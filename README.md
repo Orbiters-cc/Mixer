@@ -65,6 +65,10 @@ saved as a native mesh asset when you commit.
   (a 89k-vertex body used to lose 4,368). Meshes also carry UV channels 1-7, vertex colours, in-between shape frames
   and bind poses. Blender rests the armature in the bind pose with Unity's bone orientations, and poses it where the
   scene has it. The Blender extension has to be the matching version (Open scene in Blender reinstalls it).
+- Capture simulator (**Tools > Orbiters > Mixer Capture**): flies a camera through the open scene (a recorded Scene view
+  flight, waypoints or an orbit), renders it as VRChat's Stream camera sees the capture avatar (strip, depth frames,
+  optional PPv2) into a raw capture with ground truth under Documents/Orbiters/Raw captures for Orbiters desktop, then
+  decodes a sample back and checks it bit for bit. Formats come from the OrbitersContracts submodule in `Contracts/`.
 - Requires Orbiters Toolkit 0.4.0, which now holds the avatar gizmos (bones, weight paint, mesh edges, avatar budget).
 
 ## Get started
@@ -173,3 +177,5 @@ Toolkit's `orbiters_editor_window` tool captures the Mixer windows.
 
 The tests in `Tests/Editor` run by reflection: call the `[Test]` methods of `Orbiters.Mixer.Editor.Tests`. Windows are
 checked with Orbiters Toolkit's `orbiters_editor_window` MCP tool (`window_type: "Orbiters.Mixer.Editor.MixerWindow"`).
+The capture simulator's tests (`Tests/Editor/Capture`, `Orbiters.Mixer.Capture.Editor.Tests`) render a preview scene of
+their own and write into the temp folder; its window is `Orbiters.Mixer.Editor.Capture.CaptureWindow`.

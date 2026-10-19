@@ -4,9 +4,11 @@ import zipfile
 from pathlib import PurePosixPath
 
 
-PACKAGE_ROOTS = ("Editor", "Runtime")
+PACKAGE_ROOTS = ("Contracts", "Editor", "Runtime")
 ROOT_FILES = ("README.md", "LICENSE.md", "package.json")
 FORBIDDEN_ROOTS = (".git", ".github", ".idea", ".agents", ".codex", "Tests", "ci")
+# Parts of the OrbitersContracts submodule that are not Unity package content.
+FORBIDDEN_DIRS = ("Contracts/Rust~", "Contracts/TestVectors~", "Contracts/Tools~")
 
 
 def validate_zip_name(name):
@@ -31,6 +33,9 @@ def is_allowed_package_file(name):
         return True
 
     parts = PurePosixPath(name).parts
+    if any(part.startswith(".git") for part in parts) or any(name.startswith(d + "/") for d in FORBIDDEN_DIRS):
+        return False
+
     if parts[0] in PACKAGE_ROOTS:
         return True
 
@@ -70,6 +75,9 @@ def main():
         "Editor/Tools/MixerSceneTool.cs",
         "Editor/UI/MixerWindow.cs", "Editor/UI/mixer.uss",
         "Editor/Hierarchy/MixerHierarchyWindow.cs", "Editor/UI/hierarchy.uss",
+        "Editor/Capture/Orbiters.Mixer.Capture.Editor.asmdef",
+        "Contracts/CSharp/Orbiters.Contracts.asmdef", "Contracts/Shaders/OrbitersCapture.cginc",
+        "Contracts/Shaders/OrbitersCaptureOverlay.shader",
     )
     for required_file in ROOT_FILES + required_mixer_files:
         if required_file not in names:

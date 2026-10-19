@@ -1,0 +1,3 @@
+[submodule "Contracts"]
+	path = Contracts
+	url = https://github.com/Orbiters-cc/OrbitersContracts.git

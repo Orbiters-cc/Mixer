@@ -3,12 +3,21 @@ import argparse
 from pathlib import Path
 
 
-PACKAGE_ROOTS = ("Editor", "Runtime")
+PACKAGE_ROOTS = ("Contracts", "Editor", "Runtime")
 ROOT_FILES = ("README.md", "LICENSE.md", "package.json")
+# The OrbitersContracts submodule also holds its Rust crate, test vectors and .NET tools: not part of the package.
+EXCLUDED_DIRS = ("Contracts/Rust~", "Contracts/TestVectors~", "Contracts/Tools~")
 
 
 def to_posix(path):
     return path.as_posix()
+
+
+def is_excluded(relative):
+    if any(part.startswith(".git") for part in relative.parts):
+        return True
+    posix = relative.as_posix()
+    return any(posix.startswith(excluded + "/") for excluded in EXCLUDED_DIRS)
 
 
 def collect_package_files(root):
@@ -23,8 +32,9 @@ def collect_package_files(root):
         package_root_path = root / package_root
         if package_root_path.is_dir() and not package_root_path.is_symlink():
             for path in package_root_path.rglob("*"):
-                if path.is_file() and not path.is_symlink() and path.suffix.lower() != ".meta":
-                    files.add(to_posix(path.relative_to(root)))
+                relative = path.relative_to(root)
+                if path.is_file() and not path.is_symlink() and path.suffix.lower() != ".meta" and not is_excluded(relative):
+                    files.add(to_posix(relative))
 
     return sorted(files, key=str.lower)
 

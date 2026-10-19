@@ -1,0 +1,34 @@
+{
+  "name": "Orbiters.Mixer.Capture.Editor.Tests",
+  "rootNamespace": "Orbiters.Mixer.Editor.Capture.Tests",
+  "references": [
+    "UnityEngine.TestRunner",
+    "UnityEditor.TestRunner",
+    "Orbiters.Mixer",
+    "Orbiters.Mixer.Editor",
+    "Orbiters.Mixer.Capture.Editor",
+    "Orbiters.Contracts",
+    "Orbiters.Toolkit",
+    "Orbiters.Toolkit.Editor",
+    "Unity.Postprocessing.Runtime"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "overrideReferences": true,
+  "precompiledReferences": [
+    "nunit.framework.dll",
+    "Newtonsoft.Json.dll"
+  ],
+  "autoReferenced": false,
+  "defineConstraints": [
+    "UNITY_INCLUDE_TESTS"
+  ],
+  "versionDefines": [
+    {
+      "name": "com.unity.postprocessing",
+      "expression": "3.0.0",
+      "define": "MIXER_CAPTURE_PPV2"
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+/* Mixer's capture simulator: the Mixer window's stylesheet (mixer.uss) plus the few pieces only it has. Same greys,
+   green and radii: frames at 16 px, cards at 12 px, lists and fields at 8-9 px, pills at 14 px. */
+
+.mx-capture-modes { width: 330px; flex-shrink: 0; }
+.mx-root--s .mx-capture-modes { width: 150px; }
+.mx-root--s .mx-capture-modes .orb-segmented__label { display: none; }
+.mx-root--s .mx-capture-modes .orb-segmented__icon { margin-right: 0; }
+
+/* Stage: the last frame, its status and a thin progress line along the bottom. */
+.mx-capture-stage { height: 260px; }
+.mx-root--short .mx-capture-stage { height: 190px; }
+.mx-capture-progress { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background-color: rgba(255, 255, 255, 0.06); }
+.mx-capture-progress__fill { height: 3px; width: 0; background-color: var(--mx-accent); }
+.mx-capture-under { margin-top: 8px; }
+.mx-capture-summary { flex-shrink: 1; margin: 0 8px 0 4px; }
+.mx-capture-summary--problem { color: var(--mx-warning); }
+
+/* Path pages slide like the Mixer window's pages. */
+.mx-capture-page { opacity: 1; translate: 0 0; transition-property: opacity, translate; transition-duration: 0.22s, 0.22s; transition-timing-function: ease-out, ease-out; }
+.mx-capture-actions { flex-wrap: wrap; margin: 4px 0 4px 0; }
+.mx-capture-actions .mx-button { margin: 0 6px 0 0; }
+.mx-capture-actions .mx-chip { margin: 0 6px 0 0; }
+.mx-capture-value { min-width: 64px; margin: 0; justify-content: center; }
+.mx-capture-value--ok { background-color: rgba(0, 218, 109, 0.12); color: #3cf29a; }
+.mx-capture-value--warn { background-color: rgba(245, 183, 79, 0.14); color: #f5c26b; }
+.mx-capture-value--bad { background-color: rgba(255, 107, 107, 0.14); color: #ff8f93; }
+
+/* Waypoints: an inset list like the Shape keys panel. */
+.mx-capture-points { margin: 6px 0 8px 0; padding: 2px 0; border-radius: 9px; background-color: var(--mx-field); }
+.mx-capture-point { height: 26px; padding: 0 3px 0 10px; }
+.mx-capture-point:hover { background-color: var(--mx-hover); }
+.mx-capture-point__name { flex-grow: 1; flex-shrink: 1; margin: 0; padding: 0; font-size: 12px; color: #d6d6d6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mx-capture-point__kind { margin: 0 6px; padding: 1px 6px; font-size: 10px; color: #8d8d8d; border-radius: 6px; background-color: rgba(255, 255, 255, 0.05); }
+.mx-capture-point .mx-icon-button { width: 22px; height: 22px; min-width: 22px; }
+.mx-capture-point .mx-icon { width: 12px; height: 12px; }
+.mx-capture-empty { margin: 0; padding: 8px 10px; font-size: 11px; color: var(--mx-text-3); white-space: normal; }
+
+/* Object fields as Mixer's popup fields: flat, dark, 8 px corners. */
+.mx-objectfield { width: 210px; flex-grow: 0; flex-shrink: 1; margin: 0 4px 0 0; }
+.mx-objectfield > .unity-base-field__label { display: none; }
+.mx-objectfield .unity-object-field__input { min-height: 26px; padding: 0 0 0 6px; border-radius: 8px; background-color: var(--mx-field); border-color: var(--mx-field-border); }
+.mx-objectfield .unity-object-field-display__label { color: #eaeaea; }
+.mx-objectfield .unity-object-field__selector { border-radius: 0 8px 8px 0; background-color: rgba(255, 255, 255, 0.04); border-width: 0; }
+
+.mx-capture-post { width: auto; margin: 0 0 2px 0; }
+.mx-capture-checks .mx-dot { margin-right: 10px; }
+.mx-dot--red { background-color: var(--mx-error); }

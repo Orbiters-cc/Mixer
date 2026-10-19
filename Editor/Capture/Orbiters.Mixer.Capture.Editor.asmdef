@@ -1,0 +1,27 @@
+{
+  "name": "Orbiters.Mixer.Capture.Editor",
+  "rootNamespace": "Orbiters.Mixer.Editor.Capture",
+  "references": [
+    "Orbiters.Mixer",
+    "Orbiters.Mixer.Editor",
+    "Orbiters.Toolkit",
+    "Orbiters.Toolkit.Editor",
+    "Orbiters.Contracts",
+    "Unity.Postprocessing.Runtime"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "overrideReferences": true,
+  "precompiledReferences": [
+    "Newtonsoft.Json.dll"
+  ],
+  "autoReferenced": false,
+  "versionDefines": [
+    {
+      "name": "com.unity.postprocessing",
+      "expression": "3.0.0",
+      "define": "MIXER_CAPTURE_PPV2"
+    }
+  ]
+}
