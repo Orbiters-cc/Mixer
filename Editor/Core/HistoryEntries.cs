@@ -65,6 +65,34 @@ namespace Orbiters.Mixer.Editor
         }
     }
 
+    /// <summary>Mask values painted: before and after for the touched vertices.</summary>
+    internal sealed class MaskEdit : HistoryEntry
+    {
+        public int[] Indices;
+        public float[] Before, After;
+
+        public override long Bytes => Indices.Length * 12L + 64;
+        public override void Undo() => Apply(Before);
+        public override void Redo() => Apply(After);
+
+        private void Apply(float[] values)
+        {
+            var mask = Target.Document.EnsureMask();
+            for (int i = 0; i < Indices.Length; i++) mask[Indices[i]] = values[i];
+            Target.Document.Revision++;
+        }
+    }
+
+    /// <summary>A shape renamed, duplicated or otherwise rearranged: the shape structure before and after.</summary>
+    internal sealed class ShapeStateEdit : HistoryEntry
+    {
+        public MeshDocument.ShapeState Before, After;
+        public override long Bytes => 256;
+
+        public override void Undo() { Target.Document.RestoreShapes(Before); Target.AfterLayerChange(); }
+        public override void Redo() { Target.Document.RestoreShapes(After); Target.AfterLayerChange(); }
+    }
+
     /// <summary>Records the positions a stroke touches: the first touch of a vertex keeps its position before.</summary>
     internal sealed class StrokeRecorder
     {

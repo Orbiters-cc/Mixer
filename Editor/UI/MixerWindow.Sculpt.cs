@@ -16,7 +16,8 @@ namespace Orbiters.Mixer.Editor
         private SegmentedControl falloffControl;
         private ToggleSwitch symmetrySwitch;
         private TextField newShapeField;
-        private Label layerCaption;
+        private Label layerCaption, maskCaption;
+        private VisualElement maskActions;
         private readonly Dictionary<string, Button> tileByBrush = new Dictionary<string, Button>();
 
         private void BuildSculptPage(VisualElement page)
@@ -58,6 +59,18 @@ namespace Orbiters.Mixer.Editor
             sculptSettings.Add(MixerUi.Setting("Falloff", "How the effect fades toward the edge", falloffControl));
             symmetrySwitch = new ToggleSwitch(MixerSceneTool.Symmetry, on => MixerSceneTool.Symmetry = on);
             sculptSettings.Add(MixerUi.Setting("Symmetry", "Mirror every stroke across the mesh's X axis", symmetrySwitch));
+            maskActions = MixerUi.Row();
+            maskActions.Add(MixerUi.Pill("Clear", () => MixerSession.ClearMask(CurrentTarget()), "ghost", null, "Free every vertex"));
+            maskActions.Add(MixerUi.Pill("Invert", () => MixerSession.InvertMask(CurrentTarget()), "ghost", null, "Swap masked and free vertices"));
+            maskCaption = MixerUi.Text("No mask", "mx-setting__detail");
+            var maskTexts = MixerUi.Box("mx-setting__texts");
+            maskTexts.Add(MixerUi.Text("Mask", "mx-setting__title"));
+            maskTexts.Add(maskCaption);
+            var maskRow = MixerUi.Box("mx-setting");
+            maskRow.Add(maskTexts);
+            maskActions.AddToClassList("mx-setting__control");
+            maskRow.Add(maskActions);
+            sculptSettings.Add(maskRow);
 
             var layers = MixerUi.Card("LAYER", out var layerBody);
             page.Add(layers);
@@ -110,6 +123,9 @@ namespace Orbiters.Mixer.Editor
             if (falloffControl.Index != (int)MixerSceneTool.Falloff) falloffControl.SetIndex((int)MixerSceneTool.Falloff);
             symmetrySwitch.SetValueWithoutNotify(MixerSceneTool.Symmetry);
             layerChips.Clear();
+            int masked = target != null ? target.Document.MaskedCount : 0;
+            maskCaption.text = target == null ? "Paint with the Mask brush to hold parts of the mesh still" : masked == 0 ? "No mask: paint one with the Mask brush, Ctrl unmasks" : MixerUi.Count(masked) + " vertices held still";
+            maskActions.SetEnabled(target != null && target.Document.Mask != null);
             if (target == null)
             {
                 layerCaption.text = "Strokes go to the base mesh or to a blendshape. Edit a mesh to pick.";
@@ -131,7 +147,19 @@ namespace Orbiters.Mixer.Editor
             {
                 string n = name;
                 bool edited = doc.ShapeEdits.TryGetValue(n, out var layer) && (layer.Edited || layer.IsNew);
-                layerChips.Add(Chip(name + (edited ? " •" : ""), doc.Layer == name, () => MixerSession.SetLayer(target, n, false), () => MixerSession.DeleteShape(target, n)));
+                var chip = Chip(name + (edited ? " •" : ""), doc.Layer == name, () => MixerSession.SetLayer(target, n, false), () => MixerSession.DeleteShape(target, n));
+                chip.tooltip = "Right-click: rename, duplicate, mirror or delete";
+                chip.AddManipulator(new ContextualMenuManipulator(evt =>
+                {
+                    evt.menu.AppendAction("Rename…", _ => AskName("Rename " + n, n, value => MixerSession.RenameShape(target, n, value)));
+                    evt.menu.AppendAction("Duplicate…", _ => AskName("Duplicate " + n, n + " copy", value => MixerSession.DuplicateShape(target, n, value)));
+                    evt.menu.AppendSeparator();
+                    evt.menu.AppendAction("Mirror +X side onto -X", _ => MixerSession.MirrorShape(target, n, true));
+                    evt.menu.AppendAction("Mirror -X side onto +X", _ => MixerSession.MirrorShape(target, n, false));
+                    evt.menu.AppendSeparator();
+                    evt.menu.AppendAction("Delete", _ => MixerSession.DeleteShape(target, n));
+                }));
+                layerChips.Add(chip);
             }
             if (shown.Count < names.Count)
             {
@@ -143,6 +171,11 @@ namespace Orbiters.Mixer.Editor
             }
         }
 
+        private void AskName(string title, string initial, Action<string> done)
+        {
+            UnityEditor.PopupWindow.Show(layerChips.worldBound, new NamePopup(title, initial, done));
+        }
+
         private static VisualElement Chip(string text, bool on, Action pick, Action remove)
         {
             var chip = MixerUi.Box("mx-chip mx-chip--pick");
@@ -151,6 +184,42 @@ namespace Orbiters.Mixer.Editor
             MixerUi.Press(chip, pick);
             if (remove != null) chip.Add(MixerUi.Icon(IconGlyph.Close, "Delete this blendshape", remove, "mx-chip__remove"));
             return chip;
+        }
+    }
+
+    /// <summary>A small popup asking for a name.</summary>
+    internal sealed class NamePopup : PopupWindowContent
+    {
+        private readonly string title, initial;
+        private readonly Action<string> done;
+
+        public NamePopup(string title, string initial, Action<string> done) { this.title = title; this.initial = initial; this.done = done; }
+        public override Vector2 GetWindowSize() => new Vector2(300f, 96f);
+        public override void OnGUI(Rect rect) { }
+
+        public override void OnOpen()
+        {
+            var root = editorWindow.rootVisualElement;
+            root.AddToClassList("mx-root");
+            root.AddToClassList("mx-popup");
+            var sheet = AssetDatabase.LoadAssetAtPath<StyleSheet>(MixerInfo.BasePath + "/Editor/UI/mixer.uss");
+            if (sheet != null) root.styleSheets.Add(sheet);
+            root.Add(MixerUi.Text(title, "mx-popup__title"));
+            var field = new TextField { value = initial };
+            field.AddToClassList("mx-field");
+            root.Add(field);
+            var row = MixerUi.Row();
+            row.Add(MixerUi.Spacer());
+            row.Add(MixerUi.Pill("Cancel", () => editorWindow.Close(), "ghost"));
+            row.Add(MixerUi.Pill("OK", () => { done(field.value); editorWindow.Close(); }, "primary"));
+            row.style.marginTop = 8;
+            root.Add(row);
+            field.RegisterCallback<KeyDownEvent>(evt =>
+            {
+                if (evt.keyCode == KeyCode.Return || evt.keyCode == KeyCode.KeypadEnter) { done(field.value); editorWindow.Close(); evt.StopPropagation(); }
+                else if (evt.keyCode == KeyCode.Escape) { editorWindow.Close(); evt.StopPropagation(); }
+            });
+            root.schedule.Execute(() => { field.Q(TextField.textInputUssName)?.Focus(); field.SelectAll(); }).StartingIn(30);
         }
     }
 

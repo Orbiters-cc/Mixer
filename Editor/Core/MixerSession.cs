@@ -88,19 +88,73 @@ namespace Orbiters.Mixer.Editor
             var target = new EditTarget(renderer, original, working);
             if (original == shown) target.Show(working);
             MixerMeshGuard.Shown(working, original);
+            MixerSidecar.Load(original, target.Document);
             targets.Add(target);
             SaveState();
+            MixerLinkService.ClaimForUnity(target);
             Changed?.Invoke();
             return target;
+        }
+
+        // ---- Vertex groups ----------------------------------------------------------------------------------------
+
+        public static VertexGroup AddGroup(EditTarget target, string name)
+        {
+            if (target == null) return null;
+            var doc = target.Document;
+            name = (name ?? "").Trim();
+            if (name.Length == 0) return null;
+            if (doc.Group(name) != null) { Say("A group named " + name + " exists already.", true); return doc.Group(name); }
+            var before = new List<VertexGroup>(doc.Groups);
+            var group = new VertexGroup { Name = name };
+            doc.Groups.Add(group);
+            doc.Revision++;
+            MixerHistory.Push(new GroupListEdit { Target = target, Label = "New group " + name, Before = before, After = new List<VertexGroup>(doc.Groups) });
+            NoteEdited(target);
+            return group;
+        }
+
+        public static void RemoveGroup(EditTarget target, string name)
+        {
+            if (target == null) return;
+            var doc = target.Document;
+            var group = doc.Group(name);
+            if (group == null) return;
+            var before = new List<VertexGroup>(doc.Groups);
+            doc.Groups.Remove(group);
+            doc.Revision++;
+            MixerHistory.Push(new GroupListEdit { Target = target, Label = "Remove group " + name, Before = before, After = new List<VertexGroup>(doc.Groups) });
+            if (target.ShownChannel.IsGroup && target.ShownChannel.Group == name) target.ShowChannel(WeightChannel.None);
+            NoteEdited(target);
+        }
+
+        public static void RenameGroup(EditTarget target, string from, string to)
+        {
+            if (target == null) return;
+            var doc = target.Document;
+            var group = doc.Group(from);
+            to = (to ?? "").Trim();
+            if (group == null || to.Length == 0 || to == from) return;
+            if (doc.Group(to) != null) { Say("A group named " + to + " exists already.", true); return; }
+            var before = new List<VertexGroup>(doc.Groups);
+            var renamed = new VertexGroup { Name = to };
+            foreach (var pair in group.Weights) renamed.Weights[pair.Key] = pair.Value;
+            doc.Groups[doc.Groups.IndexOf(group)] = renamed;
+            doc.Revision++;
+            MixerHistory.Push(new GroupListEdit { Target = target, Label = "Rename group " + from, Before = before, After = new List<VertexGroup>(doc.Groups) });
+            if (target.ShownChannel.IsGroup && target.ShownChannel.Group == from) target.ShowChannel(WeightChannel.OfGroup(to));
+            NoteEdited(target);
         }
 
         /// <summary>Puts the original back and drops every edit of the target.</summary>
         public static void Revert(EditTarget target)
         {
             if (target == null || !targets.Contains(target)) return;
+            MixerLinkService.ReleaseForUnity(target);
             MixerHistory.Forget(target);
             if (target.Renderer != null)
             {
+                target.ShowChannel(WeightChannel.None);
                 target.RestoreWeights();
                 target.Show(target.Original);
             }
@@ -127,6 +181,8 @@ namespace Orbiters.Mixer.Editor
             owner = owner ?? OwnerName(target.Renderer);
             var built = MeshBuilder.Build(target);
             var asset = MeshAssets.Save(built, MeshAssets.Folder("Mixer", owner), name);
+            MixerSidecar.Save(AssetDatabase.GetAssetPath(asset), doc);
+            target.ShowChannel(WeightChannel.None);
             Undo.IncrementCurrentGroup();
             Undo.SetCurrentGroupName("Mixer: Commit " + name);
             target.RestoreWeights();
@@ -141,6 +197,7 @@ namespace Orbiters.Mixer.Editor
             MixerAutosave.Delete(target.Id);
             targets.Remove(target);
             SaveState();
+            MixerLinkService.ReleaseForUnity(target);
             AvatarMeshEdits.NotifyApplied(RootOf(target.Renderer));
             Notice?.Invoke("Saved " + AssetDatabase.GetAssetPath(asset), false);
             Changed?.Invoke();
@@ -160,6 +217,7 @@ namespace Orbiters.Mixer.Editor
         public static void NoteEdited(EditTarget target)
         {
             dirtySinceAutosave = true;
+            if (!MixerLinkService.IsBlenderOwned(target)) MixerLinkService.NotePositions(target);
             Changed?.Invoke();
         }
 
@@ -291,5 +349,103 @@ namespace Orbiters.Mixer.Editor
         }
 
         public static void Say(string text, bool error = false) => Notice?.Invoke(text, error);
+
+        // ---- Shape and mask operations -------------------------------------------------------------------------------
+
+        public static void RenameShape(EditTarget target, string from, string to)
+        {
+            if (target == null) return;
+            var doc = target.Document;
+            to = (to ?? "").Trim();
+            if (!doc.HasShape(from) || to.Length == 0 || to == from) return;
+            if (doc.HasShape(to)) { Say("A shape named " + to + " exists already.", true); return; }
+            var before = doc.CaptureShapes();
+            doc.RenameShape(from, to);
+            MixerHistory.Push(new ShapeStateEdit { Target = target, Label = "Rename " + from + " to " + to, Before = before, After = doc.CaptureShapes() });
+            target.AfterLayerChange();
+            SaveState();
+            NoteEdited(target);
+        }
+
+        public static void DuplicateShape(EditTarget target, string from, string to)
+        {
+            if (target == null) return;
+            var doc = target.Document;
+            to = (to ?? "").Trim();
+            if (!doc.HasShape(from) || to.Length == 0) return;
+            if (doc.HasShape(to)) { Say("A shape named " + to + " exists already.", true); return; }
+            var before = doc.CaptureShapes();
+            doc.DuplicateShape(from, to);
+            doc.Layer = to;
+            MixerHistory.Push(new ShapeStateEdit { Target = target, Label = "Duplicate " + from, Before = before, After = doc.CaptureShapes() });
+            target.AfterLayerChange();
+            SaveState();
+            NoteEdited(target);
+        }
+
+        /// <summary>Copies one side of a shape onto the other across the mesh's X axis (<paramref name="fromPositiveX"/>: +X side is the source).</summary>
+        public static void MirrorShape(EditTarget target, string name, bool fromPositiveX)
+        {
+            if (target == null || !target.Document.HasShape(name)) return;
+            var doc = target.Document;
+            var layer = doc.Shape(name);
+            var mirror = target.Mirror;
+            var n = doc.Neighbors;
+            var original = doc.Original.vertices;
+            var indices = new List<int>();
+            var before = new List<Vector3>();
+            var after = new List<Vector3>();
+            for (int w = 0; w < n.WeldedCount; w++)
+            {
+                int rep = n.Representative[w];
+                float x = original[rep].x;
+                bool destination = fromPositiveX ? x < -1e-6f : x > 1e-6f;
+                if (!destination) continue;
+                int source = mirror.Of[w];
+                if (source < 0) continue;
+                var d = layer.Deltas[n.Representative[source]];
+                var flipped = new Vector3(-d.x, d.y, d.z);
+                foreach (int v in n.Members[w])
+                {
+                    if (layer.Deltas[v] == flipped) continue;
+                    indices.Add(v);
+                    before.Add(doc.Positions[v] + layer.Deltas[v]);
+                    after.Add(doc.Positions[v] + flipped);
+                    layer.Deltas[v] = flipped;
+                }
+            }
+            if (indices.Count == 0) { Say("Both sides of " + name + " already match.", false); return; }
+            layer.Edited = true;
+            string previousLayer = doc.Layer;
+            doc.Layer = name;
+            doc.MarkEdited(indices);
+            MixerHistory.Push(new PositionEdit { Target = target, Label = "Mirror " + name + (fromPositiveX ? " +X to -X" : " -X to +X"), Layer = name, Indices = indices.ToArray(), Before = before.ToArray(), After = after.ToArray() });
+            if (previousLayer != name) target.AfterLayerChange(); else { target.AfterEdit(indices, fullRefresh: true); target.RecomputeAllNormals(); }
+            SaveState();
+            NoteEdited(target);
+        }
+
+        public static void ClearMask(EditTarget target) => SetMask(target, _ => 0f, "Clear mask");
+        public static void InvertMask(EditTarget target) => SetMask(target, m => 1f - m, "Invert mask");
+
+        private static void SetMask(EditTarget target, Func<float, float> change, string label)
+        {
+            if (target == null) return;
+            var doc = target.Document;
+            var mask = doc.EnsureMask();
+            var indices = new List<int>(); var before = new List<float>(); var after = new List<float>();
+            for (int v = 0; v < mask.Length; v++)
+            {
+                float next = Mathf.Clamp01(change(mask[v]));
+                if (next == mask[v]) continue;
+                indices.Add(v); before.Add(mask[v]); after.Add(next);
+                mask[v] = next;
+            }
+            if (indices.Count == 0) return;
+            doc.Revision++;
+            MixerHistory.Push(new MaskEdit { Target = target, Label = label, Indices = indices.ToArray(), Before = before.ToArray(), After = after.ToArray() });
+            NoteEdited(target);
+            SceneView.RepaintAll();
+        }
     }
 }

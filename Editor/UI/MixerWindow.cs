@@ -113,7 +113,9 @@ namespace Orbiters.Mixer.Editor
             root.RegisterCallback<GeometryChangedEvent>(_ => ApplyWidthClasses());
             root.schedule.Execute(Tick).Every(60);
             built = true;
-            SelectMode(Mathf.Clamp(modeIndex, 0, ModeNames.Length - 1), animate: false);
+            // A window follows the tool's mode when one is on (another window may have set it); otherwise its own last page.
+            int initial = MixerSceneTool.Mode == MixerMode.Weights ? 1 : MixerSceneTool.Mode == MixerMode.Armature ? 2 : MixerSceneTool.Mode == MixerMode.Sculpt ? 0 : Mathf.Clamp(modeIndex, 0, ModeNames.Length - 1);
+            SelectMode(initial, animate: false, applyToTool: false);
             chromeDirty = true;
         }
 
@@ -132,7 +134,7 @@ namespace Orbiters.Mixer.Editor
 
             var options = new List<SegmentedControl.Option>();
             for (int i = 0; i < ModeNames.Length; i++) options.Add(new SegmentedControl.Option(ModeNames[i], ModeIcons[i]));
-            modes = new SegmentedControl(options, index => SelectMode(index, animate: true));
+            modes = new SegmentedControl(options, index => SelectMode(index, animate: true, applyToTool: true));
             modes.AddToClassList("mx-modes");
             toolbarCenter = MixerUi.Box("mx-topbar__center");
             toolbarCenter.Add(modes);
@@ -167,7 +169,7 @@ namespace Orbiters.Mixer.Editor
             footer.Add(commitButton);
         }
 
-        private void SelectMode(int index, bool animate)
+        private void SelectMode(int index, bool animate, bool applyToTool)
         {
             int previous = modeIndex;
             modeIndex = index;
@@ -184,7 +186,7 @@ namespace Orbiters.Mixer.Editor
                 }
                 else MixerUi.Show(page, false);
             }
-            MixerSceneTool.Mode = index == 0 ? MixerMode.Sculpt : index == 1 ? MixerMode.Weights : index == 2 ? MixerMode.Armature : MixerMode.None;
+            if (applyToTool) MixerSceneTool.Mode = index == 0 ? MixerMode.Sculpt : index == 1 ? MixerMode.Weights : index == 2 ? MixerMode.Armature : MixerMode.None;
             chromeDirty = true;
         }
 
@@ -210,6 +212,9 @@ namespace Orbiters.Mixer.Editor
 
         private void RefreshChrome()
         {
+            // The tool's mode changed elsewhere (the Scene toolbar, another window): show its page.
+            int toolPage = MixerSceneTool.Mode == MixerMode.Sculpt ? 0 : MixerSceneTool.Mode == MixerMode.Weights ? 1 : MixerSceneTool.Mode == MixerMode.Armature ? 2 : -1;
+            if (toolPage >= 0 && toolPage != modeIndex) SelectMode(toolPage, animate: true, applyToTool: false);
             var target = CurrentTarget();
             RefreshHero(target);
             RefreshTargets();
@@ -286,7 +291,7 @@ namespace Orbiters.Mixer.Editor
             try
             {
                 var target = MixerSession.Edit(renderer);
-                if (MixerSceneTool.Mode == MixerMode.None) SelectMode(0, true);
+                if (MixerSceneTool.Mode == MixerMode.None) SelectMode(modeIndex <= 2 ? modeIndex : 0, true, applyToTool: true);
                 toasts.Show("Editing " + target.Name + ": sculpt it in the Scene view.");
                 WakeGlow();
             }

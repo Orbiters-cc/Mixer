@@ -197,6 +197,14 @@
 .mx-tile__name { margin: 0; padding: 0; font-size: 12px; color: #d9d9d9; -unity-font-style: bold; -unity-text-align: middle-center; }
 .mx-tile--on .mx-tile__name { color: #ffffff; }
 
+.mx-tile--short { height: 64px; min-height: 64px; }
+.mx-bones { height: 190px; margin-top: 6px; border-radius: 9px; background-color: var(--mx-field); }
+.mx-bone { height: 22px; padding: 0 8px; }
+.mx-bone__dot { width: 6px; height: 6px; border-radius: 3px; margin-right: 8px; }
+.mx-bone__name { margin: 0; padding: 0; color: #d6d6d6; font-size: 11px; }
+.mx-bone--on .mx-bone__name { color: #3cf29a; -unity-font-style: bold; }
+.mx-bone__count { margin: 0; padding: 0; color: #7c7c7c; font-size: 10px; }
+
 /* ---- Footer -------------------------------------------------------------------------------------- */
 
 .mx-footer { height: 36px; min-height: 36px; flex-direction: row; align-items: center; padding: 0 8px 0 12px; background-color: var(--mx-bar); border-top-width: 1px; border-top-color: var(--mx-line); flex-shrink: 0; }

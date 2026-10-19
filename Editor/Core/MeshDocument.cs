@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Orbiters.Toolkit.Meshes;
+using Unity.Collections;
 using UnityEngine;
 
 namespace Orbiters.Mixer.Editor
@@ -54,8 +55,171 @@ namespace Orbiters.Mixer.Editor
         /// <summary>Base vertices moved since the session started (what the commit recomputes normals for).</summary>
         public readonly HashSet<int> MovedBase = new HashSet<int>();
         public bool BoundsDirty;
+        /// <summary>Per-vertex mask (0: free, 1: held still), null until painted.</summary>
+        public float[] Mask;
+        /// <summary>Bone influences per vertex, loaded from the original the first time weights are edited; null before.</summary>
+        public List<Influence>[] Influences;
+        /// <summary>Vertices whose influences differ from the original's.</summary>
+        public readonly HashSet<int> WeightEdited = new HashSet<int>();
+        /// <summary>The working mesh needs the influences uploaded.</summary>
+        public bool WeightsDirty;
+        public readonly int BoneCount;
+        public bool HasSkin => BoneCount > 0;
+
+        public struct Influence
+        {
+            public int Bone;
+            public float Weight;
+            public Influence(int bone, float weight) { Bone = bone; Weight = weight; }
+        }
+
+        /// <summary>The influences, read from the original on first use.</summary>
+        public List<Influence>[] EnsureInfluences()
+        {
+            if (Influences != null) return Influences;
+            Influences = new List<Influence>[VertexCount];
+            if (!HasSkin)
+            {
+                for (int v = 0; v < VertexCount; v++) Influences[v] = new List<Influence>(1);
+                return Influences;
+            }
+            var perVertex = Original.GetBonesPerVertex();
+            var all = Original.GetAllBoneWeights();
+            int cursor = 0;
+            for (int v = 0; v < VertexCount; v++)
+            {
+                int n = v < perVertex.Length ? perVertex[v] : 0;
+                var list = new List<Influence>(n);
+                for (int k = 0; k < n; k++) { var bw = all[cursor + k]; if (bw.weight > 0f) list.Add(new Influence(bw.boneIndex, bw.weight)); }
+                cursor += n;
+                Influences[v] = list;
+            }
+            return Influences;
+        }
+
+        public float BoneWeight(int v, int bone)
+        {
+            var list = Influences != null ? Influences[v] : null;
+            if (list == null) return OriginalBoneWeight(v, bone);
+            for (int i = 0; i < list.Count; i++) if (list[i].Bone == bone) return list[i].Weight;
+            return 0f;
+        }
+
+        private NativeArray<byte> originalPerVertex;
+        private NativeArray<BoneWeight1> originalWeights;
+        private int[] originalStart;
+
+        private float OriginalBoneWeight(int v, int bone)
+        {
+            if (!HasSkin) return 0f;
+            if (originalStart == null)
+            {
+                originalPerVertex = Original.GetBonesPerVertex();
+                originalWeights = Original.GetAllBoneWeights();
+                originalStart = new int[VertexCount + 1];
+                for (int i = 0; i < VertexCount; i++) originalStart[i + 1] = originalStart[i] + (i < originalPerVertex.Length ? originalPerVertex[i] : 0);
+            }
+            for (int k = originalStart[v]; k < originalStart[v + 1]; k++) if (originalWeights[k].boneIndex == bone) return originalWeights[k].weight;
+            return 0f;
+        }
+
+        /// <summary>
+        /// Sets a bone's weight on a vertex. With <paramref name="normalize"/> the other bones are scaled so the sum stays 1
+        /// (when they had any weight; a lone bone goes to 1). Weights under a thousandth are dropped.
+        /// </summary>
+        public void SetBoneWeight(int v, int bone, float weight, bool normalize)
+        {
+            var list = EnsureInfluences()[v];
+            weight = Mathf.Clamp01(weight);
+            int index = -1;
+            float others = 0f;
+            for (int i = 0; i < list.Count; i++) { if (list[i].Bone == bone) index = i; else others += list[i].Weight; }
+            if (normalize)
+            {
+                if (others > 1e-6f)
+                {
+                    float scale = (1f - weight) / others;
+                    for (int i = 0; i < list.Count; i++) if (list[i].Bone != bone) list[i] = new Influence(list[i].Bone, list[i].Weight * scale);
+                }
+                else weight = 1f;
+            }
+            if (index >= 0) list[index] = new Influence(bone, weight); else if (weight > 0f) list.Add(new Influence(bone, weight));
+            for (int i = list.Count - 1; i >= 0; i--) if (list[i].Weight < 0.001f) list.RemoveAt(i);
+            list.Sort((a, b) => b.Weight.CompareTo(a.Weight));
+            WeightEdited.Add(v);
+            WeightsDirty = true;
+        }
+
+        public void SetInfluences(int v, Influence[] influences)
+        {
+            var list = EnsureInfluences()[v];
+            list.Clear();
+            list.AddRange(influences);
+            WeightEdited.Add(v);
+            WeightsDirty = true;
+        }
+
+        /// <summary>The influences as Unity's arrays (sorted by weight within a vertex), for the working mesh or the commit.</summary>
+        public void BuildBoneWeights(out NativeArray<byte> perVertex, out NativeArray<BoneWeight1> weights)
+        {
+            var lists = EnsureInfluences();
+            int total = 0;
+            for (int v = 0; v < VertexCount; v++) total += Math.Max(1, lists[v].Count);
+            perVertex = new NativeArray<byte>(VertexCount, Allocator.Temp);
+            weights = new NativeArray<BoneWeight1>(total, Allocator.Temp);
+            int cursor = 0;
+            for (int v = 0; v < VertexCount; v++)
+            {
+                var list = lists[v];
+                if (list.Count == 0)
+                {
+                    // Unity needs at least one influence per vertex: the first bone at full weight.
+                    perVertex[v] = 1;
+                    weights[cursor++] = new BoneWeight1 { boneIndex = 0, weight = 1f };
+                    continue;
+                }
+                float sum = 0f;
+                for (int i = 0; i < list.Count; i++) sum += list[i].Weight;
+                perVertex[v] = (byte)Math.Min(255, list.Count);
+                for (int i = 0; i < list.Count && i < 255; i++)
+                    weights[cursor++] = new BoneWeight1 { boneIndex = list[i].Bone, weight = sum > 0f ? list[i].Weight / sum : 1f / list.Count };
+            }
+        }
+
+        /// <summary>The named group, or null.</summary>
+        public VertexGroup Group(string name)
+        {
+            foreach (var g in Groups) if (g.Name == name) return g;
+            return null;
+        }
         /// <summary>True once anything differs from the original.</summary>
         public bool Changed => Revision > 0;
+
+        public bool HasMask
+        {
+            get
+            {
+                if (Mask == null) return false;
+                for (int v = 0; v < Mask.Length; v++) if (Mask[v] > 0f) return true;
+                return false;
+            }
+        }
+
+        public int MaskedCount
+        {
+            get
+            {
+                if (Mask == null) return 0;
+                int n = 0;
+                for (int v = 0; v < Mask.Length; v++) if (Mask[v] > 0.5f) n++;
+                return n;
+            }
+        }
+
+        /// <summary>How much of a brush a vertex takes: 1 minus its mask.</summary>
+        public float Free(int v) => Mask == null ? 1f : 1f - Mathf.Clamp01(Mask[v]);
+
+        public float[] EnsureMask() => Mask ?? (Mask = new float[VertexCount]);
 
         public MeshDocument(Mesh original)
         {
@@ -68,6 +232,7 @@ namespace Orbiters.Mixer.Editor
             Triangles = original.triangles;
             Neighbors = MeshNeighbors.Build(Positions, Triangles, WeldTolerance(original));
             for (int i = 0; i < original.blendShapeCount; i++) ShapeOrder.Add(original.GetBlendShapeName(i));
+            BoneCount = original.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.BlendWeight) ? original.bindposes.Length : 0;
         }
 
         private static float WeldTolerance(Mesh mesh)
@@ -115,6 +280,61 @@ namespace Orbiters.Mixer.Editor
             DeletedShapes.Remove(name);
             if (layer != null) { ShapeEdits[name] = layer; if (!ShapeOrder.Contains(name)) ShapeOrder.Add(name); }
             Revision++;
+        }
+
+        /// <summary>The structure of the shapes (order, edited layers, deletions, the active layer), for undo of shape operations.</summary>
+        public sealed class ShapeState
+        {
+            public List<string> Order;
+            public Dictionary<string, ShapeLayer> Edits;
+            public HashSet<string> Deleted;
+            public string Layer;
+        }
+
+        public ShapeState CaptureShapes() => new ShapeState
+        {
+            Order = new List<string>(ShapeOrder),
+            Edits = new Dictionary<string, ShapeLayer>(ShapeEdits),
+            Deleted = new HashSet<string>(DeletedShapes),
+            Layer = Layer,
+        };
+
+        public void RestoreShapes(ShapeState state)
+        {
+            ShapeOrder.Clear(); ShapeOrder.AddRange(state.Order);
+            ShapeEdits.Clear(); foreach (var pair in state.Edits) ShapeEdits[pair.Key] = pair.Value;
+            DeletedShapes.Clear(); foreach (string d in state.Deleted) DeletedShapes.Add(d);
+            Layer = state.Layer != null && HasShape(state.Layer) ? state.Layer : null;
+            Revision++;
+        }
+
+        /// <summary>Gives a shape a new name: an original shape is left out of the commit and re-added under the new name.</summary>
+        public void RenameShape(string from, string to)
+        {
+            if (!HasShape(from) || string.IsNullOrEmpty(to) || from == to || HasShape(to)) return;
+            var layer = Shape(from);
+            int index = ShapeOrder.IndexOf(from);
+            if (layer.IsNew) { ShapeEdits.Remove(from); ShapeOrder.Remove(from); }
+            else { ShapeEdits.Remove(from); DeletedShapes.Add(from); }
+            var renamed = new ShapeLayer { Name = to, Deltas = layer.Deltas, IsNew = true, Edited = true };
+            ShapeEdits[to] = renamed;
+            DeletedShapes.Remove(to);
+            if (index >= 0 && index <= ShapeOrder.Count) ShapeOrder.Insert(index, to); else ShapeOrder.Add(to);
+            if (Layer == from) Layer = to;
+            Revision++;
+        }
+
+        /// <summary>A new shape with a copy of another's deltas.</summary>
+        public ShapeLayer DuplicateShape(string from, string to)
+        {
+            if (!HasShape(from) || string.IsNullOrEmpty(to) || HasShape(to)) return null;
+            var source = Shape(from);
+            var copy = new ShapeLayer { Name = to, Deltas = (Vector3[])source.Deltas.Clone(), IsNew = true, Edited = true };
+            ShapeEdits[to] = copy;
+            DeletedShapes.Remove(to);
+            ShapeOrder.Add(to);
+            Revision++;
+            return copy;
         }
 
         /// <summary>The position shown for a vertex on the active layer.</summary>

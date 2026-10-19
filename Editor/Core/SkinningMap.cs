@@ -29,7 +29,19 @@ namespace Orbiters.Mixer.Editor
         }
 
         /// <summary>Recomputes the matrices when the pose or the transform moved; true when something changed.</summary>
-        public bool Refresh(Renderer renderer, Mesh mesh) => Rebuild(renderer, mesh, false);
+        public bool Refresh(Renderer renderer, Mesh mesh) => Rebuild(renderer, mesh, weightsStale);
+
+        private bool weightsStale;
+
+        /// <summary>The mesh's bone weights changed: the next refresh reads them again.</summary>
+        public void InvalidateWeights()
+        {
+            weightsStale = true;
+            if (weights.IsCreated) weights.Dispose();
+            if (bonesPerVertex.IsCreated) bonesPerVertex.Dispose();
+            weights = default;
+            bonesPerVertex = default;
+        }
 
         private bool Rebuild(Renderer renderer, Mesh mesh, bool force)
         {
@@ -61,6 +73,7 @@ namespace Orbiters.Mixer.Editor
             }
             skinned = true;
             boneMatrices = current;
+            weightsStale = false;
             if (!weights.IsCreated || weights.Length == 0)
             {
                 weights = mesh.GetAllBoneWeights();

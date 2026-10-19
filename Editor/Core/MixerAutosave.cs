@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Security.Cryptography;
+using System.Linq;
 using System.Text;
 using Orbiters.Toolkit.Editor;
 using UnityEngine;
@@ -17,7 +18,7 @@ namespace Orbiters.Mixer.Editor
     internal static class MixerAutosave
     {
         private const string Magic = "MIXA";
-        private const int Version = 1;
+        private const int Version = 2;
 
         public static string Folder => Path.GetFullPath(Path.Combine(Application.dataPath, "..", "Library", "Orbiters", "Mixer", "autosave"));
 
@@ -65,6 +66,8 @@ namespace Orbiters.Mixer.Editor
                 foreach (var pair in g.Weights) { idx[i] = pair.Key; w[i] = pair.Value; i++; }
                 groups.Add((g.Name, idx, w));
             }
+            var influences = new List<(int vertex, MeshDocument.Influence[] list)>();
+            if (doc.Influences != null) foreach (int v in doc.WeightEdited) influences.Add((v, doc.Influences[v].ToArray()));
             string path = PathFor(target.Id);
             string layerName = doc.Layer ?? "";
             int vertexCount = doc.VertexCount;
@@ -93,6 +96,12 @@ namespace Orbiters.Mixer.Editor
                     {
                         writer.Write(g.name); writer.Write(g.indices.Length);
                         for (int i = 0; i < g.indices.Length; i++) { writer.Write(g.indices[i]); writer.Write(g.weights[i]); }
+                    }
+                    writer.Write(influences.Count);
+                    foreach (var inf in influences)
+                    {
+                        writer.Write(inf.vertex); writer.Write(inf.list.Length);
+                        for (int i = 0; i < inf.list.Length; i++) { writer.Write(inf.list[i].Bone); writer.Write(inf.list[i].Weight); }
                     }
                 }
                 if (File.Exists(path)) File.Delete(path);
@@ -147,6 +156,15 @@ namespace Orbiters.Mixer.Editor
                         int n = reader.ReadInt32();
                         for (int i = 0; i < n; i++) { int v = reader.ReadInt32(); float w = reader.ReadSingle(); group.Weights[v] = w; }
                         doc.Groups.Add(group);
+                    }
+                    int influenced = reader.ReadInt32();
+                    for (int k = 0; k < influenced; k++)
+                    {
+                        int v = reader.ReadInt32();
+                        int n = reader.ReadInt32();
+                        var list = new MeshDocument.Influence[n];
+                        for (int i = 0; i < n; i++) { int bone = reader.ReadInt32(); float w = reader.ReadSingle(); list[i] = new MeshDocument.Influence(bone, w); }
+                        if (v >= 0 && v < vertexCount && doc.HasSkin) doc.SetInfluences(v, list);
                     }
                     doc.Layer = layer.Length > 0 && doc.HasShape(layer) ? layer : null;
                 }

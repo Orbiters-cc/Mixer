@@ -226,6 +226,65 @@ namespace Orbiters.Mixer.Editor
             return true;
         }
 
+        /// <summary>Per-vertex weights shown by the weight paint overlay (a group's), or null for the bones'.</summary>
+        public float[] OverlayWeights;
+        public WeightChannel ShownChannel = WeightChannel.None;
+        private double lastWeightUpload;
+
+        /// <summary>Uploads the influences to the working mesh when they changed (throttled unless forced), and refreshes the skinning and overlay.</summary>
+        public void FlushWeights(bool force)
+        {
+            var doc = Document;
+            if (!doc.WeightsDirty || Working == null || !doc.HasSkin) return;
+            double now = EditorApplication.timeSinceStartup;
+            if (!force && now - lastWeightUpload < 0.08) return;
+            lastWeightUpload = now;
+            doc.BuildBoneWeights(out var perVertex, out var weights);
+            try { Working.SetBoneWeights(perVertex, weights); }
+            finally { perVertex.Dispose(); weights.Dispose(); }
+            doc.WeightsDirty = false;
+            Skin.InvalidateWeights();
+            Skin.Refresh(Renderer, Working);
+            RebuildWorld();
+            RefreshOverlay();
+        }
+
+        /// <summary>A vertex group changed: the overlay shows it when it is the shown channel.</summary>
+        public void GroupsChanged()
+        {
+            if (ShownChannel.IsGroup) RefreshOverlay();
+        }
+
+        /// <summary>Points the Toolkit's weight paint overlay at a bone or group of this target, or turns it off with None.</summary>
+        public void ShowChannel(WeightChannel channel)
+        {
+            ShownChannel = channel;
+            var skinned = Skinned;
+            if (skinned == null) return;
+            if (channel.IsNone) { Orbiters.Toolkit.Editor.XRay.XRayWeightPaintService.Unpin(skinned); OverlayWeights = null; return; }
+            RefreshOverlay();
+        }
+
+        private void RefreshOverlay()
+        {
+            var skinned = Skinned;
+            if (skinned == null || ShownChannel.IsNone) return;
+            if (ShownChannel.IsGroup)
+            {
+                var group = Document.Group(ShownChannel.Group);
+                if (OverlayWeights == null || OverlayWeights.Length != Document.VertexCount) OverlayWeights = new float[Document.VertexCount];
+                Array.Clear(OverlayWeights, 0, OverlayWeights.Length);
+                if (group != null) foreach (var pair in group.Weights) if (pair.Key >= 0 && pair.Key < OverlayWeights.Length) OverlayWeights[pair.Key] = pair.Value;
+                Orbiters.Toolkit.Editor.XRay.XRayWeightPaintService.Pin(skinned, null, OverlayWeights);
+            }
+            else
+            {
+                var bones = skinned.bones;
+                var bone = ShownChannel.Bone >= 0 && ShownChannel.Bone < bones.Length ? bones[ShownChannel.Bone] : null;
+                Orbiters.Toolkit.Editor.XRay.XRayWeightPaintService.Pin(skinned, bone != null ? new[] { bone } : new Transform[0], null);
+            }
+        }
+
         /// <summary>At a stroke's end: bounds and the normals around what moved.</summary>
         public void FinishStroke(IEnumerable<int> moved)
         {

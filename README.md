@@ -10,6 +10,11 @@ saved as a native mesh asset when you commit.
 - First release: sculpting with seven brushes (Grab, Smooth, Inflate, Flatten, Clay, Pinch, Crease), falloffs,
   symmetry, blendshape layers (sculpt the base mesh or any shape, new or existing), Ctrl+Z and Ctrl+Y through Unity's
   own Undo for every stroke, autosave of edits in progress, commit to a native mesh asset and revert.
+- A Mask brush (Ctrl unmasks; Clear and Invert): masked vertices stay still under the other brushes.
+- Shapes: rename, duplicate, mirror one side onto the other (right-click a shape chip), delete; all undoable.
+- Weight painting: Draw, Blur and Replace brushes on a bone (picked in the list or in the Scene view) or on a vertex
+  group, with auto-normalize, a brush value, symmetry onto the mirror bone, the Toolkit's weight overlay coloured live,
+  and the weight under the cursor. Vertex groups are kept beside the committed mesh (`<mesh>.mixer.json`).
 - Requires Orbiters Toolkit 0.4.0, which now holds the XRay gizmos (bones, weight paint, mesh edges, avatar budget).
 
 ## Get started

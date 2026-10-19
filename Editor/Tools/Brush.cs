@@ -39,6 +39,8 @@ namespace Orbiters.Mixer.Editor
         public virtual bool Grabs => false;
         /// <summary>True for brushes that apply once per mouse move without spacing.</summary>
         public virtual bool Continuous => true;
+        /// <summary>True for the brush that paints the mask instead of moving vertices.</summary>
+        public virtual bool PaintsMask => false;
 
         /// <summary>Returns the world-space move of each welded vertex of <paramref name="ctx"/> into <paramref name="moves"/>.</summary>
         public abstract void Step(BrushContext ctx, Vector3[] moves);
@@ -222,11 +224,24 @@ namespace Orbiters.Mixer.Editor
         }
     }
 
+    internal sealed class MaskBrush : Brush
+    {
+        public override string Name => "Mask";
+        public override IconGlyph Icon => IconGlyph.Lock;
+        public override string Description => "Paint a mask: masked vertices stay still under the other brushes. Ctrl unmasks.";
+        public override bool PaintsMask => true;
+
+        public override void Step(BrushContext ctx, Vector3[] moves)
+        {
+            for (int i = 0; i < ctx.Welded.Count; i++) moves[i] = Vector3.zero;
+        }
+    }
+
     internal static class Brushes
     {
         public static readonly Brush[] All =
         {
-            new GrabBrush(), new SmoothBrush(), new InflateBrush(), new FlattenBrush(), new ClayBrush(), new PinchBrush(), new CreaseBrush(),
+            new GrabBrush(), new SmoothBrush(), new InflateBrush(), new FlattenBrush(), new ClayBrush(), new PinchBrush(), new CreaseBrush(), new MaskBrush(),
         };
 
         public static Brush Named(string name)

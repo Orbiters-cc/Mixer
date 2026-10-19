@@ -18,6 +18,7 @@ namespace Orbiters.Mixer.Editor
         private readonly bool symmetry;
         private readonly Vector3 viewDirection;
         private readonly StrokeRecorder recorder;
+        private readonly Dictionary<int, float> maskBefore = new Dictionary<int, float>();
         private readonly BrushContext ctx = new BrushContext();
         private readonly List<int> scratch = new List<int>();
         private readonly List<int> moved = new List<int>();
@@ -100,6 +101,18 @@ namespace Orbiters.Mixer.Editor
         {
             if (!begun) return null;
             begun = false;
+            if (brush.PaintsMask)
+            {
+                if (maskBefore.Count == 0) return null;
+                var mask = target.Document.EnsureMask();
+                var maskEdit = new MaskEdit { Target = target, Label = "Mask", Indices = new int[maskBefore.Count], Before = new float[maskBefore.Count], After = new float[maskBefore.Count] };
+                int k = 0;
+                foreach (var pair in maskBefore) { maskEdit.Indices[k] = pair.Key; maskEdit.Before[k] = pair.Value; maskEdit.After[k] = mask[pair.Key]; k++; }
+                if (cancel) { maskEdit.Undo(); return null; }
+                MixerHistory.Push(maskEdit);
+                MixerSession.NoteEdited(target);
+                return null;
+            }
             var edit = recorder.Finish();
             if (edit == null) return null;
             if (cancel)
@@ -122,13 +135,18 @@ namespace Orbiters.Mixer.Editor
             ctx.Weight.Clear();
             var seen = new HashSet<int>();
             var world = target.World;
+            bool painting = brush.PaintsMask;
             foreach (int v in scratch)
             {
                 int w = n.Weld[v];
                 if (!seen.Add(w)) continue;
-                float d = (world[n.Representative[w]] - center).magnitude / Radius;
+                int rep = n.Representative[w];
+                float d = (world[rep] - center).magnitude / Radius;
+                float weight = Brush.Curve(falloff, d);
+                if (!painting) weight *= doc.Free(rep);
+                if (weight <= 0f) continue;
                 ctx.Welded.Add(w);
-                ctx.Weight.Add(Brush.Curve(falloff, d));
+                ctx.Weight.Add(weight);
             }
             if (moves.Length < ctx.Welded.Count) moves = new Vector3[Mathf.NextPowerOfTwo(ctx.Welded.Count)];
         }
@@ -137,6 +155,7 @@ namespace Orbiters.Mixer.Editor
         {
             if (ctx.Welded.Count == 0) return;
             Steps++;
+            if (brush.PaintsMask) { PaintMask(); return; }
             brush.Step(ctx, moves);
             var doc = target.Document;
             var n = doc.Neighbors;
@@ -180,6 +199,37 @@ namespace Orbiters.Mixer.Editor
             doc.MarkEdited(moved);
             target.AfterEdit(moved);
             doc.RefreshNormals(moved, target.Display);
+        }
+
+        // The mask brush: adds to the mask under it (Ctrl takes away), on every member of each welded vertex and, with
+        // symmetry, on the mirror side.
+        private void PaintMask()
+        {
+            var doc = target.Document;
+            var n = doc.Neighbors;
+            var mask = doc.EnsureMask();
+            float amount = Strength * 0.35f * (ctx.Invert ? -1f : 1f);
+            var welded = new List<int>(ctx.Welded.Count * 2);
+            var weights = new List<float>(ctx.Welded.Count * 2);
+            for (int i = 0; i < ctx.Welded.Count; i++) { welded.Add(ctx.Welded[i]); weights.Add(ctx.Weight[i]); }
+            if (symmetry)
+            {
+                var mirror = target.Mirror;
+                for (int i = 0; i < ctx.Welded.Count; i++)
+                {
+                    int other = mirror.Of[ctx.Welded[i]];
+                    if (other >= 0 && other != ctx.Welded[i]) { welded.Add(other); weights.Add(ctx.Weight[i]); }
+                }
+            }
+            for (int i = 0; i < welded.Count; i++)
+            {
+                foreach (int v in n.Members[welded[i]])
+                {
+                    if (!maskBefore.ContainsKey(v)) maskBefore[v] = mask[v];
+                    mask[v] = Mathf.Clamp01(mask[v] + amount * weights[i]);
+                }
+            }
+            doc.Revision++;
         }
     }
 }

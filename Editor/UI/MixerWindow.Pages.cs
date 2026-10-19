@@ -6,13 +6,7 @@ namespace Orbiters.Mixer.Editor
     // The pages of the modes that come in later phases: a short card each, filled as the phase lands.
     internal sealed partial class MixerWindow
     {
-        private VisualElement weightsBody, armatureBody, joinBody, renderBody;
-
-        private void BuildWeightsPage(VisualElement page)
-        {
-            page.Add(MixerUi.Card("WEIGHT PAINT", out weightsBody));
-            weightsBody.Add(MixerUi.Text("Paint bone weights and manage vertex groups. Coming in the next phase.", "mx-caption"));
-        }
+        private VisualElement armatureBody, joinBody, renderBody;
 
         private void BuildArmaturePage(VisualElement page)
         {
@@ -32,7 +26,6 @@ namespace Orbiters.Mixer.Editor
             renderBody.Add(MixerUi.Text("Render the scene with Blender's engine. Coming in a later phase.", "mx-caption"));
         }
 
-        private void RefreshWeightsPage(EditTarget target) { }
         private void RefreshArmaturePage(EditTarget target) { }
         private void RefreshJoinPage() { }
         private void RefreshRenderPage() { }
