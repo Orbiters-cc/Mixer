@@ -57,7 +57,13 @@ namespace Orbiters.Mixer.Editor
             return false;
         }
 
-        internal static Button Icon(IconGlyph glyph, string tooltip, Action action, string extraClass = null)
+        internal static Button Icon(IconGlyph glyph, string tooltip, Action action, string extraClass = null) => Icon(glyph, tooltip, action, null, extraClass);
+
+        /// <summary>
+        /// An icon button. <paramref name="onPointerDown"/> sees the press with its modifiers before the press handling
+        /// (which stops the event for later handlers): for buttons whose action depends on Alt or Shift.
+        /// </summary>
+        internal static Button Icon(IconGlyph glyph, string tooltip, Action action, Action<PointerDownEvent> onPointerDown, string extraClass = null)
         {
             var button = new Button { tooltip = tooltip, text = string.Empty };
             button.AddToClassList("mx-icon-button");
@@ -65,6 +71,7 @@ namespace Orbiters.Mixer.Editor
             var icon = new VectorIcon(glyph) { pickingMode = PickingMode.Ignore };
             icon.AddToClassList("mx-icon");
             button.Add(icon);
+            if (onPointerDown != null) button.RegisterCallback<PointerDownEvent>(evt => { if (evt.button == 0) onPointerDown(evt); }, TrickleDown.TrickleDown);
             Press(button, action);
             return button;
         }

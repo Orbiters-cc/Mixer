@@ -98,5 +98,46 @@ namespace Orbiters.Mixer.Editor.Tests
                 window.Close();
             }
         }
+        [Test]
+        public void TheFoldArrowOpensAndClosesABranch()
+        {
+            var window = ScriptableObject.CreateInstance<MixerHierarchyWindow>();
+            try
+            {
+                window.position = new Rect(-32000, -32000, 420, 600);
+                var show = typeof(EditorWindow).GetMethod("ShowPopupWithMode", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var showMode = typeof(EditorWindow).Assembly.GetType("UnityEditor.ShowMode");
+                show.Invoke(window, new object[] { System.Enum.Parse(showMode, "PopupMenu"), false });
+                var repaint = typeof(EditorWindow).GetMethod("RepaintImmediately", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var tick = typeof(MixerHierarchyWindow).GetMethod("Tick", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                repaint.Invoke(window, null);
+                window.RevealObject(root);
+                tick.Invoke(window, null);
+                repaint.Invoke(window, null);
+                System.Func<System.Collections.Generic.List<string>> shown = () => window.rootVisualElement.Query(className: "mxh-row").ToList()
+                    .Where(r => r.resolvedStyle.display != DisplayStyle.None).Select(r => r.Q<Label>(className: "mxh-row__name")).Where(l => l != null).Select(l => l.text).ToList();
+                System.Action press = () =>
+                {
+                    // Pooled rows that are off screen keep their last text: only a shown row counts.
+                    var label = window.rootVisualElement.Query<Label>(className: "mxh-row__name").ToList()
+                        .First(l => l.text == "MixerHierarchyFixture" && l.parent.resolvedStyle.display != DisplayStyle.None && l.parent.layout.y >= 0);
+                    var chevron = label.parent.Q(className: "mxh-row__chevron");
+                    var down = new Event { type = EventType.MouseDown, mousePosition = chevron.worldBound.center, button = 0, clickCount = 1 };
+                    using (var evt = PointerDownEvent.GetPooled(down)) { evt.target = chevron; window.rootVisualElement.panel.visualTree.SendEvent(evt); }
+                    tick.Invoke(window, null);
+                    repaint.Invoke(window, null);
+                };
+                bool openAtFirst = shown().Contains("Child 0");
+                press();
+                Assert.That(shown().Contains("Child 0"), Is.EqualTo(!openAtFirst), "one press on the arrow folds or unfolds the branch");
+                press();
+                Assert.That(shown().Contains("Child 0"), Is.EqualTo(openAtFirst), "a second press puts it back");
+            }
+            finally
+            {
+                Selection.activeObject = null;
+                window.Close();
+            }
+        }
     }
 }

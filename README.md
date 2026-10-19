@@ -39,6 +39,22 @@ saved as a native mesh asset when you commit.
 - An MCP tool `mixer_tool` for agents (see Agents).
 - `MixerLink`, a public facade for the other Orbiters tools: the link's state, Open scene in Blender, a renderer's Mixer state, Commit, Revert, Edit, keep out of Blender. MCB's creator mode uses it.
 - A tool can name the project file each renderer's mesh stands for (`MixerLink.TargetFbxResolver`): Blender gets it on the node as `targetFbx`, and the Mixer extension's **Export for MCB** writes one FBX per target with the manifest MCB imports. Status frames from Blender reach tools through `MixerLink.BlenderStatus`.
+- Mixer in the Scene view, like Blender: a **Mixer** toolbar overlay with the mode dropdown (Object Mode, Sculpt Mode,
+  Weight Paint, Edit Armature; entering a mode opens the selected mesh in Mixer) and Commit / Revert, and a **Mixer
+  brushes** overlay with the brushes and brush settings of the mode, shown while sculpting or weight painting. Nothing
+  needs the Mixer window any more.
+- The Skinned Mesh Renderer inspector gains Blender's panels: **Shape keys** (the blendshapes with their values; New,
+  Duplicate, Mirror, Rename by double-click, Delete, Sculpt a shape; Commit and Revert) and **Vertex groups** (the bones
+  and Mixer's groups with Paint, which enters Weight paint on that channel).
+- Mixer's card in the Orbiters settings: Replace Unity's Hierarchy (on by default, also when Mixer arrives in a running
+  editor) and the Blender link.
+- Fixed: Ctrl+Z after a sculpt stroke left the normals of the previous state; the Mixer Hierarchy's fold arrows, eye and
+  lock did not react to clicks.
+- Review fixes: commits never overwrite another mesh asset of the same name; a picked shape loads at once; unedited
+  shapes keep their frames, edited ones their in-betweens, with seamless normal deltas; mirror bones from the humanoid
+  map or L/R tokens (no painting the other side on an unmatched side bone); rest-pose editing carries every mesh of the
+  rig; bind poses and the mask in the autosave; Prefab Mode refused and prefab writes keep the original mesh; the edited
+  shape's own weight kept for saves, uploads and reloads.
 - Requires Orbiters Toolkit 0.4.0, which now holds the XRay gizmos (bones, weight paint, mesh edges, avatar budget).
 
 ## Get started

@@ -218,6 +218,66 @@
 .mx-popupfield > .unity-base-popup-field__input { flex-grow: 1; }
 .mx-popupfield .unity-base-popup-field__input { min-height: 26px; border-radius: 8px; background-color: var(--mx-field); border-color: var(--mx-field-border); color: #eaeaea; }
 
+/* ---- Scene view overlays: Blender's strips, no frame of their own ---- */
+.mx-strip { background-color: rgba(0, 0, 0, 0); }
+.mx-strip--grid { flex-direction: row; flex-wrap: wrap; width: 58px; padding: 1px; }
+.mx-tool { width: 26px; height: 26px; min-width: 26px; min-height: 26px; margin: 1px; padding: 0; border-width: 0; border-radius: 6px; justify-content: center; align-items: center; background-color: rgba(28, 30, 35, 0.78); }
+.mx-tool:hover { background-color: rgba(60, 62, 70, 0.92); }
+.mx-tool--on, .mx-tool--on:hover { background-color: rgba(0, 218, 109, 0.26); }
+.mx-tool__icon { width: 15px; height: 15px; --icon-color: #cfcfcf; }
+.mx-tool--on .mx-tool__icon { --icon-color: #3cf29a; }
+.mx-mode { height: 26px; margin: 1px; padding: 0 6px 0 4px; border-width: 0; border-radius: 6px; background-color: rgba(28, 30, 35, 0.78); color: #e0e0e0; }
+.mx-mode:hover { background-color: rgba(60, 62, 70, 0.92); }
+.mx-mode--on { color: #ffffff; -unity-font-style: bold; background-color: rgba(0, 218, 109, 0.22); }
+.mx-mode__icon { width: 14px; height: 14px; margin-right: 4px; --icon-color: #cfcfcf; }
+.mx-mode--on .mx-mode__icon { --icon-color: #3cf29a; }
+.mx-header { flex-direction: row; align-items: center; height: 28px; }
+.mx-header__field { flex-direction: row; align-items: center; height: 26px; margin: 1px; padding: 0 6px; border-radius: 6px; background-color: rgba(28, 30, 35, 0.78); }
+.mx-header__label { margin: 0 4px 0 0; padding: 0; font-size: 10px; color: #9f9f9f; }
+.mx-header__slider { width: 70px; margin: 0; }
+.mx-header__slider .unity-base-slider__tracker { height: 2px; margin-top: -1px; border-radius: 1px; background-color: #4a4d55; }
+.mx-header__slider .unity-base-slider__dragger { width: 10px; height: 10px; border-radius: 5px; margin-top: -4px; background-color: #3cf29a; border-width: 0; }
+.mx-header__value { min-width: 40px; margin: 0 0 0 4px; padding: 0; font-size: 10px; color: #e0e0e0; -unity-text-align: middle-right; }
+.mx-header__drop { height: 26px; margin: 1px; padding: 0 8px; border-width: 0; border-radius: 6px; font-size: 11px; color: #e0e0e0; background-color: rgba(28, 30, 35, 0.78); }
+.mx-header__drop:hover { background-color: rgba(60, 62, 70, 0.92); }
+.mx-header__drop.mx-tool--on { background-color: rgba(0, 218, 109, 0.26); color: #ffffff; }
+.mx-header__commit { background-color: rgba(0, 218, 109, 0.26); color: #ffffff; }
+
+/* ---- Skinned Mesh Renderer inspector ---- */
+.mx-inspector, .mx-overlay { --mx-bar: #3b3b3b; --mx-surface: #303030; --mx-bg: #2b2b2b; --mx-card: #262626; --mx-hero: #1c1e23; --mx-sub: #2a2b30; --mx-field: #262626; --mx-field-border: rgba(0, 0, 0, 0.22); --mx-track: #2d2d2d; --mx-surface-3: #4d4d4d; --mx-surface-3-hover: #5a5a5a; --mx-hover: rgba(255, 255, 255, 0.045); --mx-press: rgba(255, 255, 255, 0.09); --mx-line: #262626; --mx-text: #e6e6e6; --mx-text-2: #a8a8a8; --mx-text-3: #7c7c7c; --mx-accent: #00da6d; --mx-accent-hover: #1ee57f; --mx-on-accent: #06140c; --mx-violet: #8a7dff; --mx-violet-text: #b9b1ff; --mx-warning: #f5b74f; --mx-error: #ff6b6b; }
+.mx-inspector { margin: 6px 0 4px 0; padding: 8px 10px 10px 10px; border-radius: 10px; background-color: rgba(0, 0, 0, 0.14); }
+.mx-inspector__head { flex-direction: row; align-items: center; margin-bottom: 6px; }
+.mx-inspector__title { flex-grow: 1; margin: 0; font-size: 11px; letter-spacing: 1px; color: #9a9a9a; -unity-font-style: bold; }
+.mx-inspector__count { margin: 0 6px; font-size: 11px; color: #7c7c7c; }
+.mx-inspector__list { border-radius: 8px; background-color: var(--mx-field); padding: 2px 0; }
+.mx-shape { flex-direction: row; align-items: center; height: 24px; padding: 0 6px; }
+.mx-shape:hover { background-color: var(--mx-hover); }
+.mx-shape--on { background-color: rgba(0, 218, 109, 0.14); }
+.mx-shape--editing .mx-shape__name { color: #3cf29a; }
+.mx-shape__dot { width: 6px; height: 6px; border-radius: 3px; margin-right: 8px; background-color: #4a4a4a; }
+.mx-shape--editing .mx-shape__dot { background-color: #3cf29a; }
+.mx-shape__name { flex-grow: 1; margin: 0; padding: 0; font-size: 12px; color: #d6d6d6; overflow: hidden; text-overflow: ellipsis; }
+.mx-shape__rename { flex-grow: 1; margin: 0 6px 0 0; }
+.mx-shape__rename .unity-base-text-field__input { min-height: 20px; padding-left: 6px; border-radius: 6px; background-color: #1b1b1f; border-color: rgba(0, 218, 109, 0.5); color: #eaeaea; font-size: 12px; }
+.mx-shape__slider { width: 110px; margin: 0 6px; flex-shrink: 0; }
+.mx-shape__slider .unity-base-slider__tracker { height: 3px; border-radius: 2px; background-color: #3a3a3f; }
+.mx-shape__slider .unity-base-slider__dragger { width: 10px; height: 10px; border-radius: 5px; margin-top: -4px; background-color: #3cf29a; border-width: 0; }
+.mx-shape__value { width: 40px; margin: 0; padding: 0; font-size: 11px; color: #9a9a9a; -unity-text-align: middle-right; }
+.mx-shape .mx-icon-button { width: 20px; height: 20px; margin-left: 2px; opacity: 0; }
+.mx-shape:hover .mx-icon-button, .mx-shape--on .mx-icon-button { opacity: 1; }
+.mx-inspector__tools { flex-direction: row; align-items: center; margin-top: 6px; }
+.mx-inspector__tools .mx-pill { margin-right: 6px; }
+.mx-inspector__hint { margin: 6px 0 0 0; font-size: 11px; color: #8d8d8d; white-space: normal; }
+.mx-group { flex-direction: row; align-items: center; height: 22px; padding: 0 6px; }
+.mx-group:hover { background-color: var(--mx-hover); }
+.mx-group--on { background-color: rgba(0, 218, 109, 0.14); }
+.mx-group__name { flex-grow: 1; margin: 0; padding: 0; font-size: 12px; color: #d6d6d6; }
+.mx-group__count { margin: 0 8px; font-size: 10px; color: #7c7c7c; }
+.mx-group__kind { margin: 0 6px; padding: 0 6px; font-size: 10px; color: #8d8d8d; border-radius: 6px; background-color: rgba(255, 255, 255, 0.05); }
+.mx-inspector__search { margin: 4px 0 6px 0; }
+.mx-inspector__scroll { max-height: 264px; }
+.mx-inspector__scroll .unity-scroll-view__content-container { padding: 0; }
+
 /* ---- Footer -------------------------------------------------------------------------------------- */
 
 .mx-footer { height: 36px; min-height: 36px; flex-direction: row; align-items: center; padding: 0 8px 0 12px; background-color: var(--mx-bar); border-top-width: 1px; border-top-color: var(--mx-line); flex-shrink: 0; }

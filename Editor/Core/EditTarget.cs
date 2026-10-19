@@ -320,11 +320,17 @@ namespace Orbiters.Mixer.Editor
         /// <summary>At a stroke's end: bounds and the normals around what moved.</summary>
         public void FinishStroke(IEnumerable<int> moved)
         {
-            Document.DisplayPositions(display);
-            Document.RefreshNormals(moved, display);
+            RefreshNormals(moved);
             Working.RecalculateBounds();
             Document.BoundsDirty = false;
             Flush();
+        }
+
+        /// <summary>The normals around the given vertices, from the shown positions (after an undo, a redo or a stroke).</summary>
+        public void RefreshNormals(IEnumerable<int> vertices)
+        {
+            Document.DisplayPositions(display);
+            Document.RefreshNormals(vertices, display);
         }
 
         /// <summary>The display positions (active layer) as last computed.</summary>

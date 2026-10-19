@@ -220,6 +220,19 @@ namespace Orbiters.Mixer.Editor.Tests
             Assert.That(working == null, Is.True, "the working mesh is destroyed");
             Assert.That(MixerSession.Targets, Is.Empty);
         }
+
+        [Test]
+        public void UndoPutsTheNormalsBackToo()
+        {
+            var target = MixerSession.Edit(renderer);
+            var before = (Vector3[])target.Document.Normals.Clone();
+            MixerSceneTool.StrokeBetween(target, Brushes.Named("Inflate"), new Vector3(0.3f, 0.5f, 0f), new Vector3(0.3f, 0.6f, 0f), 3, 0.2f, 1f, Vector3.forward);
+            Assert.That(MaxDistance(before, target.Document.Normals), Is.GreaterThan(1e-3f), "the stroke changed the normals");
+            Undo.PerformUndo();
+            Assert.That(MaxDistance(before, target.Document.Normals), Is.LessThan(1e-4f), "Ctrl+Z put the normals back");
+            target.Flush();
+            Assert.That(MaxDistance(before, target.Working.normals), Is.LessThan(1e-4f), "and the working mesh shows them");
+        }
     }
 
     internal static class MixerTestHooks

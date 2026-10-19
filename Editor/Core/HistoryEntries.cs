@@ -15,17 +15,34 @@ namespace Orbiters.Mixer.Editor
         public abstract void Redo();
     }
 
-    /// <summary>Vertices of a layer moved: their positions before and after.</summary>
+    /// <summary>
+    /// Vertices of a layer moved: their positions before and after, and the normals the stroke changed as they were
+    /// before it (around the moved vertices), so an undo shows the mesh exactly as it was; a redo recomputes them as
+    /// the stroke did.
+    /// </summary>
     internal sealed class PositionEdit : HistoryEntry
     {
         public string Layer;
         public int[] Indices;
         public Vector3[] Before, After;
+        public int[] NormalIndices;
+        public Vector3[] NormalsBefore;
 
-        public override long Bytes => Indices.Length * (4L + 24L) + 64;
+        public override long Bytes => Indices.Length * (4L + 24L) + (NormalIndices != null ? NormalIndices.Length * (4L + 12L) : 0L) + 64;
 
-        public override void Undo() => Apply(Before);
-        public override void Redo() => Apply(After);
+        public override void Undo()
+        {
+            Apply(Before);
+            if (NormalIndices == null || NormalsBefore == null) { Target.RefreshNormals(Indices); return; }
+            var doc = Target.Document;
+            for (int i = 0; i < NormalIndices.Length; i++) { doc.Normals[NormalIndices[i]] = NormalsBefore[i]; doc.Dirty.Add(NormalIndices[i]); }
+        }
+
+        public override void Redo()
+        {
+            Apply(After);
+            Target.RefreshNormals(Indices);
+        }
 
         private void Apply(Vector3[] positions)
         {
@@ -97,6 +114,7 @@ namespace Orbiters.Mixer.Editor
     internal sealed class StrokeRecorder
     {
         private readonly Dictionary<int, Vector3> before = new Dictionary<int, Vector3>();
+        private readonly Dictionary<int, Vector3> normalsBefore = new Dictionary<int, Vector3>();
         private readonly EditTarget target;
         private readonly string layer;
         public readonly string Label;
@@ -111,10 +129,23 @@ namespace Orbiters.Mixer.Editor
         public bool Empty => before.Count == 0;
         public int Count => before.Count;
 
-        /// <summary>Call before moving <paramref name="v"/>.</summary>
+        /// <summary>Call before moving <paramref name="v"/>: its position and the normals its move will change are kept.</summary>
         public void Touch(int v)
         {
-            if (!before.ContainsKey(v)) before[v] = target.Document.GetLayerPosition(layer, v);
+            if (before.ContainsKey(v)) return;
+            var doc = target.Document;
+            before[v] = doc.GetLayerPosition(layer, v);
+            // RefreshNormals recomputes the welded vertex and its neighbours: those normals are the ones an undo puts back.
+            var neighbors = doc.Neighbors;
+            int w = neighbors.Weld[v];
+            Keep(neighbors.Members[w]);
+            foreach (int a in neighbors.Adjacent[w]) Keep(neighbors.Members[a]);
+        }
+
+        private void Keep(int[] members)
+        {
+            var normals = target.Document.Normals;
+            foreach (int m in members) if (!normalsBefore.ContainsKey(m)) normalsBefore[m] = normals[m];
         }
 
         public PositionEdit Finish()
@@ -131,7 +162,11 @@ namespace Orbiters.Mixer.Editor
                 now[i] = target.Document.GetLayerPosition(layer, pair.Key);
                 i++;
             }
-            return new PositionEdit { Target = target, Label = Label, Layer = layer, Indices = indices, Before = was, After = now };
+            var normalIndices = new int[normalsBefore.Count];
+            var normals = new Vector3[normalsBefore.Count];
+            int n = 0;
+            foreach (var pair in normalsBefore) { normalIndices[n] = pair.Key; normals[n] = pair.Value; n++; }
+            return new PositionEdit { Target = target, Label = Label, Layer = layer, Indices = indices, Before = was, After = now, NormalIndices = normalIndices, NormalsBefore = normals };
         }
     }
 }

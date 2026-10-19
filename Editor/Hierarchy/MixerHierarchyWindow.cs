@@ -241,7 +241,12 @@ namespace Orbiters.Mixer.Editor
         {
             var row = MixerUi.Box("mxh-row");
             row.Add(MixerUi.Box("mxh-row__indent", PickingMode.Ignore));
-            var chevron = MixerUi.Icon(IconGlyph.Chevron, "", null, "mxh-row__chevron");
+            var chevron = MixerUi.Icon(IconGlyph.Chevron, "", null, evt =>
+            {
+                var r = RowOf(row);
+                if (r != null && r.HasChildren) { if (r.IsScene) model.SetSceneFolded(r.Scene, r.Expanded); else model.SetExpanded(r.InstanceId, !r.Expanded, evt.altKey); MarkDirty(); }
+                evt.StopPropagation();
+            }, "mxh-row__chevron");
             row.Add(chevron);
             var dot = MixerUi.Box("mxh-row__dot", PickingMode.Ignore);
             row.Add(dot);
@@ -251,15 +256,22 @@ namespace Orbiters.Mixer.Editor
             row.Add(MixerUi.Box("mxh-row__badges", PickingMode.Ignore));
             row.Add(MixerUi.Spacer());
             row.Add(MixerUi.Box("mxh-row__components", PickingMode.Ignore));
-            var pick = MixerUi.Icon(IconGlyph.Lock, "Pickable in the Scene view", null, "mxh-row__pick");
-            var eye = MixerUi.Icon(IconGlyph.Eye, "Visible in the Scene view", null, "mxh-row__eye");
+            var pick = MixerUi.Icon(IconGlyph.Lock, "Pickable in the Scene view", null, evt =>
+            {
+                var r = RowOf(row);
+                if (r?.Object != null) { SceneVisibilityManager.instance.TogglePicking(r.Object, evt.altKey); MarkDirty(); }
+                evt.StopPropagation();
+            }, "mxh-row__pick");
+            var eye = MixerUi.Icon(IconGlyph.Eye, "Visible in the Scene view", null, evt =>
+            {
+                var r = RowOf(row);
+                if (r?.Object != null) { SceneVisibilityManager.instance.ToggleVisibility(r.Object, evt.altKey); MarkDirty(); }
+                evt.StopPropagation();
+            }, "mxh-row__eye");
             row.Add(pick);
             row.Add(eye);
             row.RegisterCallback<PointerDownEvent>(evt => OnRowPointerDown(row, evt));
             row.RegisterCallback<ClickEvent>(evt => { if (evt.clickCount == 2) OnRowDoubleClick(row); });
-            chevron.RegisterCallback<PointerDownEvent>(evt => { if (evt.button != 0) return; var r = RowOf(row); if (r != null && r.HasChildren) { if (r.IsScene) model.SetSceneFolded(r.Scene, r.Expanded); else model.SetExpanded(r.InstanceId, !r.Expanded, evt.altKey); MarkDirty(); } evt.StopPropagation(); }, TrickleDown.TrickleDown);
-            eye.RegisterCallback<PointerDownEvent>(evt => { if (evt.button != 0) return; var r = RowOf(row); if (r?.Object != null) { SceneVisibilityManager.instance.ToggleVisibility(r.Object, evt.altKey); MarkDirty(); } evt.StopPropagation(); }, TrickleDown.TrickleDown);
-            pick.RegisterCallback<PointerDownEvent>(evt => { if (evt.button != 0) return; var r = RowOf(row); if (r?.Object != null) { SceneVisibilityManager.instance.TogglePicking(r.Object, evt.altKey); MarkDirty(); } evt.StopPropagation(); }, TrickleDown.TrickleDown);
             rename.RegisterCallback<FocusOutEvent>(_ => CommitRename(row, rename, true));
             rename.RegisterCallback<KeyDownEvent>(evt =>
             {

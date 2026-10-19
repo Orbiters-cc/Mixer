@@ -10,12 +10,12 @@ using Object = UnityEngine.Object;
 namespace Orbiters.Mixer.Editor
 {
     /// <summary>
-    /// "Replace Hierarchy" (on by default, per user): the Mixer Hierarchy takes the place of Unity's Hierarchy
-    /// window, as the Logger does with the Console. At the start of the editor, once the layout is loaded, a
-    /// Hierarchy docked somewhere gets a Mixer Hierarchy tab at its place (selected only if it was) and is closed;
-    /// later in the session a Hierarchy opened by Window › General › Hierarchy or Ctrl+4 is swapped the same way.
-    /// Docking goes through Unity's internal <c>DockArea</c>; when a Unity version changes it the Mixer Hierarchy
-    /// opens as a window of its own, Unity's stays, and one warning says so.
+    /// "Replace Unity's Hierarchy" (on by default, off in the Orbiters settings): the Mixer Hierarchy takes the place
+    /// of Unity's Hierarchy window, as the Logger does with the Console. Once the layout is loaded, every Hierarchy
+    /// docked somewhere gets a Mixer Hierarchy tab at its place (selected only if it was) and is closed; a Hierarchy
+    /// opened later (Window › General › Hierarchy, Ctrl+4, a layout change) is swapped the same way, half a second
+    /// later. Docking goes through Unity's internal <c>DockArea</c>; when a Unity version changes it the Mixer
+    /// Hierarchy opens as a window of its own, Unity's stays, and one warning says so.
     /// </summary>
     [InitializeOnLoad]
     internal static class HierarchyReplacement
@@ -42,7 +42,6 @@ namespace Orbiters.Mixer.Editor
 
         private static bool enabled;
         private static bool pending;
-        private static EditorWindow lastSeen;
         private static int readyTicks;
         private static double nextScan;
 
@@ -67,12 +66,12 @@ namespace Orbiters.Mixer.Editor
             catch (Exception) { }
             enabled = EditorPrefs.GetBool(PrefKey, DefaultOn);
             if (HierarchyType == null || Application.isBatchMode) return;
+            // Only windows the docking failed on since this reload are left alone.
+            SessionState.EraseString(KnownKey);
             if (!SessionState.GetBool(LoadedKey, false))
             {
                 SessionState.SetBool(LoadedKey, true);
-                bool startup = Resources.FindObjectsOfTypeAll<EditorWindow>().Length == 0;
-                SessionState.SetBool(PendingKey, startup);
-                if (!startup) foreach (var hierarchy in OpenHierarchies()) Remember(hierarchy);
+                SessionState.SetBool(PendingKey, true);
             }
             pending = SessionState.GetBool(PendingKey, false);
             EditorApplication.update += Update;
@@ -85,7 +84,7 @@ namespace Orbiters.Mixer.Editor
         {
             enabled = on;
             EditorPrefs.SetBool(PrefKey, on);
-            if (on) SessionState.EraseString(KnownKey);
+            if (on) { SessionState.EraseString(KnownKey); ReplaceOpenHierarchies(); }
         }
 
         internal static void ReplaceOpenHierarchies()
@@ -109,20 +108,16 @@ namespace Orbiters.Mixer.Editor
                 }
                 return;
             }
-            // A Hierarchy opened during the session (Ctrl+4, the Window menu): swapped once it exists.
-            if (EditorApplication.timeSinceStartup < nextScan) return;
+            // A Hierarchy opened during the session (Ctrl+4, the Window menu, a layout change): swapped once it exists.
+            // One that could not be docked (Fallback) is left alone.
+            if (!enabled || EditorApplication.timeSinceStartup < nextScan) return;
             nextScan = EditorApplication.timeSinceStartup + 0.5;
-            EditorWindow current = null;
-            try { current = LastInteractedProperty?.GetValue(null) as EditorWindow; } catch (Exception) { }
-            if (current == null)
+            foreach (var hierarchy in OpenHierarchies())
             {
-                foreach (var h in OpenHierarchies()) { if (!IsKnown(h)) { current = h; break; } }
+                if (IsKnown(hierarchy)) continue;
+                Replace(hierarchy, hierarchy == EditorWindow.focusedWindow);
+                break;
             }
-            if (current == null || ReferenceEquals(current, lastSeen)) return;
-            lastSeen = current;
-            if (IsHidden(current) || IsKnown(current)) return;
-            if (!enabled) { Remember(current); return; }
-            Replace(current, true);
         }
 
         internal static bool Replace(EditorWindow hierarchy, bool focus)
