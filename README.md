@@ -37,6 +37,7 @@ saved as a native mesh asset when you commit.
 - A VRChat build hook strips Mixer's helper objects and shows the original meshes on the build copy, so an upload made
   during an edit carries nothing of Mixer.
 - An MCP tool `mixer_tool` for agents (see Agents).
+- `MixerLink`, a public facade for the other Orbiters tools: the link's state, Open scene in Blender, a renderer's Mixer state, Commit, Revert, Edit, keep out of Blender. MCB's creator mode uses it.
 - Requires Orbiters Toolkit 0.4.0, which now holds the XRay gizmos (bones, weight paint, mesh edges, avatar budget).
 
 ## Get started
