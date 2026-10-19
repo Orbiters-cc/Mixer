@@ -325,15 +325,15 @@ namespace Orbiters.Mixer.Editor
             this.shown = shown;
             tooltip = tip;
             AddToClassList("unity-editor-toolbar-element");
-            MixerOverlays.Dress(this, "mx-field");
+            MixerOverlays.Dress(this, "mx-slider-field");
             fill = new VisualElement { pickingMode = PickingMode.Ignore };
-            fill.AddToClassList("mx-field__fill");
+            fill.AddToClassList("mx-slider-field__fill");
             Add(fill);
             var label = new Label(name) { pickingMode = PickingMode.Ignore };
-            label.AddToClassList("mx-field__name");
+            label.AddToClassList("mx-slider-field__name");
             Add(label);
             value = new Label { pickingMode = PickingMode.Ignore };
-            value.AddToClassList("mx-field__value");
+            value.AddToClassList("mx-slider-field__value");
             Add(value);
             RegisterCallback<PointerDownEvent>(evt =>
             {
