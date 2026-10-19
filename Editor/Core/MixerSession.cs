@@ -57,7 +57,6 @@ namespace Orbiters.Mixer.Editor
             var mesh = MeshOf(renderer);
             if (mesh == null) { reason = "No mesh."; return false; }
             if (MixerMeshGuard.IsWorking(mesh)) return true;
-            if (!mesh.isReadable) { reason = "The mesh is not readable: turn on Read/Write in its import settings."; return false; }
             if (mesh.vertexCount == 0) { reason = "The mesh has no vertices."; return false; }
             return true;
         }

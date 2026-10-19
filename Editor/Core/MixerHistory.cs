@@ -76,8 +76,8 @@ namespace Orbiters.Mixer.Editor
             return anchor;
         }
 
-        /// <summary>Adds an entry already applied to its target, as one Unity undo step named after it.</summary>
-        public static void Push(HistoryEntry entry)
+        /// <summary>Adds an entry already applied to its target, as one Unity undo step named after it (or inside the current step when <paramref name="joinCurrentGroup"/>).</summary>
+        public static void Push(HistoryEntry entry, bool joinCurrentGroup = false)
         {
             if (entry == null) return;
             var a = GetAnchor();
@@ -86,14 +86,16 @@ namespace Orbiters.Mixer.Editor
             entries.Add(entry);
             bytes += entry.Bytes;
             cursor = entries.Count;
-            Undo.IncrementCurrentGroup();
-            Undo.SetCurrentGroupName("Mixer: " + entry.Label);
+            if (!joinCurrentGroup) { Undo.IncrementCurrentGroup(); Undo.SetCurrentGroupName("Mixer: " + entry.Label); }
             Undo.RegisterCompleteObjectUndo(a, "Mixer: " + entry.Label);
             a.revision = dropped + cursor;
-            Undo.IncrementCurrentGroup();
+            if (!joinCurrentGroup) Undo.IncrementCurrentGroup();
             Trim();
             Changed?.Invoke();
         }
+
+        /// <summary>The newest entry, when it is the one being extended by a gesture still going on.</summary>
+        public static HistoryEntry Last => cursor > 0 && cursor == entries.Count ? entries[cursor - 1] : null;
 
         /// <summary>Forgets every entry of a target (it was committed or reverted); Unity's steps stay, as no-ops.</summary>
         public static void Forget(EditTarget target)

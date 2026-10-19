@@ -49,6 +49,7 @@ namespace Orbiters.Mixer.Editor
             MixerSession.Notice += OnNotice;
             MixerSceneTool.Changed += MarkChrome;
             MixerHistory.Changed += MarkChrome;
+            ArmatureEdit.Changed += MarkChrome;
             Selection.selectionChanged += MarkChrome;
             Undo.undoRedoPerformed += MarkChrome;
         }
@@ -59,6 +60,7 @@ namespace Orbiters.Mixer.Editor
             MixerSession.Notice -= OnNotice;
             MixerSceneTool.Changed -= MarkChrome;
             MixerHistory.Changed -= MarkChrome;
+            ArmatureEdit.Changed -= MarkChrome;
             Selection.selectionChanged -= MarkChrome;
             Undo.undoRedoPerformed -= MarkChrome;
         }

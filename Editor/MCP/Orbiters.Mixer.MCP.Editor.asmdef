@@ -1,0 +1,11 @@
+{
+  "name": "Orbiters.Mixer.MCP.Editor",
+  "rootNamespace": "Orbiters.Mixer.Editor.MCP",
+  "references": ["Orbiters.Mixer", "Orbiters.Mixer.Editor", "Orbiters.Toolkit", "Orbiters.Toolkit.Editor", "MCPForUnity.Editor"],
+  "includePlatforms": ["Editor"],
+  "overrideReferences": true,
+  "precompiledReferences": ["Newtonsoft.Json.dll"],
+  "autoReferenced": true,
+  "defineConstraints": ["MIXER_MCP"],
+  "versionDefines": [{ "name": "com.coplaydev.unity-mcp", "expression": "9.7.1", "define": "MIXER_MCP" }]
+}

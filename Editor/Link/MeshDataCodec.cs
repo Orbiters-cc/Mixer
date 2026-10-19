@@ -137,11 +137,7 @@ namespace Orbiters.Mixer.Editor
         }
 
         /// <summary>A mesh that is not being edited (no document): welded on the fly from the asset (main thread, in one go).</summary>
-        public static byte[] Encode(string id, Mesh mesh, SkinnedMeshRenderer skinned)
-        {
-            if (!mesh.isReadable) return null;
-            return Encode(Snapshot(id, mesh, skinned));
-        }
+        public static byte[] Encode(string id, Mesh mesh, SkinnedMeshRenderer skinned) => Encode(Snapshot(id, mesh, skinned));
 
         /// <summary>The arrays of a mesh asset, read on the main thread; <see cref="Encode(MeshSnapshot)"/> can then run on any thread.</summary>
         public sealed class MeshSnapshot

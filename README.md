@@ -24,6 +24,19 @@ saved as a native mesh asset when you commit.
   filters, keyboard and multi-selection, rename, drag to reparent and reorder, prefab drops, visibility and picking
   switches, prefab and missing-script badges, Mixer's edits and the Blender state per object, and Blender actions in
   the context menu.
+- Armature mode: rest-pose editing (move a bone with Unity's handles or the Mixer Hierarchy and the bind poses
+  follow so the skin stays where it is, in the same undo step), a list of the bones with their weighted vertex counts,
+  Reset to bind pose, Add bone under the selected bone, and the Toolkit's mirror posing. Blender's armature edits
+  rebuild the bones on the way back.
+- Join: the selected meshes (skinned or static, several objects) become one skinned mesh in the first one's space,
+  bones united, blendshapes united by name, same materials in one slot, saved as a mesh asset on a new object; the
+  sources are hidden; one Undo step.
+- Render with Blender: Eevee or Cycles, size, samples, Scene view or a scene camera, transparent background. With
+  Blender linked it renders the scene it holds; otherwise a background Blender takes the scene over the link, renders
+  it and quits. The PNG is shown in Mixer and saved on request (never imported on its own).
+- A VRChat build hook strips Mixer's helper objects and shows the original meshes on the build copy, so an upload made
+  during an edit carries nothing of Mixer.
+- An MCP tool `mixer_tool` for agents (see Agents).
 - Requires Orbiters Toolkit 0.4.0, which now holds the XRay gizmos (bones, weight paint, mesh edges, avatar budget).
 
 ## Get started
@@ -68,6 +81,40 @@ a branch with everything under it, double-click frames the object. Drag rows to 
 the Project. The eye and lock at the right switch the Scene view visibility and picking. The dot before each object
 is its Blender state: green in the Blender project, grey kept out, violet being edited in Blender, hollow when Blender
 is not linked.
+
+## Armature
+
+The **Armature** mode lists the target's bones (the weighted vertices of each) and turns on rest-pose editing: move or
+rotate a bone with Unity's own handles, the Mixer Hierarchy or the Inspector, and the skin stays where it is because
+the bind poses are recomputed in the same undo step. Switch rest-pose editing off to pose the mesh as usual. **Reset
+to bind pose** puts the bones back where the mesh was skinned, **Add bone** adds a leaf bone under the selected one
+(then paint its weights in the Weights mode), **Mirror** moves left and right bones together. Commit writes the new
+bind poses into the mesh asset.
+
+## Join
+
+Select two or more objects with meshes in the Hierarchy and press **Join** in the **Join** mode: the result is one
+skinned mesh in the first object's space on a new object next to it. Skinned meshes bring their bones (united by
+transform); a static mesh rides its own transform as a bone, so joining a hat onto a head keeps it where it is.
+Blendshapes with the same name become one shape; submeshes that share a material share one slot (switch off **Merge
+same materials** to keep them apart). The sources are hidden, not deleted; Ctrl+Z brings everything back.
+
+## Render
+
+The **Render** mode renders the scene with Blender: engine (Eevee, Cycles), size, samples, camera (the Scene view's
+eye or any camera of the scene) and a transparent background. When Blender is linked it renders the scene it holds and
+sends the image back; otherwise Mixer starts a Blender without a window, which connects to the link, receives the scene
+and renders it (the Mixer extension must have been installed once with **Open scene in Blender**). The PNG lands under
+`Library/Orbiters/Mixer/render`, is shown in Mixer, and **Save as…** or **Save to project** keep it.
+
+## Agents
+
+The `mixer_tool` MCP tool (with MCP for Unity installed) drives Mixer without the desktop: `status` (sessions, mode,
+brush, history, link), `start {target, mode}` (edit a renderer: instance ID, Mixer node id or hierarchy path
+`Root/Child`, `Scene:Root/Child`), `stroke {brush, from, to, radius, strength, steps, invert}` (a world-space stroke
+recorded as one undo step), `undo`, `redo`, `commit`, `revert`, `link_status`, `hierarchy {search, limit}` (the
+objects with Mixer's flags) and `exclude {target, excluded}` (keep an object out of the Blender project). The
+Toolkit's `orbiters_editor_window` tool captures the Mixer windows.
 
 ## How it works
 

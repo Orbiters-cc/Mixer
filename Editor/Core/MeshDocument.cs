@@ -63,7 +63,11 @@ namespace Orbiters.Mixer.Editor
         public readonly HashSet<int> WeightEdited = new HashSet<int>();
         /// <summary>The working mesh needs the influences uploaded.</summary>
         public bool WeightsDirty;
-        public readonly int BoneCount;
+        /// <summary>Bind poses per bone, edited by the armature tools; uploaded to the working mesh when dirty.</summary>
+        public Matrix4x4[] BindPoses;
+        public bool BindPosesDirty;
+        public bool BindPosesEdited;
+        public int BoneCount => BindPoses != null ? BindPoses.Length : 0;
         public bool HasSkin => BoneCount > 0;
 
         public struct Influence
@@ -224,15 +228,16 @@ namespace Orbiters.Mixer.Editor
         public MeshDocument(Mesh original)
         {
             Original = original ?? throw new ArgumentNullException(nameof(original));
-            if (!original.isReadable) throw new InvalidOperationException("'" + original.name + "' is not readable: enable Read/Write on its import settings.");
+            // The editor reads meshes whether or not Read/Write is on (the flag matters in builds only).
             Positions = original.vertices;
+            if (Positions == null || Positions.Length == 0) throw new InvalidOperationException("'" + original.name + "' has no vertex data the editor can read.");
             Normals = original.normals;
             if (Normals == null || Normals.Length != Positions.Length) Normals = new Vector3[Positions.Length];
             VertexCount = Positions.Length;
             Triangles = original.triangles;
             Neighbors = MeshNeighbors.Build(Positions, Triangles, WeldTolerance(original));
             for (int i = 0; i < original.blendShapeCount; i++) ShapeOrder.Add(original.GetBlendShapeName(i));
-            BoneCount = original.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.BlendWeight) ? original.bindposes.Length : 0;
+            BindPoses = original.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.BlendWeight) ? original.bindposes : new Matrix4x4[0];
         }
 
         private static float WeldTolerance(Mesh mesh)

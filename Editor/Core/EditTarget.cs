@@ -250,6 +250,18 @@ namespace Orbiters.Mixer.Editor
             RefreshOverlay();
         }
 
+        /// <summary>Uploads the document's bind poses to the working mesh and refreshes the skinning.</summary>
+        public void FlushBindposes()
+        {
+            var doc = Document;
+            if (!doc.BindPosesDirty || Working == null) return;
+            Working.bindposes = doc.BindPoses;
+            doc.BindPosesDirty = false;
+            Skin.InvalidateWeights();
+            Skin.Refresh(Renderer, Working);
+            RebuildWorld();
+        }
+
         /// <summary>A vertex group changed: the overlay shows it when it is the shown channel.</summary>
         public void GroupsChanged()
         {

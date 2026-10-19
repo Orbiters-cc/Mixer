@@ -172,6 +172,8 @@ namespace Orbiters.Mixer.Editor
             else if (id == connection)
             {
                 connection = -1; peer = null;
+                meshQueue.Clear();
+                queuedMeshes.Clear();
                 foreach (string owned in blenderOwned.ToList()) ReleaseFromBlender(owned);
                 Say("Blender left.");
             }
@@ -219,6 +221,7 @@ namespace Orbiters.Mixer.Editor
             }));
             lastGraph = null;
             SendGraph(force: true);
+            meshesAnnounced = false;
             SendAllMeshes();
             Changed?.Invoke();
         }
@@ -287,6 +290,9 @@ namespace Orbiters.Mixer.Editor
             }
         }
 
+        /// <summary>Bones moved in rest-pose mode or were added: Blender gets the graph again and rebuilds its armatures.</summary>
+        public static void NoteArmatureChanged() => MarkGraphDirty(0.4);
+
         /// <summary>The exclusions changed: the hierarchy and the popup refresh.</summary>
         public static void NoteSettingsChanged() => Changed?.Invoke();
 
@@ -316,6 +322,7 @@ namespace Orbiters.Mixer.Editor
         private static readonly Queue<string> meshQueue = new Queue<string>();
         private static readonly HashSet<string> queuedMeshes = new HashSet<string>();
         private static System.Threading.Tasks.Task encoding;
+        private static bool meshesAnnounced;
 
         private static void SendAllMeshes()
         {
@@ -341,7 +348,11 @@ namespace Orbiters.Mixer.Editor
         private static void SendNextMesh()
         {
             if (encoding != null && !encoding.IsCompleted) return;
-            if (meshQueue.Count == 0) return;
+            if (meshQueue.Count == 0)
+            {
+                if (!meshesAnnounced && Connected) { meshesAnnounced = true; Status("link", "meshes done", "info"); }
+                return;
+            }
             string nodeId = meshQueue.Dequeue();
             queuedMeshes.Remove(nodeId);
             if (!Connected) return;
@@ -359,7 +370,6 @@ namespace Orbiters.Mixer.Editor
                 }
                 var mesh = renderer is SkinnedMeshRenderer s ? s.sharedMesh : renderer.GetComponent<MeshFilter>()?.sharedMesh;
                 if (mesh == null) return;
-                if (!mesh.isReadable) { Status(nodeId, mesh.name + " is not readable: enable Read/Write on its import settings.", "warning"); return; }
                 var snapshot = MeshDataCodec.Snapshot(meshId, mesh, renderer as SkinnedMeshRenderer);
                 var connectionServer = server;
                 int connectionId = connection;

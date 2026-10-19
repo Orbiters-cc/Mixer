@@ -64,8 +64,9 @@ namespace Orbiters.Mixer.Editor
                 var previous = mode;
                 mode = value;
                 hovering = false;
-                if (previous == MixerMode.Weights) LeaveWeights();
-                if (mode == MixerMode.Weights) EnterWeights();
+                if (previous == MixerMode.Weights || previous == MixerMode.Armature) LeaveWeights();
+                if (mode == MixerMode.Weights || mode == MixerMode.Armature) EnterWeights();
+                if (previous == MixerMode.Armature) ArmatureEdit.Leave();
                 Changed?.Invoke();
                 SceneView.RepaintAll();
             }
@@ -321,6 +322,8 @@ namespace Orbiters.Mixer.Editor
 
         private static void EnterWeights()
         {
+            if (xrayPinnedByMixer) return;
+            xrayPinnedByMixer = true;
             xrayWasEnabled = XRayGizmoService.Enabled;
             xrayModeBefore = XRayGizmoService.TargetMode;
             xrayPinnedBefore = XRayGizmoService.PinnedObject;
@@ -339,8 +342,12 @@ namespace Orbiters.Mixer.Editor
             XRayGizmoService.SetEnabled(true);
         }
 
+        private static bool xrayPinnedByMixer;
+
         private static void LeaveWeights()
         {
+            if (mode == MixerMode.Weights || mode == MixerMode.Armature) return; // one bone mode to the other: keep the gizmos
+            xrayPinnedByMixer = false;
             foreach (var t in MixerSession.Targets) t.ShowChannel(WeightChannel.None);
             XRayWeightPaintService.Unpin();
             XRayGizmoService.SetTargetMode(xrayModeBefore);
@@ -352,13 +359,13 @@ namespace Orbiters.Mixer.Editor
         // A bone of the focus target picked in the Scene view (XRay's bone picking) or the Hierarchy becomes the channel.
         private static void OnSelectionChanged()
         {
-            if (mode != MixerMode.Weights) return;
+            if (mode != MixerMode.Weights && mode != MixerMode.Armature) return;
             var target = FocusTarget ?? MixerSession.First;
             var picked = Selection.activeTransform;
             if (target == null || picked == null || target.Skinned == null) return;
             var bones = target.Skinned.bones;
             for (int i = 0; i < bones.Length; i++)
-                if (bones[i] == picked) { if (FocusTarget == null) FocusTarget = target; SetChannel(WeightChannel.OfBone(i)); return; }
+                if (bones[i] == picked) { if (FocusTarget == null) FocusTarget = target; if (mode == MixerMode.Weights) SetChannel(WeightChannel.OfBone(i)); else ArmatureEdit.SelectedBone = i; return; }
         }
 
         private static void Draw(SceneView view)

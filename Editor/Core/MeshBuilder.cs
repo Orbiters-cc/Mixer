@@ -23,6 +23,7 @@ namespace Orbiters.Mixer.Editor
             mesh.hideFlags = HideFlags.None;
             mesh.vertices = doc.Positions;
             if (doc.MovedBase.Count > 0) MeshNormals.Recalculate(mesh, doc.MovedBase);
+            if (doc.HasSkin && doc.BindPosesEdited) mesh.bindposes = doc.BindPoses;
             if (doc.HasSkin && doc.Influences != null && doc.WeightEdited.Count > 0)
             {
                 doc.BuildBoneWeights(out var perVertex, out var weights);

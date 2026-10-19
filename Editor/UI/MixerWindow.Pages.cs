@@ -1,34 +1,10 @@
 using Orbiters.Toolkit.Editor;
-using UnityEngine.UIElements;
 
 namespace Orbiters.Mixer.Editor
 {
-    // The pages of the modes that come in later phases: a short card each, filled as the phase lands.
+    // Every mode page lives in its own partial file: Sculpt, Weights, Armature, Join, Render, Link.
     internal sealed partial class MixerWindow
     {
-        private VisualElement armatureBody, joinBody, renderBody;
-
-        private void BuildArmaturePage(VisualElement page)
-        {
-            page.Add(MixerUi.Card("ARMATURE", out armatureBody));
-            armatureBody.Add(MixerUi.Text("Edit the rest pose, add and reparent bones. Coming in a later phase.", "mx-caption"));
-        }
-
-        private void BuildJoinPage(VisualElement page)
-        {
-            page.Add(MixerUi.Card("JOIN MESHES", out joinBody));
-            joinBody.Add(MixerUi.Text("Join the selected meshes into one. Coming in a later phase.", "mx-caption"));
-        }
-
-        private void BuildRenderPage(VisualElement page)
-        {
-            page.Add(MixerUi.Card("RENDER WITH BLENDER", out renderBody));
-            renderBody.Add(MixerUi.Text("Render the scene with Blender's engine. Coming in a later phase.", "mx-caption"));
-        }
-
-        private void RefreshArmaturePage(EditTarget target) { }
-        private void RefreshJoinPage() { }
-        private void RefreshRenderPage() { }
     }
 
     /// <summary>About Mixer: version and licenses.</summary>

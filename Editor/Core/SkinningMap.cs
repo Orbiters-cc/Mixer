@@ -14,6 +14,8 @@ namespace Orbiters.Mixer.Editor
     {
         public Matrix4x4[] ToWorld;
         public Matrix4x4[] ToMesh;
+        /// <summary>Per bone, the matrix that takes mesh space to the world (bone to world times bind pose), as of the last refresh.</summary>
+        public Matrix4x4[] Combined => boneMatrices;
         /// <summary>The bone matrices the map was built from, to tell when the pose changed.</summary>
         private Matrix4x4[] boneMatrices;
         private Matrix4x4 transformMatrix;
