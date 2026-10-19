@@ -259,7 +259,7 @@ namespace Orbiters.Mixer.Editor
             foreach (var t in targets)
             {
                 if (!t.Alive) continue;
-                lines.Add(t.Id + "\t" + t.Working.GetInstanceID() + "\t" + GlobalObjectId.GetGlobalObjectIdSlow(t.Original) + "\t" + (t.Document.Layer ?? ""));
+                lines.Add(t.Id + "\t" + t.Working.GetInstanceID() + "\t" + SceneGraphExporter.IdOf(t.Original) + "\t" + (t.Document.Layer ?? ""));
             }
             SessionState.SetString(StateKey, string.Join("\n", lines));
         }
@@ -281,9 +281,9 @@ namespace Orbiters.Mixer.Editor
                 {
                     var parts = line.Split('\t');
                     if (parts.Length < 3) continue;
-                    if (!GlobalObjectId.TryParse(parts[0], out var rendererId) || !GlobalObjectId.TryParse(parts[2], out var originalId)) continue;
-                    var renderer = GlobalObjectId.GlobalObjectIdentifierToObjectSlow(rendererId) as Renderer;
-                    var original = GlobalObjectId.GlobalObjectIdentifierToObjectSlow(originalId) as Mesh;
+                    var holder = SceneGraphExporter.Resolve(parts[0]) as GameObject;
+                    var renderer = holder != null ? holder.GetComponent<Renderer>() : SceneGraphExporter.Resolve(parts[0]) as Renderer;
+                    var original = SceneGraphExporter.Resolve(parts[2]) as Mesh;
                     if (renderer == null || original == null) continue;
                     int workingId = int.Parse(parts[1]);
                     var working = EditorUtility.InstanceIDToObject(workingId) as Mesh;

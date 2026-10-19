@@ -43,7 +43,8 @@ namespace Orbiters.Mixer.Editor
             Filter = renderer is MeshRenderer ? renderer.GetComponent<MeshFilter>() : null;
             Original = original;
             Working = working;
-            Id = GlobalObjectId.GetGlobalObjectIdSlow(renderer).ToString();
+            // The object's id (what the link and the hierarchy call the node), with a fallback for objects that have none.
+            Id = SceneGraphExporter.IdOf(renderer.gameObject);
             Document = new MeshDocument(original);
             display = new Vector3[Document.VertexCount];
             Document.DisplayPositions(display);

@@ -29,29 +29,6 @@ namespace Orbiters.Mixer.Editor
         private void RefreshArmaturePage(EditTarget target) { }
         private void RefreshJoinPage() { }
         private void RefreshRenderPage() { }
-        private void RefreshLinkPill()
-        {
-            MixerUi.SetPillText(linkPill, "Not linked");
-        }
-    }
-
-    /// <summary>The Blender link popup: where the link stands; filled in the link phase.</summary>
-    internal sealed class MixerLinkPopup : UnityEditor.PopupWindowContent
-    {
-        public override UnityEngine.Vector2 GetWindowSize() => new UnityEngine.Vector2(360f, 160f);
-        public override void OnGUI(UnityEngine.Rect rect) { }
-
-        public override void OnOpen()
-        {
-            var root = editorWindow.rootVisualElement;
-            root.AddToClassList("mx-root");
-            root.AddToClassList("mx-popup");
-            var sheet = UnityEditor.AssetDatabase.LoadAssetAtPath<StyleSheet>(MixerInfo.BasePath + "/Editor/UI/mixer.uss");
-            if (sheet != null) root.styleSheets.Add(sheet);
-            root.Add(MixerUi.Text("Blender link", "mx-popup__title"));
-            root.Add(MixerUi.Text("The live link to Blender arrives in the link phase: the scene streams to a Blender project and edits come back as they happen.", "mx-popup__detail"));
-            root.RegisterCallback<KeyDownEvent>(evt => { if (evt.keyCode == UnityEngine.KeyCode.Escape) editorWindow.Close(); }, TrickleDown.TrickleDown);
-        }
     }
 
     /// <summary>About Mixer: version and licenses.</summary>

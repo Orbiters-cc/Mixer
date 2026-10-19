@@ -240,6 +240,9 @@
 .mx-list .unity-collection-view__item:hover { background-color: var(--mx-hover); }
 .mx-list .unity-collection-view__item--selected { background-color: rgba(0, 218, 109, 0.18); }
 
+.mx-log { padding: 4px 0; }
+.mx-log__line { margin: 0; padding: 1px 0; color: #9a9a9a; font-size: 10px; white-space: normal; }
+
 /* ---- Scrollers ----------------------------------------------------------------------------------- */
 
 .mx-root .unity-scroller { width: 10px; }
