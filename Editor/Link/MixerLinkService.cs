@@ -39,6 +39,8 @@ namespace Orbiters.Mixer.Editor
         private static double lastEndpointWrite;
 
         public static event Action Changed;
+        /// <summary>A Status frame Blender sent (the Mixer extension's Export for MCB reports its manifest this way).</summary>
+        internal static event Action<MixerLinkProtocol.StatusMessage> StatusReceived;
 
         public static bool Enabled
         {
@@ -194,7 +196,7 @@ namespace Orbiters.Mixer.Editor
                     case MixerLinkProtocol.FrameType.MeshData: LinkApply.Mesh(MeshDataCodec.Decode(frame.Payload)); break;
                     case MixerLinkProtocol.FrameType.Weights: LinkApply.Weights(MeshDataCodec.DecodeWeights(frame.Payload)); break;
                     case MixerLinkProtocol.FrameType.SceneDelta: LinkApply.Delta(MixerLinkProtocol.Read<SceneDelta>(frame.Payload)); break;
-                    case MixerLinkProtocol.FrameType.Status: { var s = MixerLinkProtocol.Read<MixerLinkProtocol.StatusMessage>(frame.Payload); Say("Blender: " + s.message); if (s.level == "error") MixerSession.Say(s.message, true); break; }
+                    case MixerLinkProtocol.FrameType.Status: { var s = MixerLinkProtocol.Read<MixerLinkProtocol.StatusMessage>(frame.Payload); Say("Blender: " + s.message); if (s.level == "error") MixerSession.Say(s.message, true); StatusReceived?.Invoke(s); break; }
                     case MixerLinkProtocol.FrameType.RequestMesh: { var r = MixerLinkProtocol.Read<MixerLinkProtocol.RequestMesh>(frame.Payload); SendMesh(r.id); break; }
                     case MixerLinkProtocol.FrameType.RenderResult: MixerRenderer.OnResult(MixerLinkProtocol.Read<MixerLinkProtocol.RenderResult>(frame.Payload)); break;
                 }

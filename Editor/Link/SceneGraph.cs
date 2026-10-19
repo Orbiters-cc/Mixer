@@ -36,6 +36,8 @@ namespace Orbiters.Mixer.Editor
         /// <summary>For Skinned: node ids of the bones in the renderer's order, and the root bone.</summary>
         public string[] bones;
         public string rootBone;
+        /// <summary>For Mesh and Skinned: the project file (a Unity path) the renderer's mesh stands for to the tool that told Mixer, e.g. a custom base's target FBX for MCB; null otherwise.</summary>
+        public string targetFbx;
         public SceneLight light;
         public SceneCamera camera;
     }
@@ -139,6 +141,7 @@ namespace Orbiters.Mixer.Editor
                     node.materials = MaterialIds(skinned.sharedMaterials, materials);
                     node.bones = skinned.bones.Select(b => b != null ? IdOf(b.gameObject) : "").ToArray();
                     node.rootBone = skinned.rootBone != null ? IdOf(skinned.rootBone.gameObject) : null;
+                    node.targetFbx = MixerLink.TargetFbxResolver?.Invoke(skinned);
                 }
                 else if (filter != null && filter.sharedMesh != null && t.GetComponent<MeshRenderer>() != null)
                 {
@@ -147,6 +150,7 @@ namespace Orbiters.Mixer.Editor
                     node.meshId = IdOf(mesh);
                     node.vertexCount = mesh.vertexCount;
                     node.materials = MaterialIds(t.GetComponent<MeshRenderer>().sharedMaterials, materials);
+                    node.targetFbx = MixerLink.TargetFbxResolver?.Invoke(t.GetComponent<MeshRenderer>());
                 }
                 else if (light != null)
                 {

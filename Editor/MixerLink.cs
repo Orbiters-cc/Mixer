@@ -116,5 +116,32 @@ namespace Orbiters.Mixer.Editor
 
         /// <summary>Keeps objects (with their children) out of the Blender project, or sends them back.</summary>
         public static void KeepOutOfBlender(IEnumerable<GameObject> objects, bool keepOut) => MixerHierarchyWindow.SetExcluded(objects, keepOut);
+
+        /// <summary>
+        /// Names the project file (a Unity path, e.g. a custom base's target FBX) a renderer's mesh stands for, for the
+        /// tool that sets it: Blender gets it as the node's targetFbx, and the Mixer extension's Export for MCB groups
+        /// meshes by it. Null means unknown. Setting it sends the scene to Blender again.
+        /// </summary>
+        public static Func<Renderer, string> TargetFbxResolver
+        {
+            get => targetFbxResolver;
+            set { targetFbxResolver = value; RefreshScene(); }
+        }
+
+        private static Func<Renderer, string> targetFbxResolver;
+
+        /// <summary>Sends the scene graph to Blender again when it is connected (for a tool whose answers changed).</summary>
+        public static void RefreshScene()
+        {
+            if (Connected) MixerLinkService.SendGraph(force: true);
+        }
+
+        /// <summary>A status Blender sent, as (id, message): the Mixer extension's Export for MCB reports "mcb.export" with the manifest's path.</summary>
+        public static event Action<string, string> BlenderStatus;
+
+        static MixerLink()
+        {
+            MixerLinkService.StatusReceived += status => BlenderStatus?.Invoke(status.id, status.message);
+        }
     }
 }
