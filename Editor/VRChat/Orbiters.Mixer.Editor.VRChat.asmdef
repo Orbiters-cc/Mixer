@@ -1,0 +1,27 @@
+{
+  "name": "Orbiters.Mixer.Editor.VRChat",
+  "rootNamespace": "Orbiters.Mixer.Editor.VRChat",
+  "references": [
+    "Orbiters.Mixer",
+    "Orbiters.Mixer.Editor",
+    "Orbiters.Toolkit",
+    "Orbiters.Toolkit.Editor",
+    "VRC.SDK3A",
+    "VRC.SDKBase",
+    "VRC.SDKBase.Editor"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "autoReferenced": false,
+  "defineConstraints": [
+    "MIXER_VRCHAT_AVATARS"
+  ],
+  "versionDefines": [
+    {
+      "name": "com.vrchat.avatars",
+      "expression": "3.7.0",
+      "define": "MIXER_VRCHAT_AVATARS"
+    }
+  ]
+}

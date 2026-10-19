@@ -1,0 +1,20 @@
+{
+  "name": "Orbiters.Mixer.Editor.Tests",
+  "rootNamespace": "Orbiters.Mixer.Editor.Tests",
+  "references": [
+    "Orbiters.Mixer",
+    "Orbiters.Mixer.Editor",
+    "Orbiters.Toolkit",
+    "Orbiters.Toolkit.Editor"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "autoReferenced": false,
+  "defineConstraints": [
+    "UNITY_INCLUDE_TESTS"
+  ],
+  "optionalUnityReferences": [
+    "TestAssemblies"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "name": "Orbiters.Mixer.Editor",
+  "rootNamespace": "Orbiters.Mixer.Editor",
+  "references": [
+    "Orbiters.Mixer",
+    "Orbiters.Toolkit",
+    "Orbiters.Toolkit.Editor"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "allowUnsafeCode": true,
+  "autoReferenced": true
+}

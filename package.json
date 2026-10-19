@@ -1,0 +1,37 @@
+{
+  "name": "orbiters.mixer",
+  "displayName": "Mixer",
+  "version": "0.1.0",
+  "license": "LicenseRef-Mixer-Proprietary",
+  "unity": "2022.3",
+  "description": "Blender inside the Unity editor: sculpt and create blendshapes, paint weights and manage vertex groups, edit armatures, join meshes and render with Blender's engine, with a live two-way link to the real Blender and a modern Hierarchy window. Nothing re-imports while you edit.",
+  "type": "tool",
+  "dependencies": {
+    "com.unity.nuget.newtonsoft-json": "3.2.1"
+  },
+  "gitDependencies": {},
+  "vpmDependencies": {
+    "orbiters.toolkit": ">=0.4.0 <0.5.0"
+  },
+  "author": {
+    "name": "blackorbit",
+    "email": "blackorbit.eclaire@gmail.com",
+    "url": "https://orbiters.cc"
+  },
+  "legacyFolders": {},
+  "legacyFiles": {},
+  "url": "https://github.com/Orbiters-cc/Mixer/releases/download/0.1.0/Mixer-0.1.0.zip",
+  "orbiters": {
+    "dependencyDisplayNames": {
+      "orbiters.toolkit": "Orbiters Toolkit"
+    },
+    "repositories": [
+      {
+        "url": "https://orbiters.cc/vpm/orbiters/index.json",
+        "packages": [
+          "orbiters.toolkit"
+        ]
+      }
+    ]
+  }
+}

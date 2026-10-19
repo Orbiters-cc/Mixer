@@ -1,0 +1,8 @@
+{
+  "name": "Orbiters.Mixer",
+  "rootNamespace": "Orbiters.Mixer",
+  "references": [
+    "Orbiters.Toolkit"
+  ],
+  "autoReferenced": true
+}
