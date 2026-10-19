@@ -23,8 +23,16 @@ namespace Orbiters.Mixer.Editor.VRChat
                 if (helper != null) UnityEngine.Object.DestroyImmediate(helper.gameObject);
             foreach (var skinned in avatarRoot.GetComponentsInChildren<SkinnedMeshRenderer>(true))
             {
-                var original = MixerMeshGuard.OriginalOf(skinned.sharedMesh);
-                if (original != null) skinned.sharedMesh = original;
+                var working = skinned.sharedMesh;
+                var original = MixerMeshGuard.OriginalOf(working);
+                if (original == null) continue;
+                // The shape being edited shows at 0 on the renderer (its edits are in the working vertices): the upload
+                // gets the renderer's own weight for it.
+                var held = MixerSession.Targets.FirstOrDefault(t => t.Working == working)?.HeldWeights;
+                if (held != null)
+                    for (int i = 0; i < held.Length && i < original.blendShapeCount; i++)
+                        if (!float.IsNaN(held[i])) skinned.SetBlendShapeWeight(i, held[i]);
+                skinned.sharedMesh = original;
             }
             foreach (var filter in avatarRoot.GetComponentsInChildren<MeshFilter>(true))
             {

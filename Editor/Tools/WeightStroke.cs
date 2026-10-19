@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text.RegularExpressions;
 using UnityEngine;
 
 namespace Orbiters.Mixer.Editor
@@ -31,7 +32,7 @@ namespace Orbiters.Mixer.Editor
         private readonly WeightChannel mirrorChannel;
         private readonly float radius, strength, value;
         private readonly Falloff falloff;
-        private readonly bool symmetry, normalize;
+        private readonly bool symmetry, normalize, paintMirror;
         private readonly WeightRecorder recorder;
         private readonly List<int> scratch = new List<int>();
         private readonly HashSet<int> touchedAll = new HashSet<int>();
@@ -54,6 +55,9 @@ namespace Orbiters.Mixer.Editor
             this.symmetry = symmetry;
             this.normalize = normalize && !channel.IsGroup;
             mirrorChannel = symmetry && !channel.IsGroup ? WeightChannel.OfBone(MirrorBone(target, channel.Bone)) : channel;
+            // The other side takes the stroke on the mirror bone, or on the same bone when it sits on the middle line;
+            // a side bone without a mirror leaves the other side alone (painting it there would skin it to this side).
+            paintMirror = symmetry && (channel.IsGroup || mirrorChannel.Bone != channel.Bone || IsCentered(target, channel.Bone));
             string name = channel.IsGroup ? channel.Group : BoneName(target, channel.Bone);
             recorder = new WeightRecorder(target, channel.Group, kind + " weights of " + name);
         }
@@ -65,32 +69,81 @@ namespace Orbiters.Mixer.Editor
             return skinned.bones[bone].name;
         }
 
-        /// <summary>The bone on the other side by name (Left/Right, _L/_R, .L/.R, L_/R_), or the same bone.</summary>
+        /// <summary>
+        /// The bone on the other side: the humanoid pair when the avatar is humanoid, else by name (Left/Right anywhere in
+        /// it, or an L/R token: Leg_L, Hand.L, J_Bip_L_UpperArm, mixamorig:LeftArm), or the same bone when none is found.
+        /// </summary>
         public static int MirrorBone(EditTarget target, int bone)
         {
             var skinned = target.Skinned;
             if (skinned == null || bone < 0 || bone >= skinned.bones.Length || skinned.bones[bone] == null) return bone;
-            string name = skinned.bones[bone].name;
+            var bones = skinned.bones;
+            var human = HumanMirror(skinned, bones[bone]);
+            if (human != null)
+            {
+                int index = Array.IndexOf(bones, human);
+                if (index >= 0) return index;
+            }
+            string name = bones[bone].name;
             string mirrored = MirrorName(name);
             if (mirrored == name) return bone;
-            var bones = skinned.bones;
             for (int i = 0; i < bones.Length; i++) if (bones[i] != null && bones[i].name == mirrored) return i;
             return bone;
         }
 
+        // The humanoid bone on the other side (LeftUpperArm <-> RightUpperArm...), or null when the avatar is not humanoid
+        // or the bone is not one of its human bones.
+        private static Transform HumanMirror(SkinnedMeshRenderer skinned, Transform bone)
+        {
+            var animator = skinned.GetComponentInParent<Animator>(true);
+            if (animator == null || animator.avatar == null || !animator.isHuman) return null;
+            foreach (HumanBodyBones human in Enum.GetValues(typeof(HumanBodyBones)))
+            {
+                if (human == HumanBodyBones.LastBone || animator.GetBoneTransform(human) != bone) continue;
+                string name = human.ToString();
+                string other = name.StartsWith("Left", StringComparison.Ordinal) ? "Right" + name.Substring(4)
+                    : name.StartsWith("Right", StringComparison.Ordinal) ? "Left" + name.Substring(5) : null;
+                return other != null && Enum.TryParse(other, out HumanBodyBones pair) ? animator.GetBoneTransform(pair) : null;
+            }
+            return null;
+        }
+
+        /// <summary>Whether a bone sits on the mesh's middle line (X = 0 in mesh space at bind time), where both sides share it.</summary>
+        internal static bool IsCentered(EditTarget target, int bone)
+        {
+            var poses = target.Document.BindPoses;
+            if (poses == null || bone < 0 || bone >= poses.Length) return true;
+            var origin = poses[bone].inverse.GetColumn(3);
+            return Mathf.Abs(origin.x) <= Mathf.Max(1e-4f, target.Document.Original.bounds.size.magnitude * 0.01f);
+        }
+
+        private static readonly Regex SideWord = new Regex("Left|Right|left|right|LEFT|RIGHT", RegexOptions.CultureInvariant);
+        // A lone L or R between separators (or at an end): Leg_L, Hand.L, L_Arm, "Hand L", J_Bip_L_UpperArm.
+        private static readonly Regex SideLetter = new Regex(@"(?<=^|[_.\s:\-])[LRlr](?=$|[_.\s:\-])", RegexOptions.CultureInvariant);
+
         internal static string MirrorName(string name)
         {
-            var pairs = new[] { ("Left", "Right"), ("left", "right"), ("_L", "_R"), (".L", ".R"), ("_l", "_r"), (".l", ".r"), (" L", " R"), ("L_", "R_"), ("l_", "r_") };
-            foreach (var (a, b) in pairs)
+            if (string.IsNullOrEmpty(name)) return name;
+            string swapped = SideWord.Replace(name, m => Swap(m.Value));
+            return swapped != name ? swapped : SideLetter.Replace(name, m => Swap(m.Value));
+        }
+
+        private static string Swap(string side)
+        {
+            switch (side)
             {
-                if (name.EndsWith(a, StringComparison.Ordinal)) return name.Substring(0, name.Length - a.Length) + b;
-                if (name.EndsWith(b, StringComparison.Ordinal)) return name.Substring(0, name.Length - b.Length) + a;
-                if (name.StartsWith(a, StringComparison.Ordinal) && (a == "Left" || a == "left" || a == "L_" || a == "l_")) return b + name.Substring(a.Length);
-                if (name.StartsWith(b, StringComparison.Ordinal) && (b == "Right" || b == "right" || b == "R_" || b == "r_")) return a + name.Substring(b.Length);
-                int at = name.IndexOf(a + "_", StringComparison.Ordinal); if (at >= 0 && (a == "Left" || a == "left")) return name.Substring(0, at) + b + name.Substring(at + a.Length);
-                at = name.IndexOf(b + "_", StringComparison.Ordinal); if (at >= 0 && (b == "Right" || b == "right")) return name.Substring(0, at) + a + name.Substring(at + b.Length);
+                case "Left": return "Right";
+                case "Right": return "Left";
+                case "left": return "right";
+                case "right": return "left";
+                case "LEFT": return "RIGHT";
+                case "RIGHT": return "LEFT";
+                case "L": return "R";
+                case "R": return "L";
+                case "l": return "r";
+                case "r": return "l";
+                default: return side;
             }
-            return name;
         }
 
         public void Begin(Vector3 point, Vector3 normal, bool invert)
@@ -165,7 +218,7 @@ namespace Orbiters.Mixer.Editor
                 int w = welded[i];
                 float f = weights[i];
                 PaintWelded(w, f, goal, blurTargets, channel);
-                if (!symmetry) continue;
+                if (!paintMirror) continue;
                 int other = target.Mirror.Of[w];
                 if (other < 0 || other == w) continue;
                 PaintWelded(other, f, goal, blurTargets, mirrorChannel, w);

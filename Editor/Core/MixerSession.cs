@@ -33,8 +33,9 @@ namespace Orbiters.Mixer.Editor
         static MixerSession()
         {
             EditorApplication.update += Tick;
-            EditorSceneManager.sceneSaving += (scene, path) => { foreach (var t in targets) if (t.Alive) t.Show(t.Original); };
-            EditorSceneManager.sceneSaved += scene => { foreach (var t in targets) if (t.Alive) t.Show(t.Working); };
+            // The scene file gets the originals and the renderers' own weights of the shapes being edited (held at 0 while shown).
+            EditorSceneManager.sceneSaving += (scene, path) => { foreach (var t in targets) if (t.Alive) { t.Show(t.Original); t.ReleaseLayerWeight(); } };
+            EditorSceneManager.sceneSaved += scene => { foreach (var t in targets) if (t.Alive) { t.Show(t.Working); t.HoldLayerWeight(); } };
             AssemblyReloadEvents.beforeAssemblyReload += SaveState;
             MixerHistory.Notice += text => Notice?.Invoke(text, false);
             LoadState();
@@ -56,6 +57,8 @@ namespace Orbiters.Mixer.Editor
             reason = null;
             var mesh = MeshOf(renderer);
             if (mesh == null) { reason = "No mesh."; return false; }
+            // Prefab Mode saves the prefab on its own (auto-save): it would write the working copy, which is never saved.
+            if (PrefabStageUtility.GetPrefabStage(renderer.gameObject) != null) { reason = "Mixer edits meshes in scenes: close Prefab Mode and edit an instance of the prefab instead."; return false; }
             if (MixerMeshGuard.IsWorking(mesh)) return true;
             if (mesh.vertexCount == 0) { reason = "The mesh has no vertices."; return false; }
             return true;
@@ -179,7 +182,11 @@ namespace Orbiters.Mixer.Editor
             if (MixerMeshGuard.IsWorking(target.Original)) name = name.Replace(" (Mixer working)", "");
             owner = owner ?? OwnerName(target.Renderer);
             var built = MeshBuilder.Build(target);
-            var asset = MeshAssets.Save(built, MeshAssets.Folder("Mixer", owner), name);
+            // A mesh Mixer saved before is updated in place (what points at it follows); any other gets a file of its
+            // own, never one another mesh of the same name already has.
+            var asset = MeshAssets.IsOwnedBy(target.Original, "Mixer")
+                ? MeshAssets.Replace(built, target.Original)
+                : MeshAssets.Save(built, MeshAssets.Folder("Mixer", owner), name);
             MixerSidecar.Save(AssetDatabase.GetAssetPath(asset), doc);
             target.ShowChannel(WeightChannel.None);
             Undo.IncrementCurrentGroup();
@@ -258,9 +265,34 @@ namespace Orbiters.Mixer.Editor
             foreach (var t in targets)
             {
                 if (!t.Alive) continue;
-                lines.Add(t.Id + "\t" + t.Working.GetInstanceID() + "\t" + SceneGraphExporter.IdOf(t.Original) + "\t" + (t.Document.Layer ?? ""));
+                lines.Add(t.Id + "\t" + t.Working.GetInstanceID() + "\t" + SceneGraphExporter.IdOf(t.Original) + "\t" + (t.Document.Layer ?? "") + "\t" + HeldText(t.HeldWeights));
             }
             SessionState.SetString(StateKey, string.Join("\n", lines));
+        }
+
+        // Held weights as "index:weight" pairs (only the held ones), invariant culture.
+        private static string HeldText(float[] held)
+        {
+            if (held == null) return "";
+            var pairs = new List<string>();
+            for (int i = 0; i < held.Length; i++)
+                if (!float.IsNaN(held[i])) pairs.Add(i + ":" + held[i].ToString("R", System.Globalization.CultureInfo.InvariantCulture));
+            return string.Join(",", pairs);
+        }
+
+        private static float[] ParseHeld(string text, int count)
+        {
+            if (string.IsNullOrEmpty(text) || count <= 0) return null;
+            var held = new float[count];
+            for (int i = 0; i < count; i++) held[i] = float.NaN;
+            foreach (string pair in text.Split(','))
+            {
+                int colon = pair.IndexOf(':');
+                if (colon > 0 && int.TryParse(pair.Substring(0, colon), out int index) && index >= 0 && index < count
+                    && float.TryParse(pair.Substring(colon + 1), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float weight))
+                    held[index] = weight;
+            }
+            return held;
         }
 
         private static void LoadState()
@@ -298,6 +330,9 @@ namespace Orbiters.Mixer.Editor
                     targets.Add(target);
                     string layer = parts.Length > 3 && parts[3].Length > 0 ? parts[3] : null;
                     if (MixerAutosave.Restore(target)) target.Document.Layer = layer != null && target.Document.HasShape(layer) ? layer : null;
+                    target.FlushBindposes();
+                    // The renderer shows 0 for the shape being edited: its own weight comes from before the reload.
+                    target.HoldLayerWeight(parts.Length > 4 ? ParseHeld(parts[4], working.blendShapeCount) : null);
                     target.AfterLayerChange();
                 }
             }

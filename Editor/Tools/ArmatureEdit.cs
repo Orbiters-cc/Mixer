@@ -56,6 +56,8 @@ namespace Orbiters.Mixer.Editor
             {
                 if (!active) return;
                 foreach (var gone in rest.Keys.Where(t => !t.Alive).ToList()) rest.Remove(gone);
+                // A skinned mesh opened during the mode brings its rig mates along.
+                if (MixerSession.Targets.Any(t => t.Alive && t.Skinned != null && t.Document.HasSkin && !rest.ContainsKey(t))) AddRigMates();
                 foreach (var target in MixerSession.Targets) if (!rest.ContainsKey(target)) Snapshot(target);
             };
         }
@@ -69,10 +71,58 @@ namespace Orbiters.Mixer.Editor
                 if (active == value) return;
                 active = value;
                 rest.Clear();
-                if (active) foreach (var target in MixerSession.Targets) Snapshot(target);
+                if (active)
+                {
+                    AddRigMates();
+                    foreach (var target in MixerSession.Targets) Snapshot(target);
+                }
                 Changed?.Invoke();
                 SceneView.RepaintAll();
             }
+        }
+
+        private static bool addingMates;
+
+        /// <summary>
+        /// Opens every skinned mesh that shares a bone with an edited one (clothes, hair, the other body parts of the
+        /// avatar): a rest-pose change moves bones they use too, and a mesh left out would keep its bind poses and show
+        /// the move as a pose, saved with the scene.
+        /// </summary>
+        internal static void AddRigMates()
+        {
+            if (addingMates) return;
+            addingMates = true;
+            var added = new List<string>();
+            try
+            {
+                var bones = new HashSet<Transform>();
+                var roots = new HashSet<Transform>();
+                foreach (var target in MixerSession.Targets)
+                {
+                    if (!target.Alive || target.Skinned == null) continue;
+                    foreach (var bone in target.Skinned.bones) if (bone != null) bones.Add(bone);
+                    roots.Add(target.Renderer.transform.root);
+                }
+                foreach (var root in roots)
+                {
+                    foreach (var other in root.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+                    {
+                        if (MixerSession.TargetOf(other) != null || other.sharedMesh == null) continue;
+                        var otherBones = other.bones;
+                        if (otherBones == null || !otherBones.Any(b => b != null && bones.Contains(b))) continue;
+                        if (!MixerSession.CanEdit(other, out string reason))
+                        {
+                            Debug.LogWarning("[Mixer] Rest-pose editing cannot carry '" + other.name + "' (" + reason + "): moving the bones it shares will pose it.");
+                            continue;
+                        }
+                        try { MixerSession.Edit(other); added.Add(other.name); }
+                        catch (Exception e) { Debug.LogWarning("[Mixer] Rest-pose editing cannot carry '" + other.name + "': " + e.Message); }
+                    }
+                }
+            }
+            finally { addingMates = false; }
+            if (added.Count > 0)
+                MixerSession.Say("Rest-pose editing also carries " + string.Join(", ", added) + " (they share its bones); commit them with it.");
         }
 
         /// <summary>

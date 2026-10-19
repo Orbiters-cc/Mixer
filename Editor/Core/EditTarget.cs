@@ -183,6 +183,25 @@ namespace Orbiters.Mixer.Editor
                 if (!float.IsNaN(savedWeight[i])) { skinned.SetBlendShapeWeight(i, savedWeight[i]); savedWeight[i] = float.NaN; }
         }
 
+        /// <summary>
+        /// The renderer's own weight of each blendshape held at 0 while it is the edited layer (NaN: not held): what a
+        /// scene save, an upload or a script reload must keep instead of the 0 shown.
+        /// </summary>
+        public float[] HeldWeights => savedWeight;
+
+        /// <summary>Gives the renderer its held weights back for a moment (a scene save); <see cref="HoldLayerWeight"/> holds them again.</summary>
+        public void ReleaseLayerWeight() => RestoreWeights();
+
+        /// <summary>
+        /// Holds the edited layer's weight at 0 again, remembering the renderer's own; after a script reload,
+        /// <paramref name="remembered"/> (the <see cref="HeldWeights"/> from before) says what the renderer had, since it shows 0 now.
+        /// </summary>
+        public void HoldLayerWeight(float[] remembered = null)
+        {
+            if (remembered != null && Working != null && remembered.Length == Working.blendShapeCount) savedWeight = (float[])remembered.Clone();
+            ApplyLayerWeight();
+        }
+
         public void RecomputeAllNormals()
         {
             var doc = Document;

@@ -46,8 +46,16 @@ namespace Orbiters.Mixer.Editor
         public readonly Dictionary<string, ShapeLayer> ShapeEdits = new Dictionary<string, ShapeLayer>();
         public readonly HashSet<string> DeletedShapes = new HashSet<string>();
         public readonly List<VertexGroup> Groups = new List<VertexGroup>();
-        /// <summary>The shape being edited, or null for the base mesh.</summary>
-        public string Layer;
+        /// <summary>
+        /// The shape being edited, or null for the base mesh. Picking a shape loads its deltas at once, so what shows,
+        /// what brushes aim at and what undo records are the shape from the first stroke on.
+        /// </summary>
+        public string Layer
+        {
+            get => layer;
+            set { layer = value; if (value != null) Shape(value); }
+        }
+        private string layer;
         /// <summary>Bumped by every applied edit.</summary>
         public int Revision;
         /// <summary>Mesh vertices changed since the last flush to the working mesh.</summary>
@@ -109,8 +117,9 @@ namespace Orbiters.Mixer.Editor
             return 0f;
         }
 
-        private NativeArray<byte> originalPerVertex;
-        private NativeArray<BoneWeight1> originalWeights;
+        // Copies, not views into the mesh's memory: the original can be reimported or replaced during a session.
+        private byte[] originalPerVertex;
+        private BoneWeight1[] originalWeights;
         private int[] originalStart;
 
         private float OriginalBoneWeight(int v, int bone)
@@ -118,8 +127,8 @@ namespace Orbiters.Mixer.Editor
             if (!HasSkin) return 0f;
             if (originalStart == null)
             {
-                originalPerVertex = Original.GetBonesPerVertex();
-                originalWeights = Original.GetAllBoneWeights();
+                originalPerVertex = Original.GetBonesPerVertex().ToArray();
+                originalWeights = Original.GetAllBoneWeights().ToArray();
                 originalStart = new int[VertexCount + 1];
                 for (int i = 0; i < VertexCount; i++) originalStart[i + 1] = originalStart[i] + (i < originalPerVertex.Length ? originalPerVertex[i] : 0);
             }
@@ -149,7 +158,7 @@ namespace Orbiters.Mixer.Editor
             }
             if (index >= 0) list[index] = new Influence(bone, weight); else if (weight > 0f) list.Add(new Influence(bone, weight));
             for (int i = list.Count - 1; i >= 0; i--) if (list[i].Weight < 0.001f) list.RemoveAt(i);
-            list.Sort((a, b) => b.Weight.CompareTo(a.Weight));
+            list.Sort(ByWeightDescending);
             WeightEdited.Add(v);
             WeightsDirty = true;
         }
@@ -159,9 +168,13 @@ namespace Orbiters.Mixer.Editor
             var list = EnsureInfluences()[v];
             list.Clear();
             list.AddRange(influences);
+            // Unity reads the strongest first (and keeps only the first four at the usual quality): Blender's order is any.
+            list.Sort(ByWeightDescending);
             WeightEdited.Add(v);
             WeightsDirty = true;
         }
+
+        private static readonly Comparison<Influence> ByWeightDescending = (a, b) => b.Weight.CompareTo(a.Weight);
 
         /// <summary>The influences as Unity's arrays (sorted by weight within a vertex), for the working mesh or the commit.</summary>
         public void BuildBoneWeights(out NativeArray<byte> perVertex, out NativeArray<BoneWeight1> weights)

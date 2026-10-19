@@ -80,10 +80,53 @@ namespace Orbiters.Mixer.Editor
             return repaired;
         }
 
+        /// <summary>
+        /// A prefab is about to be written while sessions show working meshes (Apply overrides on an instance being
+        /// edited): the prefab's renderers that point at a working mesh get its original back first, so the file never
+        /// holds a reference to a mesh that is never saved. How many it changed.
+        /// </summary>
+        internal static int RepairPrefab(string path)
+        {
+            if (originals.Count == 0) return 0;
+            var root = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+            if (root == null) return 0;
+            int repaired = 0;
+            foreach (var renderer in root.GetComponentsInChildren<Renderer>(true))
+            {
+                var filter = renderer is MeshRenderer ? renderer.GetComponent<MeshFilter>() : null;
+                Object holder = filter != null ? (Object)filter : renderer is SkinnedMeshRenderer ? renderer : null;
+                if (holder == null) continue;
+                int id = new SerializedObject(holder).FindProperty("m_Mesh").objectReferenceInstanceIDValue;
+                if (id == 0 || !originals.ContainsKey(id)) continue;
+                var original = Original(id);
+                if (original == null) continue;
+                if (filter != null) filter.sharedMesh = original; else ((SkinnedMeshRenderer)renderer).sharedMesh = original;
+                EditorUtility.SetDirty(holder);
+                Debug.LogWarning("[Mixer] '" + path + "' was being saved with Mixer's working copy of '" + original.name + "' on '" + renderer.name + "': the prefab keeps '" + original.name + "' (commit in Mixer, then apply, to put the edits in the prefab).");
+                repaired++;
+            }
+            return repaired;
+        }
+
         private static Mesh Original(int workingId) =>
             originals.TryGetValue(workingId, out string id) && GlobalObjectId.TryParse(id, out var parsed)
                 ? GlobalObjectId.GlobalObjectIdentifierToObjectSlow(parsed) as Mesh
                 : null;
+
+        private sealed class PrefabSaves : AssetModificationProcessor
+        {
+            private static string[] OnWillSaveAssets(string[] paths)
+            {
+                if (originals.Count == 0) return paths;
+                foreach (string path in paths)
+                    if (path.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase))
+                    {
+                        try { RepairPrefab(path); }
+                        catch (Exception e) { Debug.LogException(e); }
+                    }
+                return paths;
+            }
+        }
 
         private static void Save() => SessionState.SetString(StateKey, string.Join("\n", originals.Select(pair => pair.Key + "\t" + pair.Value)));
 

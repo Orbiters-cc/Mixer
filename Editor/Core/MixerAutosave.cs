@@ -13,12 +13,12 @@ namespace Orbiters.Mixer.Editor
     /// What a target's document differs from its original by, written a few seconds after each change to
     /// <c>Library/Orbiters/Mixer/autosave</c> on a thread of its own, and read back after a script reload or a crash so
     /// edits in progress are not lost. Sparse: moved base vertices, then each edited or new shape's non-zero deltas,
-    /// then vertex groups.
+    /// then vertex groups, bone influences, rest-pose bind poses and the mask.
     /// </summary>
     internal static class MixerAutosave
     {
         private const string Magic = "MIXA";
-        private const int Version = 2;
+        private const int Version = 3;
 
         public static string Folder => Path.GetFullPath(Path.Combine(Application.dataPath, "..", "Library", "Orbiters", "Mixer", "autosave"));
 
@@ -68,6 +68,10 @@ namespace Orbiters.Mixer.Editor
             }
             var influences = new List<(int vertex, MeshDocument.Influence[] list)>();
             if (doc.Influences != null) foreach (int v in doc.WeightEdited) influences.Add((v, doc.Influences[v].ToArray()));
+            // Rest-pose edits: the bones stay moved in the scene through a reload, so their bind poses must come back too.
+            var bindPoses = doc.BindPosesEdited && doc.BindPoses != null ? (Matrix4x4[])doc.BindPoses.Clone() : new Matrix4x4[0];
+            var masked = new List<(int vertex, float value)>();
+            if (doc.Mask != null) for (int v = 0; v < doc.Mask.Length; v++) if (doc.Mask[v] > 0f) masked.Add((v, doc.Mask[v]));
             string path = PathFor(target.Id);
             string layerName = doc.Layer ?? "";
             int vertexCount = doc.VertexCount;
@@ -103,6 +107,10 @@ namespace Orbiters.Mixer.Editor
                         writer.Write(inf.vertex); writer.Write(inf.list.Length);
                         for (int i = 0; i < inf.list.Length; i++) { writer.Write(inf.list[i].Bone); writer.Write(inf.list[i].Weight); }
                     }
+                    writer.Write(bindPoses.Length);
+                    foreach (var pose in bindPoses) for (int i = 0; i < 16; i++) writer.Write(pose[i]);
+                    writer.Write(masked.Count);
+                    foreach (var (vertex, value) in masked) { writer.Write(vertex); writer.Write(value); }
                 }
                 if (File.Exists(path)) File.Delete(path);
                 File.Move(temp, path);
@@ -165,6 +173,26 @@ namespace Orbiters.Mixer.Editor
                         var list = new MeshDocument.Influence[n];
                         for (int i = 0; i < n; i++) { int bone = reader.ReadInt32(); float w = reader.ReadSingle(); list[i] = new MeshDocument.Influence(bone, w); }
                         if (v >= 0 && v < vertexCount && doc.HasSkin) doc.SetInfluences(v, list);
+                    }
+                    int poses = reader.ReadInt32();
+                    if (poses > 0)
+                    {
+                        var bindPoses = new Matrix4x4[poses];
+                        for (int p = 0; p < poses; p++) for (int i = 0; i < 16; i++) bindPoses[p][i] = reader.ReadSingle();
+                        // Only when the renderer still has that many bones (an undone added bone leaves the original's).
+                        var skinned = target.Skinned;
+                        if (skinned != null && skinned.bones.Length == poses)
+                        {
+                            doc.BindPoses = bindPoses;
+                            doc.BindPosesDirty = true;
+                            doc.BindPosesEdited = true;
+                        }
+                    }
+                    int masked = reader.ReadInt32();
+                    if (masked > 0)
+                    {
+                        var mask = doc.EnsureMask();
+                        for (int i = 0; i < masked; i++) { int v = reader.ReadInt32(); float m = reader.ReadSingle(); if (v >= 0 && v < vertexCount) mask[v] = m; }
                     }
                     doc.Layer = layer.Length > 0 && doc.HasShape(layer) ? layer : null;
                 }
