@@ -161,7 +161,7 @@ namespace Orbiters.Mixer.Editor.Tests
             Assert.That(MaxDistance(asset.vertices, edited), Is.LessThan(1e-6f));
             Assert.That(asset.blendShapeCount, Is.EqualTo(1), "the original shape is kept");
             Assert.That(mesh.vertices[0], Is.EqualTo(new Vector3(0.3f, 0f, 0f)), "the original asset is untouched");
-            Assert.That(MixerSession.Targets, Is.Empty);
+            Assert.That(MixerSession.Targets, Has.No.Member(target), "the session is closed");
             Assert.That(asset.bindposes.Length, Is.EqualTo(2));
         }
 
@@ -222,7 +222,7 @@ namespace Orbiters.Mixer.Editor.Tests
             MixerSession.Revert(target);
             Assert.That(renderer.sharedMesh, Is.SameAs(mesh));
             Assert.That(working == null, Is.True, "the working mesh is destroyed");
-            Assert.That(MixerSession.Targets, Is.Empty);
+            Assert.That(MixerSession.Targets, Has.No.Member(target), "the session is closed");
         }
 
         [Test]

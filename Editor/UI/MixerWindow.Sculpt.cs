@@ -31,7 +31,7 @@ namespace Orbiters.Mixer.Editor
                 var b = brush;
                 var tile = new Button { text = string.Empty, tooltip = brush.Description };
                 tile.AddToClassList("mx-tile");
-                var icon = new VectorIcon(brush.Icon) { pickingMode = PickingMode.Ignore };
+                var icon = new BrushIcon(brush.Glyph);
                 icon.AddToClassList("mx-tile__icon");
                 tile.Add(icon);
                 tile.Add(MixerUi.Text(brush.Name, "mx-tile__name"));
@@ -43,17 +43,17 @@ namespace Orbiters.Mixer.Editor
 
             var settings = MixerUi.Card("BRUSH", out sculptSettings);
             page.Add(settings);
-            radiusSlider = new Slider(0f, 1f) { value = RadiusToSlider(MixerSceneTool.Radius) };
+            radiusSlider = new Slider(0f, 1f) { value = MixerBrushTiles.RadiusToSlider(MixerSceneTool.Radius) };
             radiusSlider.AddToClassList("mx-slider");
             radiusValue = MixerUi.Text(MixerUi.Metres(MixerSceneTool.Radius), "mx-chip mx-chip__text");
-            radiusSlider.RegisterValueChangedCallback(evt => { MixerSceneTool.Radius = SliderToRadius(evt.newValue); radiusValue.text = MixerUi.Metres(MixerSceneTool.Radius); });
+            radiusSlider.RegisterValueChangedCallback(evt => { MixerSceneTool.Radius = MixerBrushTiles.SliderToRadius(evt.newValue); radiusValue.text = MixerUi.Metres(MixerSceneTool.Radius); });
             sculptSettings.Add(MixerUi.Setting("Radius", "How far the brush reaches, in the world", Pair(radiusSlider, radiusValue), first: true));
             strengthSlider = new Slider(0f, 1f) { value = MixerSceneTool.Strength };
             strengthSlider.AddToClassList("mx-slider");
             strengthValue = MixerUi.Text(MixerUi.Percent(MixerSceneTool.Strength), "mx-chip mx-chip__text");
             strengthSlider.RegisterValueChangedCallback(evt => { MixerSceneTool.Strength = evt.newValue; strengthValue.text = MixerUi.Percent(evt.newValue); });
             sculptSettings.Add(MixerUi.Setting("Strength", "How much each step moves", Pair(strengthSlider, strengthValue)));
-            falloffControl = new SegmentedControl(new[] { "Smooth", "Sphere", "Linear", "Sharp", "Flat" }, index => MixerSceneTool.Falloff = (Falloff)index);
+            falloffControl = new SegmentedControl(MixerBrushTiles.FalloffNames, index => MixerSceneTool.Falloff = (Falloff)index);
             falloffControl.AddToClassList("orb-segmented--compact");
             falloffControl.SetIndex((int)MixerSceneTool.Falloff);
             sculptSettings.Add(MixerUi.Setting("Falloff", "How the effect fades toward the edge", falloffControl));
@@ -96,9 +96,6 @@ namespace Orbiters.Mixer.Editor
             return row;
         }
 
-        // Radius on a log scale from 1 mm to 2 m.
-        private static float RadiusToSlider(float radius) => Mathf.InverseLerp(Mathf.Log10(0.001f), Mathf.Log10(2f), Mathf.Log10(Mathf.Clamp(radius, 0.001f, 2f)));
-        private static float SliderToRadius(float value) => Mathf.Pow(10f, Mathf.Lerp(Mathf.Log10(0.001f), Mathf.Log10(2f), value));
 
         private void CreateShape()
         {
@@ -116,7 +113,7 @@ namespace Orbiters.Mixer.Editor
         private void RefreshSculptPage(EditTarget target)
         {
             foreach (var pair in tileByBrush) pair.Value.EnableInClassList("mx-tile--on", MixerSceneTool.ActiveBrush.Name == pair.Key && MixerSceneTool.Mode == MixerMode.Sculpt);
-            if (Math.Abs(radiusSlider.value - RadiusToSlider(MixerSceneTool.Radius)) > 1e-4f) radiusSlider.SetValueWithoutNotify(RadiusToSlider(MixerSceneTool.Radius));
+            if (Math.Abs(radiusSlider.value - MixerBrushTiles.RadiusToSlider(MixerSceneTool.Radius)) > 1e-4f) radiusSlider.SetValueWithoutNotify(MixerBrushTiles.RadiusToSlider(MixerSceneTool.Radius));
             radiusValue.text = MixerUi.Metres(MixerSceneTool.Radius);
             if (Math.Abs(strengthSlider.value - MixerSceneTool.Strength) > 1e-4f) strengthSlider.SetValueWithoutNotify(MixerSceneTool.Strength);
             strengthValue.text = MixerUi.Percent(MixerSceneTool.Strength);

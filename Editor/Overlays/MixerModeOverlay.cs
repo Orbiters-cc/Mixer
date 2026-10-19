@@ -10,37 +10,36 @@ using UnityEngine.UIElements;
 namespace Orbiters.Mixer.Editor
 {
     /// <summary>
-    /// Blender's header strip in the Scene view: the mode dropdown (Object Mode, Sculpt Mode, Weight Paint, Edit
-    /// Armature), the brush settings of the mode (radius, strength, falloff and symmetry, or weight and normalize),
-    /// Commit and Revert while a session is open, and the Mixer window. Every feature of Mixer starts from here.
+    /// Blender's header in the Scene view, made of Unity's own toolbar controls: the mode (Object Mode, Sculpt Mode,
+    /// Weight Paint, Edit Armature), the brush and its settings in the sculpt and weight modes (radius, strength, falloff
+    /// and symmetry, or weight and normalize), Commit and Revert while a session is open, and the Mixer window. Every
+    /// feature of Mixer starts from here.
     /// </summary>
     [Overlay(typeof(SceneView), Id, "Mixer", true)]
     internal sealed class MixerModeOverlay : ToolbarOverlay
     {
-        public const string Id = "orbiters.mixer.mode";
+        public const string Id = "orbiters.mixer.header";
 
-        public MixerModeOverlay() : base(MixerModeDropdown.Id, MixerBrushSettingsElement.Id, MixerCommitButton.Id, MixerRevertButton.Id, MixerWindowButton.Id) { }
+        public MixerModeOverlay() : base(MixerModeDropdown.Id, MixerBrushDropdown.Id, MixerWeightField.Id, MixerRadiusField.Id, MixerStrengthField.Id,
+            MixerFalloffDropdown.Id, MixerSymmetryToggle.Id, MixerNormalizeToggle.Id, MixerCommitButton.Id, MixerRevertButton.Id, MixerWindowButton.Id) { }
 
-        public override void OnCreated() => MixerOverlays.FirstPlacement(this, new Vector2(50f, 34f));
+        // Right of Unity's Tools strip and level with it, as Blender's header sits beside its toolbar.
+        public override void OnCreated() => MixerOverlays.FirstPlacement(this, new Vector2(42f, 26f));
     }
 
     [EditorToolbarElement(Id, typeof(SceneView))]
     internal sealed class MixerModeDropdown : EditorToolbarDropdown
     {
-        public const string Id = "orbiters.mixer.mode.dropdown";
+        public const string Id = "orbiters.mixer.header.mode";
         private readonly VectorIcon glyph;
 
         public MixerModeDropdown()
         {
             tooltip = "Mixer mode: Object, Sculpt, Weight Paint or Edit Armature, on the selected mesh (Blender's modes)";
-            MixerOverlays.Dress(this, "mx-mode");
-            glyph = new VectorIcon(MixerModes.IconOf(MixerMode.None)) { pickingMode = PickingMode.Ignore };
-            glyph.AddToClassList("mx-mode__icon");
-            Insert(0, glyph);
-            clicked += ShowMenu;
-            Refresh();
-            RegisterCallback<AttachToPanelEvent>(_ => { MixerSceneTool.Changed += Refresh; MixerSession.Changed += Refresh; });
-            RegisterCallback<DetachFromPanelEvent>(_ => { MixerSceneTool.Changed -= Refresh; MixerSession.Changed -= Refresh; });
+            MixerOverlays.Dress(this);
+            glyph = MixerOverlays.Glyph(this, new VectorIcon(MixerModes.IconOf(MixerMode.None)));
+            MixerUi.Press(this, ShowMenu);
+            MixerOverlays.Follow(this, Refresh, session: true);
         }
 
         private void Refresh()
@@ -48,7 +47,6 @@ namespace Orbiters.Mixer.Editor
             var mode = MixerSceneTool.Mode;
             text = MixerModes.NameOf(mode);
             glyph.Glyph = MixerModes.IconOf(mode);
-            EnableInClassList("mx-mode--on", mode != MixerMode.None);
         }
 
         private void ShowMenu()
@@ -77,77 +75,159 @@ namespace Orbiters.Mixer.Editor
         }
     }
 
-    /// <summary>The brush settings of the mode in one strip: radius, strength, falloff, symmetry; or weight and normalize.</summary>
+    /// <summary>The active brush with its picture, as Blender's header shows the active tool; the menu lists the mode's brushes.</summary>
     [EditorToolbarElement(Id, typeof(SceneView))]
-    internal sealed class MixerBrushSettingsElement : VisualElement
+    internal sealed class MixerBrushDropdown : EditorToolbarDropdown
     {
-        public const string Id = "orbiters.mixer.mode.brush";
-        private readonly Slider radius, strength, weight;
-        private readonly Label radiusValue, strengthValue, weightValue;
-        private readonly Button falloff, symmetry, normalize;
+        public const string Id = "orbiters.mixer.header.brush";
+        private readonly BrushIcon glyph;
 
-        public MixerBrushSettingsElement()
+        public MixerBrushDropdown()
         {
-            MixerOverlays.Dress(this, "mx-header");
-            radius = Field("Radius", "Brush radius in the world ([ and ] in the Scene view)", MixerBrushTiles.RadiusToSlider(MixerSceneTool.Radius), v => MixerSceneTool.Radius = MixerBrushTiles.SliderToRadius(v), out radiusValue);
-            strength = Field("Strength", "How much each step moves (Shift+wheel)", MixerSceneTool.Strength, v => MixerSceneTool.Strength = v, out strengthValue);
-            weight = Field("Weight", "What Draw and Replace paint toward", MixerSceneTool.WeightValue, v => MixerSceneTool.WeightValue = v, out weightValue);
-            falloff = new Button(() =>
-            {
-                var menu = new GenericMenu();
-                foreach (Falloff f in Enum.GetValues(typeof(Falloff))) { var value = f; menu.AddItem(new GUIContent(f.ToString()), MixerSceneTool.Falloff == f, () => MixerSceneTool.Falloff = value); }
-                menu.DropDown(falloff.worldBound);
-            }) { tooltip = "Falloff: how the effect fades toward the edge of the brush" };
-            falloff.AddToClassList("mx-header__drop");
-            Add(falloff);
-            symmetry = MixerOverlays.ToolButton(IconGlyph.Mirror, "Symmetry: mirror every stroke across the mesh's X axis (F)", () => MixerSceneTool.Symmetry = !MixerSceneTool.Symmetry);
-            Add(symmetry);
-            normalize = new Button(() => MixerSceneTool.AutoNormalize = !MixerSceneTool.AutoNormalize) { text = "Normalize", tooltip = "Keep each vertex's bone weights summing to 1" };
-            normalize.AddToClassList("mx-header__drop");
-            Add(normalize);
-            Refresh();
-            RegisterCallback<AttachToPanelEvent>(_ => MixerSceneTool.Changed += Refresh);
-            RegisterCallback<DetachFromPanelEvent>(_ => MixerSceneTool.Changed -= Refresh);
-        }
-
-        private Slider Field(string name, string tooltip, float value, Action<float> changed, out Label valueLabel)
-        {
-            var box = new VisualElement();
-            box.AddToClassList("mx-header__field");
-            box.tooltip = tooltip;
-            var label = new Label(name);
-            label.AddToClassList("mx-header__label");
-            box.Add(label);
-            var slider = new Slider(0f, 1f) { value = value };
-            slider.AddToClassList("mx-header__slider");
-            slider.RegisterValueChangedCallback(evt => { changed(evt.newValue); Refresh(); });
-            box.Add(slider);
-            valueLabel = new Label();
-            valueLabel.AddToClassList("mx-header__value");
-            box.Add(valueLabel);
-            Add(box);
-            return slider;
+            MixerOverlays.Dress(this, "mx-bar--group");
+            glyph = MixerOverlays.Glyph(this, new BrushIcon(BrushGlyph.Grab));
+            MixerUi.Press(this, ShowMenu);
+            MixerOverlays.Follow(this, Refresh);
         }
 
         private void Refresh()
         {
             var mode = MixerSceneTool.Mode;
-            bool sculpt = mode == MixerMode.Sculpt, weights = mode == MixerMode.Weights;
-            style.display = sculpt || weights ? DisplayStyle.Flex : DisplayStyle.None;
-            if (!(sculpt || weights)) return;
-            if (Math.Abs(radius.value - MixerBrushTiles.RadiusToSlider(MixerSceneTool.Radius)) > 1e-4f) radius.SetValueWithoutNotify(MixerBrushTiles.RadiusToSlider(MixerSceneTool.Radius));
-            radiusValue.text = MixerUi.Metres(MixerSceneTool.Radius);
-            if (Math.Abs(strength.value - MixerSceneTool.Strength) > 1e-4f) strength.SetValueWithoutNotify(MixerSceneTool.Strength);
-            strengthValue.text = MixerUi.Percent(MixerSceneTool.Strength);
-            if (Math.Abs(weight.value - MixerSceneTool.WeightValue) > 1e-4f) weight.SetValueWithoutNotify(MixerSceneTool.WeightValue);
-            weightValue.text = MixerSceneTool.WeightValue.ToString("0.00");
-            weight.parent.style.display = weights ? DisplayStyle.Flex : DisplayStyle.None;
-            falloff.style.display = sculpt ? DisplayStyle.Flex : DisplayStyle.None;
-            falloff.text = MixerSceneTool.Falloff + " ▾";
-            symmetry.style.display = sculpt ? DisplayStyle.Flex : DisplayStyle.None;
-            symmetry.EnableInClassList("mx-tool--on", MixerSceneTool.Symmetry);
-            normalize.style.display = weights ? DisplayStyle.Flex : DisplayStyle.None;
-            normalize.EnableInClassList("mx-tool--on", MixerSceneTool.AutoNormalize);
+            style.display = MixerOverlays.Brushing ? DisplayStyle.Flex : DisplayStyle.None;
+            if (mode == MixerMode.Sculpt)
+            {
+                var brush = MixerSceneTool.ActiveBrush;
+                text = brush.Name;
+                glyph.Glyph = brush.Glyph;
+                tooltip = brush.Name + ": " + brush.Description;
+            }
+            else if (mode == MixerMode.Weights)
+            {
+                var kind = MixerSceneTool.WeightKind;
+                text = kind.ToString();
+                glyph.Glyph = MixerBrushTiles.GlyphOf(kind);
+                tooltip = kind + ": " + MixerBrushTiles.WeightBrushes.First(b => b.Kind == kind).Tip;
+            }
+        }
+
+        private void ShowMenu()
+        {
+            var menu = new GenericMenu();
+            if (MixerSceneTool.Mode == MixerMode.Weights)
+            {
+                foreach (var brush in MixerBrushTiles.WeightBrushes)
+                {
+                    var kind = brush.Kind;
+                    menu.AddItem(new GUIContent(kind.ToString()), MixerSceneTool.WeightKind == kind, () => MixerSceneTool.WeightKind = kind);
+                }
+            }
+            else
+            {
+                foreach (var brush in Brushes.All)
+                {
+                    var b = brush;
+                    menu.AddItem(new GUIContent(b.Name), MixerSceneTool.ActiveBrush == b, () => MixerSceneTool.ActiveBrush = b);
+                }
+            }
+            menu.DropDown(worldBound);
+        }
+    }
+
+    [EditorToolbarElement(Id, typeof(SceneView))]
+    internal sealed class MixerWeightField : MixerSliderField
+    {
+        public const string Id = "orbiters.mixer.header.weight";
+
+        public MixerWeightField() : base("Weight", "What Draw and Replace paint toward",
+            () => MixerSceneTool.WeightValue, v => MixerSceneTool.WeightValue = v,
+            () => MixerSceneTool.WeightValue.ToString("0.00"), () => MixerSceneTool.Mode == MixerMode.Weights) { }
+    }
+
+    [EditorToolbarElement(Id, typeof(SceneView))]
+    internal sealed class MixerRadiusField : MixerSliderField
+    {
+        public const string Id = "orbiters.mixer.header.radius";
+
+        public MixerRadiusField() : base("Radius", "How far the brush reaches, in the world ([ and ] in the Scene view)",
+            () => MixerBrushTiles.RadiusToSlider(MixerSceneTool.Radius), v => MixerSceneTool.Radius = MixerBrushTiles.SliderToRadius(v),
+            () => MixerUi.Metres(MixerSceneTool.Radius), () => MixerOverlays.Brushing) { }
+    }
+
+    [EditorToolbarElement(Id, typeof(SceneView))]
+    internal sealed class MixerStrengthField : MixerSliderField
+    {
+        public const string Id = "orbiters.mixer.header.strength";
+
+        public MixerStrengthField() : base("Strength", "How much each step moves (Shift+wheel in the Scene view)",
+            () => MixerSceneTool.Strength, v => MixerSceneTool.Strength = v,
+            () => MixerUi.Percent(MixerSceneTool.Strength), () => MixerOverlays.Brushing) { }
+    }
+
+    [EditorToolbarElement(Id, typeof(SceneView))]
+    internal sealed class MixerFalloffDropdown : EditorToolbarDropdown
+    {
+        public const string Id = "orbiters.mixer.header.falloff";
+        private readonly BrushIcon.FalloffCurve curve;
+
+        public MixerFalloffDropdown()
+        {
+            tooltip = "Falloff: how the effect fades toward the edge of the brush";
+            MixerOverlays.Dress(this);
+            curve = MixerOverlays.Glyph(this, new BrushIcon.FalloffCurve());
+            MixerUi.Press(this, () =>
+            {
+                var menu = new GenericMenu();
+                foreach (Falloff falloff in Enum.GetValues(typeof(Falloff)))
+                {
+                    var value = falloff;
+                    menu.AddItem(new GUIContent(MixerBrushTiles.NameOf(falloff)), MixerSceneTool.Falloff == falloff, () => MixerSceneTool.Falloff = value);
+                }
+                menu.DropDown(worldBound);
+            });
+            MixerOverlays.Follow(this, () =>
+            {
+                style.display = MixerSceneTool.Mode == MixerMode.Sculpt ? DisplayStyle.Flex : DisplayStyle.None;
+                text = MixerBrushTiles.NameOf(MixerSceneTool.Falloff);
+                curve.Falloff = MixerSceneTool.Falloff;
+            });
+        }
+    }
+
+    /// <summary>Blender's symmetry switch: every stroke mirrored across the mesh's X axis.</summary>
+    [EditorToolbarElement(Id, typeof(SceneView))]
+    internal sealed class MixerSymmetryToggle : EditorToolbarToggle
+    {
+        public const string Id = "orbiters.mixer.header.symmetry";
+
+        public MixerSymmetryToggle() : base("X")
+        {
+            tooltip = "Symmetry: mirror every stroke across the mesh's X axis (F)";
+            MixerOverlays.Dress(this);
+            MixerOverlays.Glyph(this, new VectorIcon(IconGlyph.Mirror));
+            MixerUi.Press(this, () => { MixerSceneTool.Symmetry = !MixerSceneTool.Symmetry; SetValueWithoutNotify(MixerSceneTool.Symmetry); });
+            MixerOverlays.Follow(this, () =>
+            {
+                style.display = MixerSceneTool.Mode == MixerMode.Sculpt ? DisplayStyle.Flex : DisplayStyle.None;
+                SetValueWithoutNotify(MixerSceneTool.Symmetry);
+            });
+        }
+    }
+
+    [EditorToolbarElement(Id, typeof(SceneView))]
+    internal sealed class MixerNormalizeToggle : EditorToolbarToggle
+    {
+        public const string Id = "orbiters.mixer.header.normalize";
+
+        public MixerNormalizeToggle() : base("Normalize")
+        {
+            tooltip = "Keep each vertex's bone weights summing to 1";
+            MixerOverlays.Dress(this);
+            MixerUi.Press(this, () => { MixerSceneTool.AutoNormalize = !MixerSceneTool.AutoNormalize; SetValueWithoutNotify(MixerSceneTool.AutoNormalize); });
+            MixerOverlays.Follow(this, () =>
+            {
+                style.display = MixerSceneTool.Mode == MixerMode.Weights ? DisplayStyle.Flex : DisplayStyle.None;
+                SetValueWithoutNotify(MixerSceneTool.AutoNormalize);
+            });
         }
     }
 
@@ -155,30 +235,29 @@ namespace Orbiters.Mixer.Editor
     [EditorToolbarElement(Id, typeof(SceneView))]
     internal sealed class MixerCommitButton : EditorToolbarButton
     {
-        public const string Id = "orbiters.mixer.mode.commit";
+        public const string Id = "orbiters.mixer.header.commit";
 
         public MixerCommitButton()
         {
             text = "Commit";
             tooltip = "Save the edits of the edited mesh as its mesh asset, in one Undo step (Mixer)";
-            MixerOverlays.Dress(this, "mx-header__commit");
-            clicked += () =>
+            MixerOverlays.Dress(this, "mx-bar--group");
+            MixerUi.Press(this, () =>
             {
                 var target = MixerSceneTool.FocusTarget ?? MixerSession.First;
                 if (target == null) return;
                 var mesh = MixerSession.Commit(target);
                 MixerModes.Notify(mesh != null ? "Committed " + target.Name : "Nothing to commit");
-            };
-            Refresh();
-            RegisterCallback<AttachToPanelEvent>(_ => { MixerSession.Changed += Refresh; MixerSceneTool.Changed += Refresh; schedule.Execute(Refresh).Every(500); });
-            RegisterCallback<DetachFromPanelEvent>(_ => { MixerSession.Changed -= Refresh; MixerSceneTool.Changed -= Refresh; });
+            });
+            MixerOverlays.Follow(this, Refresh, session: true);
+            // Edits change the document without a session event: look again twice a second.
+            RegisterCallback<AttachToPanelEvent>(_ => schedule.Execute(Refresh).Every(500));
         }
 
         private void Refresh()
         {
             var target = MixerSceneTool.FocusTarget ?? MixerSession.First;
-            bool show = target != null && target.Alive && target.Document.Changed;
-            style.display = show ? DisplayStyle.Flex : DisplayStyle.None;
+            style.display = target != null && target.Alive && target.Document.Changed ? DisplayStyle.Flex : DisplayStyle.None;
         }
     }
 
@@ -186,29 +265,26 @@ namespace Orbiters.Mixer.Editor
     [EditorToolbarElement(Id, typeof(SceneView))]
     internal sealed class MixerRevertButton : EditorToolbarButton
     {
-        public const string Id = "orbiters.mixer.mode.revert";
+        public const string Id = "orbiters.mixer.header.revert";
 
         public MixerRevertButton()
         {
             text = "Revert";
             tooltip = "Put the edited mesh's own mesh back and close its Mixer session";
-            clicked += () =>
+            MixerOverlays.Dress(this);
+            MixerUi.Press(this, () =>
             {
                 var target = MixerSceneTool.FocusTarget ?? MixerSession.First;
                 if (target == null) return;
                 string name = target.Name;
                 MixerSession.Revert(target);
                 MixerModes.Notify("Reverted " + name);
-            };
-            Refresh();
-            RegisterCallback<AttachToPanelEvent>(_ => { MixerSession.Changed += Refresh; MixerSceneTool.Changed += Refresh; });
-            RegisterCallback<DetachFromPanelEvent>(_ => { MixerSession.Changed -= Refresh; MixerSceneTool.Changed -= Refresh; });
-        }
-
-        private void Refresh()
-        {
-            var target = MixerSceneTool.FocusTarget ?? MixerSession.First;
-            style.display = target != null && target.Alive ? DisplayStyle.Flex : DisplayStyle.None;
+            });
+            MixerOverlays.Follow(this, () =>
+            {
+                var target = MixerSceneTool.FocusTarget ?? MixerSession.First;
+                style.display = target != null && target.Alive ? DisplayStyle.Flex : DisplayStyle.None;
+            }, session: true);
         }
     }
 
@@ -216,15 +292,89 @@ namespace Orbiters.Mixer.Editor
     [EditorToolbarElement(Id, typeof(SceneView))]
     internal sealed class MixerWindowButton : EditorToolbarButton
     {
-        public const string Id = "orbiters.mixer.mode.window";
+        public const string Id = "orbiters.mixer.header.window";
 
         public MixerWindowButton()
         {
             tooltip = "Open the Mixer window (layers, vertex groups, join, render, the Blender link)";
-            var icon = new MixerLogo.Element { Color = new Color(0.235f, 0.949f, 0.604f), Cut = new Color(0.11f, 0.118f, 0.137f) };
-            icon.style.width = 14; icon.style.height = 14; icon.pickingMode = PickingMode.Ignore;
-            Add(icon);
-            clicked += MixerWindow.Open;
+            icon = MixerLogo.TabIcon();
+            MixerOverlays.Dress(this, "mx-bar--group");
+            MixerUi.Press(this, MixerWindow.Open);
+        }
+    }
+
+    /// <summary>
+    /// Blender's slider field in the look of Unity's toolbar buttons: the name at the left, the value at the right and a
+    /// fill for how much. A press sets the value under the pointer at once and a drag follows it; the wheel nudges it.
+    /// </summary>
+    internal abstract class MixerSliderField : VisualElement
+    {
+        private readonly Func<float> get;
+        private readonly Action<float> set;
+        private readonly Func<string> valueText;
+        private readonly Func<bool> shown;
+        private readonly VisualElement fill;
+        private readonly Label value;
+        private bool dragging;
+
+        protected MixerSliderField(string name, string tip, Func<float> get, Action<float> set, Func<string> valueText, Func<bool> shown)
+        {
+            this.get = get;
+            this.set = set;
+            this.valueText = valueText;
+            this.shown = shown;
+            tooltip = tip;
+            AddToClassList("unity-editor-toolbar-element");
+            MixerOverlays.Dress(this, "mx-field");
+            fill = new VisualElement { pickingMode = PickingMode.Ignore };
+            fill.AddToClassList("mx-field__fill");
+            Add(fill);
+            var label = new Label(name) { pickingMode = PickingMode.Ignore };
+            label.AddToClassList("mx-field__name");
+            Add(label);
+            value = new Label { pickingMode = PickingMode.Ignore };
+            value.AddToClassList("mx-field__value");
+            Add(value);
+            RegisterCallback<PointerDownEvent>(evt =>
+            {
+                if (evt.button != 0) return;
+                dragging = true;
+                this.CapturePointer(evt.pointerId);
+                AddToClassList(MixerUi.PressedClass);
+                SetAt(evt.localPosition.x);
+                evt.StopPropagation();
+            });
+            RegisterCallback<PointerMoveEvent>(evt => { if (dragging && this.HasPointerCapture(evt.pointerId)) SetAt(evt.localPosition.x); });
+            RegisterCallback<PointerUpEvent>(evt =>
+            {
+                if (!dragging) return;
+                dragging = false;
+                this.ReleasePointer(evt.pointerId);
+                RemoveFromClassList(MixerUi.PressedClass);
+            });
+            RegisterCallback<PointerCaptureOutEvent>(_ => { dragging = false; RemoveFromClassList(MixerUi.PressedClass); });
+            RegisterCallback<WheelEvent>(evt => { Set(get() - Mathf.Sign(evt.delta.y) * 0.02f); evt.StopPropagation(); });
+            MixerOverlays.Follow(this, Refresh);
+        }
+
+        private void SetAt(float x)
+        {
+            if (layout.width > 0f) Set(x / layout.width);
+        }
+
+        private void Set(float normalized)
+        {
+            set(Mathf.Clamp01(normalized));
+            Refresh();
+        }
+
+        private void Refresh()
+        {
+            bool visible = shown();
+            style.display = visible ? DisplayStyle.Flex : DisplayStyle.None;
+            if (!visible) return;
+            fill.style.width = Length.Percent(Mathf.Clamp01(get()) * 100f);
+            value.text = valueText();
         }
     }
 }

@@ -17,13 +17,17 @@ namespace Orbiters.Mixer.Editor.Tests
         private Mesh mesh;
         private Transform lower, upper;
 
-        // Sessions open before the test (another tool's, the user's): left alone.
+        // Sessions open before the test (another tool's, the user's): left alone, with the mode and focus they had.
         private HashSet<EditTarget> targetsBefore;
+        private MixerMode modeBefore;
+        private EditTarget focusBefore;
 
         [SetUp]
         public void SetUp()
         {
             targetsBefore = new HashSet<EditTarget>(MixerSession.Targets);
+            modeBefore = MixerSceneTool.Mode;
+            focusBefore = MixerSceneTool.FocusTarget;
             scene = EditorSceneManager.NewPreviewScene();
             root = new GameObject("MixerArmatureFixture");
             SceneManager.MoveGameObjectToScene(root, scene);
@@ -45,6 +49,8 @@ namespace Orbiters.Mixer.Editor.Tests
             ArmatureEdit.Leave();
             foreach (var t in MixerSession.Targets.ToList()) if (!targetsBefore.Contains(t)) MixerSession.Revert(t);
             MixerSceneTool.Mode = MixerMode.None;
+            MixerSceneTool.FocusTarget = focusBefore;
+            MixerSceneTool.Mode = modeBefore;
             if (root != null) Object.DestroyImmediate(root);
             EditorSceneManager.ClosePreviewScene(scene);
             AssetDatabase.DeleteAsset("Assets/Orbiters/MixerTests");

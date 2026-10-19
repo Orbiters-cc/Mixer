@@ -49,18 +49,13 @@ namespace Orbiters.Mixer.Editor
             page.Add(brushCard);
             var tiles = MixerUi.Box("mx-tiles");
             brushBody.Add(tiles);
-            foreach (var (kind, glyph, tip) in new[]
-            {
-                (WeightBrushKind.Draw, IconGlyph.Sculpt, "Paint the weight toward the brush value; Ctrl toward 0."),
-                (WeightBrushKind.Blur, IconGlyph.Broom, "Average the weight with the neighbours'."),
-                (WeightBrushKind.Replace, IconGlyph.Layers, "Set the weight to the brush value outright; Ctrl to 0."),
-            })
+            foreach (var (kind, glyph, tip) in MixerBrushTiles.WeightBrushes)
             {
                 var k = kind;
                 var tile = new Button { text = string.Empty, tooltip = tip };
                 tile.AddToClassList("mx-tile");
                 tile.AddToClassList("mx-tile--short");
-                var icon = new VectorIcon(glyph) { pickingMode = PickingMode.Ignore };
+                var icon = new BrushIcon(glyph);
                 icon.AddToClassList("mx-tile__icon");
                 tile.Add(icon);
                 tile.Add(MixerUi.Text(kind.ToString(), "mx-tile__name"));
@@ -73,10 +68,10 @@ namespace Orbiters.Mixer.Editor
             weightValueLabel = MixerUi.Text(MixerSceneTool.WeightValue.ToString("0.00"), "mx-chip mx-chip__text");
             weightValueSlider.RegisterValueChangedCallback(evt => { MixerSceneTool.WeightValue = evt.newValue; weightValueLabel.text = evt.newValue.ToString("0.00"); });
             brushBody.Add(MixerUi.Setting("Weight", "What Draw and Replace paint toward", Pair(weightValueSlider, weightValueLabel), first: true));
-            weightRadiusSlider = new Slider(0f, 1f) { value = RadiusToSlider(MixerSceneTool.Radius) };
+            weightRadiusSlider = new Slider(0f, 1f) { value = MixerBrushTiles.RadiusToSlider(MixerSceneTool.Radius) };
             weightRadiusSlider.AddToClassList("mx-slider");
             weightRadiusValue = MixerUi.Text(MixerUi.Metres(MixerSceneTool.Radius), "mx-chip mx-chip__text");
-            weightRadiusSlider.RegisterValueChangedCallback(evt => { MixerSceneTool.Radius = SliderToRadius(evt.newValue); weightRadiusValue.text = MixerUi.Metres(MixerSceneTool.Radius); });
+            weightRadiusSlider.RegisterValueChangedCallback(evt => { MixerSceneTool.Radius = MixerBrushTiles.SliderToRadius(evt.newValue); weightRadiusValue.text = MixerUi.Metres(MixerSceneTool.Radius); });
             brushBody.Add(MixerUi.Setting("Radius", "Shared with the sculpt brushes", Pair(weightRadiusSlider, weightRadiusValue)));
             weightStrengthSlider = new Slider(0f, 1f) { value = MixerSceneTool.Strength };
             weightStrengthSlider.AddToClassList("mx-slider");
@@ -176,7 +171,7 @@ namespace Orbiters.Mixer.Editor
             foreach (var pair in weightTiles) pair.Value.EnableInClassList("mx-tile--on", MixerSceneTool.WeightKind == pair.Key && MixerSceneTool.Mode == MixerMode.Weights);
             if (Math.Abs(weightValueSlider.value - MixerSceneTool.WeightValue) > 1e-4f) weightValueSlider.SetValueWithoutNotify(MixerSceneTool.WeightValue);
             weightValueLabel.text = MixerSceneTool.WeightValue.ToString("0.00");
-            if (Math.Abs(weightRadiusSlider.value - RadiusToSlider(MixerSceneTool.Radius)) > 1e-4f) weightRadiusSlider.SetValueWithoutNotify(RadiusToSlider(MixerSceneTool.Radius));
+            if (Math.Abs(weightRadiusSlider.value - MixerBrushTiles.RadiusToSlider(MixerSceneTool.Radius)) > 1e-4f) weightRadiusSlider.SetValueWithoutNotify(MixerBrushTiles.RadiusToSlider(MixerSceneTool.Radius));
             weightRadiusValue.text = MixerUi.Metres(MixerSceneTool.Radius);
             if (Math.Abs(weightStrengthSlider.value - MixerSceneTool.Strength) > 1e-4f) weightStrengthSlider.SetValueWithoutNotify(MixerSceneTool.Strength);
             weightStrengthValue.text = MixerUi.Percent(MixerSceneTool.Strength);

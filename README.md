@@ -14,7 +14,8 @@ saved as a native mesh asset when you commit.
 - Shapes: rename, duplicate, mirror one side onto the other (right-click a shape chip), delete; all undoable.
 - Weight painting: Draw, Blur and Replace brushes on a bone (picked in the list or in the Scene view) or on a vertex
   group, with auto-normalize, a brush value, symmetry onto the mirror bone, the Toolkit's weight overlay coloured live,
-  and the weight under the cursor. Vertex groups are kept beside the committed mesh (`<mesh>.mixer.json`).
+  and the weight under the cursor. Weight Paint shows a bone's weights as soon as it is on: the bone picked last, else
+  the one weighing most on the mesh. Vertex groups are kept beside the committed mesh (`<mesh>.mixer.json`).
 - The Blender link: Mixer listens for the Mixer extension of Blender (installed by Mixer when you open a scene in
   Blender) and streams the whole scene (objects, lights, cameras, meshes with skin, shape keys and vertex groups,
   armatures from the bones); what you edit, sculpt or weight paint in Blender lands in Unity live and becomes one
@@ -39,10 +40,13 @@ saved as a native mesh asset when you commit.
 - An MCP tool `mixer_tool` for agents (see Agents).
 - `MixerLink`, a public facade for the other Orbiters tools: the link's state, Open scene in Blender, a renderer's Mixer state, Commit, Revert, Edit, keep out of Blender. MCB's creator mode uses it.
 - A tool can name the project file each renderer's mesh stands for (`MixerLink.TargetFbxResolver`): Blender gets it on the node as `targetFbx`, and the Mixer extension's **Export for MCB** writes one FBX per target with the manifest MCB imports. Status frames from Blender reach tools through `MixerLink.BlenderStatus`.
-- Mixer in the Scene view, like Blender: a **Mixer** toolbar overlay with the mode dropdown (Object Mode, Sculpt Mode,
-  Weight Paint, Edit Armature; entering a mode opens the selected mesh in Mixer) and Commit / Revert, and a **Mixer
-  brushes** overlay with the brushes and brush settings of the mode, shown while sculpting or weight painting. Nothing
-  needs the Mixer window any more.
+- Mixer in the Scene view, like Blender, made of Unity's own toolbar controls: a **Mixer** header beside Unity's Tools
+  with the mode dropdown (Object Mode, Sculpt Mode, Weight Paint, Edit Armature; entering a mode opens the selected mesh
+  in Mixer), the active brush, its settings as Blender's slider fields (Radius, Strength and Weight: press, drag or use
+  the wheel), the falloff with its curve, X symmetry, Normalize, Commit / Revert and the Mixer window; and a **Mixer
+  brushes** toolbar under Unity's Tools with a large picture of each brush (a cut through the surface showing what the
+  brush does to it, after Blender's tool icons), shown while sculpting or weight painting. Nothing needs the Mixer
+  window any more.
 - The Skinned Mesh Renderer inspector gains Blender's panels: **Shape keys** (the blendshapes with their values; New,
   Duplicate, Mirror, Rename by double-click, Delete, Sculpt a shape; Commit and Revert) and **Vertex groups** (the bones
   and Mixer's groups with Paint, which enters Weight paint on that channel).
@@ -61,7 +65,7 @@ saved as a native mesh asset when you commit.
   (a 89k-vertex body used to lose 4,368). Meshes also carry UV channels 1-7, vertex colours, in-between shape frames
   and bind poses. Blender rests the armature in the bind pose with Unity's bone orientations, and poses it where the
   scene has it. The Blender extension has to be the matching version (Open scene in Blender reinstalls it).
-- Requires Orbiters Toolkit 0.4.0, which now holds the XRay gizmos (bones, weight paint, mesh edges, avatar budget).
+- Requires Orbiters Toolkit 0.4.0, which now holds the avatar gizmos (bones, weight paint, mesh edges, avatar budget).
 
 ## Get started
 

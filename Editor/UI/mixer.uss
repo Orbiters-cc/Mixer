@@ -218,33 +218,63 @@
 .mx-popupfield > .unity-base-popup-field__input { flex-grow: 1; }
 .mx-popupfield .unity-base-popup-field__input { min-height: 26px; border-radius: 8px; background-color: var(--mx-field); border-color: var(--mx-field-border); color: #eaeaea; }
 
-/* ---- Scene view overlays: Blender's strips, no frame of their own ---- */
-.mx-strip { background-color: rgba(0, 0, 0, 0); }
-.mx-strip--grid { flex-direction: row; flex-wrap: wrap; width: 58px; padding: 1px; }
-.mx-tool { width: 26px; height: 26px; min-width: 26px; min-height: 26px; margin: 1px; padding: 0; border-width: 0; border-radius: 6px; justify-content: center; align-items: center; background-color: rgba(28, 30, 35, 0.78); }
-.mx-tool:hover { background-color: rgba(60, 62, 70, 0.92); }
-.mx-tool--on, .mx-tool--on:hover { background-color: rgba(0, 218, 109, 0.26); }
-.mx-tool__icon { width: 15px; height: 15px; --icon-color: #cfcfcf; }
-.mx-tool--on .mx-tool__icon { --icon-color: #3cf29a; }
-.mx-mode { height: 26px; margin: 1px; padding: 0 6px 0 4px; border-width: 0; border-radius: 6px; background-color: rgba(28, 30, 35, 0.78); color: #e0e0e0; }
-.mx-mode:hover { background-color: rgba(60, 62, 70, 0.92); }
-.mx-mode--on { color: #ffffff; -unity-font-style: bold; background-color: rgba(0, 218, 109, 0.22); }
-.mx-mode__icon { width: 14px; height: 14px; margin-right: 4px; --icon-color: #cfcfcf; }
-.mx-mode--on .mx-mode__icon { --icon-color: #3cf29a; }
-.mx-header { flex-direction: row; align-items: center; height: 28px; }
-.mx-header__field { flex-direction: row; align-items: center; height: 26px; margin: 1px; padding: 0 6px; border-radius: 6px; background-color: rgba(28, 30, 35, 0.78); }
-.mx-header__label { margin: 0 4px 0 0; padding: 0; font-size: 10px; color: #9f9f9f; }
-.mx-header__slider { width: 70px; margin: 0; }
-.mx-header__slider .unity-base-slider__tracker { height: 2px; margin-top: -1px; border-radius: 1px; background-color: #4a4d55; }
-.mx-header__slider .unity-base-slider__dragger { width: 10px; height: 10px; border-radius: 5px; margin-top: -4px; background-color: #3cf29a; border-width: 0; }
-.mx-header__value { min-width: 40px; margin: 0 0 0 4px; padding: 0; font-size: 10px; color: #e0e0e0; -unity-text-align: middle-right; }
-.mx-header__drop { height: 26px; margin: 1px; padding: 0 8px; border-width: 0; border-radius: 6px; font-size: 11px; color: #e0e0e0; background-color: rgba(28, 30, 35, 0.78); }
-.mx-header__drop:hover { background-color: rgba(60, 62, 70, 0.92); }
-.mx-header__drop.mx-tool--on { background-color: rgba(0, 218, 109, 0.26); color: #ffffff; }
-.mx-header__commit { background-color: rgba(0, 218, 109, 0.26); color: #ffffff; }
+/* ---- Scene view overlays: Unity's own toolbar look (20 px controls in #585858 with 2 px corners, the blue of a toggle
+   that is on, 16 px icons in #c4c4c4), Blender's slider fields as Unity's dark input fields with that blue as the fill,
+   and a toolbar of large brush pictures ---- */
+.mx-bar__icon { width: 16px; height: 16px; min-width: 16px; flex-shrink: 0; margin: 0; --icon-color: #c4c4c4; }
+.mx-bar--group { margin-left: 8px; }
+
+.mx-field {
+    flex-direction: row; align-items: center; justify-content: space-between; flex-shrink: 0;
+    width: 116px; height: 20px; min-height: 20px; margin: 0 2px; padding: 0 6px; overflow: hidden;
+    border-radius: 2px; background-color: #2a2a2a; cursor: slide-arrow;
+}
+.mx-field:hover { background-color: #323232; }
+.mx-field.mx-pressed { background-color: #363636; }
+.mx-field__fill { position: absolute; left: 0; top: 0; bottom: 0; background-color: #46607c; }
+.mx-field__name, .mx-field__value { margin: 0; padding: 0; font-size: 12px; color: #c4c4c4; white-space: nowrap; -unity-text-align: middle-left; }
+.mx-field__value { color: #eeeeee; -unity-text-align: middle-right; }
+
+.mx-brushes { flex-direction: column; flex-shrink: 0; }
+.mx-brushes--horizontal { flex-direction: row; }
+.mx-brush {
+    width: 32px; height: 32px; min-width: 32px; min-height: 32px; margin: 0 0 1px 0; padding: 0;
+    flex-direction: row; align-items: center; justify-content: center; flex-shrink: 0;
+    border-width: 0; border-radius: 0; background-color: #585858; background-image: none;
+}
+.mx-brushes--horizontal .mx-brush { margin: 0 1px 0 0; }
+.mx-brush:hover { background-color: #676767; }
+.mx-brush.mx-pressed { background-color: #6e6e6e; }
+.mx-brush--on, .mx-brush--on:hover, .mx-brush--on.mx-pressed { background-color: #46607c; }
+.mx-brush__icon { width: 24px; height: 24px; flex-shrink: 0; --icon-color: #c4c4c4; }
+.mx-brush--on .mx-brush__icon { --icon-color: #eeeeee; }
+.mx-brush__name { margin: 0 0 0 6px; padding: 0; font-size: 12px; color: #c4c4c4; -unity-text-align: middle-left; }
+.mx-brush--on .mx-brush__name { color: #eeeeee; }
+.mx-brushes--vertical .mx-brush--first { margin-top: 2px; border-top-left-radius: 3px; border-top-right-radius: 3px; }
+.mx-brushes--vertical .mx-brush--last { margin-bottom: 2px; border-bottom-left-radius: 3px; border-bottom-right-radius: 3px; }
+.mx-brushes--horizontal .mx-brush--first { border-top-left-radius: 3px; border-bottom-left-radius: 3px; }
+.mx-brushes--horizontal .mx-brush--last { margin-right: 0; border-top-right-radius: 3px; border-bottom-right-radius: 3px; }
+.mx-brushes--panel { width: 116px; padding: 2px 0; }
+.mx-brushes--panel .mx-brush { width: auto; height: 30px; min-height: 30px; padding: 0 8px 0 4px; justify-content: flex-start; }
+.mx-brushes--panel .mx-brush--first { border-top-left-radius: 3px; border-top-right-radius: 3px; }
+.mx-brushes--panel .mx-brush--last { margin-bottom: 0; border-bottom-left-radius: 3px; border-bottom-right-radius: 3px; }
+
+/* The same controls in Unity's light skin. */
+.mx-skin-light .mx-bar__icon, .mx-bar__icon.mx-skin-light { --icon-color: #555555; }
+.mx-field.mx-skin-light { background-color: #f0f0f0; }
+.mx-field.mx-skin-light:hover { background-color: #f7f7f7; }
+.mx-field.mx-skin-light.mx-pressed { background-color: #e8e8e8; }
+.mx-skin-light .mx-field__fill { background-color: #96c3fb; }
+.mx-skin-light .mx-field__name, .mx-skin-light .mx-field__value { color: #090909; }
+.mx-skin-light .mx-brush { background-color: #e4e4e4; }
+.mx-skin-light .mx-brush:hover { background-color: #ececec; }
+.mx-skin-light .mx-brush.mx-pressed { background-color: #d0d0d0; }
+.mx-skin-light .mx-brush--on, .mx-skin-light .mx-brush--on:hover { background-color: #96c3fb; }
+.mx-skin-light .mx-brush__icon, .mx-skin-light .mx-brush--on .mx-brush__icon { --icon-color: #3c3c3c; }
+.mx-skin-light .mx-brush__name, .mx-skin-light .mx-brush--on .mx-brush__name { color: #090909; }
 
 /* ---- Skinned Mesh Renderer inspector ---- */
-.mx-inspector, .mx-overlay { --mx-bar: #3b3b3b; --mx-surface: #303030; --mx-bg: #2b2b2b; --mx-card: #262626; --mx-hero: #1c1e23; --mx-sub: #2a2b30; --mx-field: #262626; --mx-field-border: rgba(0, 0, 0, 0.22); --mx-track: #2d2d2d; --mx-surface-3: #4d4d4d; --mx-surface-3-hover: #5a5a5a; --mx-hover: rgba(255, 255, 255, 0.045); --mx-press: rgba(255, 255, 255, 0.09); --mx-line: #262626; --mx-text: #e6e6e6; --mx-text-2: #a8a8a8; --mx-text-3: #7c7c7c; --mx-accent: #00da6d; --mx-accent-hover: #1ee57f; --mx-on-accent: #06140c; --mx-violet: #8a7dff; --mx-violet-text: #b9b1ff; --mx-warning: #f5b74f; --mx-error: #ff6b6b; }
+.mx-inspector { --mx-bar: #3b3b3b; --mx-surface: #303030; --mx-bg: #2b2b2b; --mx-card: #262626; --mx-hero: #1c1e23; --mx-sub: #2a2b30; --mx-field: #262626; --mx-field-border: rgba(0, 0, 0, 0.22); --mx-track: #2d2d2d; --mx-surface-3: #4d4d4d; --mx-surface-3-hover: #5a5a5a; --mx-hover: rgba(255, 255, 255, 0.045); --mx-press: rgba(255, 255, 255, 0.09); --mx-line: #262626; --mx-text: #e6e6e6; --mx-text-2: #a8a8a8; --mx-text-3: #7c7c7c; --mx-accent: #00da6d; --mx-accent-hover: #1ee57f; --mx-on-accent: #06140c; --mx-violet: #8a7dff; --mx-violet-text: #b9b1ff; --mx-warning: #f5b74f; --mx-error: #ff6b6b; }
 .mx-inspector { margin: 6px 0 4px 0; padding: 8px 10px 10px 10px; border-radius: 10px; background-color: rgba(0, 0, 0, 0.14); }
 .mx-inspector__head { flex-direction: row; align-items: center; margin-bottom: 6px; }
 .mx-inspector__title { flex-grow: 1; margin: 0; font-size: 11px; letter-spacing: 1px; color: #9a9a9a; -unity-font-style: bold; }

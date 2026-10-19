@@ -16,13 +16,17 @@ namespace Orbiters.Mixer.Editor.Tests
         private SkinnedMeshRenderer renderer;
         private Mesh mesh;
 
-        // Sessions open before the test (another tool's, the user's): left alone.
+        // Sessions open before the test (another tool's, the user's): left alone, with the mode and focus they had.
         private HashSet<EditTarget> targetsBefore;
+        private MixerMode modeBefore;
+        private EditTarget focusBefore;
 
         [SetUp]
         public void SetUp()
         {
             targetsBefore = new HashSet<EditTarget>(MixerSession.Targets);
+            modeBefore = MixerSceneTool.Mode;
+            focusBefore = MixerSceneTool.FocusTarget;
             scene = EditorSceneManager.NewPreviewScene();
             root = new GameObject("MixerWeightFixture");
             SceneManager.MoveGameObjectToScene(root, scene);
@@ -44,6 +48,8 @@ namespace Orbiters.Mixer.Editor.Tests
         {
             foreach (var t in MixerSession.Targets.ToList()) if (!targetsBefore.Contains(t)) MixerSession.Revert(t);
             MixerSceneTool.Mode = MixerMode.None;
+            MixerSceneTool.FocusTarget = focusBefore;
+            MixerSceneTool.Mode = modeBefore;
             if (root != null) Object.DestroyImmediate(root);
             EditorSceneManager.ClosePreviewScene(scene);
             AssetDatabase.DeleteAsset("Assets/Orbiters/MixerTests");
@@ -74,6 +80,21 @@ namespace Orbiters.Mixer.Editor.Tests
             var asset = MixerSession.Commit(target);
             var perVertex = asset.GetBonesPerVertex();
             Assert.That(perVertex[probe], Is.EqualTo(2), "the committed mesh keeps both bones on the painted vertex");
+        }
+
+        [Test]
+        public void WeightPaintShowsTheHeaviestBoneOnEntry()
+        {
+            var target = MixerSession.Edit(renderer);
+            MixerSceneTool.SetChannel(WeightChannel.None);
+            MixerSceneTool.FocusTarget = target;
+            MixerSceneTool.Mode = MixerMode.Weights;
+            int heaviest = Toolkit.Editor.XRay.XRayWeightPaintService.MostWeightedBone(renderer);
+            Assert.That(heaviest, Is.GreaterThanOrEqualTo(0));
+            Assert.That(MixerSceneTool.Channel.Bone, Is.EqualTo(heaviest), "a bone is picked when none was");
+            Assert.That(Toolkit.Editor.XRay.XRayWeightPaintService.ActiveRenderers, Has.Member(renderer), "its weights show on the mesh");
+            MixerSceneTool.Mode = MixerMode.None;
+            Assert.That(Toolkit.Editor.XRay.XRayWeightPaintService.ActiveRenderers, Has.No.Member(renderer), "leaving the mode hides them");
         }
 
         [Test]

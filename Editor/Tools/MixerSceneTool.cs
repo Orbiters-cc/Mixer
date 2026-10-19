@@ -84,6 +84,7 @@ namespace Orbiters.Mixer.Editor
                 if (mode == MixerMode.Weights)
                 {
                     previous?.ShowChannel(WeightChannel.None);
+                    EnsureChannel(FocusTarget);
                     FocusTarget?.ShowChannel(channel);
                     PinXRay();
                 }
@@ -318,19 +319,33 @@ namespace Orbiters.Mixer.Editor
             return s.End(false);
         }
 
-        // ---- Weights mode and the XRay gizmos ------------------------------------------------------------------------
+        // ---- Weights mode and the avatar gizmos ----------------------------------------------------------------------
 
         private static void EnterWeights()
         {
-            if (xrayPinnedByMixer) return;
-            xrayPinnedByMixer = true;
-            xrayWasEnabled = XRayGizmoService.Enabled;
-            xrayModeBefore = XRayGizmoService.TargetMode;
-            xrayPinnedBefore = XRayGizmoService.PinnedObject;
-            xrayPickingWasEnabled = XRayBonePickingService.Enabled;
-            PinXRay();
-            XRayBonePickingService.SetEnabled(true);
-            FocusTarget?.ShowChannel(channel);
+            if (!xrayPinnedByMixer)
+            {
+                xrayPinnedByMixer = true;
+                xrayWasEnabled = XRayGizmoService.Enabled;
+                xrayModeBefore = XRayGizmoService.TargetMode;
+                xrayPinnedBefore = XRayGizmoService.PinnedObject;
+                xrayPickingWasEnabled = XRayBonePickingService.Enabled;
+                PinXRay();
+                XRayBonePickingService.SetEnabled(true);
+            }
+            // From Armature mode too (the gizmos stay pinned): the weights show as soon as the mode is on.
+            EnsureChannel(FocusTarget ?? MixerSession.First);
+            (FocusTarget ?? MixerSession.First)?.ShowChannel(channel);
+        }
+
+        // Weights mode always shows a weight, as Blender's weight paint always shows a group: with none picked (or a bone
+        // the mesh does not have), the bone that weighs most on the mesh.
+        private static void EnsureChannel(EditTarget target)
+        {
+            if (mode != MixerMode.Weights || target == null || target.Skinned == null) return;
+            if (channel.IsGroup || (channel.Bone >= 0 && channel.Bone < target.Skinned.bones.Length)) return;
+            int bone = XRayWeightPaintService.MostWeightedBone(target.Skinned);
+            if (bone >= 0) channel = WeightChannel.OfBone(bone);
         }
 
         private static void PinXRay()

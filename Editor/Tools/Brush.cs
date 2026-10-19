@@ -33,7 +33,7 @@ namespace Orbiters.Mixer.Editor
     internal abstract class Brush
     {
         public abstract string Name { get; }
-        public abstract IconGlyph Icon { get; }
+        public abstract BrushGlyph Glyph { get; }
         public virtual string Description => "";
         /// <summary>True for brushes that keep the vertices they grabbed at the first step instead of what is under the cursor.</summary>
         public virtual bool Grabs => false;
@@ -91,7 +91,7 @@ namespace Orbiters.Mixer.Editor
     internal sealed class GrabBrush : Brush
     {
         public override string Name => "Grab";
-        public override IconGlyph Icon => IconGlyph.Person;
+        public override BrushGlyph Glyph => BrushGlyph.Grab;
         public override string Description => "Drag the surface along with the cursor.";
         public override bool Grabs => true;
 
@@ -105,7 +105,7 @@ namespace Orbiters.Mixer.Editor
     internal sealed class SmoothBrush : Brush
     {
         public override string Name => "Smooth";
-        public override IconGlyph Icon => IconGlyph.Broom;
+        public override BrushGlyph Glyph => BrushGlyph.Smooth;
         public override string Description => "Relax the surface toward the average of its neighbours.";
 
         public override void Step(BrushContext ctx, Vector3[] moves)
@@ -129,7 +129,7 @@ namespace Orbiters.Mixer.Editor
     internal sealed class InflateBrush : Brush
     {
         public override string Name => "Inflate";
-        public override IconGlyph Icon => IconGlyph.Sparkle;
+        public override BrushGlyph Glyph => BrushGlyph.Inflate;
         public override string Description => "Push the surface out along its normals; Ctrl pulls it in.";
 
         public override void Step(BrushContext ctx, Vector3[] moves)
@@ -142,7 +142,7 @@ namespace Orbiters.Mixer.Editor
     internal sealed class FlattenBrush : Brush
     {
         public override string Name => "Flatten";
-        public override IconGlyph Icon => IconGlyph.Grid;
+        public override BrushGlyph Glyph => BrushGlyph.Flatten;
         public override string Description => "Level the surface toward the plane under the brush.";
 
         public override void Step(BrushContext ctx, Vector3[] moves)
@@ -162,7 +162,7 @@ namespace Orbiters.Mixer.Editor
     internal sealed class ClayBrush : Brush
     {
         public override string Name => "Clay";
-        public override IconGlyph Icon => IconGlyph.Plus;
+        public override BrushGlyph Glyph => BrushGlyph.Clay;
         public override string Description => "Build the surface up to a plane just above it; Ctrl carves it down.";
 
         public override void Step(BrushContext ctx, Vector3[] moves)
@@ -184,7 +184,7 @@ namespace Orbiters.Mixer.Editor
     internal sealed class PinchBrush : Brush
     {
         public override string Name => "Pinch";
-        public override IconGlyph Icon => IconGlyph.Chevron;
+        public override BrushGlyph Glyph => BrushGlyph.Pinch;
         public override string Description => "Pull the surface toward the center of the brush; Ctrl spreads it.";
 
         public override void Step(BrushContext ctx, Vector3[] moves)
@@ -205,7 +205,7 @@ namespace Orbiters.Mixer.Editor
     internal sealed class CreaseBrush : Brush
     {
         public override string Name => "Crease";
-        public override IconGlyph Icon => IconGlyph.Sliders;
+        public override BrushGlyph Glyph => BrushGlyph.Crease;
         public override string Description => "Pinch the surface together and push it in, for a sharp fold; Ctrl raises a ridge.";
 
         public override void Step(BrushContext ctx, Vector3[] moves)
@@ -227,7 +227,7 @@ namespace Orbiters.Mixer.Editor
     internal sealed class MaskBrush : Brush
     {
         public override string Name => "Mask";
-        public override IconGlyph Icon => IconGlyph.Lock;
+        public override BrushGlyph Glyph => BrushGlyph.Mask;
         public override string Description => "Paint a mask: masked vertices stay still under the other brushes. Ctrl unmasks.";
         public override bool PaintsMask => true;
 
