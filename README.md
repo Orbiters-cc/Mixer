@@ -55,6 +55,12 @@ saved as a native mesh asset when you commit.
   map or L/R tokens (no painting the other side on an unmatched side bone); rest-pose editing carries every mesh of the
   rig; bind poses and the mask in the autosave; Prefab Mode refused and prefab writes keep the original mesh; the edited
   shape's own weight kept for saves, uploads and reloads.
+- Blender link protocol 2, for an Export for MCB that keeps the mesh whole. The link welds vertices only where Unity
+  split them for a UV seam or a hard edge: same place, normals less than 120° apart, same skin, same motion in every
+  shape frame. So double-sided cloth, closed lips and seams that open in a shape stay apart, and no face is left out
+  (a 89k-vertex body used to lose 4,368). Meshes also carry UV channels 1-7, vertex colours, in-between shape frames
+  and bind poses. Blender rests the armature in the bind pose with Unity's bone orientations, and poses it where the
+  scene has it. The Blender extension has to be the matching version (Open scene in Blender reinstalls it).
 - Requires Orbiters Toolkit 0.4.0, which now holds the XRay gizmos (bones, weight paint, mesh edges, avatar budget).
 
 ## Get started
@@ -88,6 +94,15 @@ arrives as a collection `Unity: <scene>`; skinned meshes get an armature built f
 - Right-click an object in the Mixer Hierarchy, Blender, **Keep out of Blender** to leave it (and its children) out
   of the project; **Send to Blender** puts it back. The exclusions are saved per scene under `Assets/Orbiters/Mixer/Link`.
 - Topology changes (vertices added or removed in Blender) are not applied by the link: export an FBX for those.
+- What Blender gets is the whole mesh:
+  - every face;
+  - UV channels 1-7 (`UVMap1`…);
+  - vertex colours (`Color`);
+  - in-between shape frames, as keys named `<shape> @<weight>`;
+  - an armature resting in the bind pose and posed like the scene.
+
+  **Export for MCB** folds the in-between keys back into frames of their shape in the FBX. Its manifest only warns
+  about what FBX cannot hold (UV components past two).
 - Development: EditorPrefs `Orbiters.Mixer.BlenderExtensionSource` (a folder with `blender_manifest.toml`) or
   `Orbiters.Mixer.BlenderExtensionZip` make Mixer install the extension from there instead of the release.
 

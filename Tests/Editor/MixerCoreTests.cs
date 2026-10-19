@@ -17,9 +17,13 @@ namespace Orbiters.Mixer.Editor.Tests
         private Mesh mesh;
         private string assetFolder;
 
+        // Sessions open before the test (another tool's, the user's): left alone.
+        private HashSet<EditTarget> targetsBefore;
+
         [SetUp]
         public void SetUp()
         {
+            targetsBefore = new HashSet<EditTarget>(MixerSession.Targets);
             scene = EditorSceneManager.NewPreviewScene();
             root = new GameObject("MixerFixture");
             SceneManager.MoveGameObjectToScene(root, scene);
@@ -40,8 +44,7 @@ namespace Orbiters.Mixer.Editor.Tests
         [TearDown]
         public void TearDown()
         {
-            foreach (var t in MixerSession.Targets.ToList()) MixerSession.Revert(t);
-            MixerHistory.Clear();
+            foreach (var t in MixerSession.Targets.ToList()) if (!targetsBefore.Contains(t)) MixerSession.Revert(t);
             if (root != null) Object.DestroyImmediate(root);
             EditorSceneManager.ClosePreviewScene(scene);
             AssetDatabase.DeleteAsset("Assets/Orbiters/MixerTests");
@@ -114,6 +117,7 @@ namespace Orbiters.Mixer.Editor.Tests
         public void UnitysUndoWalksMixersStrokes()
         {
             var target = MixerSession.Edit(renderer);
+            int countBefore = MixerHistory.Count, cursorBefore = MixerHistory.Cursor;
             var s0 = Snapshot(target);
             MixerSceneTool.StrokeBetween(target, Brushes.Named("Inflate"), new Vector3(0.3f, 0.5f, 0f), new Vector3(0.3f, 0.6f, 0f), 3, 0.2f, 1f, Vector3.forward);
             var s1 = Snapshot(target);
@@ -124,7 +128,7 @@ namespace Orbiters.Mixer.Editor.Tests
             Assert.That(MaxDistance(s0, s1), Is.GreaterThan(1e-4f));
             Assert.That(MaxDistance(s1, s2), Is.GreaterThan(1e-4f));
             Assert.That(MaxDistance(s2, s3), Is.GreaterThan(1e-4f));
-            Assert.That(MixerHistory.Count, Is.EqualTo(3));
+            Assert.That(MixerHistory.Count, Is.EqualTo(countBefore + 3));
             Assert.That(Undo.GetCurrentGroupName(), Does.Contain("Mixer:"));
 
             Undo.PerformUndo();
@@ -136,7 +140,7 @@ namespace Orbiters.Mixer.Editor.Tests
             Undo.PerformUndo();
             Undo.PerformUndo();
             Assert.That(MaxDistance(Snapshot(target), s0), Is.LessThan(1e-6f), "back at the start");
-            Assert.That(MixerHistory.Cursor, Is.EqualTo(0));
+            Assert.That(MixerHistory.Cursor, Is.EqualTo(cursorBefore));
             Undo.PerformRedo(); Undo.PerformRedo(); Undo.PerformRedo();
             Assert.That(MaxDistance(Snapshot(target), s3), Is.LessThan(1e-6f), "redo all the way");
         }

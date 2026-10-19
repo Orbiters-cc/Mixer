@@ -253,7 +253,16 @@ namespace Orbiters.Mixer.Editor
             BindPoses = original.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.BlendWeight) ? original.bindposes : new Matrix4x4[0];
         }
 
-        private static float WeldTolerance(Mesh mesh)
+        /// <summary>
+        /// The vertices as the Blender link welds them: by place, normal, skin and shape motion
+        /// (<see cref="MeshDataCodec.LinkWeld"/>), so sheets that only touch (double-sided cloth, closed lips, seams that
+        /// open in a shape) stay apart in Blender. Built from the original, so its indices hold through the session and
+        /// match what was sent before the mesh was opened in Mixer.
+        /// </summary>
+        public MeshNeighbors LinkWeld => linkWeld ?? (linkWeld = MeshDataCodec.LinkWeld(Original.vertices, Triangles, Original.normals, WeldTolerance(Original), MeshDataCodec.LinkWeldKeys(Original)));
+        private MeshNeighbors linkWeld;
+
+        internal static float WeldTolerance(Mesh mesh)
         {
             float size = mesh.bounds.size.magnitude;
             return Mathf.Max(1e-6f, size * 1e-6f);

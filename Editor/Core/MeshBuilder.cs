@@ -74,28 +74,51 @@ namespace Orbiters.Mixer.Editor
         /// </summary>
         private static void AddEdited(Mesh mesh, Mesh original, MeshDocument doc, ShapeLayer layer, Vector3[] weldedBase)
         {
-            int count = mesh.vertexCount;
-            int index = layer.IsNew ? -1 : original.GetBlendShapeIndex(layer.Name);
-            int frames = index >= 0 ? original.GetBlendShapeFrameCount(index) : 0;
-            if (frames <= 1)
+            foreach (var (weight, deltas) in FramesOf(doc, original, layer.Name))
+                mesh.AddBlendShapeFrame(layer.Name, weight, deltas, NormalDeltas(doc, deltas, weldedBase), null);
+        }
+
+        /// <summary>
+        /// Every frame of a shape (weight, deltas), first to last, as a commit makes it: the original's frames when the
+        /// shape was not edited, else the edited deltas as the last frame and the original's in-betweens moved by the
+        /// edit in proportion to their weight; a new shape is one frame at 100. Empty for an unknown shape.
+        /// </summary>
+        internal static List<(float weight, Vector3[] deltas)> FramesOf(MeshDocument doc, Mesh original, string name)
+        {
+            var frames = new List<(float, Vector3[])>();
+            doc.ShapeEdits.TryGetValue(name, out var layer);
+            int index = layer != null && layer.IsNew ? -1 : original.GetBlendShapeIndex(name);
+            int count = index >= 0 ? original.GetBlendShapeFrameCount(index) : 0;
+            bool edited = layer != null && (layer.Edited || layer.IsNew);
+            if (!edited)
             {
-                float weight = frames == 1 ? original.GetBlendShapeFrameWeight(index, 0) : 100f;
-                mesh.AddBlendShapeFrame(layer.Name, weight, layer.Deltas, NormalDeltas(doc, layer.Deltas, weldedBase), null);
-                return;
+                for (int f = 0; f < count; f++)
+                {
+                    var deltas = new Vector3[doc.VertexCount];
+                    original.GetBlendShapeFrameVertices(index, f, deltas, null, null);
+                    frames.Add((original.GetBlendShapeFrameWeight(index, f), deltas));
+                }
+                return frames;
             }
-            var last = new Vector3[count];
-            original.GetBlendShapeFrameVertices(index, frames - 1, last, null, null);
-            float lastWeight = original.GetBlendShapeFrameWeight(index, frames - 1);
-            var frame = new Vector3[count];
-            for (int f = 0; f < frames; f++)
+            if (count <= 1)
+            {
+                frames.Add((count == 1 ? original.GetBlendShapeFrameWeight(index, 0) : 100f, layer.Deltas));
+                return frames;
+            }
+            var last = new Vector3[doc.VertexCount];
+            original.GetBlendShapeFrameVertices(index, count - 1, last, null, null);
+            float lastWeight = original.GetBlendShapeFrameWeight(index, count - 1);
+            for (int f = 0; f < count - 1; f++)
             {
                 float weight = original.GetBlendShapeFrameWeight(index, f);
-                if (f == frames - 1) { mesh.AddBlendShapeFrame(layer.Name, weight, layer.Deltas, NormalDeltas(doc, layer.Deltas, weldedBase), null); break; }
+                var frame = new Vector3[doc.VertexCount];
                 original.GetBlendShapeFrameVertices(index, f, frame, null, null);
                 float share = Mathf.Abs(lastWeight) > 1e-6f ? weight / lastWeight : 0f;
-                for (int v = 0; v < count; v++) frame[v] += (layer.Deltas[v] - last[v]) * share;
-                mesh.AddBlendShapeFrame(layer.Name, weight, frame, NormalDeltas(doc, frame, weldedBase), null);
+                for (int v = 0; v < frame.Length; v++) frame[v] += (layer.Deltas[v] - last[v]) * share;
+                frames.Add((weight, frame));
             }
+            frames.Add((lastWeight, layer.Deltas));
+            return frames;
         }
 
         /// <summary>

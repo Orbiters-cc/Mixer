@@ -404,7 +404,7 @@ namespace Orbiters.Mixer.Editor
         {
             if (!Connected || target == null || channel.IsNone) return;
             var doc = target.Document;
-            var n = doc.Neighbors;
+            var n = doc.LinkWeld;
             string name = channel.IsGroup ? channel.Group : WeightStroke.BoneName(target, channel.Bone);
             var indices = new List<int>(); var weights = new List<float>();
             var seen = new HashSet<int>();
@@ -447,7 +447,7 @@ namespace Orbiters.Mixer.Editor
                     positionsDue.Remove(pair.Key);
                     var target = MixerSession.Targets.FirstOrDefault(t => t.Id == pair.Key);
                     if (target == null || !target.Alive) continue;
-                    var n = target.Document.Neighbors;
+                    var n = target.Document.LinkWeld;
                     var positions = new Vector3[n.WeldedCount];
                     for (int w = 0; w < positions.Length; w++) positions[w] = target.Document.LayerPosition(n.Representative[w]);
                     Send(MixerLinkProtocol.FrameType.Positions, MeshDataCodec.EncodePositions(MeshIdOf(target.Renderer), target.Document.Layer, positions));

@@ -9,14 +9,15 @@ namespace Orbiters.Mixer.Editor
 {
     /// <summary>
     /// The wire between Mixer and its Blender extension: TCP on 127.0.0.1, frames of Toolkit's <see cref="LiveLinkFormat"/>
-    /// (magic "MIXR", version 1, type, token, payload). Blender finds the port and token in
+    /// (magic "MIXR", version 2, type, token, payload; version 2: mesh payloads end with tagged sections and the link
+    /// welds by place and normal). Blender finds the port and token in
     /// <c>%LOCALAPPDATA%\Orbiters\Mixer\unity-&lt;pid&gt;.json</c>. JSON payloads are UTF-8; mesh payloads are binary,
     /// little-endian, described on <see cref="MeshDataCodec"/>. Coordinates travel in Unity's space; Blender converts.
     /// </summary>
     internal static class MixerLinkProtocol
     {
         public const uint Magic = 0x5258494D; // "MIXR"
-        public const byte Version = 1;
+        public const byte Version = 2;
         public const int MaxPayloadBytes = 64 * 1024 * 1024;
         public const string EndpointKind = "orbiters.mixer.link";
 
@@ -41,7 +42,7 @@ namespace Orbiters.Mixer.Editor
 
         public static readonly LiveLinkFormat Format = new LiveLinkFormat(Magic, Version, MaxPayloadBytes, type => type >= 1 && type <= 15);
 
-        public sealed class Hello { public string blender; public string extension; public string blendPath; public string sceneGuid; }
+        public sealed class Hello { public string blender; public string extension; public string blendPath; public string sceneGuid; public int protocolVersion; }
         public sealed class Welcome { public string unity; public string mixer; public string projectPath; public string sceneGuid; public string sceneName; public int protocolVersion = Version; }
         public sealed class Ownership { public string id; public string side; }
         public sealed class StatusMessage { public string id; public string message; public string level = "info"; }

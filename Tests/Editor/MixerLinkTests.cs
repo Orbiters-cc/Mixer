@@ -20,10 +20,13 @@ namespace Orbiters.Mixer.Editor.Tests
         private GameObject root;
         private SkinnedMeshRenderer renderer;
         private Mesh mesh;
+        // Sessions open before the test (another tool's, the user's): left alone.
+        private HashSet<EditTarget> targetsBefore;
 
         [SetUp]
         public void SetUp()
         {
+            targetsBefore = new HashSet<EditTarget>(MixerSession.Targets);
             scene = EditorSceneManager.NewPreviewScene();
             root = new GameObject("LinkFixture");
             SceneManager.MoveGameObjectToScene(root, scene);
@@ -43,8 +46,7 @@ namespace Orbiters.Mixer.Editor.Tests
         [TearDown]
         public void TearDown()
         {
-            foreach (var t in MixerSession.Targets.ToList()) MixerSession.Revert(t);
-            MixerHistory.Clear();
+            foreach (var t in MixerSession.Targets.ToList()) if (!targetsBefore.Contains(t)) MixerSession.Revert(t);
             if (root != null) UnityEngine.Object.DestroyImmediate(root);
             EditorSceneManager.ClosePreviewScene(scene);
             AssetDatabase.DeleteAsset("Assets/Orbiters/MixerTests");
@@ -79,7 +81,7 @@ namespace Orbiters.Mixer.Editor.Tests
             var target = MixerSession.Edit(renderer);
             var payload = MeshDataCodec.Encode("mesh", target);
             var decoded = MeshDataCodec.Decode(payload);
-            var n = target.Document.Neighbors;
+            var n = target.Document.LinkWeld;
             Assert.That(decoded.Vertices.Length, Is.EqualTo(n.WeldedCount), "welded: the seam column is one vertex");
             Assert.That(decoded.Vertices.Length, Is.LessThan(mesh.vertexCount));
             Assert.That(decoded.CornerVertex.Length, Is.EqualTo(mesh.triangles.Length));
@@ -94,6 +96,96 @@ namespace Orbiters.Mixer.Editor.Tests
             Assert.That(positions.Shape, Is.EqualTo("Wide"));
             Assert.That(positions.Positions.Length, Is.EqualTo(decoded.Vertices.Length));
             Assert.That(MeshDataCodec.PeekId(payload), Is.EqualTo("mesh"));
+        }
+
+        // A double-sided sheet (front and back at the same places, facing apart) with a second UV channel of three
+        // components (channel 1 empty), vertex colours, a shape with an in-between frame, and two bones' bind poses.
+        [Test]
+        public void MeshDataCarriesUvsColoursFramesAndBindPosesAndKeepsSheetsApart()
+        {
+            var sheet = new Mesh { name = "Sheet" };
+            var places = new[] { new Vector3(0, 0, 0), new Vector3(1, 0, 0), new Vector3(0, 1, 0), new Vector3(1, 1, 0) };
+            sheet.vertices = places.Concat(places).ToArray();
+            sheet.normals = Enumerable.Repeat(Vector3.back, 4).Concat(Enumerable.Repeat(Vector3.forward, 4)).ToArray();
+            sheet.triangles = new[] { 0, 2, 1, 1, 2, 3, 4, 5, 6, 5, 7, 6 };
+            sheet.SetUVs(0, sheet.vertices.Select(v => new Vector2(v.x, v.y)).ToList());
+            var uv2 = Enumerable.Range(0, 8).Select(i => new Vector3(i, i * 0.5f, i * 0.25f)).ToList();
+            sheet.SetUVs(2, uv2);
+            var colors = Enumerable.Range(0, 8).Select(i => new Color32((byte)(i * 30), (byte)(255 - i), 7, 200)).ToArray();
+            sheet.colors32 = colors;
+            sheet.boneWeights = Enumerable.Range(0, 8).Select(i => new BoneWeight { boneIndex0 = i % 2, weight0 = 1f }).ToArray();
+            var poses = new[] { Matrix4x4.identity, Matrix4x4.TRS(new Vector3(0, -1, 0), Quaternion.Euler(0, 0, 30), Vector3.one) };
+            sheet.bindposes = poses;
+            var full = new Vector3[8]; var half = new Vector3[8];
+            for (int v = 0; v < 8; v++) if (sheet.vertices[v].y > 0.5f) { full[v] = Vector3.up * 0.4f; half[v] = Vector3.up * 0.1f; }
+            sheet.AddBlendShapeFrame("Lift", 50f, half, null, null);
+            sheet.AddBlendShapeFrame("Lift", 100f, full, null, null);
+            AssetDatabase.CreateAsset(sheet, "Assets/Orbiters/MixerTests/Sheet.asset");
+            var go = new GameObject("Sheet"); go.transform.SetParent(root.transform, false);
+            var sheetRenderer = go.AddComponent<SkinnedMeshRenderer>();
+            sheetRenderer.sharedMesh = sheet;
+            sheetRenderer.bones = renderer.bones;
+
+            var fromAsset = MeshDataCodec.Decode(MeshDataCodec.Encode("sheet", sheet, sheetRenderer));
+            var target = MixerSession.Edit(sheetRenderer);
+            var fromDocument = MeshDataCodec.Decode(MeshDataCodec.Encode("sheet", target));
+            foreach (var decoded in new[] { fromAsset, fromDocument })
+            {
+                Assert.That(decoded.Vertices.Length, Is.EqualTo(8), "front and back stay two sheets: no face is a duplicate");
+                Assert.That(decoded.CornerUvs.Keys, Is.EqualTo(new[] { 2 }), "only the channels the mesh has");
+                var (dimension, values) = decoded.CornerUvs[2];
+                Assert.That(dimension, Is.EqualTo(3));
+                for (int corner = 0; corner < sheet.triangles.Length; corner++)
+                {
+                    var expected = uv2[sheet.triangles[corner]];
+                    Assert.That(new Vector3(values[corner * 3], values[corner * 3 + 1], values[corner * 3 + 2]), Is.EqualTo(expected));
+                    var c = colors[sheet.triangles[corner]];
+                    Assert.That(decoded.CornerColors.Skip(corner * 4).Take(4).ToArray(), Is.EqualTo(new[] { c.r, c.g, c.b, c.a }));
+                }
+                Assert.That(decoded.Shapes.Single().name, Is.EqualTo("Lift"));
+                var (weight, inBetweens) = decoded.ShapeFrames[0];
+                Assert.That(weight, Is.EqualTo(100f));
+                Assert.That(inBetweens.Count, Is.EqualTo(1));
+                Assert.That(inBetweens[0].Weight, Is.EqualTo(50f));
+                Assert.That(inBetweens[0].Deltas.All(d => d == Vector3.up * 0.1f), Is.True);
+                Assert.That(inBetweens[0].Indices.Length, Is.EqualTo(4), "the top two places of both sheets");
+                Assert.That(decoded.BindPoses, Is.EqualTo(poses));
+            }
+            Assert.That(MeshDataCodec.IsInBetweenKey("Lift @50"), Is.True);
+            Assert.That(MeshDataCodec.IsInBetweenKey("Lift @12.5"), Is.True);
+            Assert.That(MeshDataCodec.IsInBetweenKey("Lift"), Is.False);
+            Assert.That(MeshDataCodec.IsInBetweenKey("me @home"), Is.False);
+        }
+
+        // Two quads meeting on a row of split vertices (same places, normals and skin). When a shape opens the seam (moves
+        // the two rows apart) they stay two rows in Blender; when every shape moves them alike (a UV seam) they weld.
+        [Test]
+        public void ASeamThatOpensInAShapeStaysTwoRowsAndAUvSeamWelds()
+        {
+            foreach (bool opens in new[] { true, false })
+            {
+                var strip = new Mesh { name = opens ? "Zipper" : "UvSeam" };
+                strip.vertices = new[]
+                {
+                    new Vector3(0, 0, 0), new Vector3(1, 0, 0), new Vector3(0, 1, 0), new Vector3(1, 1, 0),   // lower quad
+                    new Vector3(0, 1, 0), new Vector3(1, 1, 0), new Vector3(0, 2, 0), new Vector3(1, 2, 0),   // upper quad
+                };
+                strip.normals = Enumerable.Repeat(Vector3.back, 8).ToArray();
+                strip.triangles = new[] { 0, 2, 1, 1, 2, 3, 4, 6, 5, 5, 6, 7 };
+                strip.boneWeights = Enumerable.Repeat(new BoneWeight { boneIndex0 = 0, weight0 = 1f }, 8).ToArray();
+                strip.bindposes = new[] { Matrix4x4.identity, Matrix4x4.identity };
+                var deltas = new Vector3[8];
+                deltas[2] = deltas[3] = Vector3.down * 0.1f;
+                deltas[4] = deltas[5] = opens ? Vector3.up * 0.1f : Vector3.down * 0.1f;
+                strip.AddBlendShapeFrame("Open", 100f, deltas, null, null);
+                var go = new GameObject(strip.name); go.transform.SetParent(root.transform, false);
+                var stripRenderer = go.AddComponent<SkinnedMeshRenderer>();
+                stripRenderer.sharedMesh = strip;
+                stripRenderer.bones = renderer.bones;
+                var decoded = MeshDataCodec.Decode(MeshDataCodec.Encode(strip.name, strip, stripRenderer));
+                Assert.That(decoded.Vertices.Length, Is.EqualTo(opens ? 8 : 6), opens ? "the seam that opens keeps both rows" : "the UV seam welds");
+                UnityEngine.Object.DestroyImmediate(strip);
+            }
         }
 
         [Test]
@@ -126,7 +218,7 @@ namespace Orbiters.Mixer.Editor.Tests
                 var target = MixerSession.TargetOf(renderer);
                 Assert.That(target, Is.Not.Null, "a claim starts editing the renderer");
                 Assert.That(MixerLinkService.IsBlenderOwned(target), Is.True);
-                var n = target.Document.Neighbors;
+                var n = target.Document.LinkWeld;
                 var positions = new Vector3[n.WeldedCount];
                 for (int w = 0; w < positions.Length; w++) positions[w] = target.Document.Positions[n.Representative[w]] + Vector3.up * 0.1f;
                 string meshId = MixerLinkService.MeshIdOf(renderer);

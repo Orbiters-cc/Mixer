@@ -60,7 +60,7 @@ namespace Orbiters.Mixer.Editor
             foreach (var target in TargetsOfMesh(frame.Id))
             {
                 var doc = target.Document;
-                var n = doc.Neighbors;
+                var n = doc.LinkWeld;
                 if (frame.Positions.Length != n.WeldedCount)
                 {
                     MixerLinkService.Status(target.Id, "Blender's mesh has " + frame.Positions.Length + " vertices, Unity's " + n.WeldedCount + ": the topology changed, which the link does not apply yet. Commit the mesh in Blender and export it as FBX instead.", "error");
@@ -95,7 +95,7 @@ namespace Orbiters.Mixer.Editor
             foreach (var target in TargetsOfMesh(data.Id))
             {
                 var doc = target.Document;
-                var n = doc.Neighbors;
+                var n = doc.LinkWeld;
                 if (data.Vertices.Length != n.WeldedCount)
                 {
                     MixerLinkService.Status(target.Id, "Blender's mesh has " + data.Vertices.Length + " vertices, Unity's " + n.WeldedCount + ": the topology changed, which the link does not apply yet.", "error");
@@ -105,6 +105,8 @@ namespace Orbiters.Mixer.Editor
                 // Shapes: each known shape's deltas, new shapes created.
                 foreach (var (name, indices, deltas) in data.Shapes)
                 {
+                    // Blender's in-between keys ("Smile @50") stand for frames of a shape, not shapes of their own.
+                    if (MeshDataCodec.IsInBetweenKey(name)) continue;
                     var layer = doc.Shape(name, create: true);
                     var full = new Vector3[n.WeldedCount];
                     for (int i = 0; i < indices.Length; i++) if (indices[i] >= 0 && indices[i] < full.Length) full[indices[i]] = deltas[i];
@@ -188,7 +190,7 @@ namespace Orbiters.Mixer.Editor
             foreach (var target in TargetsOfMesh(frame.Id))
             {
                 var doc = target.Document;
-                var n = doc.Neighbors;
+                var n = doc.LinkWeld;
                 var edit = EditOf(target);
                 if (frame.IsGroup)
                 {

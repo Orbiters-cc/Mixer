@@ -16,9 +16,13 @@ namespace Orbiters.Mixer.Editor.Tests
         private SkinnedMeshRenderer renderer;
         private Mesh mesh;
 
+        // Sessions open before the test (another tool's, the user's): left alone.
+        private HashSet<EditTarget> targetsBefore;
+
         [SetUp]
         public void SetUp()
         {
+            targetsBefore = new HashSet<EditTarget>(MixerSession.Targets);
             scene = EditorSceneManager.NewPreviewScene();
             root = new GameObject("MixerWeightFixture");
             SceneManager.MoveGameObjectToScene(root, scene);
@@ -38,8 +42,7 @@ namespace Orbiters.Mixer.Editor.Tests
         [TearDown]
         public void TearDown()
         {
-            foreach (var t in MixerSession.Targets.ToList()) MixerSession.Revert(t);
-            MixerHistory.Clear();
+            foreach (var t in MixerSession.Targets.ToList()) if (!targetsBefore.Contains(t)) MixerSession.Revert(t);
             MixerSceneTool.Mode = MixerMode.None;
             if (root != null) Object.DestroyImmediate(root);
             EditorSceneManager.ClosePreviewScene(scene);
