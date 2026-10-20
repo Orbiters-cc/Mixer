@@ -1,0 +1,126 @@
+// Back-to-front order of a splat cloud for one camera: depth keys, then a bitonic sort of (key, index) pairs over a
+// power-of-two count (padding sorts last). Blocks of 512 sort in shared memory; longer merges go through memory.
+
+#pragma kernel CalcKeys
+#pragma kernel SortLocal
+#pragma kernel MergeGlobal
+#pragma kernel MergeLocal
+
+struct Splat
+{
+    float3 position;
+    uint color;
+    float3 cov0;
+    float3 cov1;
+};
+
+StructuredBuffer<Splat> _Splats;
+RWStructuredBuffer<uint> _Keys;
+RWStructuredBuffer<uint> _Values;
+uint _Count;
+uint _PaddedCount;
+uint _K;
+uint _J;
+float4x4 _ObjectToWorld;
+// Third row of the camera's world-to-view matrix (Unity's view space looks down -Z).
+float4 _ViewRow2;
+
+[numthreads(256, 1, 1)]
+void CalcKeys(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    if (i >= _PaddedCount)
+        return;
+    uint key = 0xffffffffu;
+    if (i < _Count)
+    {
+        float3 world = mul(_ObjectToWorld, float4(_Splats[i].position, 1.0)).xyz;
+        float depth = -(dot(_ViewRow2.xyz, world) + _ViewRow2.w);
+        // Far first: larger depths get smaller keys (positive floats order like their bits).
+        key = ~asuint(max(depth, 0.0));
+    }
+    _Keys[i] = key;
+    _Values[i] = i;
+}
+
+groupshared uint2 s_pairs[512];
+
+void SwapShared(uint a, uint b, bool ascending)
+{
+    uint2 x = s_pairs[a];
+    uint2 y = s_pairs[b];
+    if ((x.x > y.x) == ascending)
+    {
+        s_pairs[a] = y;
+        s_pairs[b] = x;
+    }
+}
+
+void Load(uint base, uint gi)
+{
+    s_pairs[gi] = uint2(_Keys[base + gi], _Values[base + gi]);
+    s_pairs[gi + 256] = uint2(_Keys[base + gi + 256], _Values[base + gi + 256]);
+    GroupMemoryBarrierWithGroupSync();
+}
+
+void Store(uint base, uint gi)
+{
+    _Keys[base + gi] = s_pairs[gi].x;
+    _Values[base + gi] = s_pairs[gi].y;
+    _Keys[base + gi + 256] = s_pairs[gi + 256].x;
+    _Values[base + gi + 256] = s_pairs[gi + 256].y;
+}
+
+// Every stage up to blocks of 512.
+[numthreads(256, 1, 1)]
+void SortLocal(uint3 group : SV_GroupID, uint gi : SV_GroupIndex)
+{
+    uint base = group.x * 512;
+    Load(base, gi);
+    for (uint k = 2; k <= 512; k <<= 1)
+    {
+        for (uint j = k >> 1; j > 0; j >>= 1)
+        {
+            uint i = ((gi & ~(j - 1)) << 1) | (gi & (j - 1));
+            SwapShared(i, i | j, ((base + i) & k) == 0);
+            GroupMemoryBarrierWithGroupSync();
+        }
+    }
+    Store(base, gi);
+}
+
+// One step of stage _K at distance _J ≥ 512.
+[numthreads(256, 1, 1)]
+void MergeGlobal(uint3 id : SV_DispatchThreadID)
+{
+    uint t = id.x;
+    if (t >= _PaddedCount / 2)
+        return;
+    uint i = ((t & ~(_J - 1)) << 1) | (t & (_J - 1));
+    uint p = i | _J;
+    uint a = _Keys[i];
+    uint b = _Keys[p];
+    if ((a > b) == ((i & _K) == 0))
+    {
+        _Keys[i] = b;
+        _Keys[p] = a;
+        uint v = _Values[i];
+        _Values[i] = _Values[p];
+        _Values[p] = v;
+    }
+}
+
+// The steps of stage _K at distances under 512.
+[numthreads(256, 1, 1)]
+void MergeLocal(uint3 group : SV_GroupID, uint gi : SV_GroupIndex)
+{
+    uint base = group.x * 512;
+    Load(base, gi);
+    for (uint j = 256; j > 0; j >>= 1)
+    {
+        uint i = ((gi & ~(j - 1)) << 1) | (gi & (j - 1));
+        SwapShared(i, i | j, ((base + i) & _K) == 0);
+        GroupMemoryBarrierWithGroupSync();
+    }
+    Store(base, gi);
+}

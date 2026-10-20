@@ -1,0 +1,11 @@
+{
+  "name": "Orbiters.Mixer.Splats.Editor",
+  "rootNamespace": "Orbiters.Mixer.Editor.Splats",
+  "references": [
+    "Orbiters.Mixer.Splats"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "autoReferenced": false
+}
