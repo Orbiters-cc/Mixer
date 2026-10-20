@@ -198,6 +198,41 @@ saved as a native mesh asset when you commit.
   Unity's Assets menu on the context menu (Import, Export Package, Find References, Select Dependencies, Properties,
   other tools' items); Copy and Paste of assets; typing the start of a name to jump to it.
 - The Mixer Hierarchy no longer shows a "mixer" badge on meshes being edited.
+- Review fixes (2026-10-20):
+  - Mixer Project: "+ › C# Script" (or Assembly Definition) takes the name you give it, class included, so a second one
+    no longer breaks compilation. The create menu moves only what its item made, never files saved elsewhere meanwhile.
+    Japanese and other non-ASCII names are found inside assets, so their blendshapes no longer read as used by nothing.
+    A .unitypackage dropped from Explorer is imported; project files dragged from Explorer move instead of being copied.
+    A folder pasted onto itself goes beside it. Delete, Duplicate and Copy act only on what the open folder or search
+    shows. The Edit menu's Delete, Duplicate, Select All and Find work in the window. Scene objects dropped as prefabs
+    ask for an original prefab or a variant, as Unity does. A regular expression that is too slow stops at once and
+    turns the field red.
+  - Mixer Hierarchy: a row's picture never destroys the mesh Mixer is editing; pictures are kept for the session only
+    and freed when they change. Shift+arrows grow a range. Reordering under the same parent is undoable. Double-clicks on
+    a row's switches and light ball stay theirs. VRChat ranks update only after changes to that avatar; lookups that
+    failed are retried later and later, and an avatar whose blueprint ID is another account's upload says so.
+  - Sculpt and paint: a stroke whose release is lost ends instead of sculpting on its own. A held brush works only
+    while the pointer stays still (slow drags follow the brush spacing) and aims from the camera as it is now. Undo
+    during a held stroke puts that stroke back first. My Avatar's estimate waits only during strokes and shortly after.
+  - Data safety: Ctrl+Z after committing rest-pose edits shows the original on its own rest pose; a Revert can no
+    longer be partly undone into a deformed avatar; a duplicated shape starts at 0; undone edits are no longer brought
+    back by the crash autosave.
+  - Blender: the link waits while Unity is in Play mode (Blender keeps the edit-mode scene and links again when Play
+    ends; Render and Open scene in Blender ask you to stop Play first). Each scene's .blend is under its scene's GUID, so
+    two scenes with the same name no longer share a file. Shapes and groups you change in Mixer while Blender holds the
+    mesh reach Blender when it lets go; a shape added just as Blender takes the mesh is no longer deleted by Blender's
+    release, and a deleted shape is no longer brought back by Blender's live edits. Renders without a linked Blender
+    work for unsaved scenes and say when the installed extension is too old. The `mixer_tool` commit fails when Blender
+    holds the mesh or nothing was committed.
+  - Splats: **Import Splats…** is now **Tools > Orbiters > Mixer Splats…**. Imports work in a new project; PLYs Mixer
+    cannot read are refused before they are copied, broken splats are skipped, and clouds over 8,388,608 splats are
+    refused. Splats no longer draw in Prefab Mode, inspector previews or other tools' renders. Send to Mixer only takes
+    sessions on this computer's own drives.
+  - Performance bakes: the last pose holds through gaps instead of jumping to the origin, and without foot trackers the
+    feet follow the body when you walk. An old T-pose calibration no longer overrides VRChat's own head and hand poses.
+    Short button presses, Random parameter drivers and the sil viseme behave as in VRChat. Bakes of sessions still
+    recording, or where the avatar changed, say what is missing. Long audio tracks are streamed, so hour-long sessions
+    keep their sound.
 - Requires Orbiters Toolkit 0.4.1, which holds the avatar gizmos (bones, weight paint, mesh edges, avatar budget) and
   lets Mixer take the armature overlay's bone clicks.
 
@@ -221,7 +256,7 @@ a new shape and sculpt it; pick an existing shape to edit its deltas. While a sh
 ## Blender
 
 Press the Blender pill in Mixer's header and **Open scene in Blender**: Blender starts on the scene's project
-(`Assets/Orbiters/Mixer/Blender/<scene>/blend~/<scene>.blend`, a folder Unity never imports), installs or updates the
+(`Assets/Orbiters/Mixer/Blender/<scene GUID>/blend~/<scene>.blend`, a folder Unity never imports), installs or updates the
 Mixer extension and connects to the editor through the endpoint file in `%LOCALAPPDATA%/Orbiters/Mixer`. The scene
 arrives as a collection `Unity: <scene>`; skinned meshes get an armature built from their bones.
 
@@ -298,7 +333,7 @@ and renders it (the Mixer extension must have been installed once with **Open sc
 
 Gaussian splats that Orbiters desktop reconstructed from a VRChat session show in the Scene and Game views, where the
 world was captured. In Orbiters desktop, **Send to Mixer** in a reconstructed session's detail sends them to the Unity
-editor running Mixer; in Unity, **Tools > Orbiters > Mixer > Import Splats…** picks a session's
+editor running Mixer; in Unity, **Tools > Orbiters > Mixer Splats…** picks a session's
 `reconstruction/splats.ply`. Either way the PLY is copied to `Assets/Orbiters/Splats/<session>.splats` (imported by
 Mixer as a splat cloud), and an EditorOnly **Splat Renderer** object (left out of builds) is added to the open scene,
 selected and framed.
