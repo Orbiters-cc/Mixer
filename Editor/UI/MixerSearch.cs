@@ -9,7 +9,8 @@ namespace Orbiters.Mixer.Editor
     /// <summary>
     /// Match case ("Aa") and regular expression (".*") switches at the end of a Mixer search field, as in the Logger's,
     /// before any other buttons the field holds (the Hierarchy's and the Project's Filter). The switches are kept per field
-    /// in EditorPrefs. An invalid expression turns the field red, the reason in its tooltip, and searches nothing out.
+    /// in EditorPrefs. An invalid expression turns the field red, the reason in its tooltip, and searches nothing out; so
+    /// does one found too slow while searching (<see cref="ShowState"/> after a search).
     /// </summary>
     internal sealed class MixerSearch
     {
@@ -55,10 +56,17 @@ namespace Orbiters.Mixer.Editor
             if (!pattern.SameAs(text, Regex, MatchCase))
             {
                 pattern = new SearchPattern(text, Regex, MatchCase);
-                field.EnableInClassList("mx-search--error", pattern.Error != null);
-                field.tooltip = pattern.Error != null ? "Invalid regular expression: " + pattern.Error : baseTooltip;
+                ShowState();
             }
             return pattern;
+        }
+
+        /// <summary>Shows on the field whether its expression is invalid or was found too slow (after a search ran).</summary>
+        public void ShowState()
+        {
+            bool wrong = pattern.Error != null || pattern.TooSlow;
+            field.EnableInClassList("mx-search--error", wrong);
+            field.tooltip = pattern.Error != null ? "Invalid regular expression: " + pattern.Error : pattern.TooSlow ? SearchPattern.TooSlowMessage : baseTooltip;
         }
 
         /// <summary>Sets the switches (a saved search, a label added from a menu), without calling back.</summary>

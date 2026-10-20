@@ -46,7 +46,11 @@ namespace Orbiters.Mixer.Editor
         // Not kept across a script reload (Unity keeps a window's private fields): the rows must be built again first.
         [NonSerialized] private bool dirty = true, visible = true, built;
         private int anchorId;
+        // The row the keys step from: the one last clicked or stepped to (a range keeps the anchor as Unity's active object).
+        private int cursorId;
         private int renamingId;
+        // A selection this window made: its change needs no reveal (the row is on screen) nor a rebuild.
+        [NonSerialized] private bool selectingHere;
         private double lastRebuild, lastPersist;
         private int persistedVersion = -1;
 
@@ -130,6 +134,7 @@ namespace Orbiters.Mixer.Editor
             root.Clear();
             root.AddToClassList("mx-root");
             root.AddToClassList("mxh-root");
+            root.EnableInClassList("mxh-root--compact", Compact);
             foreach (string path in new[] { StyleSheetPath, HierarchySheetPath })
             {
                 var sheet = AssetDatabase.LoadAssetAtPath<StyleSheet>(path);
@@ -266,16 +271,25 @@ namespace Orbiters.Mixer.Editor
             model.Rebuild(filter);
             list.SetItemCount(model.Count, keepAtEnd: false);
             list.RefreshRows();
+            // An expression found too slow while matching shows on the field.
+            searchOptions?.ShowState();
+            UpdateFooter();
+        }
+
+        private void UpdateFooter()
+        {
             int shown = model.Rows.Count(r => r.Object != null);
             int selected = Selection.gameObjects.Length;
             footer.text = (filter.Any ? shown + " matching" : shown + (shown == 1 ? " object shown" : " objects shown")) + (selected > 0 ? " · " + selected + " selected" : "")
                           + (MixerLinkService.Connected ? " · Blender linked" : "");
         }
 
-        /// <summary>Opens the way to an object and scrolls it on screen (tests, pings).</summary>
+        /// <summary>Opens the way to an object and scrolls it on screen (tests, pings). A window whose rows are not
+        /// built yet (a background tab after a reload) only opens the way.</summary>
         internal void RevealObject(GameObject go)
         {
             if (go == null) return;
+            if (!built || list == null) { model.Reveal(go); return; }
             model.Reveal(go);
             RebuildNow();
             int index = model.IndexOf(go.GetInstanceID());
@@ -283,11 +297,25 @@ namespace Orbiters.Mixer.Editor
             list.RefreshRows();
         }
 
+        // Only the rows' selected look changes: the rows themselves stay (a rectangle drag in the Scene view changes the
+        // selection many times a second).
         private void OnSelectionChanged()
         {
             if (!built) return;
-            RevealRow(Selection.activeGameObject);
-            MarkDirty();
+            if (selectingHere) selectingHere = false;
+            else RevealRow(Selection.activeGameObject);
+            RefreshSelection();
+            UpdateFooter();
+        }
+
+        private void RefreshSelection()
+        {
+            foreach (var element in list.Rows)
+            {
+                if (element.resolvedStyle.display == DisplayStyle.None) continue;
+                var row = RowOf(element);
+                element.EnableInClassList("mxh-row--selected", row != null && !row.IsScene && Selection.Contains(row.InstanceId));
+            }
         }
 
         // A bone sub-selected in Weight Paint (here or in the Scene view's armature overlay) shows at once.
@@ -300,6 +328,8 @@ namespace Orbiters.Mixer.Editor
 
         private void RevealRow(GameObject go)
         {
+            // A prefab asset picked in the Project is in no scene: nothing here to open.
+            if (go != null && !go.scene.IsValid()) go = null;
             if (go != null && model.IndexOf(go.GetInstanceID()) < 0 && !filter.Any) { model.Reveal(go); RebuildNow(); }
             int index = go != null ? model.IndexOf(go.GetInstanceID()) : -1;
             if (index >= 0) list.Reveal(index);
@@ -402,7 +432,8 @@ namespace Orbiters.Mixer.Editor
             row.Add(MakeLightSphere(row));
             row.Add(MakeDropField(row));
             row.RegisterCallback<PointerDownEvent>(evt => OnRowPointerDown(row, evt));
-            row.RegisterCallback<ClickEvent>(evt => { if (evt.clickCount == 2) OnRowDoubleClick(row); });
+            // A double-click on the row's controls (the active box, the light's ball, the switches) is theirs.
+            row.RegisterCallback<ClickEvent>(evt => { if (evt.clickCount == 2 && !OnControl(evt.target as VisualElement, row)) OnRowDoubleClick(row); });
             rename.RegisterCallback<FocusOutEvent>(_ => CommitRename(row, rename, true));
             rename.RegisterCallback<KeyDownEvent>(evt =>
             {
@@ -413,6 +444,15 @@ namespace Orbiters.Mixer.Editor
         }
 
         private HierarchyRow RowOf(VisualElement element) => model[list.ItemOf(element)];
+
+        private static readonly string[] ControlClasses = { "mxh-row__active", "mxh-row__sphere", "mxh-row__chevron", "mxh-row__switches", "mxh-drop", "mxh-bones", "mxh-refit", "mxh-row__rename" };
+
+        private static bool OnControl(VisualElement target, VisualElement row)
+        {
+            for (var e = target; e != null && e != row; e = e.parent)
+                if (e is Button || ControlClasses.Any(e.ClassListContains)) return true;
+            return false;
+        }
 
         private void BindRow(VisualElement element, int index)
         {
@@ -535,6 +575,7 @@ namespace Orbiters.Mixer.Editor
             if (evt.button == 1)
             {
                 if (!Selection.Contains(row.InstanceId)) Select(index, false, false);
+                else cursorId = row.InstanceId;
                 return;
             }
             if (evt.button != 0) return;
@@ -546,7 +587,7 @@ namespace Orbiters.Mixer.Editor
             if (evt.shiftKey && AnchorIndex() >= 0) Select(index, true, false);
             else if (evt.ctrlKey || evt.commandKey) Select(index, false, true);
             else if (!Selection.Contains(row.InstanceId)) Select(index, false, false);
-            else anchorId = row.InstanceId;
+            else anchorId = cursorId = row.InstanceId;
             BeginDrag(index, evt);
         }
 
@@ -567,6 +608,7 @@ namespace Orbiters.Mixer.Editor
         {
             var row = model[index];
             if (row?.Object == null) return;
+            var before = Selection.instanceIDs;
             if (range)
             {
                 int anchor = AnchorIndex();
@@ -587,14 +629,36 @@ namespace Orbiters.Mixer.Editor
                 Selection.activeInstanceID = row.InstanceId;
                 anchorId = row.InstanceId;
             }
-            list.RefreshRows();
+            cursorId = row.InstanceId;
+            if (!Selection.instanceIDs.SequenceEqual(before)) selectingHere = true;
+            RefreshSelection();
+        }
+
+        // The row the keys step from: the cursor while it is selected, else Unity's active object.
+        private int CursorIndex()
+        {
+            int index = cursorId != 0 && Selection.Contains(cursorId) ? model.IndexOf(cursorId) : -1;
+            if (index >= 0) return index;
+            return Selection.activeGameObject != null ? model.IndexOf(Selection.activeGameObject.GetInstanceID()) : -1;
+        }
+
+        // A rename whose row is not shown (a search hides the new object) is given up: it would hold every key.
+        private bool Renaming
+        {
+            get
+            {
+                if (renamingId != 0 && model.IndexOf(renamingId) < 0) renamingId = 0;
+                return renamingId != 0;
+            }
         }
 
         private void OnKey(KeyDownEvent evt)
         {
-            if (renamingId != 0) return;
+            if (Renaming) return;
             if (evt.target is VisualElement target && (target == searchField || searchField.Contains(target))) return;
-            int current = Selection.activeGameObject != null ? model.IndexOf(Selection.activeGameObject.GetInstanceID()) : -1;
+            // The light's ball turns with the arrows while it has the focus.
+            if (evt.target is OrbitSphere) return;
+            int current = CursorIndex();
             bool command = evt.ctrlKey || evt.commandKey;
             switch (evt.keyCode)
             {
@@ -607,7 +671,7 @@ namespace Orbiters.Mixer.Editor
                     if (current >= 0) { if (model[current].Expanded && model[current].HasChildren) model.SetExpanded(model[current].InstanceId, false, evt.altKey); else { var parent = model[current].Object.transform.parent; if (parent != null) Selection.activeGameObject = parent.gameObject; } RebuildNow(); }
                     evt.StopPropagation(); break;
                 case KeyCode.F2: BeginRename(); evt.StopPropagation(); break;
-                case KeyCode.Return: case KeyCode.KeypadEnter: BeginRename(); evt.StopPropagation(); break;
+                case KeyCode.Return: case KeyCode.KeypadEnter: if (evt.target is Button) break; BeginRename(); evt.StopPropagation(); break;
                 // As Unity: Delete, or Cmd+Backspace on macOS; a plain Backspace deletes nothing.
                 case KeyCode.Delete: DeleteSelection(); evt.StopPropagation(); break;
                 case KeyCode.Backspace: if (evt.commandKey) { DeleteSelection(); evt.StopPropagation(); } break;
@@ -623,7 +687,7 @@ namespace Orbiters.Mixer.Editor
 
         // The search field and a rename keep their own text commands (Ctrl+C copies text there, not objects).
         private bool InTextField(EventBase evt) =>
-            renamingId != 0 || (evt.target is VisualElement target && (target == searchField || searchField.Contains(target)));
+            Renaming || (evt.target is VisualElement target && (target == searchField || searchField.Contains(target)));
 
         private void OnValidateCommand(ValidateCommandEvent evt)
         {
@@ -656,9 +720,10 @@ namespace Orbiters.Mixer.Editor
             list.Reveal(index);
         }
 
-        private void BeginRename()
+        // The clicked row's object from a context menu, else the cursor's.
+        private void BeginRename(GameObject go = null)
         {
-            var go = Selection.activeGameObject;
+            if (go == null) { int index = CursorIndex(); go = index >= 0 ? model[index].Object : null; }
             if (go == null || model.IndexOf(go.GetInstanceID()) < 0) return;
             renamingId = go.GetInstanceID();
             list.RefreshRows();
@@ -721,9 +786,9 @@ namespace Orbiters.Mixer.Editor
             MarkDirty();
         }
 
-        private void CreateEmpty(bool asChild)
+        private void CreateEmpty(bool asChild, GameObject clicked = null)
         {
-            var parent = Selection.activeGameObject;
+            var parent = clicked != null ? clicked : SceneParent();
             var go = new GameObject("GameObject");
             Undo.RegisterCreatedObjectUndo(go, "Create Empty");
             Place(go, parent != null ? (asChild ? parent.transform : parent.transform.parent) : null, parent != null ? parent.scene : default);
@@ -740,21 +805,31 @@ namespace Orbiters.Mixer.Editor
         /// </summary>
         internal static void Place(GameObject go, Transform parent, Scene scene = default)
         {
+            // An asset's transform (a prefab picked in the Project) is no parent for a scene object.
+            if (parent != null && !parent.gameObject.scene.IsValid()) parent = null;
             if (parent != null)
             {
                 if (go.transform.parent == null && go.scene != parent.gameObject.scene) SceneManager.MoveGameObjectToScene(go, parent.gameObject.scene);
-                go.transform.SetParent(parent, false);
+                // Through Undo, so a redo of the creation puts it back under its parent.
+                Undo.SetTransformParent(go.transform, parent, false, "Create " + go.name);
                 return;
             }
             var stage = PrefabStageUtility.GetCurrentPrefabStage();
             if (stage != null && stage.prefabContentsRoot != null)
             {
                 StageUtility.PlaceGameObjectInCurrentStage(go);
-                go.transform.SetParent(stage.prefabContentsRoot.transform, false);
+                Undo.SetTransformParent(go.transform, stage.prefabContentsRoot.transform, false, "Create " + go.name);
                 return;
             }
             var into = scene.IsValid() && scene.isLoaded ? scene : SceneManager.GetActiveScene();
             if (into.IsValid() && into.isLoaded && go.scene != into) SceneManager.MoveGameObjectToScene(go, into);
+        }
+
+        // Unity's active object, when it is in a scene (a prefab asset picked in the Project is not a parent here).
+        private static GameObject SceneParent()
+        {
+            var go = Selection.activeGameObject;
+            return go != null && go.scene.IsValid() ? go : null;
         }
 
         private static bool IsPrefabStageScene(Scene scene)

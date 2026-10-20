@@ -16,8 +16,12 @@ namespace Orbiters.Mixer.Editor
     {
         private bool thumbnailsPending;
         private double lastThumbnailPoll;
-        // Picture keys of the rows, worked out once per rebuild.
+        // Picture keys of the rows, worked out once per rebuild; the last key each row showed, whose picture is freed
+        // when the row's key changes (a commit, a material swap, a part switched off).
         private readonly Dictionary<int, string> thumbnailKeys = new Dictionary<int, string>();
+        private readonly Dictionary<int, string> shownPictureKeys = new Dictionary<int, string>();
+        // Rows holding more renderers than this (a world's folders) show their icon: a picture renders them all.
+        private const int PictureRenderers = 128;
 
         // ---- Making the parts (once per pooled row) ---------------------------------------------------------------
 
@@ -265,7 +269,9 @@ namespace Orbiters.Mixer.Editor
             bool isObject = !row.IsScene && row.Object != null;
             MixerUi.Show(active, isObject);
             if (isObject) active.EnableInClassList("mxh-row__active--on", row.Object.activeSelf);
-            bool picture = tall && row.HasMeshes && row.Light == null;
+            string pictureKey = tall && row.HasMeshes && row.Light == null ? ThumbnailKey(row) : null;
+            // A picture that could not be made (nothing shown below, an error) leaves the row its icon.
+            bool picture = pictureKey != null && !ModelThumbnails.HasFailed(pictureKey, transparent: true);
             bool vector = isObject && (row.Bones != null || row.IsBone);
             element.EnableInClassList("mxh-row--picture", picture);
             MixerUi.Show(thumbnail, picture);
@@ -320,7 +326,7 @@ namespace Orbiters.Mixer.Editor
 
             if (picture)
             {
-                var texture = ModelThumbnails.Get(row.Object, ThumbnailKey(row), transparent: true);
+                var texture = ModelThumbnails.Get(row.Object, pictureKey, transparent: true, keepOnDisk: false);
                 thumbnail.image = texture;
                 thumbnail.EnableInClassList("mxh-row__thumbnail--waiting", texture == null);
                 if (texture == null) thumbnailsPending = true;
@@ -348,16 +354,17 @@ namespace Orbiters.Mixer.Editor
             return !float.IsNaN(width) && width >= Mathf.Max(0, row.Depth - 1) * 14f + 470f;
         }
 
-        // The armature rows change height as the window crosses the width where their buttons fit beside the name.
+        // The armature rows change height as the window crosses the width where their buttons fit beside the name (each
+        // row at its own width: its indent counts).
         private float laidOutWidth = -1f;
         private void OnWidthChanged()
         {
             float width = list.layout.width;
             if (Mathf.Abs(width - laidOutWidth) < 0.5f) return;
-            bool before = laidOutWidth >= 0f && model.Rows.Any(r => r.Bones != null && laidOutWidth >= Mathf.Max(0, r.Depth - 1) * 14f + 470f);
+            float before = laidOutWidth;
             laidOutWidth = width;
-            bool now = model.Rows.Any(r => r.Bones != null && BonesFitInline(r));
-            if (before != now || model.Rows.Any(r => r.Bones != null)) list.RefreshRows();
+            bool Fits(HierarchyRow r, float at) => at >= Mathf.Max(0, r.Depth - 1) * 14f + 470f;
+            if (model.Rows.Any(r => r.Bones != null && (before < 0f || Fits(r, before) != Fits(r, width)))) list.RefreshRows();
         }
 
         // Unity's icon of the object, with Mixer's own for what Unity draws as a plain cube: a light, a folder (open or
@@ -378,33 +385,52 @@ namespace Orbiters.Mixer.Editor
             if (now - lastThumbnailPoll < 0.15) return;
             lastThumbnailPoll = now;
             thumbnailsPending = false;
+            bool failed = false;
             foreach (var element in list.Rows)
             {
                 if (element.resolvedStyle.display == DisplayStyle.None || !element.ClassListContains("mxh-row--picture")) continue;
                 var row = RowOf(element);
                 var thumbnail = element.Q<Image>(className: "mxh-row__thumbnail");
                 if (row?.Object == null || !row.HasMeshes || thumbnail == null || thumbnail.image != null) continue;
-                var texture = ModelThumbnails.Get(row.Object, ThumbnailKey(row), transparent: true);
-                if (texture == null) { thumbnailsPending = true; continue; }
+                string key = ThumbnailKey(row);
+                if (key == null) continue;
+                var texture = ModelThumbnails.Get(row.Object, key, transparent: true, keepOnDisk: false);
+                if (texture == null)
+                {
+                    // Failed for good: the row shows its icon instead.
+                    if (ModelThumbnails.HasFailed(key, transparent: true)) failed = true;
+                    else thumbnailsPending = true;
+                    continue;
+                }
                 thumbnail.image = texture;
                 thumbnail.RemoveFromClassList("mxh-row__thumbnail--waiting");
             }
+            if (failed) list.RefreshRows();
         }
 
         // What the picture shows: the meshes and materials below the object and whether they show, so a commit (a new
-        // mesh), a material swap or a switched-off part makes a new one. Kept until the next rebuild.
+        // mesh), a material swap or a switched-off part makes a new one. Kept until the next rebuild; null for a row
+        // with too many renderers to picture. Made of instance ids, so the pictures are kept for the session only.
         private string ThumbnailKey(HierarchyRow row)
         {
             if (thumbnailKeys.TryGetValue(row.InstanceId, out var cached)) return cached;
-            var key = new StringBuilder("mixer-hierarchy|").Append(row.InstanceId);
-            foreach (var renderer in row.Object.GetComponentsInChildren<Renderer>(true))
+            var renderers = row.Object.GetComponentsInChildren<Renderer>(true);
+            string made = null;
+            if (renderers.Length <= PictureRenderers)
             {
-                var mesh = renderer is SkinnedMeshRenderer skinned ? skinned.sharedMesh : renderer.TryGetComponent<MeshFilter>(out var filter) ? filter.sharedMesh : null;
-                if (mesh == null) continue;
-                key.Append('|').Append(mesh.GetInstanceID()).Append(renderer.enabled && renderer.gameObject.activeInHierarchy ? '+' : '-');
-                foreach (var material in renderer.sharedMaterials) key.Append(',').Append(material != null ? material.GetInstanceID() : 0);
+                var key = new StringBuilder("mixer-hierarchy|").Append(row.InstanceId);
+                foreach (var renderer in renderers)
+                {
+                    var mesh = renderer is SkinnedMeshRenderer skinned ? skinned.sharedMesh : renderer.TryGetComponent<MeshFilter>(out var filter) ? filter.sharedMesh : null;
+                    if (mesh == null) continue;
+                    key.Append('|').Append(mesh.GetInstanceID()).Append(renderer.enabled && renderer.gameObject.activeInHierarchy ? '+' : '-');
+                    foreach (var material in renderer.sharedMaterials) key.Append(',').Append(material != null ? material.GetInstanceID() : 0);
+                }
+                made = key.ToString();
             }
-            return thumbnailKeys[row.InstanceId] = key.ToString();
+            if (shownPictureKeys.TryGetValue(row.InstanceId, out var before) && before != made) ModelThumbnails.Release(before, transparent: true);
+            if (made != null) shownPictureKeys[row.InstanceId] = made; else shownPictureKeys.Remove(row.InstanceId);
+            return thumbnailKeys[row.InstanceId] = made;
         }
 
         private static string Detail(HierarchyRow row)

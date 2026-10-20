@@ -177,7 +177,8 @@ namespace Orbiters.Mixer.Editor
                     ToScene(go, anchor.scene);
                     if (go.transform.parent == parent && go.transform.GetSiblingIndex() < index) index--;
                     Undo.SetTransformParent(go.transform, parent, "Move " + go.name);
-                    go.transform.SetSiblingIndex(index++);
+                    // The order goes through Undo too: a reorder under the same parent records nothing else.
+                    Undo.SetSiblingIndex(go.transform, index++, "Move " + go.name);
                 }
             }
             RebuildNow();
@@ -219,8 +220,8 @@ namespace Orbiters.Mixer.Editor
                 var instance = PrefabUtility.InstantiatePrefab(prefab, scene) as GameObject;
                 if (instance == null) continue;
                 Undo.RegisterCreatedObjectUndo(instance, "Drop " + prefab.name);
-                if (parent != null) instance.transform.SetParent(parent, false);
-                if (sibling >= 0) instance.transform.SetSiblingIndex(sibling++);
+                if (parent != null) Undo.SetTransformParent(instance.transform, parent, false, "Drop " + prefab.name);
+                if (sibling >= 0) Undo.SetSiblingIndex(instance.transform, sibling++, "Drop " + prefab.name);
                 made.Add(instance);
             }
             if (made.Count > 0) Selection.objects = made.ToArray();
@@ -290,7 +291,7 @@ namespace Orbiters.Mixer.Editor
             var go0 = row?.Object;
             var selected = Selection.gameObjects.Where(g => g != null && g.scene.IsValid()).ToList();
             menu.AppendAction("Create Empty", _ => CreateEmpty(false));
-            menu.AppendAction("Create Empty Child", _ => CreateEmpty(true), go0 != null ? DropdownMenuAction.Status.Normal : DropdownMenuAction.Status.Disabled);
+            menu.AppendAction("Create Empty Child", _ => CreateEmpty(true, go0), go0 != null ? DropdownMenuAction.Status.Normal : DropdownMenuAction.Status.Disabled);
             menu.AppendAction("3D Object/Cube", _ => CreatePrimitive(PrimitiveType.Cube));
             menu.AppendAction("3D Object/Sphere", _ => CreatePrimitive(PrimitiveType.Sphere));
             menu.AppendAction("3D Object/Plane", _ => CreatePrimitive(PrimitiveType.Plane));
@@ -300,7 +301,7 @@ namespace Orbiters.Mixer.Editor
             AppendGameObjectMenu(menu);
             if (go0 == null) return;
             menu.AppendSeparator();
-            menu.AppendAction("Rename", _ => BeginRename());
+            menu.AppendAction("Rename", _ => BeginRename(go0));
             menu.AppendAction("Duplicate", _ => Duplicate());
             menu.AppendAction("Delete", _ => DeleteSelection());
             menu.AppendAction("Copy", _ => Copy());
@@ -333,6 +334,23 @@ namespace Orbiters.Mixer.Editor
             }
         }
 
+        // Unity's Hierarchy runs its context menu's GameObject items once per selected object, each with that object as
+        // the item's MenuCommand.context (items written for that menu read it). Internal; without it they run as from
+        // the main menu.
+        private static readonly System.Reflection.MethodInfo ExecuteOnGameObjects =
+            typeof(EditorApplication).GetMethod("ExecuteMenuItemOnGameObjects", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public, null, new[] { typeof(string), typeof(GameObject[]) }, null);
+
+        private static void RunGameObjectItem(string path)
+        {
+            var selected = Selection.gameObjects.Where(g => g != null && g.scene.IsValid()).ToArray();
+            if (ExecuteOnGameObjects != null && selected.Length > 0)
+            {
+                try { ExecuteOnGameObjects.Invoke(null, new object[] { path, selected }); return; }
+                catch (System.Reflection.TargetInvocationException) { }
+            }
+            EditorApplication.ExecuteMenuItem(path);
+        }
+
         // Unity's GameObject menu, with what other tools add to it (ReFit, My Avatar, VRCFury, Modular Avatar...): they
         // act on the selection, as from Unity's Hierarchy.
         private static void AppendGameObjectMenu(DropdownMenu menu)
@@ -346,7 +364,7 @@ namespace Orbiters.Mixer.Editor
             {
                 if (string.IsNullOrEmpty(item) || !item.StartsWith("GameObject/", StringComparison.Ordinal)) continue;
                 string path = item;
-                menu.AppendAction(path, _ => EditorApplication.ExecuteMenuItem(path));
+                menu.AppendAction(path, _ => RunGameObjectItem(path));
             }
         }
 
@@ -364,7 +382,7 @@ namespace Orbiters.Mixer.Editor
         {
             var go = GameObject.CreatePrimitive(type);
             Undo.RegisterCreatedObjectUndo(go, "Create " + type);
-            var parent = Selection.activeGameObject;
+            var parent = SceneParent();
             Place(go, parent != null ? parent.transform : null);
             Selection.activeGameObject = go;
             RebuildNow();

@@ -118,7 +118,8 @@
 .mxh-row--avatar .mxh-row__picture { width: 60px; height: 60px; margin-right: 8px; }
 .mxh-row--avatar .mxh-row__thumbnail { width: 60px; height: 60px; }
 .mxh-row--avatar .mxh-drop { height: 60px; }
-.mxh-row__vrchat-mark { position: absolute; left: -2px; bottom: 0; width: 30px; height: 15px; }
+/* At the logo's own size (36 x 18, pixel for pixel: VRChatLogo sets it). */
+.mxh-row__vrchat-mark { position: absolute; left: -2px; bottom: 0; }
 .mxh-avatar { flex-direction: column; justify-content: center; overflow: hidden; }
 .mxh-avatar__line { flex-direction: row; align-items: center; height: 18px; margin-top: 1px; padding-right: 4px; overflow: hidden; }
 .mxh-avatar__name { margin: 0; padding: 0; font-size: 11px; color: #c8c8c8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 1; }

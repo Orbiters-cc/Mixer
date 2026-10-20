@@ -297,7 +297,8 @@ namespace Orbiters.Mixer.Editor
         {
             loaded = true;
             Expanded.Clear();
-            foreach (string part in SessionState.GetString(ExpandedKey, "").Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
+            bool saved = HasSessionState;
+            foreach (string part in SessionState.GetString(ExpandedKey, "").Split(new[] { ',', '#' }, StringSplitOptions.RemoveEmptyEntries))
                 if (int.TryParse(part, out int id)) Expanded.Add(id);
             foreach (string part in SessionState.GetString(FoldedScenesKey, "").Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
                 if (int.TryParse(part, out int handle)) FoldedScenes.Add(handle);
@@ -311,9 +312,9 @@ namespace Orbiters.Mixer.Editor
                 }
                 catch (Exception) { }
             }
-            if (Expanded.Count == 0)
+            if (!saved && Expanded.Count == 0)
             {
-                // A fresh editor: scenes' roots open, like Unity does.
+                // A fresh editor: scenes' roots open, like Unity does (not after "Collapse all": that saved no folds).
                 for (int i = 0; i < SceneManager.sceneCount; i++)
                 {
                     var scene = SceneManager.GetSceneAt(i);
@@ -323,10 +324,11 @@ namespace Orbiters.Mixer.Editor
             }
         }
 
-        /// <summary>Opens objects kept from an earlier editor session (instance IDs of today's objects), before the first rebuild.</summary>
+        /// <summary>Opens objects kept from an earlier editor session (instance IDs of today's objects), before the first
+        /// rebuild: they replace the scenes' roots a fresh editor opens (roots the user had folded stay folded).</summary>
         public void Restore(IEnumerable<int> ids)
         {
-            if (!loaded) LoadExpanded();
+            if (!loaded) { LoadExpanded(); Expanded.Clear(); }
             bool any = false;
             foreach (int id in ids) if (id != 0 && Expanded.Add(id)) any = true;
             if (any) SaveExpanded();
@@ -359,9 +361,10 @@ namespace Orbiters.Mixer.Editor
             Version++;
         }
 
+        // "#" first: folds saved with nothing open still say this session has folds (HasSessionState).
         private void SaveExpanded()
         {
-            SessionState.SetString(ExpandedKey, string.Join(",", Expanded.Take(4000)));
+            SessionState.SetString(ExpandedKey, "#" + string.Join(",", Expanded.Take(4000)));
             Version++;
         }
 
