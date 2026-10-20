@@ -274,12 +274,13 @@ namespace Orbiters.Mixer.Editor.Splats.Tests
         public void SplatsShowOnlyInCamerasOfTheirScene()
         {
             var preview = EditorSceneManager.NewPreviewScene();
-            var go = new GameObject("Mixer splat test camera") { hideFlags = HideFlags.HideAndDontSave };
+            var go = new GameObject("Mixer splat test camera");
+            UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(go, preview);
             try
             {
                 var cam = go.AddComponent<Camera>();
                 cam.enabled = false;
-                var main = default(UnityEngine.SceneManagement.Scene);
+                var main = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
                 Assert.That(SplatRenderer.Shows(cam, main), Is.True, "a camera kept to no scene shows every scene");
                 cam.scene = preview;
                 Assert.That(SplatRenderer.Shows(cam, main), Is.False, "Prefab Mode, a preview scene");
