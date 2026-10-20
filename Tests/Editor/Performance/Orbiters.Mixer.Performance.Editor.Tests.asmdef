@@ -1,0 +1,43 @@
+{
+  "name": "Orbiters.Mixer.Performance.Editor.Tests",
+  "rootNamespace": "Orbiters.Mixer.Editor.Performance.Tests",
+  "references": [
+    "UnityEngine.TestRunner",
+    "UnityEditor.TestRunner",
+    "Orbiters.Mixer",
+    "Orbiters.Mixer.Editor",
+    "Orbiters.Mixer.Performance.Editor",
+    "Orbiters.Contracts",
+    "Orbiters.Toolkit",
+    "Orbiters.Toolkit.Editor",
+    "Orbiters.Toolkit.Editor.VRChat",
+    "VRC.SDK3A",
+    "VRC.SDKBase"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "overrideReferences": true,
+  "precompiledReferences": [
+    "nunit.framework.dll",
+    "Newtonsoft.Json.dll",
+    "VRCSDK3A.dll",
+    "VRCSDKBase.dll",
+    "VRC.Dynamics.dll",
+    "VRC.SDK3.Dynamics.PhysBone.dll",
+    "VRC.SDK3.Dynamics.Contact.dll",
+    "VRC.SDK3.Dynamics.Constraint.dll"
+  ],
+  "autoReferenced": false,
+  "defineConstraints": [
+    "UNITY_INCLUDE_TESTS",
+    "MIXER_VRCHAT_AVATARS"
+  ],
+  "versionDefines": [
+    {
+      "name": "com.vrchat.avatars",
+      "expression": "3.7.0",
+      "define": "MIXER_VRCHAT_AVATARS"
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "name": "Orbiters.Mixer.Performance.Editor",
+  "rootNamespace": "Orbiters.Mixer.Editor.Performance",
+  "references": [
+    "Orbiters.Mixer",
+    "Orbiters.Mixer.Editor",
+    "Orbiters.Toolkit",
+    "Orbiters.Toolkit.Editor",
+    "Orbiters.Toolkit.Editor.VRChat",
+    "Orbiters.Contracts",
+    "VRC.SDK3A",
+    "VRC.SDKBase",
+    "Unity.Timeline"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "autoReferenced": false,
+  "defineConstraints": [
+    "MIXER_VRCHAT_AVATARS"
+  ],
+  "versionDefines": [
+    {
+      "name": "com.vrchat.avatars",
+      "expression": "3.7.0",
+      "define": "MIXER_VRCHAT_AVATARS"
+    },
+    {
+      "name": "com.unity.timeline",
+      "expression": "1.0.0",
+      "define": "MIXER_PERFORMANCE_TIMELINE"
+    }
+  ]
+}
