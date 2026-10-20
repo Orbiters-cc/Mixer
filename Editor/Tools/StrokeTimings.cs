@@ -26,8 +26,11 @@ namespace Orbiters.Mixer.Editor
         // The skinned vertex watched on the GPU: its value before the stroke moved it, and what read-backs found since.
         private static SkinnedMeshRenderer watched;
         private static int watchedVertex = -1, readbacks, readbacksBack;
-        private static Vector3 skinnedBefore;
-        private static bool haveBefore;
+        private static Vector3 skinnedBefore, skinnedLast;
+        // Through the whole stroke: uploads, changes seen on the GPU, and the longest wait for one while uploads went on.
+        private static int uploads, seenChanges, uploadsSinceSeen;
+        private static double lastSeen, longestUnseen;
+        private static bool haveBefore, reading;
 
         public static bool Enabled
         {
@@ -46,6 +49,9 @@ namespace Orbiters.Mixer.Editor
             firstMove = firstShown = firstVisible = -1;
             longest = total = 0;
             frames = readbacks = readbacksBack = 0;
+            uploads = seenChanges = uploadsSinceSeen = 0;
+            lastSeen = -1;
+            longestUnseen = 0;
             watched = null;
             watchedVertex = -1;
             haveBefore = false;
@@ -69,7 +75,10 @@ namespace Orbiters.Mixer.Editor
         /// <summary>The moves went to the renderer.</summary>
         public static void Uploaded()
         {
-            if (active && firstMove >= 0 && firstShown < 0) firstShown = Now;
+            if (!active || firstMove < 0) return;
+            if (firstShown < 0) firstShown = Now;
+            uploads++;
+            uploadsSinceSeen++;
         }
 
         /// <summary>A Scene view repaint during the stroke.</summary>
@@ -80,14 +89,15 @@ namespace Orbiters.Mixer.Editor
             double frame = now - lastFrame;
             lastFrame = now;
             if (frames > 0 || frame < 1000) { longest = Math.Max(longest, frame); total += frame; frames++; }
-            if (firstShown >= 0 && firstVisible < 0 && haveBefore) Read(false);
+            if (firstShown >= 0 && haveBefore) Read(false);
         }
 
         // Reads the watched skinned vertex back from the GPU without waiting; the first value that differs from the one
         // before the stroke is when the stroke showed.
         private static void Read(bool before)
         {
-            if (watched == null || watchedVertex < 0 || !SystemInfo.supportsAsyncGPUReadback) return;
+            // One read-back at a time: no queue of them while the GPU is behind.
+            if (watched == null || watchedVertex < 0 || reading || !SystemInfo.supportsAsyncGPUReadback) return;
             GraphicsBuffer buffer = null;
             try
             {
@@ -96,18 +106,30 @@ namespace Orbiters.Mixer.Editor
                 double asked = Now;
                 readbacks++;
                 var held = buffer;
+                reading = true;
                 AsyncGPUReadback.Request(buffer, 12, watchedVertex * buffer.stride, request =>
                 {
+                    reading = false;
                     held.Dispose();
                     if (request.hasError) return;
                     readbacksBack++;
                     var data = request.GetData<float>();
                     var p = new Vector3(data[0], data[1], data[2]);
-                    if (before) { skinnedBefore = p; haveBefore = true; return; }
-                    if (active && firstVisible < 0 && (p - skinnedBefore).sqrMagnitude > 1e-12f) firstVisible = asked;
+                    if (before) { skinnedBefore = skinnedLast = p; haveBefore = true; return; }
+                    if (!active) return;
+                    if (firstVisible < 0 && (p - skinnedBefore).sqrMagnitude > 1e-12f) { firstVisible = asked; lastSeen = asked; skinnedLast = p; seenChanges++; uploadsSinceSeen = 0; return; }
+                    if (firstVisible >= 0 && (p - skinnedLast).sqrMagnitude > 1e-12f)
+                    {
+                        // A wait only counts while uploads went on (a still brush shows nothing new, rightly).
+                        if (uploadsSinceSeen > 0 && lastSeen >= 0) longestUnseen = Math.Max(longestUnseen, asked - lastSeen);
+                        lastSeen = asked;
+                        skinnedLast = p;
+                        seenChanges++;
+                        uploadsSinceSeen = 0;
+                    }
                 });
             }
-            catch (Exception) { buffer?.Dispose(); }
+            catch (Exception) { reading = false; buffer?.Dispose(); }
         }
 
         /// <summary>The stroke ended: one line in the log.</summary>
@@ -121,6 +143,7 @@ namespace Orbiters.Mixer.Editor
                           + "  press→move " + (firstMove >= 0 ? (firstMove - down).ToString("0", c) + " ms" : "-")
                           + "  press→upload " + (firstShown >= 0 ? (firstShown - down).ToString("0", c) + " ms" : "-")
                           + "  press→shown " + (firstVisible >= 0 ? (firstVisible - down).ToString("0", c) + " ms" : watched != null ? "never (" + readbacksBack + "/" + readbacks + " read-backs)" : "-")
+                          + "  uploads " + uploads + " seen " + seenChanges + " longest unseen " + longestUnseen.ToString("0", c) + " ms"
                           + "  frames " + frames + " avg " + (frames > 0 ? (total / frames).ToString("0.0", c) : "-") + " ms max " + longest.ToString("0", c) + " ms"
                           + "  GC during " + (collections - collectionsAtDown)
                           + (collectionsAtLastEnd >= 0 ? " between " + (collectionsAtDown - collectionsAtLastEnd) : "")

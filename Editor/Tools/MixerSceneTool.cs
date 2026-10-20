@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Orbiters.Toolkit.Editor.XRay;
 using Orbiters.Toolkit.XRay;
+using Unity.Profiling;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
@@ -75,6 +76,17 @@ namespace Orbiters.Mixer.Editor
             autoNormalize = EditorPrefs.GetBool(NormalizePref, true);
             AssemblyReloadEvents.beforeAssemblyReload += FlushPrefs;
             EditorApplication.quitting += FlushPrefs;
+            // While a mode edits an avatar's meshes, work that can wait on them (My Avatar's estimate) waits.
+            Orbiters.Toolkit.Editor.Meshes.AvatarMeshEdits.LiveEditing += EditsLive;
+        }
+
+        // A mode that edits meshes is on, on a mesh of that avatar.
+        private static bool EditsLive(Transform avatarRoot)
+        {
+            if (mode == MixerMode.None || avatarRoot == null) return false;
+            foreach (var target in MixerSession.Targets)
+                if (target.Alive && target.Renderer.transform.IsChildOf(avatarRoot)) return true;
+            return false;
         }
 
         public static MixerMode Mode
@@ -370,7 +382,15 @@ namespace Orbiters.Mixer.Editor
         }
 
         /// <summary>Finds what is under a Scene view point among the edited meshes.</summary>
+        private static readonly ProfilerMarker HoverMarker = new ProfilerMarker("Mixer.Hover");
+        private static readonly ProfilerMarker DrawMarker = new ProfilerMarker("Mixer.DrawBrush");
+
         private static void Hover(Vector2 guiPoint, bool refreshWorld)
+        {
+            using (HoverMarker.Auto()) HoverNow(guiPoint, refreshWorld);
+        }
+
+        private static void HoverNow(Vector2 guiPoint, bool refreshWorld)
         {
             var ray = HandleUtility.GUIPointToWorldRay(guiPoint);
             hovering = false;
@@ -584,6 +604,11 @@ namespace Orbiters.Mixer.Editor
         }
 
         private static void Draw(SceneView view)
+        {
+            using (DrawMarker.Auto()) DrawNow(view);
+        }
+
+        private static void DrawNow(SceneView view)
         {
             if (!hovering && !Stroking) return;
             var center = stroke != null ? stroke.Center : weightStroke != null ? weightStroke.Center : hoverPoint;

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Orbiters.Toolkit.Meshes;
+using Unity.Profiling;
 using UnityEditor;
 using UnityEngine;
 using Object = UnityEngine.Object;
@@ -253,9 +254,13 @@ namespace Orbiters.Mixer.Editor
         private int[] pendingStamp;
         private int pendingStampValue = 1;
 
+        // A stroke is on: the bounds wait for its end (working them out is a pass over every vertex).
+        private bool inStroke;
+
         /// <summary>A stroke starts: the shown positions and the world picture are brought up to date, as its moves go straight into them.</summary>
         public void BeginStroke()
         {
+            inStroke = true;
             if (worldStale)
             {
                 Skin.Refresh(Renderer, Working);
@@ -273,6 +278,11 @@ namespace Orbiters.Mixer.Editor
         /// vertices. Normals catch up at the next flush (<see cref="SettleNormals"/>), the BVH at once.
         /// </summary>
         public void MoveWelded(List<int> welded, Vector3[] moveOf, StrokeRecorder recorder, List<int> moved)
+        {
+            using (MoveMarker.Auto()) MoveWeldedNow(welded, moveOf, recorder, moved);
+        }
+
+        private void MoveWeldedNow(List<int> welded, Vector3[] moveOf, StrokeRecorder recorder, List<int> moved)
         {
             moved.Clear();
             if (welded.Count == 0) return;
@@ -324,10 +334,34 @@ namespace Orbiters.Mixer.Editor
         /// <summary>A stroke ends: its last normals, the bounds and the upload.</summary>
         public void EndStroke()
         {
+            inStroke = false;
             SettleNormals();
-            Working.RecalculateBounds();
-            Document.BoundsDirty = false;
             Flush();
+        }
+
+        /// <summary>A stroke was cancelled or moved nothing: the bounds may follow edits again.</summary>
+        public void LeaveStroke()
+        {
+            if (!inStroke) return;
+            inStroke = false;
+            Flush();
+        }
+
+        // The working mesh's bounds from the shown positions: one pass over them, where Mesh.RecalculateBounds took ~27 ms
+        // on a 90k-vertex body with 500 shapes.
+        private void UpdateBounds()
+        {
+            if (display.Length == 0) return;
+            Vector3 min = display[0], max = display[0];
+            for (int v = 1; v < display.Length; v++)
+            {
+                var p = display[v];
+                if (p.x < min.x) min.x = p.x; else if (p.x > max.x) max.x = p.x;
+                if (p.y < min.y) min.y = p.y; else if (p.y > max.y) max.y = p.y;
+                if (p.z < min.z) min.z = p.z; else if (p.z > max.z) max.z = p.z;
+            }
+            Working.bounds = new Bounds((min + max) * 0.5f, max - min);
+            Document.BoundsDirty = false;
         }
 
         /// <summary>The active layer changed: the shown positions, normals and the other shapes' weights are different now.</summary>
@@ -452,8 +486,20 @@ namespace Orbiters.Mixer.Editor
             doc.Unflushed = true;
         }
 
+        // Profiler markers of the per-frame work of a stroke (Unity's Profiler names them in the editor loop).
+        private static readonly ProfilerMarker FlushMarker = new ProfilerMarker("Mixer.Flush");
+        private static readonly ProfilerMarker NormalsMarker = new ProfilerMarker("Mixer.Flush.Normals");
+        private static readonly ProfilerMarker UploadMarker = new ProfilerMarker("Mixer.Flush.Upload");
+        private static readonly ProfilerMarker BoundsMarker = new ProfilerMarker("Mixer.Flush.Bounds");
+        private static readonly ProfilerMarker MoveMarker = new ProfilerMarker("Mixer.MoveWelded");
+
         /// <summary>Uploads the dirty vertices to the working mesh (once a frame); true when something was sent.</summary>
         public bool Flush()
+        {
+            using (FlushMarker.Auto()) return FlushNow();
+        }
+
+        private bool FlushNow()
         {
             var doc = Document;
             if (doc.Dirty.Count == 0 && !doc.Unflushed && pendingNormals.Count == 0 && flushedRevision == doc.Revision) return false;
@@ -462,15 +508,19 @@ namespace Orbiters.Mixer.Editor
             {
                 // Dirty vertices changed the document only; a stroke's moves are in the shown positions already.
                 if (doc.Dirty.Count > 0) doc.DisplayPositions(display);
-                SettleNormals();
+                using (NormalsMarker.Auto()) SettleNormals();
                 // Normals first, then the positions with the renderers told: a skinned renderer keeps showing what it
                 // skinned last until its mesh says it changed (without it, a stroke only showed when the bounds grew).
-                Working.SetNormals(doc.Normals, 0, doc.Normals.Length, UnityEngine.Rendering.MeshUpdateFlags.DontRecalculateBounds | UnityEngine.Rendering.MeshUpdateFlags.DontValidateIndices | UnityEngine.Rendering.MeshUpdateFlags.DontNotifyMeshUsers);
-                Working.SetVertices(display, 0, display.Length, UnityEngine.Rendering.MeshUpdateFlags.DontRecalculateBounds | UnityEngine.Rendering.MeshUpdateFlags.DontValidateIndices);
+                using (UploadMarker.Auto())
+                {
+                    Working.SetNormals(doc.Normals, 0, doc.Normals.Length, UnityEngine.Rendering.MeshUpdateFlags.DontRecalculateBounds | UnityEngine.Rendering.MeshUpdateFlags.DontValidateIndices | UnityEngine.Rendering.MeshUpdateFlags.DontNotifyMeshUsers);
+                    Working.SetVertices(display, 0, display.Length, UnityEngine.Rendering.MeshUpdateFlags.DontRecalculateBounds | UnityEngine.Rendering.MeshUpdateFlags.DontValidateIndices);
+                }
                 doc.Dirty.Clear();
                 doc.Unflushed = false;
                 flushes++;
-                if (doc.BoundsDirty && flushes % 10 == 0) { Working.RecalculateBounds(); doc.BoundsDirty = false; }
+                // Not during a stroke: once it ends, or after an undo or a link edit.
+                if (doc.BoundsDirty && !inStroke) using (BoundsMarker.Auto()) UpdateBounds();
             }
             flushedRevision = doc.Revision;
             return true;

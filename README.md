@@ -146,9 +146,15 @@ saved as a native mesh asset when you commit.
 - Strokes show as they are made: the working mesh's positions are uploaded with its renderers told, so a skinned
   renderer skins them again at once (it kept showing what it skinned last and only caught up when the mesh's bounds
   grew, so a stroke inside the body showed late and in jumps).
+- No more hitches every few frames of a stroke: the working mesh's bounds are worked out from the shown positions
+  once the stroke ends (Mesh.RecalculateBounds every tenth upload took ~27 ms on a body with 500 shapes), and while a
+  Mixer mode edits an avatar's meshes, work that can wait on them waits (Orbiters Toolkit's
+  `AvatarMeshEdits.LiveEditing`: My Avatar's optimization estimate took ~30 ms a frame, and up to 2.6 s at once).
+  Profiler markers name Mixer's work in Unity's Profiler (`Mixer.Flush`, `Mixer.Stroke.Step`, `Mixer.MoveWelded`...).
 - Opt-in stroke timings (EditorPrefs `Orbiters.Mixer.Diagnostics.StrokeTimings`): one line per stroke in
   `Library/Orbiters/Mixer/stroke-timings.log` (press to first move, to first upload and to the first frame the skinned
-  renderer shows it, read back from the GPU; frames; garbage collections).
+  renderer shows it, read back from the GPU; uploads against changes seen on the GPU and the longest wait for one;
+  frames; garbage collections).
 - Requires Orbiters Toolkit 0.4.1, which holds the avatar gizmos (bones, weight paint, mesh edges, avatar budget) and
   lets Mixer take the armature overlay's bone clicks.
 

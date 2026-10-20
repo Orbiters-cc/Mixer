@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Unity.Profiling;
 using UnityEngine;
 
 namespace Orbiters.Mixer.Editor
@@ -80,8 +81,17 @@ namespace Orbiters.Mixer.Editor
             ctx.First = false;
         }
 
+        private static readonly ProfilerMarker StepMarker = new ProfilerMarker("Mixer.Stroke.Step");
+        private static readonly ProfilerMarker GatherMarker = new ProfilerMarker("Mixer.Stroke.Gather");
+        private static readonly ProfilerMarker BrushMarker = new ProfilerMarker("Mixer.Stroke.Brush");
+
         /// <summary>A pointer move during the stroke; <paramref name="surface"/> is where the ray hits the mesh, null off it.</summary>
         public void Step(Ray ray, Vector3? surface, Vector3? surfaceNormal, bool invert, bool shiftSmooth)
+        {
+            using (StepMarker.Auto()) StepNow(ray, surface, surfaceNormal, invert);
+        }
+
+        private void StepNow(Ray ray, Vector3? surface, Vector3? surfaceNormal, bool invert)
         {
             if (!begun) return;
             ctx.Invert = invert;
@@ -115,6 +125,12 @@ namespace Orbiters.Mixer.Editor
         {
             if (!begun) return null;
             begun = false;
+            try { return Finish(cancel); }
+            finally { target.LeaveStroke(); }
+        }
+
+        private PositionEdit Finish(bool cancel)
+        {
             if (brush.PaintsMask)
             {
                 if (maskBefore.Count == 0) return null;
@@ -146,6 +162,11 @@ namespace Orbiters.Mixer.Editor
 
         // The welded vertices within the radius (each once, by its representative), with their falloff and mask weight.
         private void Gather(Vector3 center)
+        {
+            using (GatherMarker.Auto()) GatherNow(center);
+        }
+
+        private void GatherNow(Vector3 center)
         {
             var doc = target.Document;
             var n = doc.Neighbors;
@@ -186,7 +207,7 @@ namespace Orbiters.Mixer.Editor
             Steps++;
             if (brush.PaintsMask) { PaintMask(); return; }
             var moves = scratch.Moves;
-            brush.Step(ctx, moves);
+            using (BrushMarker.Auto()) brush.Step(ctx, moves);
             var n = target.Document.Neighbors;
             var skin = target.Skin;
             int mark = NextStamp();
