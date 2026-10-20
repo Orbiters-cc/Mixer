@@ -170,9 +170,6 @@ namespace Orbiters.Mixer.Editor
         {
             var bar = MixerUi.Box("mxh-topbar");
             root.Add(bar);
-            var mark = MixerUi.Box("mx-brand__mark mxh-mark");
-            var logo = new MixerLogo.Element(); logo.AddToClassList("mx-brand__logo"); mark.Add(logo);
-            bar.Add(mark);
             searchField = new TextField { value = search };
             searchField.AddToClassList("mx-field");
             searchField.AddToClassList("mxh-search");

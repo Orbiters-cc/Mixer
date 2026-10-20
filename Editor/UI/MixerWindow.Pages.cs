@@ -21,7 +21,7 @@ namespace Orbiters.Mixer.Editor
             Caption = "Mixer brings Blender's tools into Unity and links to the real Blender.",
             Logo = () =>
             {
-                var logo = new MixerLogo.Element { Color = new UnityEngine.Color(0.235f, 0.949f, 0.604f), Cut = new UnityEngine.Color(0.11f, 0.118f, 0.137f) };
+                var logo = new MixerLogo.Element { Color = new UnityEngine.Color(0.235f, 0.949f, 0.604f) };
                 logo.style.width = 80; logo.style.height = 80;
                 return logo;
             },

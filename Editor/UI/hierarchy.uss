@@ -2,8 +2,6 @@
 
 .mxh-root { background-color: var(--mx-bg); }
 .mxh-topbar { height: 34px; min-height: 34px; flex-direction: row; align-items: center; padding: 0 6px 0 8px; background-color: var(--mx-bar); border-bottom-width: 1px; border-bottom-color: var(--mx-line); flex-shrink: 0; }
-.mxh-mark { width: 22px; height: 22px; border-radius: 7px; margin-right: 6px; }
-.mxh-mark .mx-brand__logo { width: 15px; height: 15px; }
 .mxh-search { flex-grow: 1; margin: 0 4px 0 0; }
 .mxh-search .unity-base-text-field__input, .mxh-search .unity-text-field__input { min-height: 24px; height: 24px; padding-left: 26px; padding-right: 76px; border-radius: 8px; }
 /* The kind filters' menu, at the end of the search field. */

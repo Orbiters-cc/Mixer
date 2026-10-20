@@ -14,7 +14,9 @@ namespace Orbiters.Mixer.Editor
     /// Unity's Skinned Mesh Renderer inspector with Blender's shape key and vertex group panels under it: the
     /// blendshapes as a list with their values, add, duplicate, rename, mirror and delete (through a Mixer session,
     /// written to the mesh asset on Commit), and the bones and vertex groups with Paint, which enters Weight paint on
-    /// that channel. Unity's own inspector is drawn as it is, its BlendShapes foldout folded.
+    /// that channel. Each shape's target button lists where it is used: the animations animating it on this renderer, the
+    /// animator controllers playing those, and what other tools tell (MCB's corrective shapes, VRCFury's BlendShape Links).
+    /// Unity's own inspector is drawn as it is, its BlendShapes foldout folded.
     /// </summary>
     [CustomEditor(typeof(SkinnedMeshRenderer)), CanEditMultipleObjects]
     internal sealed class SkinnedMeshRendererInspector : UnityEditor.Editor
@@ -35,6 +37,12 @@ namespace Orbiters.Mixer.Editor
         private TextField groupSearch, shapeSearch;
         private string activeShape;
         private string shownShapes, shownGroups;
+        // The shape whose uses are listed under its row, the list, and whether the project's contents were all read.
+        private string usesShape;
+        private VisualElement usesPanel;
+        private bool usesComplete;
+        private UnityEngine.Object lastUsePressed;
+        private double lastUsePressTime;
 
         private SkinnedMeshRenderer Renderer => target as SkinnedMeshRenderer;
 
@@ -52,6 +60,7 @@ namespace Orbiters.Mixer.Editor
         {
             MixerSession.Changed -= Refresh;
             MixerSceneTool.Changed -= Refresh;
+            AssetContentIndex.Updated -= OnContentIndexUpdated;
             if (builtin != null) DestroyImmediate(builtin);
             builtin = null;
         }
@@ -78,6 +87,7 @@ namespace Orbiters.Mixer.Editor
             root.Add(BuildVertexGroups());
             MixerSession.Changed += Refresh;
             MixerSceneTool.Changed += Refresh;
+            AssetContentIndex.Updated += OnContentIndexUpdated;
             root.schedule.Execute(Refresh).Every(400);
             Refresh();
             return root;
@@ -183,6 +193,7 @@ namespace Orbiters.Mixer.Editor
                         listed++;
                     }
                     if (names.Count > 0 && listed == 0) shapesList.Add(MixerUi.Text("Nothing matches.", "mx-caption"));
+                    PlaceUses();
                 }
                 shapesCount.text = names.Count == 0 ? string.Empty : names.Count + (names.Count == 1 ? " shape" : " shapes");
             }
@@ -248,6 +259,9 @@ namespace Orbiters.Mixer.Editor
             });
             row.Add(slider);
             row.Add(MixerUi.Text(index >= 0 ? Renderer.GetBlendShapeWeight(index).ToString("0") : "new", "mx-shape__value"));
+            var uses = MixerUi.Icon(IconGlyph.Target, "Where it is used: animations, animator controllers, MCB's corrective shapes, VRCFury's BlendShape Links", () => ToggleUses(name), "mx-shape__target");
+            uses.EnableInClassList("mx-shape__target--on", name == usesShape);
+            row.Add(uses);
             row.Add(MixerUi.Icon(IconGlyph.Sculpt, "Sculpt this shape in the Scene view", () => SculptShape(name), "mx-shape__sculpt"));
             row.Add(MixerUi.Icon(IconGlyph.Layers, "Duplicate", () => DuplicateShape(name)));
             row.Add(MixerUi.Icon(IconGlyph.Mirror, "Mirror the +X side onto -X", () => WithSession(t => MixerSession.MirrorShape(t, name, true), "mirror " + name)));
@@ -453,6 +467,97 @@ namespace Orbiters.Mixer.Editor
             if (!Mathf.Approximately(slider.highValue, high)) slider.highValue = high;
         }
 
+        // ---- Where a shape is used --------------------------------------------------------------------------------------
+
+        private void ToggleUses(string shape)
+        {
+            if (usesShape == shape) { CloseUses(); return; }
+            usesShape = shape;
+            usesComplete = false;
+            if (usesPanel == null) usesPanel = MixerUi.Box("mx-shape-uses");
+            usesPanel.Clear();
+            usesPanel.Add(MixerUi.Text("Looking\u2026", "mx-shape-uses__note"));
+            PlaceUses();
+            // The press shows at once; the search (the project's animations and controllers) runs a frame later.
+            usesPanel.schedule.Execute(FillUses).StartingIn(16);
+        }
+
+        private void CloseUses()
+        {
+            usesShape = null;
+            usesPanel?.RemoveFromHierarchy();
+            PlaceUses();
+        }
+
+        // The list goes under its shape's row (again after the rows were rebuilt), the target buttons say which is open.
+        private void PlaceUses()
+        {
+            VisualElement owner = null;
+            foreach (var row in shapesList.Children())
+            {
+                if (row == usesPanel) continue;
+                row.Q(className: "mx-shape__target")?.EnableInClassList("mx-shape__target--on", usesShape != null && row.name == usesShape);
+                if (usesShape != null && row.name == usesShape && row.ClassListContains("mx-shape")) owner = row;
+            }
+            if (usesPanel == null) return;
+            if (owner == null) { usesPanel.RemoveFromHierarchy(); return; }
+            int at = shapesList.IndexOf(owner) + 1;
+            if (usesPanel.parent == shapesList && shapesList.IndexOf(usesPanel) == at) return;
+            usesPanel.RemoveFromHierarchy();
+            shapesList.Insert(at, usesPanel);
+        }
+
+        private void OnContentIndexUpdated()
+        {
+            if (usesShape != null && !usesComplete && root?.panel != null) FillUses();
+        }
+
+        private void FillUses()
+        {
+            if (usesShape == null || usesPanel == null || Renderer == null) return;
+            List<AssetUsages.Use> uses;
+            try { uses = AssetUsages.OfBlendshape(Renderer, usesShape, out usesComplete); }
+            catch (Exception e) { uses = new List<AssetUsages.Use>(); usesComplete = true; Debug.LogException(e); }
+            usesPanel.Clear();
+            if (uses.Count == 0)
+                usesPanel.Add(MixerUi.Text(usesComplete ? "No animation, animator controller, MCB corrective shape or VRCFury BlendShape Link uses it."
+                    : "Nothing found yet: the project's animations are still being read (" + AssetContentIndex.Progress + ").", "mx-shape-uses__note"));
+            foreach (var group in uses.GroupBy(u => u.Group))
+            {
+                var heading = MixerUi.Box("mx-shape-uses__group");
+                heading.Add(MixerUi.Text(group.Key, "mx-shape-uses__group-name"));
+                heading.Add(MixerUi.Text(group.Count().ToString(), "mx-shape-uses__group-count"));
+                usesPanel.Add(heading);
+                foreach (var use in group) usesPanel.Add(UseRow(use));
+            }
+            if (uses.Count > 0 && !usesComplete) usesPanel.Add(MixerUi.Text("Still reading the project's animations (" + AssetContentIndex.Progress + "): more may come.", "mx-shape-uses__note"));
+        }
+
+        // A click shows the place (in the Hierarchy or the Project) and keeps this inspector; a double click selects it.
+        private VisualElement UseRow(AssetUsages.Use use)
+        {
+            var row = MixerUi.Box("mx-shape-use");
+            var icon = new Image { image = use.Icon, scaleMode = ScaleMode.ScaleToFit, pickingMode = PickingMode.Ignore };
+            icon.AddToClassList("mx-shape-use__icon");
+            row.Add(icon);
+            var texts = MixerUi.Box("mx-shape-use__texts", PickingMode.Ignore);
+            texts.Add(MixerUi.Text(use.Title, "mx-shape-use__title"));
+            if (!string.IsNullOrEmpty(use.Detail)) texts.Add(MixerUi.Text(use.Detail, "mx-shape-use__detail"));
+            row.Add(texts);
+            row.tooltip = use.Title + (string.IsNullOrEmpty(use.Detail) ? "" : "\n" + use.Detail) + "\nClick: show it \u00b7 double click: select it";
+            MixerUi.Press(row, () =>
+            {
+                if (use.Target == null) return;
+                double now = EditorApplication.timeSinceStartup;
+                bool second = lastUsePressed == use.Target && now - lastUsePressTime < 0.4;
+                lastUsePressed = use.Target;
+                lastUsePressTime = now;
+                if (second) Selection.activeObject = use.Target is Component component ? component.gameObject : use.Target;
+                else MixerPing.Ping(use.Target);
+            });
+            return row;
+        }
+
         // ---- Common -----------------------------------------------------------------------------------------------------
 
         private void Refresh()
@@ -473,7 +578,7 @@ namespace Orbiters.Mixer.Editor
             head.Add(label);
             count = MixerUi.Text(string.Empty, "mx-inspector__count");
             head.Add(count);
-            var logo = new MixerLogo.Element { Color = new Color(0.235f, 0.949f, 0.604f), Cut = new Color(0.11f, 0.118f, 0.137f) };
+            var logo = new MixerLogo.Element { Color = new Color(0.235f, 0.949f, 0.604f) };
             logo.style.width = 14; logo.style.height = 14; logo.tooltip = "Mixer";
             head.Add(logo);
             card.Add(head);

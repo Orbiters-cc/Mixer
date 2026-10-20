@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
@@ -158,6 +159,35 @@ namespace Orbiters.Mixer.Editor
 
         /// <summary>A status Blender sent, as (id, message): the Mixer extension's Export for MCB reports "mcb.export" with the manifest's path.</summary>
         public static event Action<string, string> BlenderStatus;
+
+        /// <summary>
+        /// A place a blendshape is used that Mixer cannot find by itself (MCB's corrective shapes, VRCFury's BlendShape
+        /// Links), listed with the animations and animators using it in the Skinned Mesh Renderer inspector.
+        /// </summary>
+        public sealed class BlendshapeUse
+        {
+            /// <summary>The section it is listed in, e.g. "MCB corrective".</summary>
+            public string Group;
+            public string Title;
+            public string Detail;
+            /// <summary>What a click selects (a component, an object, an asset), or null.</summary>
+            public UnityEngine.Object Target;
+        }
+
+        /// <summary>Sources of <see cref="BlendshapeUse"/>s: for a renderer and one of its blendshape names, where else it is used.</summary>
+        public static event Func<SkinnedMeshRenderer, string, IEnumerable<BlendshapeUse>> BlendshapeUses;
+
+        internal static List<BlendshapeUse> ExternalBlendshapeUses(SkinnedMeshRenderer renderer, string shape)
+        {
+            var result = new List<BlendshapeUse>();
+            if (BlendshapeUses == null) return result;
+            foreach (Func<SkinnedMeshRenderer, string, IEnumerable<BlendshapeUse>> source in BlendshapeUses.GetInvocationList())
+            {
+                try { var uses = source(renderer, shape); if (uses != null) result.AddRange(uses.Where(u => u != null)); }
+                catch (Exception e) { Debug.LogException(e); }
+            }
+            return result;
+        }
 
         static MixerLink()
         {

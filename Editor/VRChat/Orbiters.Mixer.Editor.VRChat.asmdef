@@ -6,6 +6,7 @@
     "Orbiters.Mixer.Editor",
     "Orbiters.Toolkit",
     "Orbiters.Toolkit.Editor",
+    "Orbiters.Toolkit.Editor.VRChat",
     "VRC.SDK3A",
     "VRC.SDKBase",
     "VRC.SDKBase.Editor"

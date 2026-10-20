@@ -50,8 +50,8 @@ saved as a native mesh asset when you commit.
 - The Skinned Mesh Renderer inspector gains Blender's panels: **Shape keys** (the blendshapes with their values; New,
   Duplicate, Mirror, Rename by double-click, Delete, Sculpt a shape; Commit and Revert) and **Vertex groups** (the bones
   and Mixer's groups with Paint, which enters Weight paint on that channel).
-- Mixer's card in the Orbiters settings: Replace Unity's Hierarchy (on by default, also when Mixer arrives in a running
-  editor) and the Blender link.
+- Mixer's card in the Orbiters settings: Replace Unity's Hierarchy and Replace Unity's Project window (both on by
+  default, also when Mixer arrives in a running editor) and the Blender link.
 - Fixed: Ctrl+Z after a sculpt stroke left the normals of the previous state; the Mixer Hierarchy's fold arrows, eye and
   lock did not react to clicks.
 - Review fixes: commits never overwrite another mesh asset of the same name; a picked shape loads at once; unedited
@@ -157,6 +157,29 @@ saved as a native mesh asset when you commit.
   `Library/Orbiters/Mixer/stroke-timings.log` (press to first move, to first upload and to the first frame the skinned
   renderer shows it, read back from the GPU; uploads against changes seen on the GPU and the longest wait for one;
   frames; garbage collections).
+- The Mixer Project window replaces Unity's Project window (switch it off in its menu or the Orbiters settings):
+  folders on the left with a **Recent** list at the top (the assets selected or opened lately, anywhere in the editor,
+  by day); on the right the open folder as a tree whose folders unfold in place (their arrow; Alt: everything below),
+  **Unfold all** and **Fold all**, and a double click that opens a folder. Sort by name, date added or date modified;
+  a "new" chip on what was added in the last 24 hours. As in Unity's window, the status bar's slider turns the
+  list into an icon grid with a picture of each asset, at the size it is set to (all the way left: the list). A click on a folder never changes Unity's
+  selection, so the Inspector keeps what it shows; a click on a file selects it as Unity's does. The top bar creates a
+  folder, a material, an animation or an animator controller in the highlighted folder (else the open one), renamed in
+  place; the context menu adds Unity's own Create items, Rename, Duplicate, Delete, Copy Path, Show in Explorer and
+  Reimport; drag assets onto folders to move them, files from Explorer to import them, scene objects to make prefabs.
+- The search finds names (Unity's `t:` filters work) and what assets hold: animator controllers' parameters, layers,
+  states and blend trees, animations' paths, properties, blendshapes and events, VRChat's expression parameters and
+  menus, and the fields of components in prefabs and scenes (VRChat's, VRCFury's, any tool's). The contents are read
+  on a worker thread and kept in `Library/Orbiters/Mixer/content-index.bin`, brought up to date after imports.
+- A target button on each file shows where it is used: in the open scenes (the objects referencing it, directly or
+  through a material or a controller) and in the project, animator controllers first with the layers and states that
+  play an animation. One place is selected at once; several open a side panel listing them, a click selecting one, a
+  double click framing it in the Scene view or opening it.
+- Each shape of the Skinned Mesh Renderer inspector's **Shape keys** has a target button listing where it is used: the
+  animations animating it on that renderer, the animator controllers playing them (on this avatar or not), and what
+  other tools register through `MixerLink.BlendshapeUses`: MCB's corrective shapes on a custom base and VRCFury's
+  BlendShape Links (the base shape a linked skin follows, the linked shapes a base shape drives). A click shows the
+  place in the Mixer Hierarchy or Project without changing the selection; a double click selects it.
 - Requires Orbiters Toolkit 0.4.1, which holds the avatar gizmos (bones, weight paint, mesh edges, avatar budget) and
   lets Mixer take the armature overlay's bone clicks.
 
@@ -206,11 +229,27 @@ arrives as a collection `Unity: <scene>`; skinned meshes get an armature built f
 ## Mixer Hierarchy
 
 Tools, Orbiters, Mixer Hierarchy, or in place of Unity's Hierarchy. Ctrl+F searches (`t:Light`, `c:Rigidbody` by
-type), the chips filter by kind, arrows move, F2 renames, Delete deletes, Ctrl+D duplicates, Alt+click opens or closes
-a branch with everything under it, double-click frames the object. Drag rows to reparent or reorder, drop prefabs from
-the Project. The eye and lock at the right switch the Scene view visibility and picking. The dot before each object
-is its Blender state: green in the Blender project, grey kept out, violet being edited in Blender, hollow when Blender
-is not linked.
+type), the Filter menu in the search field filters by kind, arrows move, F2 renames, Delete deletes, Ctrl+D duplicates,
+Alt+click opens or closes a branch with everything under it, double-click frames the object. Drag rows to reparent or
+reorder, drop prefabs from the Project. The eye and lock at the right switch the Scene view visibility and picking.
+With Blender dots on (window menu), the dot before each object is its Blender state: green in the Blender project,
+grey kept out, violet being edited in Blender, hollow when Blender is not linked.
+
+## Mixer Project
+
+Tools, Orbiters, Mixer Project, or in place of Unity's Project window. Folders on the left (Recent first, then Assets
+and the packages by name); the open folder on the right, its folders unfolding in place with their arrow (Alt+click:
+everything below) or Unfold all and Fold all in the path bar; double-click opens a folder or a file. The slider at the
+right of the status bar sets the icons' size: all the way left is the list, further right an icon grid (arrows move
+through the tiles). Arrows move, Right
+and Left unfold and fold, Enter opens, F2 renames, Delete deletes (to the Recycle Bin, after asking), Ctrl+D duplicates,
+Backspace goes up, Ctrl+F searches. A click on a folder lights it up here only: Unity's selection and the Inspector stay
+as they were. The four buttons at the top create a folder, a material, an animation or an animator controller in the
+highlighted folder, or the open one. The target button on a file lists where it is used.
+
+Unity creates the assets of its main menu's **Assets > Create** in Assets when no Unity Project window is open; the
+Mixer Project's own Create menu (right-click) puts them in the folder you clicked. Unity's pings (a click on an object
+field) do not reach the Mixer Project; selecting the asset shows it.
 
 ## Armature
 
