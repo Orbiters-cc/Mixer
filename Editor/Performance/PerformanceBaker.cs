@@ -20,8 +20,8 @@ namespace Orbiters.Mixer.Editor.Performance
         /// <summary>Face and everything the avatar's animator animates (blend shapes, toggles, materials).</summary>
         public bool Face = true;
         public bool Visemes = true;
-        /// <summary>The body: exactly as VRChat showed it when the session has the capture kit's skeleton, else from the
-        /// SteamVR devices (needs a T-pose calibration) on top of the animated pose.</summary>
+        /// <summary>The body: exactly as VRChat showed it when the session has the capture kit's skeleton, else on top of
+        /// the animated pose from the SteamVR devices calibrated by a T-pose, else from VRChat's head and wrist poses.</summary>
         public bool Body = true;
         /// <summary>Joystick movement estimated from VRChat's velocity parameters.</summary>
         public bool Locomotion = true;
@@ -42,6 +42,8 @@ namespace Orbiters.Mixer.Editor.Performance
         public bool BodyFromTracking;
         /// <summary>The body came from the capture kit's skeleton band (VRChat's own pose).</summary>
         public bool BodyFromSkeleton;
+        /// <summary>The body came from VRChat's head and wrist poses (no T-pose needed).</summary>
+        public bool BodyFromVrChat;
         public TimeSpan Elapsed;
     }
 
@@ -89,31 +91,39 @@ namespace Orbiters.Mixer.Editor.Performance
                 bool humanoid = animator.avatar != null && animator.avatar.isHuman;
                 if (!humanoid) result.Warnings.Add(avatar.name + " is not humanoid: only what its animator animates is baked, no body.");
 
-                // Body: VRChat's own pose from the capture kit, else devices to bones from the calibration, measured
-                // on the copy's T-pose (before any animation).
+                // Body: VRChat's own pose from the capture kit, else devices to bones from a T-pose calibration (any
+                // game), else VRChat's head and wrist poses, measured on the copy's T-pose (before any animation).
                 BodyRig rig = humanoid ? new BodyRig(animator) : null;
                 BodyCalibration calibration = null;
                 BodySolver solver = null;
+                IPoseSource devices = tracking;
                 SkeletonReplay skeleton = options.Body && humanoid && session.HasSkeleton ? new SkeletonReplay(session.Skeleton, animator) : null;
                 result.BodyFromSkeleton = skeleton != null;
                 ushort identity = CaptureKit.Identity(avatar);
                 if (skeleton != null && session.Skeleton.All(f => f.Pose.Avatar != identity))
                     result.Warnings.Add("The capture kit in this session was on another avatar than " + avatar.name + ": its pose may not fit this armature.");
-                if (skeleton == null && options.Body && humanoid && rig.Valid && session.HasTracking)
+                if (skeleton == null && options.Body && humanoid && rig.Valid)
                 {
-                    var c = session.CalibrationAt(start);
-                    if (c == null)
+                    Vector3 eye = copy.transform.TransformPoint(descriptor.ViewPosition);
+                    var c = session.HasTracking ? session.CalibrationAt(start) : null;
+                    var vrchat = new VrChatPoses(timeline);
+                    if (c != null)
                     {
-                        result.Warnings.Add("No T-pose calibration in this session: the body follows the animation only. Calibrate in Orbiters' SteamVR tab before recording.");
-                    }
-                    else
-                    {
-                        Vector3 eye = copy.transform.TransformPoint(descriptor.ViewPosition);
                         calibration = BodyCalibration.Build(c, tracking.Devices, rig, eye, result.Warnings);
-                        if (calibration != null) solver = new BodySolver(rig);
                     }
+                    else if (vrchat.Has(VrChatPoses.Head))
+                    {
+                        calibration = BodyCalibration.FromVrChat(vrchat, rig, eye, start, result.Warnings);
+                        devices = vrchat;
+                        result.BodyFromVrChat = calibration != null;
+                    }
+                    else if (session.HasTracking)
+                    {
+                        result.Warnings.Add("No T-pose calibration in this session: the body follows the animation only. Calibrate in Orbiters' SteamVR tab before recording (in VRChat there is no need: it sends its head and hand poses).");
+                    }
+                    if (calibration != null) solver = new BodySolver(rig);
                 }
-                result.BodyFromTracking = solver != null;
+                result.BodyFromTracking = solver != null && !result.BodyFromVrChat;
 
                 stack = VrcLayerStack.Build(descriptor, animator, options.Viewer, recorded);
                 result.Warnings.AddRange(stack.Warnings);
@@ -172,7 +182,7 @@ namespace Orbiters.Mixer.Editor.Performance
                         targets.Clear();
                         foreach (var pair in calibration.Bindings)
                         {
-                            if (!tracking.TryPose(pair.Value.Device, t, out var p, out var r))
+                            if (!devices.TryPose(pair.Value.Device, t, out var p, out var r))
                             {
                                 targets[pair.Key] = default;
                                 continue;

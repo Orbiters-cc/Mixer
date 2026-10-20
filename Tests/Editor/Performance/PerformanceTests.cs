@@ -186,6 +186,109 @@ namespace Orbiters.Mixer.Editor.Performance.Tests
             Assert.Less(Vector3.Distance(rig.Head.position, targets[BodyTarget.Head].Position), 0.02f);
         }
 
+        /// <summary>A session in which VRChat sent its head and wrist poses 90 times a second for <paramref name="seconds"/>.</summary>
+        static PerformanceSession VrChatSession(double seconds, Func<double, int, (Vector3 position, Quaternion rotation)> pose)
+        {
+            var s = new PerformanceSession { Name = "VRChat poses", Parameters = new ParameterTable() };
+            var ids = new ushort[3, 6];
+            ushort id = 0;
+            for (int part = 0; part < 3; part++)
+                for (int k = 0; k < 6; k++)
+                {
+                    ids[part, k] = id;
+                    s.Parameters.Parameters.Add(new ParameterTable.ParameterInfo { Id = id++, Name = VrChatPoses.Address(part) + "[" + k + "]", Address = VrChatPoses.Address(part), Kind = "float" });
+                }
+            for (int i = 0; i <= seconds * 90; i++)
+            {
+                double t = i / 90.0;
+                for (int part = 0; part < 3; part++)
+                {
+                    var (p, r) = pose(t, part);
+                    var e = r.eulerAngles;
+                    float[] v = { p.x, p.y, p.z, e.x, e.y, e.z };
+                    for (int k = 0; k < 6; k++) s.Changes.Add(ParameterChange.Float((ulong)Math.Round(t * 1e9), ids[part, k], v[k]));
+                }
+            }
+            return s;
+        }
+
+        [Test]
+        public void VrChatHeadAndWristsMoveTheBodyWithoutACalibration()
+        {
+            // Eyes at 1.75 m, standing at (1, 0, 2) facing +X, hands out in front (controllers upright) but hanging every
+            // other second for a while. VRChat's wrist frames are made odd on purpose: the left has the fingers along +X
+            // and the thumb along -Z, the right the fingers along -Y and the thumb along +X.
+            var face = Quaternion.Euler(0f, 90f, 0f);
+            Vector3 fwd = face * Vector3.forward, right = face * Vector3.right;
+            var head = new Vector3(1f, 1.75f, 2f);
+            var frames = new[] { Quaternion.LookRotation(Vector3.right, Vector3.back), Quaternion.LookRotation(Vector3.down, Vector3.right) };
+            (Vector3 wrist, Vector3 fingers, Vector3 thumb) Hand(double t, float side)
+            {
+                var shoulder = head + face * new Vector3(0.18f * side, -0.25f, -0.08f);
+                if (t % 2.0 > 1.6) return (shoulder + Vector3.down * 0.55f, Vector3.down, fwd);
+                float sway = Mathf.Sin((float)t * 3f) * 0.1f;
+                var fingers = (fwd * 0.95f + Vector3.down * (0.15f + sway) - right * side * 0.2f).normalized;
+                return (shoulder + fwd * 0.4f + Vector3.down * 0.1f + Vector3.up * sway * 0.5f, fingers, Vector3.ProjectOnPlane(Vector3.up, fingers).normalized);
+            }
+            (Vector3, Quaternion) Pose(double t, int part)
+            {
+                if (part == VrChatPoses.Head) return (head + fwd * Mathf.Sin((float)t) * 0.05f, face * Quaternion.Euler(Mathf.Sin((float)t * 2f) * 10f, 0f, 0f));
+                var (wrist, fingers, thumb) = Hand(t, part == VrChatPoses.LeftWrist ? -1f : 1f);
+                return (wrist, Quaternion.LookRotation(fingers, thumb) * Quaternion.Inverse(frames[part - 1]));
+            }
+            var session = VrChatSession(6.0, Pose);
+            var vr = new VrChatPoses(ParameterTimeline.Build(session));
+            Assert.IsTrue(vr.Has(VrChatPoses.Head) && vr.Has(VrChatPoses.LeftWrist) && vr.Has(VrChatPoses.RightWrist));
+            Assert.IsTrue(vr.TryPose(VrChatPoses.Head, 1.0 + 0.5 / 90.0, out var midway, out _));
+            Assert.AreEqual(1.75f, midway.y, 1e-4f);
+            Assert.IsTrue(vr.TryPose(VrChatPoses.Head, 6.5, out _, out _), "a pose holds without new messages");
+            Assert.IsFalse(vr.TryPose(VrChatPoses.Head, 7.5, out _, out _), "but not for long");
+
+            // The wrist frames are read from the movement.
+            for (int part = VrChatPoses.LeftWrist; part <= VrChatPoses.RightWrist; part++)
+            {
+                var axes = BodyCalibration.WristAxes(vr, part, part == VrChatPoses.LeftWrist ? -1f : 1f, out bool sure);
+                Assert.IsTrue(sure, "wrist " + part);
+                Assert.Less(Quaternion.Angle(axes, frames[part - 1]), 0.1f, "wrist " + part);
+            }
+
+            var avatar = TestAvatar.Build(scene);
+            var rig = new BodyRig(avatar.GetComponent<Animator>());
+            var descriptor = avatar.GetComponent<VRCAvatarDescriptor>();
+            var eye = avatar.transform.TransformPoint(descriptor.ViewPosition);
+            var warnings = new List<string>();
+            var calibration = BodyCalibration.FromVrChat(vr, rig, eye, 0.0, warnings);
+            Assert.IsNotNull(calibration);
+            CollectionAssert.IsEmpty(warnings);
+            Assert.AreEqual(eye.y / 1.75f, calibration.Scale, 1e-3f);
+            Assert.Less(Vector3.Angle(calibration.ToAvatar(face) * Vector3.forward, Vector3.forward), 0.01f, "the person's forward is the avatar's");
+            var fingersBone = Quaternion.Inverse(rig.RightHand.rotation) * (rig.RightHand.position - rig.RightLowerArm.position).normalized;
+            var thumbBone = Quaternion.Inverse(rig.RightHand.rotation) * Vector3.forward;
+
+            // A second in, the hands reach the wrists, the right hand's fingers and thumb point where the person's do,
+            // and the head sits at the eyes.
+            const double at = 1.0;
+            var targets = new Dictionary<BodyTarget, BodySolver.Pose>();
+            foreach (var pair in calibration.Bindings)
+            {
+                Assert.IsTrue(vr.TryPose(pair.Value.Device, at, out var p, out var r));
+                Vector3 dp = calibration.ToAvatar(p);
+                Quaternion dr = calibration.ToAvatar(r);
+                targets[pair.Key] = new BodySolver.Pose { Valid = true, Position = dp + dr * pair.Value.PositionOffset, Rotation = dr * pair.Value.RotationOffset };
+            }
+            new BodySolver(rig).Solve(targets, new TrackingState(), 1f / 60f);
+            var (rightWrist, rightFingers, rightThumb) = Hand(at, 1f);
+            Assert.Less(Vector3.Distance(rig.RightHand.position, calibration.ToAvatar(rightWrist)), 0.02f);
+            Assert.Less(Vector3.Angle(rig.RightHand.rotation * fingersBone, calibration.PlayRotation * rightFingers), 0.5f);
+            Assert.Less(Vector3.Angle(rig.RightHand.rotation * thumbBone, calibration.PlayRotation * rightThumb), 0.5f);
+            Assert.Less(Vector3.Distance(rig.Head.position, targets[BodyTarget.Head].Position), 0.02f);
+
+            // The bake takes that path by itself.
+            var result = PerformanceBaker.Bake(session, descriptor, new BakeOptions { FrameRate = 30f, End = 2.0, Face = false, Audio = false, Timeline = false, OutputFolder = Folder });
+            Assert.IsTrue(result.BodyFromVrChat, string.Join("\n", result.Warnings));
+            Assert.IsFalse(result.BodyFromTracking);
+        }
+
         [Test]
         public void SkeletonFramesPoseTheAvatarExactly()
         {

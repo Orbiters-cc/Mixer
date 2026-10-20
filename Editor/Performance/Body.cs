@@ -204,6 +204,108 @@ namespace Orbiters.Mixer.Editor.Performance
                 warnings.Add("A tracker (" + (devices.Devices.Count > device ? devices.Devices[device].Serial : "#" + device) + ") is not near any bone the IK uses: left out.");
             return c;
         }
+
+        /// <summary>
+        /// Binds VRChat's head and wrist poses (<see cref="VrChatPoses"/>) to the head and hands, without a T-pose: the
+        /// person's standing eye height is the session's usual top of the headset (90th percentile), the play space turns
+        /// so the headset faces the avatar's forward at <paramref name="start"/>, the headset looking ahead is the avatar's
+        /// view, and the wrists are where the hands go (VRChat places them). <paramref name="rig"/> is posed in its T-pose
+        /// (and left so); <paramref name="eye"/> is the avatar's view position in the copy's space.
+        /// </summary>
+        public static BodyCalibration FromVrChat(VrChatPoses vr, BodyRig rig, Vector3 eye, double start, List<string> warnings)
+        {
+            var heads = vr.Samples(VrChatPoses.Head);
+            if (heads.Count == 0)
+            {
+                warnings.Add("VRChat sent no headset pose.");
+                return null;
+            }
+            var c = new BodyCalibration();
+            rig.TPose();
+            var heights = heads.Select(s => s.Position.y).Where(y => y > 0.3f).OrderBy(y => y).ToList();
+            float personEye = heights.Count > 0 ? heights[(int)(0.9f * (heights.Count - 1))] : 1.6f;
+            if (personEye < 1.1f) warnings.Add("The headset stayed below 1.1 m (seated?): the avatar is sized as if that were standing height.");
+            c.Scale = eye.y / Mathf.Max(0.5f, personEye);
+            if (!vr.TryPose(VrChatPoses.Head, start, out var hp, out var hr))
+            {
+                var first = heads.FirstOrDefault(s => s.Time >= start);
+                if (first.Time < start) first = heads[heads.Count - 1];
+                hp = first.Position;
+                hr = first.Rotation;
+            }
+            c.PlayRotation = Quaternion.Euler(0f, -BodySolver.YawOf(hr), 0f);
+            c.PlayPivot = new Vector3(hp.x, 0f, hp.z);
+            c.AvatarPivot = new Vector3(eye.x, 0f, eye.z);
+            c.Bindings[BodyTarget.Head] = new Binding { Device = VrChatPoses.Head, PositionOffset = rig.Head.position - eye, RotationOffset = rig.Head.rotation };
+
+            foreach (var (part, target, hand, lower, side) in new[]
+            {
+                (VrChatPoses.LeftWrist, BodyTarget.LeftHand, rig.LeftHand, rig.LeftLowerArm, -1f),
+                (VrChatPoses.RightWrist, BodyTarget.RightHand, rig.RightHand, rig.RightLowerArm, 1f),
+            })
+            {
+                string name = side < 0 ? "left" : "right";
+                if (!vr.Has(part))
+                {
+                    warnings.Add("VRChat sent no " + name + " wrist pose: that hand follows the animation.");
+                    continue;
+                }
+                var axes = WristAxes(vr, part, side, out bool sure);
+                if (!sure) warnings.Add("Too little " + name + " hand movement to tell how VRChat's wrist pose sits on the hand: its rotation may be off.");
+                // The hand bone's own axes in the T-pose (palms down): along the forearm, and forward (the thumb's side).
+                var inv = Quaternion.Inverse(hand.rotation);
+                var bone = Quaternion.LookRotation(inv * (hand.position - lower.position).normalized, inv * rig.Root.forward);
+                c.Bindings[target] = new Binding { Device = part, PositionOffset = Vector3.zero, RotationOffset = axes * Quaternion.Inverse(bone) };
+            }
+            return c;
+        }
+
+        /// <summary>
+        /// How VRChat's wrist pose sits on the hand (not documented): a rotation from the hand's axes (forward toward the
+        /// fingers, up the thumb's side) to the pose's own, read from the session. On average a hand points away from its
+        /// shoulder (estimated under the headset), and while the hands are out in front, controllers held upright, the
+        /// thumb's side is up; each estimate snaps to the nearest of the pose's axes (VRChat's frame is square to the hand),
+        /// so a fair estimate gives the exact frame. <paramref name="sure"/> is false when the session shows too little:
+        /// the frame is then the headset's (fingers forward, thumb up).
+        /// </summary>
+        internal static Quaternion WristAxes(VrChatPoses vr, int part, float side, out bool sure)
+        {
+            var wrists = vr.Samples(part);
+            var frames = new List<Quaternion>();
+            Vector3 along = Vector3.zero;
+            int step = Math.Max(1, wrists.Count / 4000);
+            for (int i = 0; i < wrists.Count; i += step)
+            {
+                var w = wrists[i];
+                if (!vr.TryPose(VrChatPoses.Head, w.Time, out var hp, out var hr)) continue;
+                var shoulder = hp + Quaternion.Euler(0f, BodySolver.YawOf(hr), 0f) * new Vector3(0.18f * side, -0.25f, -0.08f);
+                var reach = w.Position - shoulder;
+                if (reach.magnitude < 0.2f) continue;
+                along += Quaternion.Inverse(w.Rotation) * reach.normalized;
+                frames.Add(w.Rotation);
+            }
+            sure = false;
+            if (frames.Count < 30 || along.magnitude < 0.5f * frames.Count) return Quaternion.identity;
+            Vector3 fingers = along.normalized, thumb = Vector3.zero;
+            foreach (var r in frames) thumb += Quaternion.Inverse(r) * Vector3.ProjectOnPlane(Vector3.up, r * fingers);
+            if (thumb.magnitude < 0.1f * frames.Count) return Quaternion.identity;
+            thumb.Normalize();
+            var axes = new[] { Vector3.right, Vector3.left, Vector3.up, Vector3.down, Vector3.forward, Vector3.back };
+            float best = float.MinValue;
+            Vector3 bestFingers = Vector3.forward, bestThumb = Vector3.up;
+            foreach (var a in axes)
+                foreach (var b in axes)
+                {
+                    if (Mathf.Abs(Vector3.Dot(a, b)) > 0.5f) continue;
+                    float score = Vector3.Dot(fingers, a) + Vector3.Dot(thumb, b);
+                    if (score <= best) continue;
+                    best = score;
+                    bestFingers = a;
+                    bestThumb = b;
+                }
+            sure = Vector3.Dot(fingers, bestFingers) > 0.6f && Vector3.Dot(thumb, bestThumb) > 0.5f;
+            return sure ? Quaternion.LookRotation(bestFingers, bestThumb) : Quaternion.identity;
+        }
     }
 
     /// <summary>
@@ -292,7 +394,7 @@ namespace Orbiters.Mixer.Editor.Performance
             Leg(rig.RightUpperLeg, rig.RightLowerLeg, rig.RightFoot, targets, BodyTarget.RightFoot, BodyTarget.RightKnee, tracking.RightFoot, animRightFoot, animRightKnee);
         }
 
-        static float YawOf(Quaternion q)
+        internal static float YawOf(Quaternion q)
         {
             var f = Vector3.ProjectOnPlane(q * Vector3.forward, Vector3.up);
             return f.sqrMagnitude > 1e-6f ? Mathf.Atan2(f.x, f.z) * Mathf.Rad2Deg : 0f;

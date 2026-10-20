@@ -32,6 +32,8 @@ namespace Orbiters.Mixer.Editor.Performance
             public DateTime When;
             public double Seconds;
             public bool Face, Voice, Sound, Body, Kit;
+            /// <summary>VRChat sent its head and wrist poses.</summary>
+            public bool VrChatBody;
             public int Calibrations;
         }
 
@@ -179,7 +181,7 @@ namespace Orbiters.Mixer.Editor.Performance
             parent.Add(card);
             bodyBox.Add(MixerUi.Setting("Face and toggles", "Everything the avatar's animator showed: face tracking, gestures, toggles", new ToggleSwitch(face, v => { face = v; Refresh(); }), first: true));
             bodyBox.Add(MixerUi.Setting("Lip sync", "The visemes VRChat showed from your voice", new ToggleSwitch(visemes, v => { visemes = v; Refresh(); })));
-            bodyBox.Add(MixerUi.Setting("Body", "VRChat's own pose with the capture kit; otherwise from the headset, controllers and trackers, calibrated by your T-pose", new ToggleSwitch(body, v => { body = v; Refresh(); })));
+            bodyBox.Add(MixerUi.Setting("Body", "VRChat's own pose with the capture kit; otherwise from the headset, controllers and trackers calibrated by your T-pose, or from VRChat's head and hand poses", new ToggleSwitch(body, v => { body = v; Refresh(); })));
             bodyBox.Add(MixerUi.Setting("Joystick movement", "Where VRChat moved you, estimated from its velocity", new ToggleSwitch(locomotion, v => { locomotion = v; Refresh(); })));
             bodyBox.Add(MixerUi.Setting("Audio", "Voice and VRChat's sound, lined up with the clip", new ToggleSwitch(audio, v => { audio = v; Refresh(); })));
             bodyBox.Add(MixerUi.Setting("Timeline", "A Timeline with the clip and the audio, ready to play", new ToggleSwitch(timeline, v => { timeline = v; Refresh(); })));
@@ -242,6 +244,15 @@ namespace Orbiters.Mixer.Editor.Performance
                 // A session still being written: list it with what the folder shows.
             }
             info.Face = File.Exists(Path.Combine(folder, PerformanceFiles.Parameters));
+            try
+            {
+                string table = Path.Combine(folder, PerformanceFiles.ParameterTable);
+                info.VrChatBody = File.Exists(table) && File.ReadAllText(table).Contains(VrChatPoses.Address(VrChatPoses.Head));
+            }
+            catch (IOException)
+            {
+                // Being written.
+            }
             info.Body = File.Exists(Path.Combine(folder, PerformanceFiles.Tracking));
             info.Kit = File.Exists(Path.Combine(folder, PerformanceFiles.Skeleton));
             return info;
@@ -266,7 +277,9 @@ namespace Orbiters.Mixer.Editor.Performance
                 if (s.Voice) chips.Add(MixerUi.Chip("Voice"));
                 if (s.Sound) chips.Add(MixerUi.Chip("Sound"));
                 if (s.Kit) chips.Add(MixerUi.Chip("Body · exact", accent: true));
-                else if (s.Body) chips.Add(MixerUi.Chip(s.Calibrations > 0 ? "Body" : "Body · no T-pose"));
+                else if (s.Body && s.Calibrations > 0) chips.Add(MixerUi.Chip("Body"));
+                else if (s.VrChatBody) chips.Add(MixerUi.Chip("Body · VRChat"));
+                else if (s.Body) chips.Add(MixerUi.Chip("Body · no T-pose"));
                 row.Add(chips);
                 string folder = s.Folder;
                 MixerUi.Press(row, () =>
@@ -394,7 +407,11 @@ namespace Orbiters.Mixer.Editor.Performance
             MixerUi.Show(resultBox, true);
             resultBody.Add(MixerUi.Setting("Clip", r.Frames + " frames · " + r.Curves + " curves · " + MixerUi.Count(r.Keys) + " keys · " + r.Elapsed.TotalSeconds.ToString("0.0") + " s",
                 MixerUi.Pill("Select", () => { Selection.activeObject = r.Clip; EditorGUIUtility.PingObject(r.Clip); }, "ghost"), first: true));
-            resultBody.Add(MixerUi.Setting("Body", r.BodyFromSkeleton ? "Exactly as VRChat showed it (capture kit)" : r.BodyFromTracking ? "From SteamVR tracking, calibrated by the T-pose" : "From the animation (no tracking or calibration)", null));
+            string bodyFrom = r.BodyFromSkeleton ? "Exactly as VRChat showed it (capture kit)"
+                : r.BodyFromTracking ? "From SteamVR tracking, calibrated by the T-pose"
+                : r.BodyFromVrChat ? "From VRChat's head and hand poses"
+                : "From the animation (no tracking or calibration)";
+            resultBody.Add(MixerUi.Setting("Body", bodyFrom, null));
             foreach (string a in r.AudioPaths) resultBody.Add(MixerUi.Setting("Audio", Path.GetFileName(a), MixerUi.Pill("Select", () => Selection.activeObject = AssetDatabase.LoadAssetAtPath<AudioClip>(a), "ghost")));
             if (!string.IsNullOrEmpty(r.TimelinePath))
                 resultBody.Add(MixerUi.Setting("Timeline", Path.GetFileName(r.TimelinePath), MixerUi.Pill("Select", () => Selection.activeObject = AssetDatabase.LoadMainAssetAtPath(r.TimelinePath), "ghost")));
