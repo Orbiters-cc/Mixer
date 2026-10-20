@@ -15,6 +15,7 @@ namespace Orbiters.Mixer.Editor
         private Label weightValueLabel, weightRadiusValue, weightStrengthValue, boneCaption, groupCaption, hoverCaption;
         private ToggleSwitch normalizeSwitch;
         private TextField boneSearch, newGroupField;
+        private MixerSearch boneSearchOptions;
         private ListView boneList;
         private VisualElement groupChips, boneCard;
         private List<int> shownBones = new List<int>();
@@ -32,6 +33,7 @@ namespace Orbiters.Mixer.Editor
             boneSearch.AddToClassList("mx-field");
             boneSearch.tooltip = "Search bones";
             boneSearch.RegisterValueChangedCallback(_ => RefreshBoneList(true));
+            boneSearchOptions = new MixerSearch(boneSearch, "WeightBones", () => RefreshBoneList(true));
             boneBody.Add(boneSearch);
             boneList = new ListView(shownBones, 22f, MakeBoneRow, BindBoneRow);
             boneList.AddToClassList("mx-list");
@@ -158,12 +160,12 @@ namespace Orbiters.Mixer.Editor
             shownBones = new List<int>();
             if (target != null && target.Skinned != null)
             {
-                string q = boneSearch.value.Trim();
+                var q = boneSearchOptions.Pattern;
                 var bones = target.Skinned.bones;
                 for (int i = 0; i < bones.Length; i++)
                 {
                     if (bones[i] == null) continue;
-                    if (q.Length > 0 && bones[i].name.IndexOf(q, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                    if (!q.Matches(bones[i].name)) continue;
                     shownBones.Add(i);
                 }
             }

@@ -33,7 +33,6 @@ namespace Orbiters.Mixer.Editor
         /// <summary>Kept out of Blender (itself or through an ancestor).</summary>
         public bool Excluded;
         public bool BlenderOwned;
-        public bool MixerEdited;
         /// <summary>Holds a mesh or has one below: shown taller, with a picture of its meshes.</summary>
         public bool HasMeshes;
         /// <summary>A VRChat avatar's root (its avatar descriptor).</summary>
@@ -60,9 +59,10 @@ namespace Orbiters.Mixer.Editor
     /// <summary>What the search and the filter chips keep.</summary>
     internal sealed class HierarchyFilter
     {
-        public string Text = string.Empty;
+        /// <summary>The search: words found in the name (with t: and c: for types), or a regular expression over it.</summary>
+        public SearchPattern Pattern = SearchPattern.Empty;
         public bool Meshes, Skinned, Lights, Cameras, Prefabs, Missing, Inactive;
-        public bool Any => !string.IsNullOrEmpty(Text) || Meshes || Skinned || Lights || Cameras || Prefabs || Missing || Inactive;
+        public bool Any => !Pattern.IsEmpty || Meshes || Skinned || Lights || Cameras || Prefabs || Missing || Inactive;
     }
 
     /// <summary>
@@ -85,7 +85,6 @@ namespace Orbiters.Mixer.Editor
         public readonly HashSet<int> FoldedScenes = new HashSet<int>();
         private readonly HashSet<int> excludedIds = new HashSet<int>();
         private readonly HashSet<int> ownedIds = new HashSet<int>();
-        private readonly HashSet<int> editedIds = new HashSet<int>();
         /// <summary>The avatars shown, with their armatures; cleared when the hierarchy changes.</summary>
         public readonly HierarchyAvatars Avatars = new HierarchyAvatars();
         private bool loaded;
@@ -180,7 +179,7 @@ namespace Orbiters.Mixer.Editor
                 PrefabMissing = PrefabUtility.IsPrefabAssetMissing(go),
                 MissingScript = GameObjectUtility.GetMonoBehavioursWithMissingScriptCount(go) > 0,
                 Hidden = SceneVisibilityManager.instance.IsHidden(go), PickingDisabled = SceneVisibilityManager.instance.IsPickingDisabled(go),
-                Excluded = excluded, BlenderOwned = ownedIds.Contains(id), MixerEdited = editedIds.Contains(id),
+                Excluded = excluded, BlenderOwned = ownedIds.Contains(id),
                 HasMeshes = HasMeshBelow(t), VrchatAvatar = HierarchyAvatars.IsVrchatAvatar(go), Light = go.GetComponent<Light>(),
             };
             if (HierarchyAvatars.IsAvatarRoot(go))
@@ -218,10 +217,11 @@ namespace Orbiters.Mixer.Editor
         // Rows that match stay with their ancestors (dimmed); the rest go.
         private void ApplyFilter(HierarchyFilter filter)
         {
-            string text = filter.Text.Trim();
+            var pattern = filter.Pattern ?? SearchPattern.Empty;
             string typeName = null, componentName = null;
             var words = new List<string>();
-            foreach (string token in text.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries))
+            // A regular expression is matched against names as it is; plain words may name types with t: and c:.
+            foreach (string token in pattern.IsRegex || pattern.IsEmpty ? Array.Empty<string>() : pattern.Text.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries))
             {
                 if (token.StartsWith("t:", StringComparison.OrdinalIgnoreCase)) typeName = token.Substring(2);
                 else if (token.StartsWith("c:", StringComparison.OrdinalIgnoreCase)) componentName = token.Substring(2);
@@ -234,7 +234,7 @@ namespace Orbiters.Mixer.Editor
             {
                 var row = Rows[i];
                 while (ancestors.Count > 0 && Rows[ancestors.Peek()].Depth >= row.Depth) ancestors.Pop();
-                bool match = !row.IsScene && Matches(row, words, typeName, componentName, filter);
+                bool match = !row.IsScene && Matches(row, pattern, words, typeName, componentName, filter);
                 matched[i] = match;
                 if (match)
                 {
@@ -255,10 +255,11 @@ namespace Orbiters.Mixer.Editor
             Rows.AddRange(kept);
         }
 
-        private static bool Matches(HierarchyRow row, List<string> words, string typeName, string componentName, HierarchyFilter filter)
+        private static bool Matches(HierarchyRow row, SearchPattern pattern, List<string> words, string typeName, string componentName, HierarchyFilter filter)
         {
             var go = row.Object;
-            foreach (string w in words) if (go.name.IndexOf(w, StringComparison.OrdinalIgnoreCase) < 0) return false;
+            if (pattern.IsRegex) { if (!pattern.Matches(go.name)) return false; }
+            else foreach (string w in words) if (go.name.IndexOf(w, pattern.Comparison) < 0) return false;
             if (typeName != null && !row.Components.Any(c => c != null && c.GetType().Name.IndexOf(typeName, StringComparison.OrdinalIgnoreCase) >= 0)) return false;
             if (componentName != null && !row.Components.Any(c => c != null && c.GetType().Name.IndexOf(componentName, StringComparison.OrdinalIgnoreCase) >= 0)) return false;
             bool anyKind = filter.Meshes || filter.Skinned || filter.Lights || filter.Cameras || filter.Prefabs || filter.Missing || filter.Inactive;
@@ -276,7 +277,7 @@ namespace Orbiters.Mixer.Editor
         // Each scene keeps its own exclusions (where the Blender link and MixerLink.IsKeptOutOfBlender read them).
         private void RefreshLinkState()
         {
-            excludedIds.Clear(); ownedIds.Clear(); editedIds.Clear();
+            excludedIds.Clear(); ownedIds.Clear();
             for (int i = 0; i < SceneManager.sceneCount; i++)
             {
                 var scene = SceneManager.GetSceneAt(i);
@@ -288,7 +289,6 @@ namespace Orbiters.Mixer.Editor
             }
             foreach (string id in MixerLinkService.BlenderOwned)
                 if (SceneGraphExporter.Resolve(id) is GameObject go) ownedIds.Add(go.GetInstanceID());
-            foreach (var target in MixerSession.Targets) if (target.Alive) editedIds.Add(target.Renderer.gameObject.GetInstanceID());
         }
 
         // ---- Expanded state -----------------------------------------------------------------------------------------

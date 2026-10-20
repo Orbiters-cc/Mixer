@@ -13,6 +13,7 @@ namespace Orbiters.Mixer.Editor
         private ToggleSwitch restPoseSwitch, mirrorSwitch;
         private Label armatureCaption, armatureBoneCaption;
         private TextField armatureSearch;
+        private MixerSearch armatureSearchOptions;
         private ListView armatureList;
         private List<int> armatureBones = new List<int>();
         private EditTarget armatureOf;
@@ -43,6 +44,7 @@ namespace Orbiters.Mixer.Editor
             armatureSearch.AddToClassList("mx-field");
             armatureSearch.tooltip = "Search bones";
             armatureSearch.RegisterValueChangedCallback(_ => RefreshArmatureList(true));
+            armatureSearchOptions = new MixerSearch(armatureSearch, "ArmatureBones", () => RefreshArmatureList(true));
             var searchRow = MixerUi.Row();
             searchRow.Add(armatureSearch);
             boneBody.Add(searchRow);
@@ -107,12 +109,12 @@ namespace Orbiters.Mixer.Editor
             armatureBones = new List<int>();
             if (target != null && target.Skinned != null)
             {
-                string q = armatureSearch.value.Trim();
+                var q = armatureSearchOptions.Pattern;
                 var bones = target.Skinned.bones;
                 for (int i = 0; i < bones.Length; i++)
                 {
                     if (bones[i] == null) continue;
-                    if (q.Length > 0 && bones[i].name.IndexOf(q, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                    if (!q.Matches(bones[i].name)) continue;
                     armatureBones.Add(i);
                 }
             }

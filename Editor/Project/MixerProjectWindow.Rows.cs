@@ -50,6 +50,7 @@ namespace Orbiters.Mixer.Editor
             treeDirty = false;
             treeRows.Clear();
             treeRows.Add(new ProjectItem { Path = RecentPath, Name = "Recent" });
+            AddFavouriteRows();
             AddTreeFolder("Assets", "Assets", 0);
             var packages = ProjectFiles.Packages();
             packageNames.Clear();
@@ -89,7 +90,8 @@ namespace Orbiters.Mixer.Editor
             row.Add(MixerUi.Icon(IconGlyph.Chevron, "", null, evt =>
             {
                 var item = TreeRow(tree.ItemOf(row));
-                if (item != null && item.HasChildren) ToggleTree(item.Path, !item.Expanded, evt.altKey);
+                if (item != null && item.Path == FavouritesPath) { favouritesFolded = !favouritesFolded; treeDirty = true; RebuildNow(); }
+                else if (item != null && item.HasChildren) ToggleTree(item.Path, !item.Expanded, evt.altKey);
                 evt.StopPropagation();
             }, "mxp-trow__chevron"));
             var icon = new Image { scaleMode = ScaleMode.ScaleToFit, pickingMode = PickingMode.Ignore };
@@ -107,21 +109,31 @@ namespace Orbiters.Mixer.Editor
         {
             var item = TreeRow(index);
             if (item == null) return;
-            bool recent = item.Path == RecentPath;
+            bool recent = item.Path == RecentPath, favourites = item.Path == FavouritesPath;
+            var favourite = FavouriteOf(item);
             element.Q<MixerIndent>(className: "mxp-trow__indent").Set(item.Depth * 12f, item.Depth, 12f, 8f);
             var chevron = element.Q(className: "mxp-trow__chevron");
             chevron.style.visibility = item.HasChildren ? Visibility.Visible : Visibility.Hidden;
             chevron.EnableInClassList("mxp-trow__chevron--open", item.Expanded);
             var icon = element.Q<Image>(className: "mxp-trow__icon");
-            MixerUi.Show(icon, !recent);
-            MixerUi.Show(element.Q(className: "mxp-trow__glyph"), recent);
-            if (!recent) icon.image = FolderIcon(item.Expanded, item.Empty);
+            var glyph = element.Q<VectorIcon>(className: "mxp-trow__glyph");
+            bool vector = recent || favourites || (favourite != null && favourite.IsSearch);
+            MixerUi.Show(icon, !vector);
+            MixerUi.Show(glyph, vector);
+            if (vector) glyph.Glyph = recent ? IconGlyph.Clock : favourites ? IconGlyph.StarFilled : IconGlyph.Search;
+            else icon.image = item.IsFolder || favourite == null ? FolderIcon(item.Expanded, item.Empty) : AssetDatabase.GetCachedIcon(item.Path);
             element.Q<Label>(className: "mxp-trow__name").text = item.Name;
-            bool current = !Searching && (recent ? showRecent : !showRecent && item.Path == folder);
+            bool current = favourite != null
+                ? favourite.IsSearch && Searching && searchOptions.For(search).SameAs(favourite.query, favourite.regex, favourite.matchCase)
+                : !Searching && (recent ? showRecent : !showRecent && item.Path == folder);
             element.EnableInClassList("mxp-trow--current", current);
             element.EnableInClassList("mxp-trow--root", item.Depth == 0);
+            element.EnableInClassList("mxp-trow--favourite", favourite != null);
             element.EnableInClassList("mxp-trow--drop", dropFolder != null && item.Path == dropFolder);
-            element.tooltip = recent ? "The assets used lately: selected or opened, anywhere in the editor" : item.Depth == 1 && packageNames.ContainsKey(item.Path) ? item.Path : string.Empty;
+            element.tooltip = recent ? "The assets used lately: selected or opened, anywhere in the editor"
+                : favourites ? "Folders, assets and searches kept at hand: right-click one, drag assets here, or the star in the search field"
+                : favourite != null ? (favourite.IsSearch ? "Search: " + favourite.query + (favourite.regex ? " (regular expression)" : "") : favourite.AssetPath)
+                : item.Depth == 1 && packageNames.ContainsKey(item.Path) ? item.Path : string.Empty;
         }
 
         private void OnTreePointerDown(VisualElement element, PointerDownEvent evt)
@@ -131,6 +143,8 @@ namespace Orbiters.Mixer.Editor
             root.Focus();
             if (evt.button != 0) return;
             if (item.Path == RecentPath) { ShowRecent(); return; }
+            if (item.Path == FavouritesPath) { favouritesFolded = !favouritesFolded; treeDirty = true; RebuildNow(); return; }
+            if (FavouriteOf(item) is ProjectFavourites.Entry favourite) { OpenFavourite(favourite); return; }
             // As Unity's tree: a click opens the folder on the right, a double click folds or unfolds it here.
             if (evt.clickCount == 2 && item.HasChildren) { ToggleTree(item.Path, !item.Expanded, evt.altKey); return; }
             Navigate(item.Path);
@@ -154,7 +168,8 @@ namespace Orbiters.Mixer.Editor
             bool empty = rows.Count == 0;
             MixerUi.Show(emptyLabel, empty);
             if (empty)
-                emptyLabel.text = Searching ? (AssetContentIndex.Building ? "Nothing yet: the assets' contents are still being read." : "Nothing matches “" + search.Trim() + "”.")
+                emptyLabel.text = Searching ? (searchOptions?.For(search).Error is string error ? "Invalid regular expression: " + error
+                        : AssetContentIndex.Building ? "Nothing yet: the assets' contents are still being read." : "Nothing matches “" + search.Trim() + "”.")
                     : showRecent ? "The assets you select or open show here."
                     : kinds != ProjectKinds.None ? "Nothing of the kinds the filter keeps." : "This folder is empty.";
         }
@@ -177,10 +192,13 @@ namespace Orbiters.Mixer.Editor
             foreach (var item in items)
             {
                 item.Depth = depth;
-                // The grid shows the open folder's own contents; the list unfolds folders in place.
-                item.Expanded = !GridMode && item.IsFolder && item.HasChildren && contentOpenSet.Contains(item.Path);
+                // The grid shows the open folder's own contents; the list unfolds folders in place. Both unfold a file to
+                // its sub-assets.
+                item.Expanded = contentOpenSet.Contains(item.Path) && (item.HasSubAssets || (!GridMode && item.IsFolder && item.HasChildren));
                 rows.Add(item);
-                if (item.Expanded) AddItems(ProjectFiles.Children(item.Path, sort, kinds), depth + 1);
+                if (!item.Expanded) continue;
+                if (item.IsFolder) AddItems(ProjectFiles.Children(item.Path, sort, kinds), depth + 1);
+                else rows.AddRange(ProjectFiles.SubAssets(item.Path, depth + 1));
             }
         }
 
@@ -200,31 +218,53 @@ namespace Orbiters.Mixer.Editor
             }
         }
 
-        // Names first (Unity's search: t:Material and the other filters work), then what assets hold inside.
+        // Names first (Unity's search: t:Material and the other filters work; a regular expression is matched against
+        // the file names), then what assets hold inside.
         private void BuildSearchRows()
         {
-            string query = search.Trim();
+            var pattern = searchOptions != null ? searchOptions.For(search) : new SearchPattern(search, false, false);
+            if (pattern.Error != null) return;
+            string query = pattern.Text;
             var seen = new HashSet<string>(StringComparer.Ordinal);
             var names = new List<ProjectItem>();
-            string[] guids;
-            try { guids = includePackages ? AssetDatabase.FindAssets(query) : AssetDatabase.FindAssets(query, new[] { "Assets" }); }
-            catch (Exception) { guids = Array.Empty<string>(); }
-            foreach (string guid in guids)
+            void Add(string path)
             {
-                string path = AssetDatabase.GUIDToAssetPath(guid);
-                if (string.IsNullOrEmpty(path) || !seen.Add(path)) continue;
+                if (string.IsNullOrEmpty(path) || names.Count >= NameLimit || !seen.Add(path)) return;
                 var item = ProjectFiles.Item(path);
-                if (!item.IsFolder && !ProjectFiles.Keeps(kinds, item)) continue;
+                if (!item.IsFolder && !ProjectFiles.Keeps(kinds, item)) return;
                 names.Add(item);
-                if (names.Count >= NameLimit) break;
+            }
+            // The words of the query (Unity's "t:" and "l:" filters left out): matched with the case, searched in contents.
+            var words = query.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).Where(w => w.IndexOf(':') < 0).ToList();
+            if (pattern.IsRegex)
+            {
+                foreach (string path in AssetDatabase.GetAllAssetPaths())
+                {
+                    if (names.Count >= NameLimit) break;
+                    if (!InScope(path)) continue;
+                    if (pattern.Matches(System.IO.Path.GetFileName(path))) Add(path);
+                }
+            }
+            else
+            {
+                string[] guids;
+                var roots = ScopeRoots();
+                try { guids = roots == null ? AssetDatabase.FindAssets(query) : roots.Length == 0 ? Array.Empty<string>() : AssetDatabase.FindAssets(query, roots); }
+                catch (Exception) { guids = Array.Empty<string>(); }
+                foreach (string guid in guids)
+                {
+                    string path = AssetDatabase.GUIDToAssetPath(guid);
+                    // Unity's search ignores the case: Match case keeps the names holding each word as typed.
+                    if (pattern.MatchCase && !words.All(w => System.IO.Path.GetFileName(path).IndexOf(w, StringComparison.Ordinal) >= 0)) continue;
+                    Add(path);
+                }
             }
             ProjectFiles.Sort(names, sort);
-            // The words of the query (Unity's "t:" and "l:" filters left out) searched in the assets' contents.
-            string words = string.Join(" ", query.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).Where(w => w.IndexOf(':') < 0));
+            var contents = pattern.IsRegex ? pattern : new SearchPattern(string.Join(" ", words), false, pattern.MatchCase);
             var inside = new List<ProjectItem>();
-            if (words.Length >= 2)
+            if (pattern.IsRegex || contents.Text.Length >= 2)
             {
-                foreach (var hit in AssetContentIndex.Search(words, includePackages, InsideLimit))
+                foreach (var hit in AssetContentIndex.Search(contents, InScope, InsideLimit))
                 {
                     if (seen.Contains(hit.Path)) continue;
                     var item = ProjectFiles.Item(hit.Path);
@@ -240,7 +280,7 @@ namespace Orbiters.Mixer.Editor
                 rows.Add(Heading("Names · " + names.Count + (names.Count >= NameLimit ? "+" : "")));
                 rows.AddRange(names);
             }
-            if (inside.Count > 0 || (words.Length >= 2 && AssetContentIndex.Building))
+            if (inside.Count > 0 || ((pattern.IsRegex || contents.Text.Length >= 2) && AssetContentIndex.Building))
             {
                 rows.Add(Heading("Inside assets · " + inside.Count + (inside.Count >= InsideLimit ? "+" : "") + (AssetContentIndex.Building ? " · still reading " + AssetContentIndex.Progress : "")));
                 rows.AddRange(inside);
@@ -262,7 +302,7 @@ namespace Orbiters.Mixer.Editor
             row.Add(MixerUi.Icon(IconGlyph.Chevron, "", null, evt =>
             {
                 var item = Row(content.ItemOf(row));
-                if (item != null && item.IsFolder && item.HasChildren) SetUnfolded(item.Path, !item.Expanded, evt.altKey);
+                if (item != null && ((item.IsFolder && item.HasChildren) || item.HasSubAssets)) SetUnfolded(item.Path, !item.Expanded, evt.altKey && item.IsFolder);
                 evt.StopPropagation();
             }, "mxp-row__chevron"));
             var picture = MixerUi.Box("mxp-row__picture", PickingMode.Ignore);
@@ -342,16 +382,18 @@ namespace Orbiters.Mixer.Editor
             bool tall = ContentSpan(index) > 1;
             element.EnableInClassList("mxp-row--tall", tall);
             element.Q<MixerIndent>(className: "mxp-row__indent").Set(item.Depth * 14f, item.Depth, 14f, 9f);
-            chevron.style.visibility = item.IsFolder && item.HasChildren ? Visibility.Visible : Visibility.Hidden;
+            chevron.style.visibility = (item.IsFolder && item.HasChildren) || item.HasSubAssets ? Visibility.Visible : Visibility.Hidden;
             chevron.EnableInClassList("mxp-row__chevron--open", item.Expanded);
             icon.image = IconOf(item);
-            ext.text = item.IsFolder ? string.Empty : item.Extension;
+            // A sub-asset says what it is beside its name (Mesh, Material, AnimationClip).
+            ext.text = item.IsFolder ? string.Empty : item.IsSubAsset ? "  " + (item.SubAsset != null ? ObjectNames.NicifyVariableName(item.SubAsset.GetType().Name) : "") : item.Extension;
+            element.EnableInClassList("mxp-row--subasset", item.IsSubAsset);
             MixerUi.Show(chip, item.IsNew);
-            MixerUi.Show(date, true);
+            MixerUi.Show(date, !item.IsSubAsset);
             date.text = DateText(item);
             date.tooltip = item.Added == default ? string.Empty
                 : "Added " + item.Added.ToLocalTime().ToString("g") + "\nModified " + item.Modified.ToLocalTime().ToString("g") + (item.Used != default ? "\nUsed " + item.Used.ToLocalTime().ToString("g") : "");
-            MixerUi.Show(target, !item.IsFolder);
+            MixerUi.Show(target, !item.IsFolder && !item.IsSubAsset);
             target.EnableInClassList("mxp-row__target--on", usagePath == item.Path);
             target.EnableInClassList("mxp-row__target--busy", usageBusy && usagePath == item.Path);
             element.EnableInClassList("mxp-row--picked", picked.Contains(item.Path));
@@ -382,6 +424,7 @@ namespace Orbiters.Mixer.Editor
 
         private string DateText(ProjectItem item)
         {
+            if (item.IsSubAsset) return string.Empty;
             if (showRecent && !Searching) return ProjectFiles.Ago(item.Used);
             return ProjectFiles.Ago(sort == ProjectSort.Added ? item.Added : item.Modified);
         }
@@ -401,6 +444,7 @@ namespace Orbiters.Mixer.Editor
         private static string KindAndSize(ProjectItem item)
         {
             if (item.IsFolder) return "Folder";
+            if (item.IsSubAsset) return item.SubAsset != null ? ObjectNames.NicifyVariableName(item.SubAsset.GetType().Name) + " in " + System.IO.Path.GetFileName(item.AssetPath) : string.Empty;
             var type = AssetDatabase.GetMainAssetTypeAtPath(item.Path);
             return (type != null ? ObjectNames.NicifyVariableName(type.Name) : "File") + (item.Size > 0 ? "  ·  " + MixerUi.Bytes(item.Size) : "");
         }
@@ -408,6 +452,7 @@ namespace Orbiters.Mixer.Editor
         private static Texture IconOf(ProjectItem item)
         {
             if (item.IsFolder) return FolderIcon(item.Expanded, !item.HasChildren);
+            if (item.IsSubAsset) return item.SubAsset != null ? AssetPreview.GetMiniThumbnail(item.SubAsset) : null;
             return AssetDatabase.GetCachedIcon(item.Path) ?? EditorGUIUtility.IconContent("DefaultAsset Icon").image;
         }
 
@@ -416,7 +461,7 @@ namespace Orbiters.Mixer.Editor
         {
             if (item.IsFolder) return IconOf(item);
             if (previewCache.TryGetValue(item.Path, out var cached) && cached != null) return cached;
-            var asset = AssetDatabase.LoadMainAssetAtPath(item.Path);
+            var asset = item.IsSubAsset ? item.SubAsset : AssetDatabase.LoadMainAssetAtPath(item.Path);
             if (asset == null) return IconOf(item);
             var preview = AssetPreview.GetAssetPreview(asset);
             if (preview != null) { previewCache[item.Path] = preview; return preview; }
@@ -497,7 +542,17 @@ namespace Orbiters.Mixer.Editor
             if (Searching)
             {
                 AddCrumbGlyph(IconGlyph.Search);
-                crumbs.Add(MixerUi.Text(includePackages ? "Search in Assets and packages" : "Search in Assets", "mxp-crumb mxp-crumb--current"));
+                // Where the search looks, a click away from changing it (Unity's search scopes).
+                var scopeButton = new Button { text = string.Empty, tooltip = "Where to search: everywhere, Assets, packages or the open folder" };
+                scopeButton.AddToClassList("mxp-crumb");
+                scopeButton.AddToClassList("mxp-crumb--current");
+                scopeButton.AddToClassList("mxp-scope");
+                scopeButton.Add(MixerUi.Text(ScopeName(), "mxp-scope__text"));
+                var chevron = new VectorIcon(IconGlyph.Chevron) { pickingMode = PickingMode.Ignore };
+                chevron.AddToClassList("mxp-scope__chevron");
+                scopeButton.Add(chevron);
+                MixerUi.Press(scopeButton, () => ShowScopeMenu(scopeButton));
+                crumbs.Add(scopeButton);
                 return;
             }
             if (showRecent)

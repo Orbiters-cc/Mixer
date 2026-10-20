@@ -82,7 +82,7 @@ namespace Orbiters.Mixer.Editor
                 int index = IndexOf(path);
                 bool isFolder = index >= 0 ? rows[index].IsFolder : AssetDatabase.IsValidFolder(path);
                 if (isFolder) continue;
-                var asset = AssetDatabase.LoadMainAssetAtPath(path);
+                var asset = ObjectOf(path);
                 if (asset != null) objects.Add(asset);
             }
             if (objects.Count == 0) return;
@@ -129,7 +129,7 @@ namespace Orbiters.Mixer.Editor
         {
             if (item == null || item.IsHeading) return;
             if (item.IsFolder) { Navigate(item.Path); return; }
-            var asset = AssetDatabase.LoadMainAssetAtPath(item.Path);
+            var asset = ObjectOf(item.Path);
             if (asset != null) AssetDatabase.OpenAsset(asset);
         }
 
@@ -180,7 +180,7 @@ namespace Orbiters.Mixer.Editor
                 case KeyCode.End: Step(rows.Count, -1, evt.shiftKey); break;
                 case KeyCode.RightArrow:
                     if (GridMode) Step(current, 1, evt.shiftKey);
-                    else if (current >= 0 && rows[current].IsFolder && rows[current].HasChildren)
+                    else if (current >= 0 && ((rows[current].IsFolder && rows[current].HasChildren) || rows[current].HasSubAssets))
                     {
                         if (!rows[current].Expanded) SetUnfolded(rows[current].Path, true, evt.altKey); else Step(current, 1, false);
                     }
@@ -189,8 +189,8 @@ namespace Orbiters.Mixer.Editor
                     if (GridMode) Step(current < 0 ? rows.Count : current, -1, evt.shiftKey);
                     else if (current >= 0)
                     {
-                        if (rows[current].IsFolder && rows[current].Expanded) SetUnfolded(rows[current].Path, false, evt.altKey);
-                        else { int parent = IndexOf(ParentOf(rows[current].Path)); if (parent >= 0) { Pick(parent, false, false); RevealIndex(parent); } }
+                        if (rows[current].Expanded) SetUnfolded(rows[current].Path, false, evt.altKey && rows[current].IsFolder);
+                        else { int parent = IndexOf(rows[current].IsSubAsset ? rows[current].AssetPath : ParentOf(rows[current].Path)); if (parent >= 0) { Pick(parent, false, false); RevealIndex(parent); } }
                     }
                     break;
                 case KeyCode.Return: case KeyCode.KeypadEnter: if (current >= 0) Activate(rows[current]); break;
@@ -214,7 +214,10 @@ namespace Orbiters.Mixer.Editor
                     if (usagePath != null) CloseUsages();
                     else { picked.Clear(); cursor = null; RefreshContent(); UpdateFooter(); }
                     break;
-                default: return;
+                default:
+                    // Typing the start of a name jumps to it (the key's character comes in its own event).
+                    if (command || evt.altKey || evt.character == '\0' || !TypeAhead(evt.character)) return;
+                    break;
             }
             evt.StopPropagation();
         }
@@ -235,7 +238,7 @@ namespace Orbiters.Mixer.Editor
         {
             path = path ?? cursor;
             int index = IndexOf(path);
-            if (index < 0 || (packageNames.ContainsKey(path)) || !ProjectFiles.IsWritable(path)) return;
+            if (index < 0 || rows[index].IsSubAsset || packageNames.ContainsKey(path) || !ProjectFiles.IsWritable(path)) return;
             renamingPath = path;
             RevealIndex(index);
             RefreshContent();
@@ -291,7 +294,7 @@ namespace Orbiters.Mixer.Editor
         internal string CreateTarget()
         {
             int index = !showRecent && !Searching ? IndexOf(cursor) : -1;
-            if (index >= 0) return rows[index].IsFolder ? rows[index].Path : ParentOf(rows[index].Path);
+            if (index >= 0) return rows[index].IsFolder ? rows[index].Path : ParentOf(rows[index].AssetPath);
             return showRecent || Searching || folder == PackagesPath ? "Assets" : folder;
         }
 
@@ -361,7 +364,8 @@ namespace Orbiters.Mixer.Editor
             UpdateFooter();
         }
 
-        // Unity's Assets/Create items, as its Project window lists them (ours replace its folder, material, animation and controller).
+        // Unity's Assets/Create items, as its Project window lists them (ours replace its folder, material, animation and
+        // controller); the menus are built in MixerProjectWindow.Unity.
         private static readonly HashSet<string> OurCreateItems = new HashSet<string>(StringComparer.Ordinal)
         {
             "Assets/Create/Folder", "Assets/Create/Material", "Assets/Create/Animation", "Assets/Create/Animator Controller",
@@ -371,22 +375,6 @@ namespace Orbiters.Mixer.Editor
         {
             try { return Unsupported.GetSubmenus("Assets").Where(p => p.StartsWith("Assets/Create/", StringComparison.Ordinal) && !OurCreateItems.Contains(p)).ToList(); }
             catch (Exception) { return new List<string>(); }
-        }
-
-        private void AppendCreateMenu(DropdownMenu menu, string target)
-        {
-            var status = ProjectFiles.IsWritable(target) ? DropdownMenuAction.Status.Normal : DropdownMenuAction.Status.Disabled;
-            menu.AppendAction("Create/Folder", _ => CreateFolder(target), status);
-            menu.AppendSeparator("Create/");
-            menu.AppendAction("Create/Material", _ => CreateMaterial(target), status);
-            menu.AppendAction("Create/Animation", _ => CreateAnimation(target), status);
-            menu.AppendAction("Create/Animator Controller", _ => CreateAnimator(target), status);
-            menu.AppendSeparator("Create/");
-            foreach (string item in UnityCreateItems())
-            {
-                string path = item;
-                menu.AppendAction("Create/" + path.Substring("Assets/Create/".Length), _ => RunUnityCreate(path, target), status);
-            }
         }
 
         // Unity's create items make their asset in its Project window's folder, or in Assets without one: what they made
@@ -428,7 +416,7 @@ namespace Orbiters.Mixer.Editor
         // The lines lit up, without those inside a folder also lit up (they go with it), packages' roots left out.
         private List<string> PickedRoots()
         {
-            var paths = picked.Where(p => !packageNames.ContainsKey(p) && p != "Assets" && p != PackagesPath).ToList();
+            var paths = picked.Where(p => !packageNames.ContainsKey(p) && p != "Assets" && p != PackagesPath && p.IndexOf(ProjectFiles.SubAssetMark) < 0).ToList();
             return paths.Where(p => !paths.Any(o => o != p && p.StartsWith(o + "/", StringComparison.Ordinal))).ToList();
         }
 
@@ -466,7 +454,7 @@ namespace Orbiters.Mixer.Editor
             RefreshContent();
         }
 
-        private void CopyPaths() => EditorGUIUtility.systemCopyBuffer = string.Join("\n", picked.OrderBy(p => p, StringComparer.Ordinal));
+        private void CopyPaths() => EditorGUIUtility.systemCopyBuffer = string.Join("\n", picked.Select(p => p.IndexOf(ProjectFiles.SubAssetMark) < 0 ? p : p.Substring(0, p.IndexOf(ProjectFiles.SubAssetMark))).Distinct().OrderBy(p => p, StringComparer.Ordinal));
 
         // ---- Context menus ----------------------------------------------------------------------------------------------
 
@@ -475,6 +463,17 @@ namespace Orbiters.Mixer.Editor
             int index = ItemAtPoint(evt.mousePosition);
             var item = Row(index);
             string target = CreateTarget();
+            if (item != null && item.IsSubAsset)
+            {
+                // A model's mesh, material or clip: opened, shown, its file's path; Unity's Assets menu does the rest.
+                if (!picked.Contains(item.Path)) Pick(index, false, false);
+                evt.menu.AppendAction("Open", _ => Activate(item));
+                evt.menu.AppendAction("Show in Explorer", _ => EditorUtility.RevealInFinder(item.AssetPath));
+                evt.menu.AppendAction("Copy Path", _ => CopyPaths());
+                evt.menu.AppendSeparator();
+                AppendUnityAssetsMenu(evt.menu);
+                return;
+            }
             if (item != null && !item.IsHeading)
             {
                 if (!picked.Contains(item.Path)) Pick(index, false, false);
@@ -482,7 +481,7 @@ namespace Orbiters.Mixer.Editor
                 bool writable = ProjectFiles.IsWritable(item.Path) && !packageNames.ContainsKey(item.Path);
                 var whenWritable = writable ? DropdownMenuAction.Status.Normal : DropdownMenuAction.Status.Disabled;
                 evt.menu.AppendAction("Open", _ => Activate(item));
-                if (item.IsFolder && item.HasChildren) evt.menu.AppendAction(item.Expanded ? "Fold" : "Unfold", _ => SetUnfolded(item.Path, !item.Expanded, false));
+                if ((item.IsFolder && item.HasChildren) || item.HasSubAssets) evt.menu.AppendAction(item.Expanded ? "Fold" : "Unfold", _ => SetUnfolded(item.Path, !item.Expanded, false));
                 if (!item.IsFolder) evt.menu.AppendAction("Where it is used", _ => ShowUsages(item.Path));
                 if (Searching || showRecent) evt.menu.AppendAction("Show in its folder", _ => { Navigate(ParentOf(item.Path)); Reveal(item.Path); });
                 evt.menu.AppendAction("Show in Explorer", _ => EditorUtility.RevealInFinder(item.Path));
@@ -491,9 +490,16 @@ namespace Orbiters.Mixer.Editor
                 evt.menu.AppendAction("Duplicate", _ => DuplicatePicked(), whenWritable);
                 evt.menu.AppendAction("Delete", _ => DeletePicked(), whenWritable);
                 evt.menu.AppendAction("Copy Path", _ => CopyPaths());
+                evt.menu.AppendAction("Copy", _ => CopyPicked());
+                evt.menu.AppendAction("Paste", _ => Paste(), clipboard.Count > 0 && ProjectFiles.IsWritable(target) ? DropdownMenuAction.Status.Normal : DropdownMenuAction.Status.Disabled);
                 evt.menu.AppendAction("Reimport", _ => { foreach (string path in PickedRoots()) AssetDatabase.ImportAsset(path, ImportAssetOptions.ImportRecursive); });
+                AppendFavouriteActions(evt.menu, item);
+                evt.menu.AppendSeparator();
+                // Unity's own Assets menu (Import, Export Package, Find References, Properties, other tools' items).
+                AppendUnityAssetsMenu(evt.menu);
                 evt.menu.AppendSeparator();
             }
+            else if (clipboard.Count > 0) evt.menu.AppendAction("Paste", _ => Paste(), ProjectFiles.IsWritable(target) ? DropdownMenuAction.Status.Normal : DropdownMenuAction.Status.Disabled);
             AppendCreateMenu(evt.menu, target);
             if (!Searching && !showRecent)
             {
@@ -507,6 +513,7 @@ namespace Orbiters.Mixer.Editor
         private void BuildTreeMenu(ContextualMenuPopulateEvent evt)
         {
             var item = TreeRow(tree.ItemAt(tree.WorldToLocal(evt.mousePosition)));
+            if (item != null && (item.Path == FavouritesPath || FavouriteOf(item) != null)) { BuildFavouriteMenu(evt, item); return; }
             if (item == null || item.Path == RecentPath)
             {
                 if (item != null) evt.menu.AppendAction("Forget the recent assets", _ => RecentAssets.Clear());
@@ -516,6 +523,11 @@ namespace Orbiters.Mixer.Editor
             evt.menu.AppendAction("Open", _ => Navigate(item.Path));
             evt.menu.AppendAction("Show in Explorer", _ => EditorUtility.RevealInFinder(item.Path));
             evt.menu.AppendAction("Copy Path", _ => EditorGUIUtility.systemCopyBuffer = item.Path);
+            if (!packageNames.ContainsKey(item.Path))
+            {
+                if (ProjectFavourites.Contains(item.Path)) evt.menu.AppendAction("Remove from Favourites", _ => ProjectFavourites.RemoveAsset(item.Path));
+                else evt.menu.AppendAction("Add to Favourites", _ => AddFavourites(new[] { item.Path }));
+            }
             evt.menu.AppendSeparator();
             AppendCreateMenu(evt.menu, item.Path);
         }
@@ -538,11 +550,12 @@ namespace Orbiters.Mixer.Editor
             string from = dragFrom;
             dragFrom = null;
             var paths = picked.Contains(from) ? picked.Where(p => !packageNames.ContainsKey(p)).ToList() : new List<string> { from };
-            var objects = paths.Select(AssetDatabase.LoadMainAssetAtPath).Where(o => o != null).ToArray();
+            var objects = paths.Select(ObjectOf).Where(o => o != null).ToArray();
             if (objects.Length == 0) return;
             DragAndDrop.PrepareStartDrag();
             DragAndDrop.objectReferences = objects;
-            DragAndDrop.paths = paths.ToArray();
+            // A sub-asset travels as its object only (a mesh into a field), not as its file.
+            DragAndDrop.paths = paths.Where(p => p.IndexOf(ProjectFiles.SubAssetMark) < 0).ToArray();
             DragAndDrop.StartDrag(objects.Length == 1 ? objects[0].name : "<Multiple>");
         }
 
@@ -569,20 +582,27 @@ namespace Orbiters.Mixer.Editor
             if (onTree)
             {
                 var item = TreeRow(tree.ItemAt(tree.WorldToLocal(world)));
+                if (item != null && (item.Path == FavouritesPath || FavouriteOf(item) != null)) return FavouritesPath;
                 return item == null || item.Path == RecentPath || item.Path == PackagesPath ? null : item.Path;
             }
             var row = Row(ItemAtPoint(world));
-            if (row != null && !row.IsHeading) return row.IsFolder ? row.Path : ParentOf(row.Path);
+            if (row != null && !row.IsHeading) return row.IsFolder ? row.Path : ParentOf(row.AssetPath);
             return Searching || showRecent || folder == PackagesPath ? null : folder;
         }
 
-        private enum DropKind { None, Move, Import, Prefab }
+        private enum DropKind { None, Move, Import, Prefab, Favourite }
 
         private static DropKind KindOfDrop(string target, out List<string> sources)
         {
             sources = new List<string>();
-            if (target == null || !ProjectFiles.IsWritable(target)) return DropKind.None;
             var paths = DragAndDrop.paths ?? Array.Empty<string>();
+            // Onto the favourites: the project's folders and assets dragged there become favourites.
+            if (target == FavouritesPath)
+            {
+                sources = paths.Where(p => !string.IsNullOrEmpty(AssetDatabase.AssetPathToGUID(p))).ToList();
+                return sources.Count > 0 ? DropKind.Favourite : DropKind.None;
+            }
+            if (target == null || !ProjectFiles.IsWritable(target)) return DropKind.None;
             var assets = paths.Where(p => !string.IsNullOrEmpty(AssetDatabase.AssetPathToGUID(p))).ToList();
             if (assets.Count > 0)
             {
@@ -600,7 +620,8 @@ namespace Orbiters.Mixer.Editor
             string target = DropTargetAt(evt.mousePosition, onTree);
             var kind = KindOfDrop(target, out _);
             SetDropFolder(kind == DropKind.None ? null : target);
-            DragAndDrop.visualMode = kind == DropKind.None ? DragAndDropVisualMode.Rejected : kind == DropKind.Move ? DragAndDropVisualMode.Move : DragAndDropVisualMode.Copy;
+            DragAndDrop.visualMode = kind == DropKind.None ? DragAndDropVisualMode.Rejected : kind == DropKind.Move ? DragAndDropVisualMode.Move
+                : kind == DropKind.Favourite ? DragAndDropVisualMode.Link : DragAndDropVisualMode.Copy;
             evt.StopPropagation();
         }
 
@@ -612,7 +633,8 @@ namespace Orbiters.Mixer.Editor
             if (kind == DropKind.None) return;
             DragAndDrop.AcceptDrag();
             evt.StopPropagation();
-            if (kind == DropKind.Move) MoveInto(target, sources);
+            if (kind == DropKind.Favourite) AddFavourites(sources);
+            else if (kind == DropKind.Move) MoveInto(target, sources);
             else if (kind == DropKind.Import) ImportInto(target, sources);
             else SavePrefabsInto(target, DragAndDrop.objectReferences.OfType<GameObject>().Where(g => g != null && g.scene.IsValid()).ToList());
             EndDrag();

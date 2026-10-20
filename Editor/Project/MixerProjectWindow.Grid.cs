@@ -145,6 +145,13 @@ namespace Orbiters.Mixer.Editor
                 if (item != null && !item.IsHeading && !item.IsFolder) ShowUsages(item.Path);
                 evt.StopPropagation();
             }, "mxp-tile__target"));
+            // A file holding sub-assets unfolds to them with the arrow on its right edge, as in Unity's grid.
+            tile.Add(MixerUi.Icon(IconGlyph.Chevron, "Show what it holds (meshes, materials, clips)", null, evt =>
+            {
+                var item = Row(TileIndex(tile));
+                if (item != null && item.HasSubAssets) SetUnfolded(item.Path, !item.Expanded, false);
+                evt.StopPropagation();
+            }, "mxp-tile__expand"));
             tile.Add(MixerUi.Text("", "mxp-tile__name"));
             var rename = new TextField();
             rename.AddToClassList("mxp-tile__rename");
@@ -174,8 +181,12 @@ namespace Orbiters.Mixer.Editor
             var name = tile.Q<Label>(className: "mxp-tile__name");
             name.text = item.Name;
             MixerUi.Show(tile.Q(className: "mxp-tile__new"), item.IsNew);
+            var expand = tile.Q(className: "mxp-tile__expand");
+            MixerUi.Show(expand, item.HasSubAssets);
+            expand.EnableInClassList("mxp-tile__expand--open", item.Expanded);
+            tile.EnableInClassList("mxp-tile--subasset", item.IsSubAsset);
             var target = tile.Q(className: "mxp-tile__target");
-            MixerUi.Show(target, !item.IsFolder);
+            MixerUi.Show(target, !item.IsFolder && !item.IsSubAsset);
             target.EnableInClassList("mxp-row__target--on", usagePath == item.Path);
             target.EnableInClassList("mxp-row__target--busy", usageBusy && usagePath == item.Path);
             tile.EnableInClassList("mxp-tile--picked", picked.Contains(item.Path));

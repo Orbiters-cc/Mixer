@@ -5,7 +5,7 @@
 .mxh-search { flex-grow: 1; margin: 0 4px 0 0; }
 .mxh-search .unity-base-text-field__input, .mxh-search .unity-text-field__input { min-height: 24px; height: 24px; padding-left: 26px; padding-right: 76px; border-radius: 8px; }
 /* The kind filters' menu, at the end of the search field. */
-.mxh-filter { position: absolute; right: 3px; top: 3px; height: 18px; flex-direction: row; align-items: center; margin: 0; padding: 0 7px 0 6px; border-width: 0; border-radius: 6px; background-color: rgba(255, 255, 255, 0.06); background-image: none; scale: 1 1; transition-property: background-color, scale; transition-duration: 0.12s, 0.16s; transition-timing-function: ease-out, ease-out-back; }
+.mxh-filter { height: 18px; flex-direction: row; align-items: center; margin: 0 0 0 3px; padding: 0 7px 0 6px; border-width: 0; border-radius: 6px; background-color: rgba(255, 255, 255, 0.06); background-image: none; scale: 1 1; transition-property: background-color, scale; transition-duration: 0.12s, 0.16s; transition-timing-function: ease-out, ease-out-back; }
 .mxh-filter:hover { background-color: rgba(255, 255, 255, 0.12); }
 .mxh-filter.mx-pressed { scale: 0.94 0.94; }
 .mxh-filter__icon { width: 11px; height: 11px; margin-right: 4px; --icon-color: #9a9a9a; }

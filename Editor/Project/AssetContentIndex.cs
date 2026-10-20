@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Orbiters.Toolkit.Editor;
 using UnityEditor;
 
 namespace Orbiters.Mixer.Editor
@@ -117,24 +118,23 @@ namespace Orbiters.Mixer.Editor
         }
 
         /// <summary>
-        /// The assets whose content holds <paramref name="query"/> (any case), with what matched; at most one hit per
-        /// asset and <paramref name="limit"/> assets. Starts an update when the index is out of date.
+        /// The assets whose content matches <paramref name="pattern"/> (text or a regular expression), with what matched;
+        /// at most one hit per asset and <paramref name="limit"/> assets. Starts an update when the index is out of date.
         /// </summary>
-        public static List<Hit> Search(string query, bool includePackages, int limit = 300)
+        public static List<Hit> Search(SearchPattern pattern, Func<string, bool> inScope, int limit = 300)
         {
             Refresh();
             var hits = new List<Hit>();
-            if (string.IsNullOrWhiteSpace(query)) return hits;
-            query = query.Trim();
+            if (pattern == null || pattern.IsEmpty) return hits;
             lock (Gate)
             {
                 foreach (var pair in files)
                 {
-                    if (!includePackages && !pair.Key.StartsWith("Assets/", StringComparison.Ordinal)) continue;
+                    if (inScope != null && !inScope(pair.Key)) continue;
                     var entry = pair.Value;
                     for (int i = 0; i < entry.Values.Length; i++)
                     {
-                        if (entry.Values[i].IndexOf(query, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                        if (!pattern.Matches(entry.Values[i])) continue;
                         hits.Add(new Hit { Path = pair.Key, Label = Label(entry.Keys[i], entry.Values[i]), Value = Readable(entry.Values[i]) });
                         break;
                     }

@@ -35,6 +35,7 @@ namespace Orbiters.Mixer.Editor
         private Label shapesCount, groupsCount, shapesHint;
         private Button commitPill, revertPill;
         private TextField groupSearch, shapeSearch;
+        private MixerSearch groupSearchOptions, shapeSearchOptions;
         private string activeShape;
         private string shownShapes, shownGroups;
         // The shape whose uses are listed under its row, the list, and whether the project's contents were all read.
@@ -103,6 +104,7 @@ namespace Orbiters.Mixer.Editor
             shapeSearch.AddToClassList("mx-inspector__search");
             shapeSearch.tooltip = "Search the shapes";
             shapeSearch.RegisterValueChangedCallback(_ => { shownShapes = null; RefreshShapes(); });
+            shapeSearchOptions = new MixerSearch(shapeSearch, "Shapes", () => { shownShapes = null; RefreshShapes(); });
             body.Add(shapeSearch);
             var scroll = new ScrollView(ScrollViewMode.Vertical) { horizontalScrollerVisibility = ScrollerVisibility.Hidden };
             scroll.AddToClassList("mx-inspector__scroll");
@@ -166,7 +168,8 @@ namespace Orbiters.Mixer.Editor
             var names = ShapeNames();
             var mesh = renderer.sharedMesh;
             string layer = session != null && session.Alive ? session.Document.Layer : null;
-            string filter = (shapeSearch.value ?? string.Empty).Trim();
+            var search = shapeSearchOptions.Pattern;
+            string filter = search.IsEmpty ? string.Empty : search.Text + (search.IsRegex ? "\u0001r" : "") + (search.MatchCase ? "\u0001c" : "");
             long state = unchecked((mesh != null ? mesh.GetInstanceID() : 0) * 7919L + (session != null && session.Alive ? session.Document.Revision : -1) * 104729L
                                    + names.Count * 31L + (layer != null ? layer.GetHashCode() : 0) + ((long)filter.GetHashCode() << 32));
             if (state != shapesState)
@@ -185,7 +188,7 @@ namespace Orbiters.Mixer.Editor
                     int listed = 0;
                     foreach (string name in names)
                     {
-                        if (filter.Length > 0 && name.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                        if (!search.Matches(name)) continue;
                         int index = mesh != null ? mesh.GetBlendShapeIndex(name) : -1;
                         var row = ShapeRow(name, index, name == layer);
                         shapesList.Add(row);
@@ -364,6 +367,7 @@ namespace Orbiters.Mixer.Editor
             groupSearch.AddToClassList("mx-inspector__search");
             groupSearch.tooltip = "Search bones and groups";
             groupSearch.RegisterValueChangedCallback(_ => { shownGroups = null; RefreshGroups(); });
+            groupSearchOptions = new MixerSearch(groupSearch, "Groups", () => { shownGroups = null; RefreshGroups(); });
             body.Add(groupSearch);
             groupsList = MixerUi.Box("mx-inspector__list");
             body.Add(groupsList);
@@ -387,7 +391,8 @@ namespace Orbiters.Mixer.Editor
             var session = MixerSession.TargetOf(renderer);
             var bones = renderer.bones ?? Array.Empty<Transform>();
             var groups = session != null && session.Alive ? session.Document.Groups.Select(g => g.Name).ToList() : new List<string>();
-            string filter = (groupSearch.value ?? string.Empty).Trim();
+            var search = groupSearchOptions.Pattern;
+            string filter = search.IsEmpty ? string.Empty : search.Text + (search.IsRegex ? "\u0001r" : "") + (search.MatchCase ? "\u0001c" : "");
             var channel = session != null && MixerSceneTool.FocusTarget == session && MixerSceneTool.Mode == MixerMode.Weights ? MixerSceneTool.ChannelOn(session) : WeightChannel.None;
             // Painting gives a bone its first vertices (or takes its last): which bones weigh anything is part of the key.
             long state = session != null && session.Alive ? ((long)session.Document.Revision << 32) ^ ((long)MixerHistory.Cursor << 16) ^ MixerHistory.Count : 0L;
@@ -404,7 +409,7 @@ namespace Orbiters.Mixer.Editor
             for (int i = 0; i < bones.Length; i++)
             {
                 string name = bones[i] != null ? bones[i].name : "(missing bone " + i + ")";
-                if (filter.Length > 0 && name.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                if (!search.Matches(name)) continue;
                 if (counts != null && counts[i] == 0 && filter.Length == 0) continue;
                 int bone = i;
                 groupsList.Add(GroupRow(name, counts != null ? counts[i] : -1, "bone", !channel.IsNone && channel.Bone == bone && channel.Group == null, () => WithSession(t => PaintChannel(t, WeightChannel.OfBone(bone)), "paint " + name)));
@@ -412,7 +417,7 @@ namespace Orbiters.Mixer.Editor
             }
             foreach (string group in groups)
             {
-                if (filter.Length > 0 && group.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                if (!search.Matches(group)) continue;
                 string g = group;
                 int count = session.Document.Group(g)?.Weights.Count ?? 0;
                 groupsList.Add(GroupRow(g, count, "group", channel.Group == g, () => WithSession(t => PaintChannel(t, WeightChannel.OfGroup(g)), "paint " + g)));

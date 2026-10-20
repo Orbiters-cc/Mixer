@@ -4,6 +4,7 @@ using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using UnityEngine.TestTools;
 using UnityEngine.UIElements;
 
 namespace Orbiters.Mixer.Editor.Tests
@@ -111,18 +112,34 @@ namespace Orbiters.Mixer.Editor.Tests
             model.Rebuild(filter);
             Assert.That(model.IndexOf(root.GetInstanceID()), Is.GreaterThanOrEqualTo(0));
 
-            filter.Text = "Cube";
+            filter.Pattern = new Toolkit.Editor.SearchPattern("Cube", false, false);
             model.Rebuild(filter);
             var names = model.Rows.Where(r => r.Object != null).Select(r => r.Name).ToList();
             Assert.That(names, Does.Contain("Cube 0").And.Contain("Cube 2"));
             Assert.That(names, Does.Contain("MixerHierarchyFixture"), "ancestors of matches stay, dimmed");
             Assert.That(model.Rows.First(r => r.Name == "MixerHierarchyFixture").Match, Is.False);
             Assert.That(model.Rows.First(r => r.Name == "Cube 1").Match, Is.True);
-            filter.Text = "t:Light";
+            filter.Pattern = new Toolkit.Editor.SearchPattern("t:Light", false, false);
             model.Rebuild(filter);
             var mine = model.Rows.Where(r => r.Object != null && r.Match && r.Object.transform.IsChildOf(root.transform)).Select(r => r.Name);
             Assert.That(mine, Is.EquivalentTo(new[] { "Child 1" }), "the fixture's only light matches t:Light");
-            filter.Text = ""; filter.Lights = true;
+
+            // A regular expression over names, with the case when asked.
+            filter.Pattern = new Toolkit.Editor.SearchPattern("^Cube [02]$", true, false);
+            model.Rebuild(filter);
+            mine = model.Rows.Where(r => r.Object != null && r.Match && r.Object.transform.IsChildOf(root.transform)).Select(r => r.Name);
+            Assert.That(mine, Is.EquivalentTo(new[] { "Cube 0", "Cube 2" }), "a regular expression matches names");
+            filter.Pattern = new Toolkit.Editor.SearchPattern("^cube", true, true);
+            model.Rebuild(filter);
+            Assert.That(model.Rows.Any(r => r.Object != null && r.Match && r.Object.transform.IsChildOf(root.transform)), Is.False, "Match case keeps \"cube\" from matching \"Cube\"");
+            filter.Pattern = new Toolkit.Editor.SearchPattern("cube 1", false, true);
+            model.Rebuild(filter);
+            Assert.That(model.Rows.Any(r => r.Object != null && r.Match && r.Object.transform.IsChildOf(root.transform)), Is.False, "Match case applies to plain words too");
+            filter.Pattern = new Toolkit.Editor.SearchPattern("(Cube", true, false);
+            Assert.That(filter.Pattern.Error, Is.Not.Null, "an invalid expression says why");
+            Assert.That(filter.Any, Is.False, "and filters nothing out");
+
+            filter.Pattern = Toolkit.Editor.SearchPattern.Empty; filter.Lights = true;
             model.Rebuild(filter);
             mine = model.Rows.Where(r => r.Object != null && r.Match && r.Object.transform.IsChildOf(root.transform)).Select(r => r.Name);
             Assert.That(mine, Is.EquivalentTo(new[] { "Child 1" }), "the Lights chip keeps the fixture's light");
@@ -299,13 +316,13 @@ namespace Orbiters.Mixer.Editor.Tests
             }
         }
 
-        [Test]
-        public void AVrchatAvatarShowsTheLogoAndItsArmatureSelectsTheMainBones()
+        [UnityTest]
+        public System.Collections.IEnumerator AVrchatAvatarShowsTheLogoAndItsArmatureSelectsTheMainBones()
         {
             System.Type descriptor = null;
             foreach (var assembly in System.AppDomain.CurrentDomain.GetAssemblies())
                 if ((descriptor = assembly.GetType("VRC.SDK3.Avatars.Components.VRCAvatarDescriptor", false)) != null) break;
-            if (descriptor == null) Assert.Ignore("The VRChat avatars SDK is not in this project.");
+            if (descriptor == null) { Assert.Ignore("The VRChat avatars SDK is not in this project."); yield break; }
             // Built in the fixture's scene (new objects go to the active scene), never in the user's.
             SceneManager.SetActiveScene(scene);
             var avatar = new GameObject("Fixture avatar");
@@ -345,6 +362,17 @@ namespace Orbiters.Mixer.Editor.Tests
             {
                 window.Close();
             }
+            // An open VRChat SDK panel keeps the descriptor in its avatar list and throws (MissingReferenceException in
+            // its AvatarSelector) when it next lists avatars: the avatar goes now, and the SDK's refresh happens while this
+            // test still runs, its error expected here rather than failing the next test.
+            Selection.activeObject = null;
+            Object.DestroyImmediate(avatar);
+            LogAssert.ignoreFailingMessages = true;
+            var poke = new GameObject("Fixture refresh");
+            SceneManager.MoveGameObjectToScene(poke, scene);
+            for (int i = 0; i < 4; i++) yield return null;
+            Object.DestroyImmediate(poke);
+            for (int i = 0; i < 4; i++) yield return null;
         }
 
         [Test]

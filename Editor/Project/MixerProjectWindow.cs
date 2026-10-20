@@ -34,7 +34,8 @@ namespace Orbiters.Mixer.Editor
         [SerializeField] private List<string> contentOpen = new List<string>();
         [SerializeField] private ProjectSort sort = ProjectSort.Name;
         [SerializeField] private ProjectKinds kinds = ProjectKinds.None;
-        [SerializeField] private bool includePackages;
+        [SerializeField] private SearchScope scope = SearchScope.Assets;
+        [SerializeField] private bool locked, favouritesFolded;
         // The icons' size in the grid; 0 is the list.
         [SerializeField] private float iconSize;
         [SerializeField] private float treeWidth = 230f;
@@ -43,6 +44,7 @@ namespace Orbiters.Mixer.Editor
         [NonSerialized] private bool built, dirty = true, treeDirty = true, visible = true;
         private VisualElement root, panes, usagePanel;
         private TextField searchField;
+        private MixerSearch searchOptions;
         private Button filterButton, sortButton;
         private Label filterCount, footer, emptyLabel;
         private VirtualList tree, content;
@@ -66,6 +68,7 @@ namespace Orbiters.Mixer.Editor
             Selection.selectionChanged += OnSelectionChanged;
             RecentAssets.Changed += OnRecentChanged;
             AssetContentIndex.Updated += OnIndexUpdated;
+            ProjectFavourites.Changed += OnFavouritesChanged;
         }
 
         private void OnDisable()
@@ -74,6 +77,7 @@ namespace Orbiters.Mixer.Editor
             Selection.selectionChanged -= OnSelectionChanged;
             RecentAssets.Changed -= OnRecentChanged;
             AssetContentIndex.Updated -= OnIndexUpdated;
+            ProjectFavourites.Changed -= OnFavouritesChanged;
             treeOpen = treeOpenSet.ToList();
             contentOpen = contentOpenSet.ToList();
         }
@@ -95,7 +99,7 @@ namespace Orbiters.Mixer.Editor
             menu.AddItem(new GUIContent("Open Unity's Project window"), false, ProjectReplacement.OpenUnityProject);
             menu.AddItem(new GUIContent("Replace Unity's Project window"), ProjectReplacement.Enabled, () => ProjectReplacement.SetEnabled(!ProjectReplacement.Enabled));
             menu.AddSeparator("");
-            menu.AddItem(new GUIContent("Search in packages too"), includePackages, () => { includePackages = !includePackages; RebuildNow(); });
+            menu.AddItem(new GUIContent("Lock"), locked, () => locked = !locked);
             menu.AddItem(new GUIContent("Read the project's contents again"), false, () => { AssetContentIndex.MarkDirty(); AssetContentIndex.Refresh(); });
         }
 
@@ -147,6 +151,8 @@ namespace Orbiters.Mixer.Editor
             toasts = new MixerToasts();
             root.Add(toasts);
             root.RegisterCallback<KeyDownEvent>(OnKey, TrickleDown.TrickleDown);
+            root.RegisterCallback<ValidateCommandEvent>(OnValidateCommand);
+            root.RegisterCallback<ExecuteCommandEvent>(OnCommand);
             root.schedule.Execute(Tick).Every(100);
             ApplyViewMode();
             built = true;
@@ -161,7 +167,7 @@ namespace Orbiters.Mixer.Editor
             searchField = new TextField { value = search };
             searchField.AddToClassList("mx-field");
             searchField.AddToClassList("mxp-search");
-            searchField.tooltip = "Search names and what assets hold inside: parameters, states, layers, animated properties and blendshapes, VRChat components' fields. t:Material and other Unity filters work too.";
+            searchField.tooltip = "Search names and what assets hold inside: parameters, states, layers, animated properties and blendshapes, VRChat components' fields. t:Material and other Unity filters work too (not in a regular expression, which is matched against file names and contents).";
             searchField.RegisterValueChangedCallback(evt => { search = evt.newValue; MarkDirty(); });
             searchField.RegisterCallback<KeyDownEvent>(evt =>
             {
@@ -177,7 +183,8 @@ namespace Orbiters.Mixer.Editor
             filterCount = MixerUi.Text("", "mxp-filter__count");
             filterButton.Add(filterCount);
             MixerUi.Press(filterButton, ShowFilterMenu);
-            searchField.Add(filterButton);
+            starButton = MixerUi.Icon(IconGlyph.Star, "Save this search to Favourites", ToggleSavedSearch, "mxp-star");
+            searchOptions = new MixerSearch(searchField, "Project", () => { if (Searching) RebuildNow(); }, starButton, filterButton);
             bar.Add(searchField);
             sortButton = new Button { text = string.Empty };
             sortButton.AddToClassList("mxp-sort");
@@ -186,6 +193,13 @@ namespace Orbiters.Mixer.Editor
             MixerUi.Press(sortButton, ShowSortMenu);
             bar.Add(sortButton);
             var create = MixerUi.Box("mxp-create");
+            // As Unity's "+": everything that can be created; the four buttons after it are the usual ones.
+            addButton = new Button { text = string.Empty, tooltip = "Create: everything Unity and your tools can make, in the highlighted folder (else the open one)" };
+            addButton.AddToClassList("mxp-add");
+            var addIcon = new VectorIcon(IconGlyph.Plus) { pickingMode = PickingMode.Ignore }; addIcon.AddToClassList("mxp-add__icon"); addButton.Add(addIcon);
+            var addChevron = new VectorIcon(IconGlyph.Chevron) { pickingMode = PickingMode.Ignore }; addChevron.AddToClassList("mxp-add__chevron"); addButton.Add(addChevron);
+            MixerUi.Press(addButton, ShowCreateMenu);
+            create.Add(addButton);
             create.Add(CreateButton("Folder Icon", "folder", () => CreateFolder()));
             create.Add(CreateButton("Material Icon", "material", () => CreateMaterial()));
             create.Add(CreateButton("AnimationClip Icon", "animation", () => CreateAnimation()));
@@ -224,6 +238,17 @@ namespace Orbiters.Mixer.Editor
             Kind("Scripts", ProjectKinds.Scripts);
             Kind("Shaders", ProjectKinds.Shaders);
             Kind("Other assets", ProjectKinds.Other);
+            // Unity's asset labels: each adds or removes its l: filter in the search.
+            var labels = Labels();
+            if (labels.Count > 0)
+            {
+                menu.AddSeparator("");
+                foreach (string label in labels)
+                {
+                    string l = label;
+                    menu.AddItem(new GUIContent("Labels/" + l), HasLabelToken(l), () => ToggleLabel(l));
+                }
+            }
             menu.AddSeparator("");
             if (kinds != ProjectKinds.None) menu.AddItem(new GUIContent("Show everything"), false, () => { kinds = ProjectKinds.None; SyncTopBar(); RebuildNow(); });
             else menu.AddDisabledItem(new GUIContent("Show everything"));
@@ -282,9 +307,13 @@ namespace Orbiters.Mixer.Editor
             if (footer == null) return;
             lastFooter = EditorApplication.timeSinceStartup;
             int files = 0, folders = 0;
-            foreach (var row in rows) { if (row.IsHeading) continue; if (row.IsFolder) folders++; else files++; }
+            foreach (var row in rows) { if (row.IsHeading || row.IsSubAsset) continue; if (row.IsFolder) folders++; else files++; }
+            SyncStar();
             string what = (folders > 0 ? folders + (folders == 1 ? " folder · " : " folders · ") : "") + files + (files == 1 ? " file" : " files");
-            footer.text = what + (picked.Count > 0 ? " · " + picked.Count + " selected" : "")
+            // One asset lit up: where it is, as Unity's status bar shows it.
+            string only = picked.Count == 1 ? picked.First() : null;
+            string where = only == null ? null : only.IndexOf(ProjectFiles.SubAssetMark) >= 0 ? only.Substring(0, only.IndexOf(ProjectFiles.SubAssetMark)) + " › " + (ObjectOf(only)?.name ?? "") : only;
+            footer.text = (where != null ? where + "  ·  " : "") + what + (picked.Count > 1 ? " · " + picked.Count + " selected" : "")
                           + (AssetContentIndex.Building ? " · reading the assets' contents, " + AssetContentIndex.Progress : "");
             string target = CreateTarget();
             bool writable = ProjectFiles.IsWritable(target);
@@ -315,6 +344,20 @@ namespace Orbiters.Mixer.Editor
         {
             search = text ?? string.Empty;
             searchField?.SetValueWithoutNotify(search);
+            RebuildNow();
+        }
+
+        /// <summary>Searches with the field's switches set (tests).</summary>
+        internal void SetSearch(string text, bool regex, bool matchCase)
+        {
+            searchOptions?.Set(regex, matchCase);
+            SetSearch(text);
+        }
+
+        /// <summary>Where the search looks (tests; the path bar's menu does the same).</summary>
+        internal void SetScope(SearchScope value)
+        {
+            scope = value;
             RebuildNow();
         }
 
@@ -349,7 +392,8 @@ namespace Orbiters.Mixer.Editor
                     if (!string.IsNullOrEmpty(path)) picked.Add(path);
                 }
                 string active = Selection.activeObject != null ? AssetDatabase.GetAssetPath(Selection.activeObject) : null;
-                if (!string.IsNullOrEmpty(active))
+                // Locked, the window stays where it is (as Unity's).
+                if (!string.IsNullOrEmpty(active) && !locked)
                 {
                     cursor = anchor = active;
                     if (!creating && !Searching && IndexOf(active) < 0 && Selection.assetGUIDs.Length == 1 && !AssetDatabase.IsValidFolder(active))

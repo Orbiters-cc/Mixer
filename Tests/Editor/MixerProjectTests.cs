@@ -217,10 +217,10 @@ namespace Orbiters.Mixer.Editor.Tests
             var clip = AssetDatabase.LoadAssetAtPath<AnimationClip>(Root + "/Walk.anim");
             ControllerPlaying(clip, "MixerProjectWaving");
             AssetContentIndex.RefreshNow();
-            var hit = AssetContentIndex.Search("MixerProjectTestParam", includePackages: false).FirstOrDefault(h => h.Path == Root + "/Fixture.controller");
+            var hit = AssetContentIndex.Search(new Toolkit.Editor.SearchPattern("MixerProjectTestParam", false, false), p => p.StartsWith("Assets/", StringComparison.Ordinal)).FirstOrDefault(h => h.Path == Root + "/Fixture.controller");
             Assert.That(hit, Is.Not.Null, "a controller's parameter is found");
             Assert.That(hit.Label, Is.EqualTo("parameter"));
-            var state = AssetContentIndex.Search("MixerProjectWaving", includePackages: false).FirstOrDefault(h => h.Path == Root + "/Fixture.controller");
+            var state = AssetContentIndex.Search(new Toolkit.Editor.SearchPattern("MixerProjectWaving", false, false), p => p.StartsWith("Assets/", StringComparison.Ordinal)).FirstOrDefault(h => h.Path == Root + "/Fixture.controller");
             Assert.That(state?.Label, Is.EqualTo("state"));
         }
 
@@ -422,6 +422,119 @@ namespace Orbiters.Mixer.Editor.Tests
                 Assert.That(rows.Count, Is.EqualTo(2));
                 Press(window, rows.First(r => r.Q<Label>(className: "mxp-use__title").text.EndsWith("MixerProjectFixtureAvatar", StringComparison.Ordinal)));
                 Assert.That(Selection.activeObject, Is.EqualTo(avatar), "a row selects its place");
+            }
+            finally { window.Close(); }
+        }
+
+        // ---- What Unity's Project window also does ---------------------------------------------------------------------
+
+        [Test]
+        public void FavouritesKeepFoldersAssetsAndSearches()
+        {
+            var window = OpenHidden();
+            try
+            {
+                window.Navigate(Root);
+                ProjectFavourites.AddAssets(new[] { Root + "/Sub", Root + "/Walk.anim" });
+                var entry = ProjectFavourites.Entries.First(e => e.AssetPath == Root + "/Sub");
+                window.OpenFavourite(entry);
+                Assert.That(window.Folder, Is.EqualTo(Root + "/Sub"), "a favourite folder opens");
+                window.OpenFavourite(ProjectFavourites.Entries.First(e => e.AssetPath == Root + "/Walk.anim"));
+                Assert.That(window.Folder, Is.EqualTo(Root), "a favourite asset opens its folder");
+                Assert.That(Selection.activeObject, Is.EqualTo(AssetDatabase.LoadMainAssetAtPath(Root + "/Walk.anim")), "and is selected");
+
+                var search = ProjectFavourites.AddSearch("^Run", true, false);
+                window.Navigate(Root);
+                window.OpenFavourite(search);
+                Assert.That(window.IndexOf(Root + "/Sub/Run.anim"), Is.GreaterThanOrEqualTo(0), "a saved search runs, with its regular expression");
+                Assert.That(window.IndexOf(Root + "/Walk.anim"), Is.LessThan(0));
+                ProjectFavourites.Remove(search);
+                Assert.That(ProjectFavourites.FindSearch("^Run", true, false), Is.Null);
+            }
+            finally
+            {
+                ProjectFavourites.RemoveAsset(Root + "/Sub");
+                ProjectFavourites.RemoveAsset(Root + "/Walk.anim");
+                window.SetSearch(string.Empty, false, false);
+                window.Close();
+            }
+        }
+
+        [Test]
+        public void AFileUnfoldsToItsSubAssetsWhichSelectAsObjects()
+        {
+            var main = new Mesh { name = "Pack" };
+            AssetDatabase.CreateAsset(main, Root + "/Pack.asset");
+            var part = new Mesh { name = "MixerProjectPart" };
+            AssetDatabase.AddObjectToAsset(part, main);
+            AssetDatabase.SaveAssets();
+            AssetDatabase.ImportAsset(Root + "/Pack.asset");
+            var window = OpenHidden();
+            try
+            {
+                window.Navigate(Root);
+                Repaint(window);
+                int index = window.IndexOf(Root + "/Pack.asset");
+                Assert.That(window.Rows[index].HasSubAssets, Is.True, "Unity's view of the folder says it holds sub-assets");
+                Press(window, RowNamed(window, "Pack").Q(className: "mxp-row__chevron"));
+                var sub = window.Rows.FirstOrDefault(r => r.IsSubAsset && r.Name == "MixerProjectPart");
+                Assert.That(sub, Is.Not.Null, "its arrow unfolds it to its sub-assets");
+                Assert.That(sub.AssetPath, Is.EqualTo(Root + "/Pack.asset"));
+                window.Pick(window.IndexOf(sub.Path), false, false);
+                Assert.That(Selection.activeObject, Is.EqualTo(AssetDatabase.LoadAllAssetRepresentationsAtPath(Root + "/Pack.asset").First(o => o.name == "MixerProjectPart")), "a sub-asset selects as itself");
+            }
+            finally { window.Close(); }
+        }
+
+        [Test]
+        public void SearchLooksWhereItIsToldWithRegularExpressionsToo()
+        {
+            var window = OpenHidden();
+            try
+            {
+                window.Navigate(Root + "/Sub");
+                window.SetScope(SearchScope.Folder);
+                window.SetSearch("Run", false, false);
+                Assert.That(window.IndexOf(Root + "/Sub/Run.anim"), Is.GreaterThanOrEqualTo(0), "the open folder's assets are found");
+                window.SetSearch("Walk", false, false);
+                Assert.That(window.IndexOf(Root + "/Walk.anim"), Is.LessThan(0), "not those outside it");
+                window.SetScope(SearchScope.Assets);
+                Assert.That(window.IndexOf(Root + "/Walk.anim"), Is.GreaterThanOrEqualTo(0), "Assets finds it");
+                window.SetSearch(@"^(Walk|Jump)\.anim$", true, false);
+                Assert.That(window.IndexOf(Root + "/Walk.anim"), Is.GreaterThanOrEqualTo(0), "a regular expression matches file names");
+                Assert.That(window.IndexOf(Root + "/Sub/Deep/Jump.anim"), Is.GreaterThanOrEqualTo(0));
+                Assert.That(window.IndexOf(Root + "/Sub/Run.anim"), Is.LessThan(0));
+                window.SetSearch("^walk", true, true);
+                Assert.That(window.IndexOf(Root + "/Walk.anim"), Is.LessThan(0), "Match case");
+            }
+            finally
+            {
+                window.SetScope(SearchScope.Assets);
+                window.SetSearch(string.Empty, false, false);
+                window.Close();
+            }
+        }
+
+        [Test]
+        public void CopyPasteTypeAheadAndTheCreateMenu()
+        {
+            var window = OpenHidden();
+            try
+            {
+                window.Navigate(Root);
+                Repaint(window);
+                window.Pick(window.IndexOf(Root + "/Walk.anim"), false, false);
+                window.CopyPicked();
+                window.Pick(window.IndexOf(Root + "/Sub"), false, false);
+                window.Paste();
+                Assert.That(AssetDatabase.LoadAssetAtPath<AnimationClip>(Root + "/Sub/Walk.anim"), Is.Not.Null, "Paste copies into the highlighted folder");
+
+                window.Navigate(Root);
+                window.TypeAhead('w');
+                Assert.That(window.Picked, Is.EquivalentTo(new[] { Root + "/Walk.anim" }), "typing a name's start jumps to it");
+
+                var labels = window.CreateEntries(Root).Where(e => e.label != null).Select(e => e.label).ToList();
+                Assert.That(labels, Does.Contain("Folder").And.Contain("Material").And.Contain("C# Script"), "the + menu holds Unity's create items too");
             }
             finally { window.Close(); }
         }

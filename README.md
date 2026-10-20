@@ -23,7 +23,7 @@ saved as a native mesh asset when you commit.
   editing side at a time. Objects can be kept out of Blender from the Mixer Hierarchy.
 - The Mixer Hierarchy window replaces Unity's Hierarchy (switch it off in its menu): search with t: and c:, kind
   filters, keyboard and multi-selection, rename, drag to reparent and reorder, prefab drops, visibility and picking
-  switches, prefab and missing-script badges, Mixer's edits and the Blender state per object, and Blender actions in
+  switches, prefab and missing-script badges, the Blender state per object, and Blender actions in
   the context menu.
 - Armature mode: rest-pose editing (move a bone with Unity's handles or the Mixer Hierarchy and the bind poses
   follow so the skin stays where it is, in the same undo step), a list of the bones with their weighted vertex counts,
@@ -185,6 +185,19 @@ saved as a native mesh asset when you commit.
   other tools register through `MixerLink.BlendshapeUses`: MCB's corrective shapes on a custom base and VRCFury's
   BlendShape Links (the base shape a linked skin follows, the linked shapes a base shape drives). A click shows the
   place in the Mixer Hierarchy or Project without changing the selection; a double click selects it.
+- Every Mixer search field (the Hierarchy, the Project, the Skinned Mesh Renderer inspector's shapes and groups, the
+  Mixer window's bone lists) has the Logger's switches: match case (Aa) and regular expression (.*), kept per field. An
+  invalid expression turns the field red, the reason in its tooltip. In the Project window an expression is matched
+  against file names and what assets hold.
+- The Mixer Project window gets what Unity's Project window had: **Favourites** in the tree (Unity's all materials,
+  models and prefabs, plus folders and assets added from the context menu or dragged there, and searches saved with the
+  star in the search field; right-click to move or remove one); a **+** button with everything Unity and the project's
+  tools can create; files holding sub-assets (a model's meshes, materials, clips and avatar) unfold to them, to select or
+  drag one; the search's scope (everywhere, Assets, packages or the open folder, in the path bar) and asset labels
+  (Filter › Labels); the selected asset's path in the status bar; a lock in the tab that stops following the selection;
+  Unity's Assets menu on the context menu (Import, Export Package, Find References, Select Dependencies, Properties,
+  other tools' items); Copy and Paste of assets; typing the start of a name to jump to it.
+- The Mixer Hierarchy no longer shows a "mixer" badge on meshes being edited.
 - Requires Orbiters Toolkit 0.4.1, which holds the avatar gizmos (bones, weight paint, mesh edges, avatar budget) and
   lets Mixer take the armature overlay's bone clicks.
 

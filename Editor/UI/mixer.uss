@@ -384,3 +384,14 @@
 .mx-root .unity-scroller .unity-base-slider__dragger { width: 6px; left: 2px; border-radius: 3px; border-width: 0; background-color: rgba(255, 255, 255, 0.16); }
 .mx-root .unity-scroller .unity-base-slider__dragger:hover { background-color: rgba(255, 255, 255, 0.28); }
 .mx-root .unity-scroller .unity-scroller__slider { margin: 0; }
+
+/* Search fields' switches (match case, regular expression), as in the Logger's: at the end of the field, before its other buttons. */
+.mx-search__options { position: absolute; right: 3px; top: 0; bottom: 0; flex-direction: row; align-items: center; }
+.mx-search__toggle { width: 22px; height: 18px; min-width: 22px; margin: 0 0 0 1px; padding: 0; border-width: 0; border-radius: 6px; background-color: rgba(0, 0, 0, 0); background-image: none; color: #8c8c8c; font-size: 10px; -unity-font-style: bold; -unity-text-align: middle-center; scale: 1 1; transition-property: background-color, color, scale; transition-duration: 0.12s, 0.12s, 0.16s; transition-timing-function: ease-out, ease-out, ease-out-back; }
+.mx-search__toggle:hover { background-color: var(--mx-hover); color: #e0e0e0; }
+.mx-search__toggle.mx-pressed { scale: 0.88 0.88; }
+.mx-search__toggle--on { background-color: rgba(0, 218, 109, 0.16); color: #3cf29a; }
+.mx-search__toggle--on:hover { background-color: rgba(0, 218, 109, 0.26); color: #5cf7aa; }
+.mx-search--error .unity-base-text-field__input, .mx-search--error .unity-text-field__input { border-width: 1px; border-color: rgba(255, 107, 107, 0.75); background-color: rgba(255, 107, 107, 0.07); }
+.mx-skin-light .mx-search__toggle { color: #555555; }
+.mx-skin-light .mx-search__toggle--on { color: #0a8a4a; }

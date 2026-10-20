@@ -9,6 +9,9 @@ namespace Orbiters.Mixer.Editor
 {
     internal enum ProjectSort { Name, Added, Modified }
 
+    /// <summary>Where the Project window's search looks.</summary>
+    internal enum SearchScope { Assets, All, Packages, Folder }
+
     /// <summary>Kinds of assets the Project window's filter keeps.</summary>
     [Flags]
     internal enum ProjectKinds
@@ -41,6 +44,16 @@ namespace Orbiters.Mixer.Editor
         public string MatchLabel, MatchValue;
         /// <summary>A heading line in a list (search sections), not an asset.</summary>
         public bool IsHeading;
+        /// <summary>A file holding sub-assets (a model's meshes, materials and clips): it unfolds to them.</summary>
+        public bool HasSubAssets;
+        /// <summary>A line showing a sub-asset of the file at <see cref="Path"/>'s start (its own key is <see cref="Path"/>).</summary>
+        public bool IsSubAsset;
+        public UnityEngine.Object SubAsset;
+        /// <summary>What a tree line stands for besides a folder: a favourite (<see cref="ProjectFavourites.Entry"/>).</summary>
+        public object Tag;
+
+        /// <summary>The asset's own path (a sub-asset's file).</summary>
+        public string AssetPath => IsSubAsset ? Path.Substring(0, Path.IndexOf(ProjectFiles.SubAssetMark)) : Path;
     }
 
     /// <summary>
@@ -50,6 +63,8 @@ namespace Orbiters.Mixer.Editor
     internal static class ProjectFiles
     {
         public static readonly TimeSpan NewFor = TimeSpan.FromHours(24);
+        /// <summary>Between a file's path and a sub-asset's instance ID in a sub-asset line's key.</summary>
+        public const char SubAssetMark = '\u0001';
 
         /// <summary>The roots of the folder tree: Assets, then each package (by its display name) under "Packages".</summary>
         public static List<(string path, string name)> Packages()
@@ -151,6 +166,7 @@ namespace Orbiters.Mixer.Editor
             var now = DateTime.UtcNow;
             IEnumerable<string> entries;
             try { entries = Directory.EnumerateFileSystemEntries(full).ToList(); } catch (Exception) { return items; }
+            var holding = foldersOnly ? null : FilesWithSubAssets(folder);
             foreach (string entry in entries)
             {
                 string name = System.IO.Path.GetFileName(entry);
@@ -160,9 +176,51 @@ namespace Orbiters.Mixer.Editor
                 if (foldersOnly && !isFolder) continue;
                 var item = Make(folder + "/" + name, entry, isFolder, now);
                 if (!isFolder && !Keeps(kinds, item)) continue;
+                if (!isFolder && holding != null) item.HasSubAssets = holding.Contains(AssetDatabase.AssetPathToGUID(item.Path));
                 items.Add(item);
             }
             Sort(items, sort);
+            return items;
+        }
+
+        // Unity's own view of a folder (as its Project window reads it, nothing loaded): the files whose rows unfold to
+        // sub-assets, by GUID.
+        private static HashSet<string> FilesWithSubAssets(string folder)
+        {
+            var result = new HashSet<string>(StringComparer.Ordinal);
+            try
+            {
+                var property = new HierarchyProperty(HierarchyType.Assets, folder, false);
+                var none = Array.Empty<int>();
+                while (property.Next(none))
+                    if (property.depth == 0 && property.hasChildren && property.isMainRepresentation && !property.isFolder) result.Add(property.guid);
+            }
+            catch (Exception) { }
+            return result;
+        }
+
+        /// <summary>The sub-asset lines of a file (a model's meshes, materials, clips, avatar), loaded now, as Unity lists them.</summary>
+        public static List<ProjectItem> SubAssets(string assetPath, int depth)
+        {
+            var items = new List<ProjectItem>();
+            foreach (var asset in AssetDatabase.LoadAllAssetRepresentationsAtPath(assetPath))
+            {
+                if (asset == null) continue;
+                items.Add(new ProjectItem
+                {
+                    Path = assetPath + SubAssetMark + asset.GetInstanceID(),
+                    Name = asset.name,
+                    Extension = string.Empty,
+                    IsSubAsset = true,
+                    SubAsset = asset,
+                    Depth = depth,
+                });
+            }
+            items.Sort((a, b) =>
+            {
+                int c = string.Compare(a.SubAsset.GetType().Name, b.SubAsset.GetType().Name, StringComparison.Ordinal);
+                return c != 0 ? c : EditorUtility.NaturalCompare(a.Name, b.Name);
+            });
             return items;
         }
 

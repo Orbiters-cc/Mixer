@@ -40,6 +40,7 @@ namespace Orbiters.Mixer.Editor
         private Label filterCount;
         private VirtualList list;
         private TextField searchField;
+        private MixerSearch searchOptions;
         private Label footer;
         private MixerToasts toasts;
         // Not kept across a script reload (Unity keeps a window's private fields): the rows must be built again first.
@@ -176,7 +177,7 @@ namespace Orbiters.Mixer.Editor
             searchField.AddToClassList("mx-field");
             searchField.AddToClassList("mxh-search");
             searchField.tooltip = "Search by name; t:Light or c:Rigidbody by type";
-            searchField.RegisterValueChangedCallback(evt => { search = evt.newValue; filter.Text = search; MarkDirty(); });
+            searchField.RegisterValueChangedCallback(evt => { search = evt.newValue; filter.Pattern = searchOptions.For(search); MarkDirty(); });
             searchField.RegisterCallback<KeyDownEvent>(evt => { if (evt.keyCode == KeyCode.Escape) { searchField.value = string.Empty; root.Focus(); evt.StopPropagation(); } else if (evt.keyCode == KeyCode.DownArrow) { root.Focus(); evt.StopPropagation(); } });
             var searchIcon = new VectorIcon(IconGlyph.Search); searchIcon.AddToClassList("mxh-search__icon");
             searchField.Add(searchIcon);
@@ -188,7 +189,7 @@ namespace Orbiters.Mixer.Editor
             filterCount = MixerUi.Text("", "mxh-filter__count");
             filterButton.Add(filterCount);
             MixerUi.Press(filterButton, ShowFilterMenu);
-            searchField.Add(filterButton);
+            searchOptions = new MixerSearch(searchField, "Hierarchy", () => { SyncFilter(); RebuildNow(); }, filterButton);
             bar.Add(searchField);
             bar.Add(MixerUi.Icon(IconGlyph.Plus, "Create an empty object (under the selection)", () => CreateEmpty(true), "mxh-add"));
             SyncFilter();
@@ -222,7 +223,7 @@ namespace Orbiters.Mixer.Editor
 
         private void SyncFilter()
         {
-            filter.Text = search;
+            filter.Pattern = searchOptions != null ? searchOptions.For(search) : new SearchPattern(search, false, false);
             filter.Meshes = filterMeshes; filter.Skinned = filterSkinned; filter.Lights = filterLights; filter.Cameras = filterCameras;
             filter.Prefabs = filterPrefabs; filter.Missing = filterMissing; filter.Inactive = filterInactive;
             if (filterButton == null) return;
@@ -468,7 +469,6 @@ namespace Orbiters.Mixer.Editor
             }
             if (row.PrefabRoot) badges.Add(Badge("prefab", row.PrefabMissing ? "The prefab asset is missing" : "A prefab instance", "mxh-badge--prefab"));
             if (row.MissingScript) badges.Add(Badge("missing script", "A component's script is missing", "mxh-badge--missing"));
-            if (row.MixerEdited) badges.Add(Badge("mixer", "Being edited in Mixer (working copy shown)", "mxh-badge--mixer"));
             if (subSelected) badges.Add(PaintsPicked()
                 ? Badge("painting", "The bone Weight Paint paints and poses; the mesh stays selected", "mxh-badge--mixer")
                 : Badge("posing", "Posed in Weight Paint; the painted mesh is not skinned to it", "mxh-badge--mixer"));
