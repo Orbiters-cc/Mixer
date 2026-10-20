@@ -146,6 +146,8 @@ saved as a native mesh asset when you commit.
 - Strokes show as they are made: the working mesh's positions are uploaded with its renderers told, so a skinned
   renderer skins them again at once (it kept showing what it skinned last and only caught up when the mesh's bounds
   grew, so a stroke inside the body showed late and in jumps).
+- Brushes keep working while the pointer is held still (every one but Grab, in Sculpt and Weight Paint): the brush
+  applies again about twenty times a second where the pointer's ray meets the surface as it is now, until the release.
 - No more hitches every few frames of a stroke: the working mesh's bounds are worked out from the shown positions
   once the stroke ends (Mesh.RecalculateBounds every tenth upload took ~27 ms on a body with 500 shapes), and while a
   Mixer mode edits an avatar's meshes, work that can wait on them waits (Orbiters Toolkit's
@@ -234,6 +236,20 @@ eye or any camera of the scene) and a transparent background. When Blender is li
 sends the image back; otherwise Mixer starts a Blender without a window, which connects to the link, receives the scene
 and renders it (the Mixer extension must have been installed once with **Open scene in Blender**). The PNG lands under
 `Library/Orbiters/Mixer/render`, is shown in Mixer, and **Save as…** or **Save to project** keep it.
+
+## Splats
+
+Gaussian splats that Orbiters desktop reconstructed from a VRChat session show in the Scene and Game views, where the
+world was captured. In Orbiters desktop, **Send to Mixer** in a reconstructed session's detail sends them to the Unity
+editor running Mixer; in Unity, **Tools > Orbiters > Mixer > Import Splats…** picks a session's
+`reconstruction/splats.ply`. Either way the PLY is copied to `Assets/Orbiters/Splats/<session>.splats` (imported by
+Mixer as a splat cloud), and an EditorOnly **Splat Renderer** object (left out of builds) is added to the open scene,
+selected and framed.
+
+The renderer sorts the splats back to front for each camera on the GPU (a bitonic sort in a compute shader) and draws
+them before the transparent pass, behind your scene's geometry where it is in front (built-in render pipeline, compute
+shaders). Move the object to offset them. Each editor keeps an inbox for Orbiters desktop under
+`%LOCALAPPDATA%/Orbiters/Mixer/inbox/<process id>/` (an `endpoint.json` naming the project, and the requests).
 
 ## Agents
 

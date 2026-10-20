@@ -42,6 +42,12 @@ namespace Orbiters.Mixer.Editor
         private static EditTarget hoverTarget;
         private static EditTarget focusTarget;
         private static double lastWorldRefresh;
+        // A held stroke: the pointer's last ray and Ctrl, and when the brush last applied (a drag step or a dab).
+        private static Ray heldRay;
+        private static bool heldInvert;
+        private static double lastApplied;
+        private static int stepsSeen;
+        private const double DabInterval = 0.05;
         private static int refreshCursor;
         // The painted bone or vertex group, and the mesh whose bone indices it uses: bone indices differ from one mesh to
         // another, so the channel is carried to another mesh by the bone itself (its Transform), never by its index.
@@ -324,6 +330,8 @@ namespace Orbiters.Mixer.Editor
             if (PrefabStageUtility.GetCurrentPrefabStage() != null) { if (hovering) ClearHover(); return; }
             var e = Event.current;
             if (mode == MixerMode.Weights) BoneSubSelection.OnSceneGui(view);
+            // Ctrl pressed or let go while the pointer stays still turns a held brush round too.
+            if (Stroking && e.type != EventType.Layout && e.type != EventType.Repaint) heldInvert = e.control;
             int control = GUIUtility.GetControlID(ControlHint, FocusType.Passive);
             switch (e.GetTypeForControl(control))
             {
@@ -353,6 +361,7 @@ namespace Orbiters.Mixer.Editor
                     break;
                 case EventType.MouseDrag:
                     if (GUIUtility.hotControl != control || !Stroking) break;
+                    heldRay = HandleUtility.GUIPointToWorldRay(e.mousePosition);
                     Hover(e.mousePosition, false);
                     if (stroke != null) stroke.Step(HandleUtility.GUIPointToWorldRay(e.mousePosition), hovering ? hoverPoint : (Vector3?)null, hovering ? hoverNormal : (Vector3?)null, e.control, e.shift);
                     else weightStroke.Step(hovering ? hoverPoint : (Vector3?)null, hovering ? hoverNormal : (Vector3?)null, e.control);
@@ -449,13 +458,50 @@ namespace Orbiters.Mixer.Editor
                 if (refusal != null) { MixerModes.Notify(refusal); return false; }
                 weightStroke = new WeightStroke(hoverTarget, WeightKind, on, Radius, Strength, WeightValue, Falloff, Symmetry, AutoNormalize);
                 weightStroke.Begin(hoverPoint, hoverNormal, e.control);
+                StartHolding(e);
                 return true;
             }
             FocusTarget = hoverTarget;
             var effective = e.shift && !(brush is SmoothBrush) ? Brushes.Named("Smooth") : brush;
             stroke = new SculptStroke(hoverTarget, effective, Radius, Strength, Falloff, Symmetry, view.camera != null ? view.camera.transform.forward : Vector3.forward);
             stroke.Begin(hoverPoint, hoverNormal, HandleUtility.GUIPointToWorldRay(e.mousePosition), e.control);
+            if (stroke.WorksWhileHeld) StartHolding(e);
             return true;
+        }
+
+        // ---- Held brushes: pressing without moving keeps the brush working until the release --------------------------
+
+        private static void StartHolding(Event e)
+        {
+            heldRay = HandleUtility.GUIPointToWorldRay(e.mousePosition);
+            heldInvert = e.control;
+            lastApplied = EditorApplication.timeSinceStartup;
+            stepsSeen = 0;
+            EditorApplication.update -= HoldTick;
+            EditorApplication.update += HoldTick;
+        }
+
+        // While a stroke is held and no drag step applied for a moment, the brush applies again where the pointer's ray
+        // meets the surface now (Inflate swells under a still pointer, Smooth keeps relaxing...).
+        private static void HoldTick()
+        {
+            if (!Stroking) { EditorApplication.update -= HoldTick; return; }
+            double now = EditorApplication.timeSinceStartup;
+            int steps = stroke != null ? stroke.Steps : weightStroke.Steps;
+            if (steps != stepsSeen) { stepsSeen = steps; lastApplied = now; return; }
+            if (now - lastApplied < DabInterval) return;
+            var target = stroke != null ? stroke.Target : weightStroke.Target;
+            if (target == null || !target.Alive) return;
+            var hit = target.Bvh.Raycast(heldRay.origin, heldRay.direction, 1000f, backfaces: false);
+            if (!hit.Found) return;
+            var normal = target.Bvh.FaceNormal(hit.Triangle);
+            if (stroke != null) stroke.Dab(hit.Position, normal, heldInvert);
+            else weightStroke.Dab(hit.Position, normal, heldInvert);
+            stepsSeen = stroke != null ? stroke.Steps : weightStroke.Steps;
+            lastApplied = now;
+            hoverPoint = hit.Position;
+            hoverNormal = normal;
+            SceneView.RepaintAll();
         }
 
         private static void EndStroke(bool cancel)

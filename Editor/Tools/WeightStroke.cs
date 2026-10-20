@@ -162,6 +162,18 @@ namespace Orbiters.Mixer.Editor
             Apply(invert);
         }
 
+        public EditTarget Target => target;
+
+        /// <summary>The pointer held still: the brush paints again where it is, without the spacing a moving pointer needs.</summary>
+        public void Dab(Vector3 surface, Vector3 normal, bool invert)
+        {
+            if (!begun) return;
+            lastSample = surface;
+            Center = surface;
+            Normal = normal;
+            Apply(invert);
+        }
+
         public HistoryEntry End(bool cancel)
         {
             if (!begun) return null;

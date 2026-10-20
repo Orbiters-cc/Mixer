@@ -33,6 +33,9 @@ namespace Orbiters.Mixer.Editor
         private bool begun;
 
         public string BrushName => brush.Name;
+        public EditTarget Target => target;
+        /// <summary>The brush keeps working while the pointer is held still (every brush but the grabbing ones).</summary>
+        public bool WorksWhileHeld => !brush.Grabs;
         public string TargetName => target.Name;
         public float Radius { get; }
         public float Strength { get; }
@@ -118,6 +121,26 @@ namespace Orbiters.Mixer.Editor
             Gather(ctx.Center);
             Apply();
             ctx.First = false;
+        }
+
+        /// <summary>
+        /// The pointer held still: the brush applies again where the surface under it is now (it moved as the brush worked),
+        /// without the spacing a moving pointer needs.
+        /// </summary>
+        public void Dab(Vector3 surface, Vector3 normal, bool invert)
+        {
+            if (!begun || brush.Grabs) return;
+            using (StepMarker.Auto())
+            {
+                ctx.Invert = invert;
+                lastSample = surface;
+                ctx.Previous = ctx.Center;
+                ctx.Center = surface;
+                ctx.Normal = normal;
+                Gather(surface);
+                Apply();
+                ctx.First = false;
+            }
         }
 
         /// <summary>Ends the stroke: normals, bounds, history. Returns the recorded edit (null when nothing moved).</summary>

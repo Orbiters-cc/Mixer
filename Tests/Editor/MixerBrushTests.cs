@@ -93,6 +93,33 @@ namespace Orbiters.Mixer.Editor.Tests
         }
 
         [Test]
+        public void ABrushHeldStillKeepsWorkingUntilTheRelease()
+        {
+            // Pressed on the sphere's front and never moved: each dab (the still pointer's) inflates it further, at the
+            // surface where it is now; Grab, which only follows the pointer, does nothing held.
+            var front = new Vector3(0, 0, -0.5f);
+            var hit = target.Bvh.ClosestPoint(front, 0.1f);
+            var stroke = new SculptStroke(target, Brushes.Named("Inflate"), 0.15f, 1f, Falloff.Smooth, false, Vector3.forward);
+            Assert.That(stroke.WorksWhileHeld, Is.True);
+            stroke.Begin(hit.Position, target.Bvh.FaceNormal(hit.Triangle), new Ray(hit.Position - Vector3.forward, Vector3.forward), false);
+            int nearest = 0;
+            float best = float.MaxValue;
+            for (int v = 0; v < target.Document.VertexCount; v++) { float d = (target.Document.Positions[v] - front).sqrMagnitude; if (d < best) { best = d; nearest = v; } }
+            float afterPress = RadiusAt(nearest);
+            for (int i = 0; i < 5; i++)
+            {
+                var again = target.Bvh.Raycast(front - Vector3.forward, Vector3.forward, 10f, backfaces: false);
+                Assert.That(again.Found, Is.True, "the still pointer's ray still meets the surface");
+                stroke.Dab(again.Position, target.Bvh.FaceNormal(again.Triangle), false);
+            }
+            float held = RadiusAt(nearest);
+            var edit = stroke.End(false);
+            Assert.That(held, Is.GreaterThan(afterPress + 0.005f), "holding the pointer still keeps inflating");
+            Assert.That(edit, Is.Not.Null, "the held stroke is one undo step");
+            Assert.That(new SculptStroke(target, Brushes.Named("Grab"), 0.15f, 1f, Falloff.Smooth, false, Vector3.forward).WorksWhileHeld, Is.False, "Grab only follows the pointer");
+        }
+
+        [Test]
         public void FlattenLevelsAndSmoothRelaxesTheSurface()
         {
             var front = new Vector3(0, 0, -0.5f);
