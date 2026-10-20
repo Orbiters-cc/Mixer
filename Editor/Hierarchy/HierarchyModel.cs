@@ -6,6 +6,7 @@ using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using Orbiters.Toolkit.Editor;
 using Object = UnityEngine.Object;
 
 namespace Orbiters.Mixer.Editor
@@ -33,6 +34,23 @@ namespace Orbiters.Mixer.Editor
         public bool Excluded;
         public bool BlenderOwned;
         public bool MixerEdited;
+        /// <summary>Holds a mesh or has one below: shown taller, with a picture of its meshes.</summary>
+        public bool HasMeshes;
+        /// <summary>A VRChat avatar's root (its avatar descriptor).</summary>
+        public bool VrchatAvatar;
+        /// <summary>The light on the object, turned from its row.</summary>
+        public Light Light;
+        /// <summary>An avatar's armature: its row selects the main bones.</summary>
+        public QuickBones Bones;
+        /// <summary>An avatar tool (My Avatar) takes drops on this avatar root.</summary>
+        public IAvatarObjectTool DropTool;
+        /// <summary>An avatar tool asks whether this item it added should be refitted.</summary>
+        public IAvatarObjectTool RefitTool;
+
+        /// <summary>A bone of an avatar (a skinned mesh's or the humanoid's).</summary>
+        public bool IsBone;
+        /// <summary>An empty object that only groups others (shown as a folder).</summary>
+        public bool IsFolder;
 
         private Component[] components;
         /// <summary>The object's components, read once per rebuild (rows are bound again on every click).</summary>
@@ -68,6 +86,8 @@ namespace Orbiters.Mixer.Editor
         private readonly HashSet<int> excludedIds = new HashSet<int>();
         private readonly HashSet<int> ownedIds = new HashSet<int>();
         private readonly HashSet<int> editedIds = new HashSet<int>();
+        /// <summary>The avatars shown, with their armatures; cleared when the hierarchy changes.</summary>
+        public readonly HierarchyAvatars Avatars = new HierarchyAvatars();
         private bool loaded;
         private static Scene dontDestroyOnLoad;
 
@@ -161,10 +181,30 @@ namespace Orbiters.Mixer.Editor
                 MissingScript = GameObjectUtility.GetMonoBehavioursWithMissingScriptCount(go) > 0,
                 Hidden = SceneVisibilityManager.instance.IsHidden(go), PickingDisabled = SceneVisibilityManager.instance.IsPickingDisabled(go),
                 Excluded = excluded, BlenderOwned = ownedIds.Contains(id), MixerEdited = editedIds.Contains(id),
+                HasMeshes = HasMeshBelow(t), VrchatAvatar = HierarchyAvatars.IsVrchatAvatar(go), Light = go.GetComponent<Light>(),
             };
+            if (HierarchyAvatars.IsAvatarRoot(go))
+            {
+                Avatars.Scan(go);
+                if (row.VrchatAvatar) row.DropTool = AvatarObjectTools.DropTarget(go);
+            }
+            row.Bones = Avatars.BonesOf(go);
+            row.IsBone = row.Bones == null && Avatars.IsBone(go);
+            row.IsFolder = row.HasChildren && row.Bones == null && !row.IsBone && row.Components.Length == 1 && !row.PrefabRoot;
+            if (row.HasMeshes) row.RefitTool = AvatarObjectTools.RefitQuestion(go);
             Rows.Add(row);
             if (!row.Expanded || !row.HasChildren) return;
             for (int i = 0; i < t.childCount; i++) Walk(t.GetChild(i), depth + 1, filter, excluded);
+        }
+
+        // A mesh shown on the object or anywhere below it (helpers hidden from the hierarchy aside); stops at the first.
+        private static bool HasMeshBelow(Transform t)
+        {
+            if ((t.gameObject.hideFlags & HideFlags.HideInHierarchy) != 0) return false;
+            if (t.TryGetComponent<SkinnedMeshRenderer>(out var skinned) && skinned.sharedMesh != null) return true;
+            if (t.TryGetComponent<MeshFilter>(out var filter) && filter.sharedMesh != null && t.TryGetComponent<MeshRenderer>(out _)) return true;
+            for (int i = 0; i < t.childCount; i++) if (HasMeshBelow(t.GetChild(i))) return true;
+            return false;
         }
 
         // Children hidden from the hierarchy (the gizmos' helpers under bones) give no fold arrow.

@@ -35,21 +35,23 @@ namespace Orbiters.Mixer.Editor
 
         private readonly HierarchyModel model = new HierarchyModel();
         private readonly HierarchyFilter filter = new HierarchyFilter();
-        private VisualElement root, chips, dragLine;
+        private VisualElement root, dragLine;
+        private Button filterButton;
+        private Label filterCount;
         private VirtualList list;
         private TextField searchField;
         private Label footer;
         private MixerToasts toasts;
-        private bool dirty = true, visible = true, built;
+        // Not kept across a script reload (Unity keeps a window's private fields): the rows must be built again first.
+        [NonSerialized] private bool dirty = true, visible = true, built;
         private int anchorId;
         private int renamingId;
         private double lastRebuild, lastPersist;
         private int persistedVersion = -1;
-        private readonly Dictionary<string, Button> chipButtons = new Dictionary<string, Button>();
 
         private static bool Compact => EditorPrefs.GetBool(CompactPref, false);
         private static bool ShowComponents => EditorPrefs.GetBool(ComponentsPref, true);
-        private static bool ShowDots => EditorPrefs.GetBool(DotsPref, true);
+        private static bool ShowDots => EditorPrefs.GetBool(DotsPref, false);
 
         [MenuItem(MixerInfo.HierarchyMenuPath, priority = 2001)]
         public static void Open()
@@ -62,9 +64,10 @@ namespace Orbiters.Mixer.Editor
         {
             titleContent = new GUIContent("Hierarchy", MixerLogo.TabIcon(), "Mixer Hierarchy");
             minSize = new Vector2(240f, 160f);
-            EditorApplication.hierarchyChanged += MarkDirty;
+            EditorApplication.hierarchyChanged += OnHierarchyChanged;
             EditorApplication.playModeStateChanged += OnPlayModeChanged;
             Selection.selectionChanged += OnSelectionChanged;
+            AvatarObjectTools.Changed += MarkDirty;
             EditorSceneManager.sceneDirtied += OnSceneChanged;
             EditorSceneManager.sceneSaved += OnSceneChanged;
             EditorSceneManager.sceneOpened += OnSceneOpened;
@@ -79,9 +82,10 @@ namespace Orbiters.Mixer.Editor
 
         private void OnDisable()
         {
-            EditorApplication.hierarchyChanged -= MarkDirty;
+            EditorApplication.hierarchyChanged -= OnHierarchyChanged;
             EditorApplication.playModeStateChanged -= OnPlayModeChanged;
             Selection.selectionChanged -= OnSelectionChanged;
+            AvatarObjectTools.Changed -= MarkDirty;
             EditorSceneManager.sceneDirtied -= OnSceneChanged;
             EditorSceneManager.sceneSaved -= OnSceneChanged;
             EditorSceneManager.sceneOpened -= OnSceneOpened;
@@ -98,6 +102,7 @@ namespace Orbiters.Mixer.Editor
         private void OnBecameVisible() { visible = true; MarkDirty(); }
         private void OnBecameInvisible() => visible = false;
         private void MarkDirty() => dirty = true;
+        private void OnHierarchyChanged() { model.Avatars.Clear(); MarkDirty(); }
         private void OnSceneChanged(Scene _) => MarkDirty();
         private void OnSceneOpened(Scene _, OpenSceneMode __) => MarkDirty();
         private void OnPrefabStage(PrefabStage _) => MarkDirty();
@@ -133,6 +138,9 @@ namespace Orbiters.Mixer.Editor
             persistedVersion = model.Version;
             BuildTopBar();
             list = new VirtualList(Compact ? CompactRowHeight : RowHeight, MakeRow, BindRow);
+            // Rows with a picture, a light or the armature's bones take two lines (one each in compact rows).
+            list.SpanOf = index => Tall(model[index]) ? 2 : 1;
+            list.RegisterCallback<GeometryChangedEvent>(_ => OnWidthChanged());
             list.AddToClassList("mxh-list");
             root.Add(list);
             dragLine = MixerUi.Box("mxh-dragline", PickingMode.Ignore);
@@ -173,41 +181,56 @@ namespace Orbiters.Mixer.Editor
             searchField.RegisterCallback<KeyDownEvent>(evt => { if (evt.keyCode == KeyCode.Escape) { searchField.value = string.Empty; root.Focus(); evt.StopPropagation(); } else if (evt.keyCode == KeyCode.DownArrow) { root.Focus(); evt.StopPropagation(); } });
             var searchIcon = new VectorIcon(IconGlyph.Search); searchIcon.AddToClassList("mxh-search__icon");
             searchField.Add(searchIcon);
+            // The kind filters, in a menu at the end of the search field (they took a line of their own).
+            filterButton = new Button { text = string.Empty, tooltip = "Show only some kinds of objects" };
+            filterButton.AddToClassList("mxh-filter");
+            var filterIcon = new VectorIcon(IconGlyph.Sliders) { pickingMode = PickingMode.Ignore }; filterIcon.AddToClassList("mxh-filter__icon"); filterButton.Add(filterIcon);
+            filterButton.Add(MixerUi.Text("Filter", "mxh-filter__text"));
+            filterCount = MixerUi.Text("", "mxh-filter__count");
+            filterButton.Add(filterCount);
+            MixerUi.Press(filterButton, ShowFilterMenu);
+            searchField.Add(filterButton);
             bar.Add(searchField);
             bar.Add(MixerUi.Icon(IconGlyph.Plus, "Create an empty object (under the selection)", () => CreateEmpty(true), "mxh-add"));
-            chips = MixerUi.Box("mxh-chips");
-            root.Add(chips);
-            Chip("Meshes", IconGlyph.Grid, () => filterMeshes, v => filterMeshes = v);
-            Chip("Skinned", IconGlyph.Person, () => filterSkinned, v => filterSkinned = v);
-            Chip("Lights", IconGlyph.Sparkle, () => filterLights, v => filterLights = v);
-            Chip("Cameras", IconGlyph.Camera, () => filterCameras, v => filterCameras = v);
-            Chip("Prefabs", IconGlyph.Layers, () => filterPrefabs, v => filterPrefabs = v);
-            Chip("Missing", IconGlyph.Close, () => filterMissing, v => filterMissing = v);
-            Chip("Inactive", IconGlyph.EyeOff, () => filterInactive, v => filterInactive = v);
             SyncFilter();
         }
 
-        private void Chip(string name, IconGlyph glyph, Func<bool> get, Action<bool> set)
+        private void ShowFilterMenu()
         {
-            var chip = new Button { text = string.Empty, tooltip = "Show only " + name.ToLowerInvariant() };
-            chip.AddToClassList("mxh-chip");
-            var icon = new VectorIcon(glyph) { pickingMode = PickingMode.Ignore }; icon.AddToClassList("mxh-chip__icon"); chip.Add(icon);
-            chip.Add(MixerUi.Text(name, "mxh-chip__text"));
-            MixerUi.Press(chip, () => { set(!get()); SyncFilter(); RebuildNow(); });
-            chips.Add(chip);
-            chipButtons[name] = chip;
+            var menu = new GenericMenu();
+            void Kind(string name, Func<bool> get, Action<bool> set) =>
+                menu.AddItem(new GUIContent(name), get(), () => { set(!get()); SyncFilter(); RebuildNow(); });
+            Kind("Meshes", () => filterMeshes, v => filterMeshes = v);
+            Kind("Skinned meshes", () => filterSkinned, v => filterSkinned = v);
+            Kind("Lights", () => filterLights, v => filterLights = v);
+            Kind("Cameras", () => filterCameras, v => filterCameras = v);
+            Kind("Prefabs", () => filterPrefabs, v => filterPrefabs = v);
+            Kind("Missing", () => filterMissing, v => filterMissing = v);
+            Kind("Inactive", () => filterInactive, v => filterInactive = v);
+            menu.AddSeparator("");
+            if (FilterCount() > 0)
+                menu.AddItem(new GUIContent("Show everything"), false, () =>
+                {
+                    filterMeshes = filterSkinned = filterLights = filterCameras = filterPrefabs = filterMissing = filterInactive = false;
+                    SyncFilter(); RebuildNow();
+                });
+            else menu.AddDisabledItem(new GUIContent("Show everything"));
+            menu.DropDown(filterButton.worldBound);
         }
+
+        private int FilterCount() => (filterMeshes ? 1 : 0) + (filterSkinned ? 1 : 0) + (filterLights ? 1 : 0) + (filterCameras ? 1 : 0)
+                                     + (filterPrefabs ? 1 : 0) + (filterMissing ? 1 : 0) + (filterInactive ? 1 : 0);
 
         private void SyncFilter()
         {
             filter.Text = search;
             filter.Meshes = filterMeshes; filter.Skinned = filterSkinned; filter.Lights = filterLights; filter.Cameras = filterCameras;
             filter.Prefabs = filterPrefabs; filter.Missing = filterMissing; filter.Inactive = filterInactive;
-            foreach (var pair in chipButtons)
-            {
-                bool on = pair.Key == "Meshes" ? filterMeshes : pair.Key == "Skinned" ? filterSkinned : pair.Key == "Lights" ? filterLights : pair.Key == "Cameras" ? filterCameras : pair.Key == "Prefabs" ? filterPrefabs : pair.Key == "Missing" ? filterMissing : filterInactive;
-                pair.Value.EnableInClassList("mxh-chip--on", on);
-            }
+            if (filterButton == null) return;
+            int count = FilterCount();
+            filterButton.EnableInClassList("mxh-filter--on", count > 0);
+            filterCount.text = count > 0 ? count.ToString() : string.Empty;
+            MixerUi.Show(filterCount, count > 0);
         }
 
         private void ApplyDensity()
@@ -221,6 +244,7 @@ namespace Orbiters.Mixer.Editor
         {
             if (!built) return;
             PersistExpanded(force: false);
+            PollThumbnails();
             if (!visible || !dirty) return;
             // Hierarchy changes come in bursts (an import, a prefab apply): one rebuild per 60 ms is plenty.
             if (EditorApplication.timeSinceStartup - lastRebuild < 0.06) return;
@@ -238,6 +262,7 @@ namespace Orbiters.Mixer.Editor
 
         private void Rebuild()
         {
+            thumbnailKeys.Clear();
             model.Rebuild(filter);
             list.SetItemCount(model.Count, keepAtEnd: false);
             list.RefreshRows();
@@ -335,12 +360,21 @@ namespace Orbiters.Mixer.Editor
             row.Add(chevron);
             var dot = MixerUi.Box("mxh-row__dot", PickingMode.Ignore);
             row.Add(dot);
-            var icon = new Image { scaleMode = ScaleMode.ScaleToFit, pickingMode = PickingMode.Ignore }; icon.AddToClassList("mxh-row__icon"); row.Add(icon);
-            row.Add(MixerUi.Text("", "mxh-row__name"));
-            var rename = new TextField(); rename.AddToClassList("mxh-row__rename"); MixerUi.Show(rename, false); row.Add(rename);
-            row.Add(MixerUi.Box("mxh-row__badges", PickingMode.Ignore));
-            row.Add(MixerUi.Spacer());
-            row.Add(MixerUi.Box("mxh-row__components", PickingMode.Ignore));
+            row.Add(MakeActiveBox(row));
+            var picture = MixerUi.Box("mxh-row__picture", PickingMode.Ignore);
+            row.Add(picture);
+            var icon = new Image { scaleMode = ScaleMode.ScaleToFit, pickingMode = PickingMode.Ignore }; icon.AddToClassList("mxh-row__icon"); picture.Add(icon);
+            var glyph = new VectorIcon(IconGlyph.Bones); glyph.AddToClassList("mxh-row__glyph"); picture.Add(glyph);
+            var thumbnail = new Image { scaleMode = ScaleMode.ScaleToFit, pickingMode = PickingMode.Ignore }; thumbnail.AddToClassList("mxh-row__thumbnail"); picture.Add(thumbnail);
+            var body = MixerUi.Box("mxh-row__body", PickingMode.Ignore);
+            row.Add(body);
+            var line = MixerUi.Box("mxh-row__line", PickingMode.Ignore);
+            body.Add(line);
+            line.Add(MixerUi.Text("", "mxh-row__name"));
+            var rename = new TextField(); rename.AddToClassList("mxh-row__rename"); MixerUi.Show(rename, false); line.Add(rename);
+            line.Add(MixerUi.Box("mxh-row__badges", PickingMode.Ignore));
+            line.Add(MixerUi.Spacer());
+            line.Add(MixerUi.Box("mxh-row__components", PickingMode.Ignore));
             // As Unity's Hierarchy: a click switches the object and its children, Alt+click the object alone.
             var pick = MixerUi.Icon(IconGlyph.Lock, "Pickable in the Scene view (Alt+click: this object only)", null, evt =>
             {
@@ -354,8 +388,12 @@ namespace Orbiters.Mixer.Editor
                 if (r?.Object != null) { SceneVisibilityManager.instance.ToggleVisibility(r.Object, !evt.altKey); RebuildNow(); }
                 evt.StopPropagation();
             }, "mxh-row__eye");
-            row.Add(pick);
-            row.Add(eye);
+            line.Add(pick);
+            line.Add(eye);
+            body.Add(MakeSecondLine(row));
+            // Right of the lines: a light's turning ball, My Avatar's drop field on an avatar root.
+            row.Add(MakeLightSphere(row));
+            row.Add(MakeDropField(row));
             row.RegisterCallback<PointerDownEvent>(evt => OnRowPointerDown(row, evt));
             row.RegisterCallback<ClickEvent>(evt => { if (evt.clickCount == 2) OnRowDoubleClick(row); });
             rename.RegisterCallback<FocusOutEvent>(_ => CommitRename(row, rename, true));
@@ -405,6 +443,9 @@ namespace Orbiters.Mixer.Editor
             rename.userData = renaming ? (object)row.InstanceId : null;
             badges.Clear();
             components.Clear();
+            bool tall = Tall(row);
+            element.EnableInClassList("mxh-row--tall", tall);
+            BindRich(element, row, tall);
             if (row.IsScene)
             {
                 icon.image = EditorGUIUtility.IconContent("SceneAsset Icon").image;
@@ -412,14 +453,19 @@ namespace Orbiters.Mixer.Editor
                 return;
             }
             // Unity's own icon of the object: a prefab, a model, a variant or a missing prefab as its Hierarchy shows them.
-            icon.image = row.Object != null ? PrefabUtility.GetIconForGameObject(row.Object) : null;
+            icon.image = IconOf(row);
+            if (row.VrchatAvatar)
+            {
+                var logo = VRChatLogo.Create();
+                if (logo != null) { logo.tooltip = "A VRChat avatar (it has an avatar descriptor)"; logo.pickingMode = PickingMode.Position; logo.AddToClassList("mxh-row__vrchat"); badges.Add(logo); }
+            }
             if (row.PrefabRoot) badges.Add(Badge("prefab", row.PrefabMissing ? "The prefab asset is missing" : "A prefab instance", "mxh-badge--prefab"));
             if (row.MissingScript) badges.Add(Badge("missing script", "A component's script is missing", "mxh-badge--missing"));
             if (row.MixerEdited) badges.Add(Badge("mixer", "Being edited in Mixer (working copy shown)", "mxh-badge--mixer"));
             if (subSelected) badges.Add(PaintsPicked()
                 ? Badge("painting", "The bone Weight Paint paints and poses; the mesh stays selected", "mxh-badge--mixer")
                 : Badge("posing", "Posed in Weight Paint; the painted mesh is not skinned to it", "mxh-badge--mixer"));
-            if (ShowComponents && row.Object != null)
+            if (ShowComponents && row.Object != null && !row.VrchatAvatar)
             {
                 int shown = 0;
                 foreach (var component in row.Components)

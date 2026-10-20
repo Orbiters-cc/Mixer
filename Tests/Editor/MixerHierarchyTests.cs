@@ -60,6 +60,17 @@ namespace Orbiters.Mixer.Editor.Tests
             return window;
         }
 
+        // The user's own scenes come first and may fill the window (rows with pictures are tall): the fixture's root goes
+        // to the top, so what opens under it is on screen.
+        private static void ScrollToTop(MixerHierarchyWindow window, GameObject go)
+        {
+            var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+            var list = (Orbiters.Toolkit.Editor.VirtualList)typeof(MixerHierarchyWindow).GetField("list", flags).GetValue(window);
+            var model = (HierarchyModel)typeof(MixerHierarchyWindow).GetField("model", flags).GetValue(window);
+            int index = model.IndexOf(go.GetInstanceID());
+            list.SetFirst(list.First + list.TopOf(index) / list.RowHeight);
+        }
+
         private static void Repaint(EditorWindow window) =>
             typeof(EditorWindow).GetMethod("RepaintImmediately", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance).Invoke(window, null);
 
@@ -161,6 +172,7 @@ namespace Orbiters.Mixer.Editor.Tests
                 var tick = typeof(MixerHierarchyWindow).GetMethod("Tick", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
                 window.RevealObject(root);
                 tick.Invoke(window, null);
+                ScrollToTop(window, root);
                 Repaint(window);
                 System.Func<System.Collections.Generic.List<string>> shown = () => window.rootVisualElement.Query(className: "mxh-row").ToList()
                     .Where(r => r.resolvedStyle.display != DisplayStyle.None).Select(r => r.Q<Label>(className: "mxh-row__name")).Where(l => l != null).Select(l => l.text).ToList();
@@ -169,6 +181,8 @@ namespace Orbiters.Mixer.Editor.Tests
                     var chevron = RowNamed(window, "MixerHierarchyFixture").Q(className: "mxh-row__chevron");
                     Press(window, chevron);
                     // No Tick: the press itself shows the branch open or folded (the 60 ms burst throttle is for hierarchy changes).
+                    // A fold shortens the list, which scrolls the fixture down: back to the top, so its children are on screen.
+                    ScrollToTop(window, root);
                     Repaint(window);
                 };
                 bool openAtFirst = shown().Contains("Child 0");
@@ -220,6 +234,112 @@ namespace Orbiters.Mixer.Editor.Tests
                 Assert.That(child == null, Is.True, "the object is deleted");
                 Undo.PerformUndo();
                 Assert.That(root.transform.Find("Child 0"), Is.Not.Null, "one Ctrl+Z brings it back");
+            }
+            finally
+            {
+                window.Close();
+            }
+        }
+
+        [Test]
+        public void ObjectsWithMeshesGetTallRowsWithAPictureAndLightsABall()
+        {
+            var model = new HierarchyModel();
+            model.SetExpanded(root.GetInstanceID(), true);
+            model.Rebuild(new HierarchyFilter());
+            var rootRow = model[model.IndexOf(root.GetInstanceID())];
+            var lightRow = model[model.IndexOf(root.transform.GetChild(1).gameObject.GetInstanceID())];
+            Assert.That(rootRow.HasMeshes, Is.True, "the fixture root has cubes below: tall, with a picture");
+            Assert.That(lightRow.Light, Is.Not.Null, "the light row knows its light");
+            Assert.That(rootRow.VrchatAvatar || rootRow.Bones != null, Is.False, "a plain object is no avatar and no armature");
+
+            var window = OpenHidden();
+            try
+            {
+                window.RevealObject(root.transform.GetChild(1).gameObject);
+                Repaint(window);
+                var row = RowNamed(window, "MixerHierarchyFixture");
+                Assert.That(row.ClassListContains("mxh-row--tall"), Is.True);
+                Assert.That(row.layout.height, Is.EqualTo(48f).Within(0.5f), "a tall row takes two lines");
+                Assert.That(row.Q(className: "mxh-row__thumbnail").resolvedStyle.display, Is.EqualTo(DisplayStyle.Flex), "the picture shows (or waits for its render)");
+                Assert.That(row.Q<Label>(className: "mxh-row__detail").text, Does.Contain("meshes below"));
+                var light = RowNamed(window, "Child 1");
+                Assert.That(light.Q(className: "mxh-row__sphere").resolvedStyle.display, Is.EqualTo(DisplayStyle.Flex), "a light row turns its light with a ball");
+                Assert.That(light.Q<Label>(className: "mxh-row__detail").text, Does.Contain("light"));
+                var child = RowNamed(window, "Child 0");
+                Assert.That(child.layout.y, Is.GreaterThanOrEqualTo(row.layout.yMax - 0.5f), "rows below a tall one start under it");
+            }
+            finally
+            {
+                window.Close();
+            }
+        }
+
+        [Test]
+        public void TheActiveBoxSwitchesTheObjectInOneUndoStep()
+        {
+            var child = root.transform.GetChild(0).gameObject;
+            var window = OpenHidden();
+            try
+            {
+                window.RevealObject(child);
+                Repaint(window);
+                var box = RowNamed(window, "Child 0").Q(className: "mxh-row__active");
+                Assert.That(box.ClassListContains("mxh-row__active--on"), Is.True, "an active object shows a ticked box");
+                Press(window, box);
+                Assert.That(child.activeSelf, Is.False, "a press deactivates it");
+                Assert.That(box.ClassListContains("mxh-row__active--on"), Is.False, "the box follows at once");
+                Assert.That(Selection.activeGameObject, Is.Not.SameAs(child), "the press does not select the object");
+                Undo.PerformUndo();
+                Assert.That(child.activeSelf, Is.True, "Ctrl+Z activates it again");
+            }
+            finally
+            {
+                window.Close();
+            }
+        }
+
+        [Test]
+        public void AVrchatAvatarShowsTheLogoAndItsArmatureSelectsTheMainBones()
+        {
+            System.Type descriptor = null;
+            foreach (var assembly in System.AppDomain.CurrentDomain.GetAssemblies())
+                if ((descriptor = assembly.GetType("VRC.SDK3.Avatars.Components.VRCAvatarDescriptor", false)) != null) break;
+            if (descriptor == null) Assert.Ignore("The VRChat avatars SDK is not in this project.");
+            // Built in the fixture's scene (new objects go to the active scene), never in the user's.
+            SceneManager.SetActiveScene(scene);
+            var avatar = new GameObject("Fixture avatar");
+            avatar.transform.SetParent(root.transform, false);
+            var armature = new GameObject("Armature").transform; armature.SetParent(avatar.transform, false);
+            Transform Make(string name, Transform parent) { var t = new GameObject(name).transform; t.SetParent(parent, false); return t; }
+            var hips = Make("Hips", armature);
+            var spine = Make("Spine", hips); var chest = Make("Chest", spine); var neck = Make("Neck", chest); var head = Make("Head", neck);
+            var leftFoot = Make("LeftFoot", Make("LeftLowerLeg", Make("LeftUpperLeg", hips)));
+            var leftHand = Make("LeftHand", Make("LeftLowerArm", Make("LeftUpperArm", Make("LeftShoulder", chest))));
+            avatar.AddComponent(descriptor);
+            if (activeBefore.IsValid() && activeBefore.isLoaded) SceneManager.SetActiveScene(activeBefore);
+            var model = new HierarchyModel();
+            model.SetExpanded(root.GetInstanceID(), true);
+            model.SetExpanded(avatar.GetInstanceID(), true);
+            model.Rebuild(new HierarchyFilter());
+            var avatarRow = model[model.IndexOf(avatar.GetInstanceID())];
+            Assert.That(avatarRow.VrchatAvatar, Is.True, "the descriptor marks a VRChat avatar");
+            var armatureRow = model[model.IndexOf(armature.gameObject.GetInstanceID())];
+            Assert.That(armatureRow.Bones, Is.Not.Null, "the root's child above the hips is the armature");
+            Assert.That(armatureRow.Bones.Head, Is.SameAs(head));
+            Assert.That(armatureRow.Bones.Chest, Is.SameAs(chest));
+
+            var window = OpenHidden();
+            try
+            {
+                window.RevealObject(armature.gameObject);
+                Repaint(window);
+                Assert.That(RowNamed(window, "Fixture avatar").Q(className: "mxh-row__vrchat"), Is.Not.Null, "the avatar's row shows VRChat's logo");
+                var row = RowNamed(window, "Armature");
+                Assert.That(row.ClassListContains("mxh-row--tall"), Is.True);
+                var headButton = row.Query<Button>(className: "mxh-bone").ToList().First(b => b.text == "Head");
+                Press(window, headButton);
+                Assert.That(Selection.activeGameObject, Is.SameAs(head.gameObject), "Head selects the head bone");
             }
             finally
             {

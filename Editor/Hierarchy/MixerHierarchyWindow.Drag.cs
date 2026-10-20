@@ -80,9 +80,9 @@ namespace Orbiters.Mixer.Editor
             MixerUi.Show(dragLine, false);
             if (index < 0) return;
             var row = model[index];
-            float rowTop = (float)((index - list.First) * list.RowHeight);
+            float rowTop = list.TopOf(index);
             float within = list.ChangeCoordinatesTo(list.Viewport, local).y - rowTop;
-            float h = list.RowHeight;
+            float h = list.HeightOf(index);
             if (row.IsScene || IsStageRoot(row.Object)) dropZone = DropZone.Onto;
             else if (within < h * 0.25f) dropZone = DropZone.Above;
             else if (within > h * 0.75f) dropZone = DropZone.Below;

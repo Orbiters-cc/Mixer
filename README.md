@@ -127,6 +127,17 @@ saved as a native mesh asset when you commit.
   welds, mirror map and BVH a first stroke needs are built on worker threads as the session opens. The Mixer window,
   the preview badge and the Skinned Mesh Renderer inspector's panels wait for the stroke's end instead of rebuilding
   during it.
+- The Mixer Hierarchy shows more on each line: objects holding a mesh, or with one below, take two lines with a picture
+  of their meshes (no background) and what they are (vertices, shapes, meshes below); every object has a box that
+  switches it on and off (one Undo step); a light's row has a light icon and, on its right, a ball that turns it (drag
+  sideways to turn it around, up and down to tilt it, double-click for Unity's default); a VRChat avatar's row shows
+  VRChat's logo and, with My Avatar on it, a two-line "Drop anything" field on its right that hands what is dropped to
+  My Avatar (its component icons make room for it); its armature's row has an armature icon and selects the chest, head,
+  hands or feet in one click, beside its name when the window is wide enough, else on a second line; bones show a bone
+  icon and empty objects that only group others a folder (open while unfolded); an accessory My Avatar added that may
+  not fit offers "ReFit ?". The kind filters moved into a Filter menu in the search field; the Blender dots are off by
+  default (window menu). Compact rows keep one line. The window no longer throws after a script reload when the
+  selection changes before it rebuilt its rows.
 - Requires Orbiters Toolkit 0.4.1, which holds the avatar gizmos (bones, weight paint, mesh edges, avatar budget) and
   lets Mixer take the armature overlay's bone clicks.
 
