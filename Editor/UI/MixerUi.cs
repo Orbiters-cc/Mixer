@@ -218,6 +218,55 @@ namespace Orbiters.Mixer.Editor
     }
 
     /// <summary>Short confirmations that slide in at the bottom right and leave on their own.</summary>
+    /// <summary>
+    /// A row's indent with a faint vertical line for each open level above it (under that level's fold arrow), so the
+    /// nesting of a tree reads at a glance. It stretches to the row's height, so the lines run on from row to row.
+    /// </summary>
+    internal sealed class MixerIndent : VisualElement
+    {
+        private static readonly Color DarkSkin = new Color(1f, 1f, 1f, 0.14f);
+        private static readonly Color LightSkin = new Color(0f, 0f, 0f, 0.2f);
+        private int levels;
+        private float step, offset;
+
+        public MixerIndent(string className)
+        {
+            AddToClassList(className);
+            pickingMode = PickingMode.Ignore;
+            style.alignSelf = Align.Stretch;
+            style.flexShrink = 0;
+            generateVisualContent += Draw;
+        }
+
+        /// <summary><paramref name="levels"/> lines, the first at <paramref name="offset"/>, one every <paramref name="step"/> points.</summary>
+        public void Set(float width, int levels, float step, float offset)
+        {
+            style.width = width;
+            if (levels == this.levels && Mathf.Approximately(step, this.step) && Mathf.Approximately(offset, this.offset)) return;
+            this.levels = levels;
+            this.step = step;
+            this.offset = offset;
+            MarkDirtyRepaint();
+        }
+
+        private void Draw(MeshGenerationContext context)
+        {
+            float height = contentRect.height;
+            if (levels <= 0 || float.IsNaN(height) || height <= 0f) return;
+            var painter = context.painter2D;
+            painter.strokeColor = UnityEditor.EditorGUIUtility.isProSkin ? DarkSkin : LightSkin;
+            painter.lineWidth = 1f;
+            for (int i = 0; i < levels; i++)
+            {
+                float x = Mathf.Round(offset + i * step) + 0.5f;
+                painter.BeginPath();
+                painter.MoveTo(new Vector2(x, 0f));
+                painter.LineTo(new Vector2(x, height));
+                painter.Stroke();
+            }
+        }
+    }
+
     internal sealed class MixerToasts : VisualElement
     {
         public MixerToasts()

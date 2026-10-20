@@ -130,9 +130,14 @@ saved as a native mesh asset when you commit.
 - The Mixer Hierarchy shows more on each line: objects holding a mesh, or with one below, take two lines with a picture
   of their meshes (no background) and what they are (vertices, shapes, meshes below); every object has a box that
   switches it on and off (one Undo step); a light's row has a light icon and, on its right, a ball that turns it (drag
-  sideways to turn it around, up and down to tilt it, double-click for Unity's default); a VRChat avatar's row shows
-  VRChat's logo and, with My Avatar on it, a two-line "Drop anything" field on its right that hands what is dropped to
-  My Avatar (its component icons make room for it); its armature's row has an armature icon and selects the chest, head,
+  sideways to turn it around, up and down to tilt it, double-click for Unity's default); a VRChat avatar's row takes
+  three lines: its picture with VRChat's logo on it, its name on VRChat (asked to VRChat through the SDK's session) and
+  its custom base (MCB's or another tool's, through the Toolkit's `CustomBases`), then the VRChat SDK's performance rank
+  of the avatar as it is in the scene for the build target, whether it is public, and a button that copies its link;
+  with My Avatar on it, a "Drop anything" field on its right hands what is dropped to My Avatar (its component icons
+  make room for it). On light and avatar rows the visibility and picking switches sit at the right end, after the ball
+  or the drop field. Faint lines under each open object's fold arrow show the nesting (in the Mixer Project's trees
+  too). Its armature's row has an armature icon and selects the chest, head,
   hands or feet in one click, beside its name when the window is wide enough, else on a second line; bones show a bone
   icon and empty objects that only group others a folder (open while unfolded); an accessory My Avatar added that may
   not fit offers "ReFit ?". The kind filters moved into a Filter menu in the search field; the Blender dots are off by

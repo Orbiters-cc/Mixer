@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using Orbiters.Toolkit.Editor;
+using Orbiters.Toolkit.Editor.Refit;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.UIElements;
@@ -107,6 +108,85 @@ namespace Orbiters.Mixer.Editor
             return line;
         }
 
+        // A VRChat avatar's second and third lines: its name on VRChat and its custom base; its performance rank, whether
+        // it is public, and its link.
+        private VisualElement MakeAvatarLines(VisualElement row)
+        {
+            var lines = MixerUi.Box("mxh-avatar", PickingMode.Ignore);
+            var names = MixerUi.Box("mxh-avatar__line", PickingMode.Ignore);
+            var uploaded = MixerUi.Text("", "mxh-avatar__name");
+            uploaded.pickingMode = PickingMode.Position;
+            names.Add(uploaded);
+            var customBase = MixerUi.Text("", "mxh-avatar__base");
+            customBase.pickingMode = PickingMode.Position;
+            names.Add(customBase);
+            lines.Add(names);
+            var facts = MixerUi.Box("mxh-avatar__line", PickingMode.Ignore);
+            var rank = MixerUi.Box("mxh-avatar__fact mxh-avatar__rank");
+            var rankIcon = new Image { scaleMode = ScaleMode.ScaleToFit, pickingMode = PickingMode.Ignore };
+            rankIcon.AddToClassList("mxh-avatar__rank-icon");
+            rank.Add(rankIcon);
+            rank.Add(MixerUi.Text("", "mxh-avatar__fact-text"));
+            facts.Add(rank);
+            var visibility = MixerUi.Box("mxh-avatar__fact mxh-avatar__visibility");
+            var visibilityIcon = new VectorIcon(IconGlyph.People) { pickingMode = PickingMode.Ignore };
+            visibilityIcon.AddToClassList("mxh-avatar__fact-icon");
+            visibility.Add(visibilityIcon);
+            visibility.Add(MixerUi.Text("", "mxh-avatar__fact-text"));
+            facts.Add(visibility);
+            var link = MixerUi.Icon(IconGlyph.Link, "Copy the avatar's link on VRChat", () =>
+            {
+                var r = RowOf(row);
+                string url = r?.Object != null ? HierarchyVrchat.Describe?.Invoke(r.Object)?.Link : null;
+                if (url == null) return;
+                EditorGUIUtility.systemCopyBuffer = url;
+                toasts.Show("Copied " + url);
+            }, "mxh-avatar__link");
+            link.RegisterCallback<PointerDownEvent>(evt => evt.StopPropagation());
+            facts.Add(link);
+            lines.Add(facts);
+            return lines;
+        }
+
+        private void BindAvatarLines(VisualElement element, HierarchyRow row)
+        {
+            var lines = element.Q(className: "mxh-avatar");
+            var facts = HierarchyVrchat.Describe?.Invoke(row.Object);
+            var uploaded = lines.Q<Label>(className: "mxh-avatar__name");
+            if (facts == null) uploaded.text = "Mixer's VRChat part is not loaded (VRChat SDK 3.7 or later)";
+            else if (facts.UploadedName != null) uploaded.text = facts.UploadedName;
+            else uploaded.text = facts.Note ?? string.Empty;
+            uploaded.EnableInClassList("mxh-avatar__name--note", facts?.UploadedName == null);
+            uploaded.tooltip = facts?.UploadedName != null ? "Its name on VRChat (" + facts.BlueprintId + ")" : facts?.BlueprintId;
+            var info = CustomBases.Describe(row.Object.transform);
+            var customBase = lines.Q<Label>(className: "mxh-avatar__base");
+            MixerUi.Show(customBase, info != null && !string.IsNullOrEmpty(info.Name));
+            if (info != null)
+            {
+                customBase.text = info.Name;
+                customBase.tooltip = "Custom base" + (string.IsNullOrEmpty(info.BaseName) ? "" : " of " + info.BaseName) + (info.Source == "MCB" ? " (My Custom Base)" : "");
+            }
+            var rank = lines.Q(className: "mxh-avatar__rank");
+            MixerUi.Show(rank, facts != null);
+            if (facts != null)
+            {
+                rank.Q<Image>().image = facts.RankIcon;
+                MixerUi.Show(rank.Q<Image>(), facts.RankIcon != null);
+                rank.Q<Label>().text = facts.Rank ?? "Ranking\u2026";
+                rank.tooltip = "Its performance rank on " + facts.RankPlatform + " as it is in the scene, worked out by the VRChat SDK (the build target's platform)";
+            }
+            var visibility = lines.Q(className: "mxh-avatar__visibility");
+            MixerUi.Show(visibility, facts?.Visibility != null);
+            if (facts?.Visibility != null)
+            {
+                bool shared = facts.Visibility == "Public";
+                visibility.Q<VectorIcon>().Glyph = shared ? IconGlyph.People : IconGlyph.Lock;
+                visibility.Q<Label>().text = facts.Visibility;
+                visibility.tooltip = shared ? "Public on VRChat: anyone can find and wear it" : "Private on VRChat: only its owner can wear it";
+            }
+            MixerUi.Show(lines.Q(className: "mxh-avatar__link"), facts?.Link != null);
+        }
+
         // My Avatar's drop field on the avatar root: what is dropped on it goes to the avatar as on My Avatar's own.
         private VisualElement MakeDropField(VisualElement row)
         {
@@ -189,10 +269,15 @@ namespace Orbiters.Mixer.Editor
             bool vector = isObject && (row.Bones != null || row.IsBone);
             element.EnableInClassList("mxh-row--picture", picture);
             MixerUi.Show(thumbnail, picture);
+            var vrchatMark = element.Q(className: "mxh-row__vrchat-mark");
+            if (vrchatMark != null) MixerUi.Show(vrchatMark, picture && row.VrchatAvatar);
             MixerUi.Show(glyph, !picture && vector);
             MixerUi.Show(icon, !picture && !vector);
             if (vector) glyph.Glyph = row.Bones != null ? IconGlyph.Armature : IconGlyph.Bones;
-            MixerUi.Show(line2, tall);
+            bool avatar = tall && row.VrchatAvatar;
+            element.EnableInClassList("mxh-row--avatar", avatar);
+            MixerUi.Show(line2, tall && !avatar);
+            MixerUi.Show(element.Q(className: "mxh-avatar"), avatar);
             bool light = isObject && row.Light != null && !Compact;
             MixerUi.Show(sphere, light);
             bool dropShown = isObject && row.DropTool != null && !Compact;
@@ -212,6 +297,12 @@ namespace Orbiters.Mixer.Editor
                     if (button.userData is System.Func<QuickBones, Transform> bone) button.SetEnabled(bone(row.Bones) != null);
             }
             MixerUi.Show(refit, tall && row.RefitTool != null);
+            // The visibility and picking switches go to the row's right end beside a light's ball or a drop field.
+            var switches = element.Q(className: "mxh-row__switches");
+            var switchesInto = light || dropShown ? element : line;
+            if (switches.parent != switchesInto) switchesInto.Add(switches);
+            else if (switchesInto == element && element.IndexOf(switches) != element.childCount - 1) switches.BringToFront();
+            element.EnableInClassList("mxh-row--switches-right", switchesInto == element);
             if (light)
             {
                 var e = row.Light.transform.eulerAngles;
@@ -225,6 +316,7 @@ namespace Orbiters.Mixer.Editor
                 drop.MarkDirtyRepaint();
             }
             if (!tall) return;
+            if (avatar) BindAvatarLines(element, row);
 
             if (picture)
             {
@@ -236,6 +328,9 @@ namespace Orbiters.Mixer.Editor
             detail.text = row.Light != null ? LightDetail(row.Light) : Detail(row);
             detail.EnableInClassList("mxh-row__detail--short", bonesShown || row.RefitTool != null);
         }
+
+        /// <summary>The lines a row takes: three for a VRChat avatar, two for <see cref="Tall"/> rows, else one.</summary>
+        private int Lines(HierarchyRow row) => !Tall(row) ? 1 : row.VrchatAvatar ? 3 : 2;
 
         /// <summary>Two lines for rows with more than a name: meshes (with their picture), a light, My Avatar's drop
         /// field or ReFit question, or an armature whose bone buttons do not fit beside its name. One in compact rows.</summary>
@@ -325,9 +420,7 @@ namespace Orbiters.Mixer.Editor
                 return "Mesh · " + MixerUi.Count(filter.sharedMesh.vertexCount) + " vertices";
             if (!row.HasMeshes) return string.Empty;
             int meshes = go.GetComponentsInChildren<Renderer>(true).Count(r => r is SkinnedMeshRenderer s ? s.sharedMesh != null : r is MeshRenderer && r.TryGetComponent<MeshFilter>(out var f) && f.sharedMesh != null);
-            string count = meshes + (meshes == 1 ? " mesh" : " meshes");
-            // VRChat's logo already says what the avatar is.
-            return row.VrchatAvatar ? count : count + " below";
+            return meshes + (meshes == 1 ? " mesh below" : " meshes below");
         }
 
         private static string LightDetail(Light light)

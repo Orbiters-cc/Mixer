@@ -76,6 +76,7 @@ namespace Orbiters.Mixer.Editor
             PrefabStage.prefabStageClosing += OnPrefabStage;
             MixerLinkService.Changed += MarkDirty;
             MixerSession.Changed += MarkDirty;
+            HierarchyVrchat.Changed += MarkDirty;
             BoneSubSelection.Changed += OnSubSelectionChanged;
             Undo.undoRedoPerformed += MarkDirty;
         }
@@ -94,6 +95,7 @@ namespace Orbiters.Mixer.Editor
             PrefabStage.prefabStageClosing -= OnPrefabStage;
             MixerLinkService.Changed -= MarkDirty;
             MixerSession.Changed -= MarkDirty;
+            HierarchyVrchat.Changed -= MarkDirty;
             BoneSubSelection.Changed -= OnSubSelectionChanged;
             Undo.undoRedoPerformed -= MarkDirty;
             PersistExpanded(force: true);
@@ -138,8 +140,8 @@ namespace Orbiters.Mixer.Editor
             persistedVersion = model.Version;
             BuildTopBar();
             list = new VirtualList(Compact ? CompactRowHeight : RowHeight, MakeRow, BindRow);
-            // Rows with a picture, a light or the armature's bones take two lines (one each in compact rows).
-            list.SpanOf = index => Tall(model[index]) ? 2 : 1;
+            // Rows with a picture, a light or the armature's bones take two lines, a VRChat avatar three (one each in compact rows).
+            list.SpanOf = index => Lines(model[index]);
             list.RegisterCallback<GeometryChangedEvent>(_ => OnWidthChanged());
             list.AddToClassList("mxh-list");
             root.Add(list);
@@ -343,7 +345,7 @@ namespace Orbiters.Mixer.Editor
         private VisualElement MakeRow()
         {
             var row = MixerUi.Box("mxh-row");
-            row.Add(MixerUi.Box("mxh-row__indent", PickingMode.Ignore));
+            row.Add(new MixerIndent("mxh-row__indent"));
             var chevron = MixerUi.Icon(IconGlyph.Chevron, "", null, evt =>
             {
                 var r = RowOf(row);
@@ -363,6 +365,9 @@ namespace Orbiters.Mixer.Editor
             var icon = new Image { scaleMode = ScaleMode.ScaleToFit, pickingMode = PickingMode.Ignore }; icon.AddToClassList("mxh-row__icon"); picture.Add(icon);
             var glyph = new VectorIcon(IconGlyph.Bones); glyph.AddToClassList("mxh-row__glyph"); picture.Add(glyph);
             var thumbnail = new Image { scaleMode = ScaleMode.ScaleToFit, pickingMode = PickingMode.Ignore }; thumbnail.AddToClassList("mxh-row__thumbnail"); picture.Add(thumbnail);
+            // A VRChat avatar's picture carries VRChat's logo.
+            var vrchat = VRChatLogo.Create();
+            if (vrchat != null) { vrchat.AddToClassList("mxh-row__vrchat-mark"); vrchat.tooltip = "A VRChat avatar (it has an avatar descriptor)"; vrchat.pickingMode = PickingMode.Position; picture.Add(vrchat); }
             var body = MixerUi.Box("mxh-row__body", PickingMode.Ignore);
             row.Add(body);
             var line = MixerUi.Box("mxh-row__line", PickingMode.Ignore);
@@ -385,9 +390,13 @@ namespace Orbiters.Mixer.Editor
                 if (r?.Object != null) { SceneVisibilityManager.instance.ToggleVisibility(r.Object, !evt.altKey); RebuildNow(); }
                 evt.StopPropagation();
             }, "mxh-row__eye");
-            line.Add(pick);
-            line.Add(eye);
+            // At the end of the name's line, or at the row's right end on rows with a light's ball or a drop field.
+            var switches = MixerUi.Box("mxh-row__switches");
+            switches.Add(pick);
+            switches.Add(eye);
+            line.Add(switches);
             body.Add(MakeSecondLine(row));
+            body.Add(MakeAvatarLines(row));
             // Right of the lines: a light's turning ball, My Avatar's drop field on an avatar root.
             row.Add(MakeLightSphere(row));
             row.Add(MakeDropField(row));
@@ -408,7 +417,7 @@ namespace Orbiters.Mixer.Editor
         {
             var row = model[index];
             if (row == null) return;
-            var indent = element.Q(className: "mxh-row__indent");
+            var indent = element.Q<MixerIndent>(className: "mxh-row__indent");
             var chevron = element.Q(className: "mxh-row__chevron");
             var dot = element.Q(className: "mxh-row__dot");
             var icon = element.Q<Image>(className: "mxh-row__icon");
@@ -418,7 +427,8 @@ namespace Orbiters.Mixer.Editor
             var components = element.Q(className: "mxh-row__components");
             var pick = element.Q(className: "mxh-row__pick");
             var eye = element.Q(className: "mxh-row__eye");
-            indent.style.width = Mathf.Max(0, row.Depth - 1) * 14f + (row.IsScene ? 0f : 4f);
+            // A guide under the fold arrow of each object above (the scene's own arrow excepted).
+            indent.Set(Mathf.Max(0, row.Depth - 1) * 14f + (row.IsScene ? 0f : 4f), row.IsScene ? 0 : Mathf.Max(0, row.Depth - 1), 14f, 13f);
             chevron.style.visibility = row.HasChildren ? Visibility.Visible : Visibility.Hidden;
             chevron.EnableInClassList("mxh-row__chevron--open", row.Expanded);
             element.EnableInClassList("mxh-row--scene", row.IsScene);
@@ -451,7 +461,7 @@ namespace Orbiters.Mixer.Editor
             }
             // Unity's own icon of the object: a prefab, a model, a variant or a missing prefab as its Hierarchy shows them.
             icon.image = IconOf(row);
-            if (row.VrchatAvatar)
+            if (row.VrchatAvatar && !element.ClassListContains("mxh-row--picture"))
             {
                 var logo = VRChatLogo.Create();
                 if (logo != null) { logo.tooltip = "A VRChat avatar (it has an avatar descriptor)"; logo.pickingMode = PickingMode.Position; logo.AddToClassList("mxh-row__vrchat"); badges.Add(logo); }

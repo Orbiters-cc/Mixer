@@ -85,7 +85,7 @@ namespace Orbiters.Mixer.Editor
         private VisualElement MakeTreeRow()
         {
             var row = MixerUi.Box("mxp-trow");
-            row.Add(MixerUi.Box("mxp-trow__indent", PickingMode.Ignore));
+            row.Add(new MixerIndent("mxp-trow__indent"));
             row.Add(MixerUi.Icon(IconGlyph.Chevron, "", null, evt =>
             {
                 var item = TreeRow(tree.ItemOf(row));
@@ -108,7 +108,7 @@ namespace Orbiters.Mixer.Editor
             var item = TreeRow(index);
             if (item == null) return;
             bool recent = item.Path == RecentPath;
-            element.Q(className: "mxp-trow__indent").style.width = item.Depth * 12f;
+            element.Q<MixerIndent>(className: "mxp-trow__indent").Set(item.Depth * 12f, item.Depth, 12f, 8f);
             var chevron = element.Q(className: "mxp-trow__chevron");
             chevron.style.visibility = item.HasChildren ? Visibility.Visible : Visibility.Hidden;
             chevron.EnableInClassList("mxp-trow__chevron--open", item.Expanded);
@@ -258,7 +258,7 @@ namespace Orbiters.Mixer.Editor
         private VisualElement MakeContentRow()
         {
             var row = MixerUi.Box("mxp-row");
-            row.Add(MixerUi.Box("mxp-row__indent", PickingMode.Ignore));
+            row.Add(new MixerIndent("mxp-row__indent"));
             row.Add(MixerUi.Icon(IconGlyph.Chevron, "", null, evt =>
             {
                 var item = Row(content.ItemOf(row));
@@ -331,7 +331,7 @@ namespace Orbiters.Mixer.Editor
             MixerUi.Show(picture, !heading);
             if (heading)
             {
-                element.Q(className: "mxp-row__indent").style.width = 0f;
+                element.Q<MixerIndent>(className: "mxp-row__indent").Set(0f, 0, 14f, 9f);
                 foreach (var e in new[] { ext, chip, rename, date, target, line2 }) MixerUi.Show(e, false);
                 MixerUi.Show(name, true);
                 element.RemoveFromClassList("mxp-row--picked");
@@ -341,7 +341,7 @@ namespace Orbiters.Mixer.Editor
             }
             bool tall = ContentSpan(index) > 1;
             element.EnableInClassList("mxp-row--tall", tall);
-            element.Q(className: "mxp-row__indent").style.width = item.Depth * 14f;
+            element.Q<MixerIndent>(className: "mxp-row__indent").Set(item.Depth * 14f, item.Depth, 14f, 9f);
             chevron.style.visibility = item.IsFolder && item.HasChildren ? Visibility.Visible : Visibility.Hidden;
             chevron.EnableInClassList("mxp-row__chevron--open", item.Expanded);
             icon.image = IconOf(item);
