@@ -1,7 +1,8 @@
 using System;
 using System.IO;
-using System.Linq;
 using Orbiters.Mixer.Splats;
+using Orbiters.Toolkit.Editor.Storage;
+using Orbiters.Toolkit.Storage;
 using UnityEditor;
 using UnityEngine;
 
@@ -19,7 +20,8 @@ namespace Orbiters.Mixer.Editor.Splats
         /// <summary><c>Documents/Orbiters/Sessions</c>, where Orbiters desktop writes sessions by default.</summary>
         static string Library => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Orbiters", "Sessions");
 
-        [MenuItem("Tools/Orbiters/Mixer/Import Splats…")]
+        // A sibling of the Mixer window's item: a menu path is either a command or a submenu.
+        [MenuItem("Tools/Orbiters/Mixer Splats…", priority = 2003)]
         static void ImportFromMenu()
         {
             string start = Directory.Exists(Library) ? Library : "";
@@ -47,19 +49,25 @@ namespace Orbiters.Mixer.Editor.Splats
         }
 
         /// <summary>Copies the PLY into the project, imports it and adds a renderer for it to the open scene, selected
-        /// and framed in the Scene view.</summary>
+        /// and framed in the Scene view. A PLY Mixer cannot read is refused before anything lands in the project.</summary>
         public static GameObject Import(string ply, string title)
         {
             if (!File.Exists(ply))
                 throw new FileNotFoundException("No splats at " + ply);
-            Directory.CreateDirectory(Folder);
-            string safe = new string(title.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c).ToArray()).Trim();
-            string asset = AssetDatabase.GenerateUniqueAssetPath(Folder + "/" + (safe.Length > 0 ? safe : "Splats") + ".splats");
+            PlyReader.Check(ply);
+            if (!AssetPaths.EnsureFolder(Folder))
+                throw new IOException("Could not create " + Folder + ".");
+            string asset = AssetDatabase.GenerateUniqueAssetPath(Folder + "/" + SafePaths.FileName(title, "Splats") + ".splats");
+            SafePaths.RequireLength(Path.GetFullPath(asset));
             File.Copy(ply, asset);
             AssetDatabase.ImportAsset(asset, ImportAssetOptions.ForceSynchronousImport);
             var cloud = AssetDatabase.LoadAssetAtPath<SplatCloud>(asset);
             if (cloud == null)
-                throw new InvalidDataException("Unity did not import " + asset + " (see the Console).");
+            {
+                // Left there, it would fail again on every reimport.
+                AssetDatabase.DeleteAsset(asset);
+                throw new InvalidDataException("Unity could not import the splats (see the Console).");
+            }
             var go = new GameObject("Splats · " + title) { tag = "EditorOnly" };
             go.AddComponent<SplatRenderer>().cloud = cloud;
             Undo.RegisterCreatedObjectUndo(go, "Import splats");

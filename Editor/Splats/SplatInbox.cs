@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using UnityEditor;
@@ -9,8 +10,8 @@ namespace Orbiters.Mixer.Editor.Splats
     /// <summary>
     /// Where Orbiters desktop's "Send to Mixer" lands: each editor keeps a folder
     /// <c>%LOCALAPPDATA%/Orbiters/Mixer/inbox/&lt;pid&gt;/</c> with an <c>endpoint.json</c> naming its project, and
-    /// imports the requests (<c>*.json</c>) dropped next to it. The folder goes away when the editor quits; Orbiters
-    /// desktop skips folders whose process is gone.
+    /// imports the requests (<c>*.json</c>) dropped next to it. The folder goes away when the editor quits, and the next
+    /// editor to start clears the folders of editors that crashed; Orbiters desktop skips folders whose process is gone.
     /// </summary>
     [InitializeOnLoad]
     static class SplatInbox
@@ -18,6 +19,10 @@ namespace Orbiters.Mixer.Editor.Splats
         public const string EndpointKind = "orbiters.mixer.inbox";
         public const string RequestKind = "orbiters.mixer.request";
         public const string ImportSplats = "import-splats";
+
+        /// <summary>A request that cannot be read (locked, no access) is tried again this often, and given up after <see cref="MaxTries"/>.</summary>
+        const double RetrySeconds = 1.0;
+        const int MaxTries = 60;
 
         [Serializable]
         internal sealed class Endpoint
@@ -39,9 +44,12 @@ namespace Orbiters.Mixer.Editor.Splats
             public string title;
         }
 
-        static readonly string Folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Orbiters", "Mixer", "inbox", Process.GetCurrentProcess().Id.ToString());
+        static readonly string Inbox = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Orbiters", "Mixer", "inbox");
+        static readonly string Folder = Path.Combine(Inbox, Process.GetCurrentProcess().Id.ToString());
         static FileSystemWatcher watcher;
         static volatile bool pending = true;
+        static double retryAt;
+        static readonly Dictionary<string, int> tries = new Dictionary<string, int>();
 
         static SplatInbox()
         {
@@ -51,6 +59,7 @@ namespace Orbiters.Mixer.Editor.Splats
             try
             {
                 Directory.CreateDirectory(Folder);
+                SweepDead(Inbox, Process.GetCurrentProcess().Id);
                 string project = Path.GetDirectoryName(Application.dataPath);
                 var endpoint = new Endpoint { pid = Process.GetCurrentProcess().Id, projectPath = project, projectName = Path.GetFileName(project), updatedUtc = DateTime.UtcNow.ToString("o") };
                 string tmp = Path.Combine(Folder, "endpoint.json.part");
@@ -75,6 +84,65 @@ namespace Orbiters.Mixer.Editor.Splats
             };
         }
 
+        /// <summary>
+        /// Clears the folders under <paramref name="inbox"/> of editors that are gone (they crashed, so they never removed
+        /// theirs): a process that later gets the same number would look like a live editor to Orbiters desktop, and what
+        /// it sends would never be imported. Only the files an inbox holds are deleted, never links or anything else.
+        /// </summary>
+        internal static void SweepDead(string inbox, int self)
+        {
+            string[] dirs;
+            try
+            {
+                dirs = Directory.GetDirectories(inbox);
+            }
+            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException)
+            {
+                return;
+            }
+            foreach (string dir in dirs)
+            {
+                if (!int.TryParse(Path.GetFileName(dir), out int pid) || pid == self || IsEditor(pid))
+                    continue;
+                try
+                {
+                    if ((File.GetAttributes(dir) & FileAttributes.ReparsePoint) != 0)
+                        continue;
+                    foreach (string file in Directory.GetFiles(dir, "*.json"))
+                        File.Delete(file);
+                    foreach (string file in Directory.GetFiles(dir, "*.json.part"))
+                        File.Delete(file);
+                    Directory.Delete(dir, false);
+                }
+                catch (Exception e) when (e is IOException || e is UnauthorizedAccessException)
+                {
+                    // Another editor sweeping at the same time, or something else in there: left as it is.
+                }
+            }
+        }
+
+        /// <summary>Whether a Unity editor runs as <paramref name="pid"/>; true when that cannot be told.</summary>
+        static bool IsEditor(int pid)
+        {
+            try
+            {
+                using (var process = Process.GetProcessById(pid))
+                    return !process.HasExited && process.ProcessName.Equals("Unity", StringComparison.OrdinalIgnoreCase);
+            }
+            catch (ArgumentException)
+            {
+                return false; // No such process.
+            }
+            catch (InvalidOperationException)
+            {
+                return false; // It has just exited.
+            }
+            catch (Exception)
+            {
+                return true;
+            }
+        }
+
         /// <summary>A request from its JSON, or null when it is not one this inbox handles.</summary>
         internal static Request Parse(string json)
         {
@@ -89,12 +157,39 @@ namespace Orbiters.Mixer.Editor.Splats
             }
         }
 
+        /// <summary>
+        /// The splats of a request's session. Any process on this computer can drop a request, so the session must be a
+        /// full path on a local drive: a network path would make the editor fetch a file from another machine (and give
+        /// it the person's Windows credentials).
+        /// </summary>
+        internal static string SessionSplats(string session)
+        {
+            if (string.IsNullOrWhiteSpace(session) || !Path.IsPathRooted(session))
+                throw new ArgumentException("The request names no full session folder.");
+            string full = Path.GetFullPath(session);
+            if (full.StartsWith(@"\\", StringComparison.Ordinal) || full.StartsWith("//", StringComparison.Ordinal))
+                throw new ArgumentException("Splats are only taken from sessions on this computer, not " + session + ".");
+            var drive = new DriveInfo(Path.GetPathRoot(full));
+            if (drive.DriveType != DriveType.Fixed && drive.DriveType != DriveType.Removable)
+                throw new ArgumentException("Splats are only taken from sessions on this computer's own drives, not " + session + ".");
+            return Path.Combine(full, "reconstruction", "splats.ply");
+        }
+
         static void Poll()
         {
-            if (!pending || EditorApplication.isCompiling || EditorApplication.isUpdating || EditorApplication.isPlayingOrWillChangePlaymode)
+            if (!pending || EditorApplication.timeSinceStartup < retryAt || EditorApplication.isCompiling || EditorApplication.isUpdating || EditorApplication.isPlayingOrWillChangePlaymode)
                 return;
             pending = false;
-            foreach (string file in Directory.GetFiles(Folder, "*.json"))
+            string[] files;
+            try
+            {
+                files = Directory.GetFiles(Folder, "*.json");
+            }
+            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException)
+            {
+                return;
+            }
+            foreach (string file in files)
             {
                 if (Path.GetFileName(file) == "endpoint.json")
                     continue;
@@ -103,18 +198,28 @@ namespace Orbiters.Mixer.Editor.Splats
                 {
                     json = File.ReadAllText(file);
                     File.Delete(file);
+                    tries.Remove(file);
                 }
-                catch (IOException)
+                catch (Exception e) when (e is IOException || e is UnauthorizedAccessException)
                 {
-                    pending = true; // Still being written.
+                    // Still being written: again in a moment, not every editor update. One that never opens is given up.
+                    tries.TryGetValue(file, out int n);
+                    tries[file] = ++n;
+                    if (n == MaxTries)
+                        UnityEngine.Debug.LogWarning("Mixer: a request from Orbiters desktop cannot be read (" + e.Message + "): " + file);
+                    if (n < MaxTries)
+                    {
+                        pending = true;
+                        retryAt = EditorApplication.timeSinceStartup + RetrySeconds;
+                    }
                     continue;
                 }
                 Request r = Parse(json);
                 if (r == null)
                     continue;
-                string ply = Path.Combine(r.session, "reconstruction", "splats.ply");
                 try
                 {
+                    string ply = SessionSplats(r.session);
                     SplatImport.Import(ply, string.IsNullOrEmpty(r.title) ? SplatImport.TitleOf(ply) : r.title);
                 }
                 catch (Exception e)

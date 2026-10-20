@@ -8,6 +8,12 @@ namespace Orbiters.Mixer.Splats
     /// </summary>
     public sealed class SplatCloud : ScriptableObject
     {
+        /// <summary>
+        /// The most splats Mixer reads and draws: the GPU sort runs 256 splats per thread group over a power-of-two count,
+        /// and a dispatch takes at most 65,535 groups in a row.
+        /// </summary>
+        public const int MaxCount = 1 << 23;
+
         /// <summary>Centres, metres.</summary>
         public Vector3[] positions = new Vector3[0];
 
@@ -23,6 +29,9 @@ namespace Orbiters.Mixer.Splats
         /// <summary>Where most of the splats are (the 2nd to 98th percentile per axis, so not the far sky shell): what
         /// framing looks at.</summary>
         public Bounds core;
+
+        /// <summary>Changes with the splats (the importer sets it): a reimport in place, even with the same count, is uploaded again.</summary>
+        public string contentHash = "";
 
         public int Count => positions != null ? positions.Length : 0;
     }

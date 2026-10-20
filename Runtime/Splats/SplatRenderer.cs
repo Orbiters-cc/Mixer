@@ -30,6 +30,8 @@ namespace Orbiters.Mixer.Splats
         ComputeBuffer keys;
         ComputeBuffer values;
         SplatCloud uploaded;
+        string uploadedHash;
+        SplatCloud refused;
         int paddedCount;
         Material material;
         ComputeShader sort;
@@ -98,6 +100,15 @@ namespace Orbiters.Mixer.Splats
                 Release();
                 return false;
             }
+            if (cloud.Count > SplatCloud.MaxCount)
+            {
+                // Said once per cloud, not every frame for every camera.
+                if (refused != cloud)
+                    Debug.LogWarning("Mixer: " + cloud.name + " has " + cloud.Count.ToString("N0") + " splats; Mixer draws at most " + SplatCloud.MaxCount.ToString("N0") + ".", this);
+                refused = cloud;
+                Release();
+                return false;
+            }
             if (material == null)
             {
                 Shader shader = Shader.Find("Hidden/Orbiters/Mixer/Splats");
@@ -111,7 +122,8 @@ namespace Orbiters.Mixer.Splats
 #endif
             if (sort == null || !SystemInfo.supportsComputeShaders)
                 return false;
-            if (uploaded != cloud || splats == null || splats.count != cloud.Count)
+            // A reimport loads the cloud in place: the same object, maybe the same count, other splats.
+            if (uploaded != cloud || splats == null || splats.count != cloud.Count || uploadedHash != cloud.contentHash)
             {
                 ReleaseBuffers();
                 int count = cloud.Count;
@@ -121,9 +133,22 @@ namespace Orbiters.Mixer.Splats
                 keys = new ComputeBuffer(paddedCount, 4);
                 values = new ComputeBuffer(paddedCount, 4);
                 uploaded = cloud;
+                uploadedHash = cloud.contentHash;
             }
             properties = properties ?? new MaterialPropertyBlock();
             return true;
+        }
+
+        /// <summary>
+        /// Whether <paramref name="cam"/> shows splats of <paramref name="scene"/>: not previews (inspector previews,
+        /// thumbnails) or reflection probes, and not a camera kept to another scene (Prefab Mode's Scene view, preview
+        /// scenes other tools render in).
+        /// </summary>
+        internal static bool Shows(Camera cam, UnityEngine.SceneManagement.Scene scene)
+        {
+            if (cam.cameraType == CameraType.Preview || cam.cameraType == CameraType.Reflection)
+                return false;
+            return !cam.scene.IsValid() || cam.scene == scene;
         }
 
         /// <summary>Records this camera's sort and draw (every frame it renders).</summary>
@@ -132,7 +157,7 @@ namespace Orbiters.Mixer.Splats
             // What this camera drew last frame goes, whether or not it draws the splats this time.
             if (buffers.TryGetValue(cam, out CommandBuffer cmd))
                 cmd.Clear();
-            if (!isActiveAndEnabled || (cam.cullingMask & (1 << gameObject.layer)) == 0)
+            if (!isActiveAndEnabled || (cam.cullingMask & (1 << gameObject.layer)) == 0 || !Shows(cam, gameObject.scene))
                 return;
             // Scene views come and go: forget the buffers of destroyed cameras.
             if (buffers.Count > 4)
@@ -200,6 +225,7 @@ namespace Orbiters.Mixer.Splats
             values?.Release();
             splats = keys = values = null;
             uploaded = null;
+            uploadedHash = null;
         }
 
         void Release()

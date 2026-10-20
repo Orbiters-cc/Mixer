@@ -2,7 +2,9 @@
   "name": "Orbiters.Mixer.Splats.Editor",
   "rootNamespace": "Orbiters.Mixer.Editor.Splats",
   "references": [
-    "Orbiters.Mixer.Splats"
+    "Orbiters.Mixer.Splats",
+    "Orbiters.Toolkit",
+    "Orbiters.Toolkit.Editor"
   ],
   "includePlatforms": [
     "Editor"
