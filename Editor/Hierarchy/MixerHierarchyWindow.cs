@@ -51,6 +51,9 @@ namespace Orbiters.Mixer.Editor
         private int renamingId;
         // A selection this window made: its change needs no reveal (the row is on screen) nor a rebuild.
         [NonSerialized] private bool selectingHere;
+        // What Cut took (instance ids, kept across script reloads): the next Paste moves those objects, so every reference
+        // to them (bones, PhysBones, constraints, other tools' fields) still holds. Shown dimmed until then.
+        private const string CutKey = "Orbiters.Mixer.Hierarchy.Cut";
         private double lastRebuild, lastPersist;
         private int persistedVersion = -1;
 
@@ -483,6 +486,7 @@ namespace Orbiters.Mixer.Editor
             element.EnableInClassList("mxh-row--hidden", row.Hidden);
             element.EnableInClassList("mxh-row--odd", index % 2 == 1);
             element.EnableInClassList("mxh-row--excluded", row.Excluded);
+            element.EnableInClassList("mxh-row--cut", !row.IsScene && IsCut(row.InstanceId));
             name.text = row.IsScene ? row.Name + (row.Scene.isLoaded && row.Scene.isDirty ? " *" : "") + (row.Scene.isLoaded || row.IsDontDestroyOnLoad ? "" : " (not loaded)") : row.Name;
             name.EnableInClassList("mxh-row__name--active-scene", row.IsScene && row.Active);
             bool renaming = row.Object != null && row.InstanceId == renamingId;
@@ -678,7 +682,7 @@ namespace Orbiters.Mixer.Editor
                 case KeyCode.F: if (!evt.ctrlKey) { if (BoneSubSelection.Bone != null) BoneSubSelection.Frame(); else SceneView.FrameLastActiveSceneView(); evt.StopPropagation(); } else { searchField.Q(TextField.textInputUssName)?.Focus(); evt.StopPropagation(); } break;
                 case KeyCode.D: if (command) { Duplicate(); evt.StopPropagation(); } break;
                 case KeyCode.A: if (command) { Selection.instanceIDs = model.Rows.Where(r => r.Object != null).Select(r => r.InstanceId).ToArray(); list.RefreshRows(); evt.StopPropagation(); } break;
-                case KeyCode.Escape: Selection.activeObject = null; list.RefreshRows(); evt.StopPropagation(); break;
+                case KeyCode.Escape: ForgetCut(); Selection.activeObject = null; list.RefreshRows(); evt.StopPropagation(); break;
             }
         }
 
@@ -768,22 +772,89 @@ namespace Orbiters.Mixer.Editor
             MarkDirty();
         }
 
-        private static void Copy()
-        {
-            if (Selection.gameObjects.Length > 0) Unsupported.CopyGameObjectsToPasteboard();
-        }
-
-        private void Cut()
+        internal void Copy()
         {
             if (Selection.gameObjects.Length == 0) return;
             Unsupported.CopyGameObjectsToPasteboard();
-            DeleteSelection();
+            ForgetCut();
         }
 
-        private void Paste()
+        /// <summary>
+        /// Cut keeps the objects where they are, dimmed, until a Paste moves them (beside the selected object, or under the
+        /// clicked one with Paste as Child): a move keeps every reference to them, where a copy would break those. They go
+        /// to Unity's pasteboard too, for a paste in another window (a copy there).
+        /// </summary>
+        internal void Cut()
         {
-            Unsupported.PasteGameObjectsFromPasteboard();
-            MarkDirty();
+            var objects = Selection.gameObjects.Where(g => g != null && g.scene.IsValid() && !IsStageRoot(g)).ToList();
+            if (objects.Count == 0) return;
+            Unsupported.CopyGameObjectsToPasteboard();
+            SessionState.SetString(CutKey, string.Join(",", objects.Select(g => g.GetInstanceID())));
+            toasts.Show("Cut " + (objects.Count == 1 ? objects[0].name : objects.Count + " objects") + ": Paste moves " + (objects.Count == 1 ? "it" : "them") + ".");
+            list.RefreshRows();
+        }
+
+        /// <summary>
+        /// Moves what Cut took beside the selected object (under <paramref name="asChildOf"/> when given; at the active
+        /// scene's root with nothing selected); without a cut, pastes Unity's pasteboard (copies), under
+        /// <paramref name="asChildOf"/> when given.
+        /// </summary>
+        internal void Paste(GameObject asChildOf = null)
+        {
+            var cut = CutObjects();
+            if (cut.Count == 0)
+            {
+                Unsupported.PasteGameObjectsFromPasteboard();
+                if (asChildOf != null && asChildOf.scene.IsValid())
+                    foreach (var pasted in Selection.gameObjects.Where(g => g != null && g.scene.IsValid() && g != asChildOf))
+                        Undo.SetTransformParent(pasted.transform, asChildOf.transform, "Paste " + pasted.name);
+                MarkDirty();
+                return;
+            }
+            var anchor = asChildOf != null ? asChildOf : SceneParent();
+            // Pasted onto what was cut, or inside it: nowhere to go yet.
+            if (anchor != null && cut.Any(c => anchor.transform.IsChildOf(c.transform)))
+            {
+                toasts.Show("Select where " + (cut.Count == 1 ? cut[0].name + " goes" : "they go") + " first: Paste moves what was cut there.", true);
+                return;
+            }
+            ForgetCut();
+            HierarchyRow target;
+            DropZone zone;
+            if (anchor != null) { target = new HierarchyRow { Object = anchor, Scene = anchor.scene, InstanceId = anchor.GetInstanceID() }; zone = asChildOf != null ? DropZone.Onto : DropZone.Below; }
+            else
+            {
+                var stage = PrefabStageUtility.GetCurrentPrefabStage();
+                var scene = stage != null ? stage.scene : SceneManager.GetActiveScene();
+                target = new HierarchyRow { IsScene = true, Scene = scene, InstanceId = scene.handle };
+                zone = DropZone.Onto;
+            }
+            Move(cut, target, zone);
+            Selection.objects = cut.Where(g => g != null).ToArray();
+        }
+
+        // What Cut took that is still in a scene.
+        private static List<GameObject> CutObjects()
+        {
+            var objects = new List<GameObject>();
+            foreach (string part in SessionState.GetString(CutKey, "").Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
+                if (int.TryParse(part, out int id) && EditorUtility.InstanceIDToObject(id) is GameObject go && go != null && go.scene.IsValid()) objects.Add(go);
+            return objects;
+        }
+
+        private static bool IsCut(int instanceId)
+        {
+            string cut = SessionState.GetString(CutKey, "");
+            return cut.Length > 0 && ("," + cut + ",").Contains("," + instanceId + ",");
+        }
+
+        internal static bool HasCut => CutObjects().Count > 0;
+
+        private void ForgetCut()
+        {
+            if (SessionState.GetString(CutKey, "").Length == 0) return;
+            SessionState.EraseString(CutKey);
+            list?.RefreshRows();
         }
 
         private void CreateEmpty(bool asChild, GameObject clicked = null)

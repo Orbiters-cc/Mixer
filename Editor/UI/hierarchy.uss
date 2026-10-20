@@ -67,6 +67,8 @@
 .mxh-row__pick .mx-icon, .mxh-row__eye .mx-icon { width: 12px; height: 12px; --icon-color: #9a9a9a; }
 .mxh-row__switch--off .mx-icon { --icon-color: #f5b74f; }
 .mxh-row--hidden .mxh-row__name { opacity: 0.6; }
+/* Cut, waiting for a Paste to move it. */
+.mxh-row--cut .mxh-row__body, .mxh-row--cut .mxh-row__picture { opacity: 0.45; }
 .mxh-dragline { position: absolute; right: 2px; height: 2px; border-radius: 1px; background-color: var(--mx-accent); }
 .mxh-dragline--onto { background-color: rgba(0, 218, 109, 0.2); border-radius: 6px; }
 .mxh-footer { height: 22px; min-height: 22px; padding: 0 10px; -unity-text-align: middle-left; color: #8c8c8c; font-size: 10px; background-color: var(--mx-bar); border-top-width: 1px; border-top-color: var(--mx-line); flex-shrink: 0; }

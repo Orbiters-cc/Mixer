@@ -209,7 +209,9 @@ saved as a native mesh asset when you commit.
     turns the field red.
   - Mixer Hierarchy: a row's picture never destroys the mesh Mixer is editing; pictures are kept for the session only
     and freed when they change. Shift+arrows grow a range. Reordering under the same parent is undoable. Double-clicks on
-    a row's switches and light ball stay theirs. VRChat ranks update only after changes to that avatar; lookups that
+    a row's switches and light ball stay theirs. Cut no longer deletes: the objects stay, dimmed, until Paste moves them
+    beside the selected object (or under the clicked one with Paste as Child), so every reference to them still holds;
+    Escape or a new Copy forgets the cut. VRChat ranks update only after changes to that avatar; lookups that
     failed are retried later and later, and an avatar whose blueprint ID is another account's upload says so.
   - Sculpt and paint: a stroke whose release is lost ends instead of sculpting on its own. A held brush works only
     while the pointer stays still (slow drags follow the brush spacing) and aims from the camera as it is now. Undo

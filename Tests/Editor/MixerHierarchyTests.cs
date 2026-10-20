@@ -49,6 +49,40 @@ namespace Orbiters.Mixer.Editor.Tests
             if (activeBefore.IsValid() && activeBefore.isLoaded && SceneManager.GetActiveScene() != activeBefore) SceneManager.SetActiveScene(activeBefore);
         }
 
+        [Test]
+        public void CutThenPasteMovesTheObjectsAndKeepsWhatPointsAtThem()
+        {
+            var moving = root.transform.Find("Child 0").gameObject;
+            var cube = moving.transform.Find("Cube 0");
+            var destination = root.transform.Find("Child 2").gameObject;
+            // Something pointing at the cut object and inside it, as a skin's bones or a PhysBone would.
+            var holder = new GameObject("Holder");
+            SceneManager.MoveGameObjectToScene(holder, scene);
+            var skin = holder.AddComponent<SkinnedMeshRenderer>();
+            skin.rootBone = cube;
+            var window = OpenHidden();
+            string cutBefore = SessionState.GetString("Orbiters.Mixer.Hierarchy.Cut", "");
+            try
+            {
+                Selection.activeGameObject = moving;
+                window.Cut();
+                Assert.That(moving != null && moving.transform.parent == root.transform, Is.True, "Cut leaves the object where it is");
+                Selection.activeGameObject = destination;
+                Undo.IncrementCurrentGroup();
+                window.Paste(destination);
+                Assert.That(moving.transform.parent, Is.SameAs(destination.transform), "Paste as Child moves it under the clicked object");
+                Assert.That(skin.rootBone, Is.SameAs(cube), "what pointed at it still does: the same objects, not copies");
+                Assert.That(root.GetComponentsInChildren<Transform>(true).Count(t => t.name == "Child 0"), Is.EqualTo(1), "no copy was made");
+                Undo.PerformUndo();
+                Assert.That(moving.transform.parent, Is.SameAs(root.transform), "one Undo puts it back");
+            }
+            finally
+            {
+                SessionState.SetString("Orbiters.Mixer.Hierarchy.Cut", cutBefore);
+                window.Close();
+            }
+        }
+
         // The window as a popup far off screen: built and laid out, never shown to the user.
         private static MixerHierarchyWindow OpenHidden()
         {

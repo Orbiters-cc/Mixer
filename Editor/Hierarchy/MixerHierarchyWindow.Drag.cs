@@ -306,7 +306,8 @@ namespace Orbiters.Mixer.Editor
             menu.AppendAction("Delete", _ => DeleteSelection());
             menu.AppendAction("Copy", _ => Copy());
             menu.AppendAction("Cut", _ => Cut());
-            menu.AppendAction("Paste", _ => Paste());
+            menu.AppendAction(HasCut ? "Paste (move what was cut)" : "Paste", _ => Paste());
+            menu.AppendAction(HasCut ? "Paste as Child (move what was cut)" : "Paste as Child", _ => Paste(go0));
             // One state for the whole selection, from the clicked row (as Unity does), not a flip per object.
             bool activate = !go0.activeSelf;
             menu.AppendAction(activate ? "Activate" : "Deactivate", _ => { foreach (var g in selected) { Undo.RecordObject(g, activate ? "Activate" : "Deactivate"); g.SetActive(activate); } RebuildNow(); });
