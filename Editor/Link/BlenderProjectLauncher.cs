@@ -12,7 +12,7 @@ namespace Orbiters.Mixer.Editor
 {
     /// <summary>
     /// "Open scene in Blender": starts the user's Blender on the scene's project (<c>.blend</c> under
-    /// <c>Assets/Orbiters/Mixer/Blender/&lt;scene&gt;/blend~</c>, a folder Unity never imports) with a small Python
+    /// <c>Assets/Orbiters/Mixer/Blender/&lt;scene GUID&gt;/blend~</c>, a folder Unity never imports) with a small Python
     /// bootstrap that installs or updates the Mixer extension, makes or opens the file, remembers the Unity scene in
     /// it and saves; the extension then connects to the link and builds the scene. The interactive Blender is the
     /// user's, not a process Unity owns.
@@ -38,13 +38,17 @@ namespace Orbiters.Mixer.Editor
 
         public static string DownloadUrl => EditorPrefs.GetString(UrlPref, string.Format(ReleaseUrlTemplate, ExtensionVersion));
 
-        /// <summary>Where the scene's .blend lives (absolute), made if needed.</summary>
+        /// <summary>
+        /// Where the scene's .blend lives (absolute), made if needed: in a folder named by the scene's GUID, as its link
+        /// settings are (two scenes of one name in other folders get a file each); an unsaved scene's in "Untitled".
+        /// </summary>
         public static string BlendPathFor(Scene scene)
         {
-            string name = string.IsNullOrEmpty(scene.name) ? "Untitled" : scene.name;
-            string folder = Path.GetFullPath(Path.Combine(Application.dataPath, "Orbiters", "Mixer", "Blender", Orbiters.Toolkit.Editor.Meshes.MeshAssets.Clean(name), "blend~"));
+            string name = Orbiters.Toolkit.Editor.Meshes.MeshAssets.Clean(string.IsNullOrEmpty(scene.name) ? "Untitled" : scene.name);
+            string guid = AssetDatabase.AssetPathToGUID(scene.path);
+            string folder = Path.GetFullPath(Path.Combine(Application.dataPath, "Orbiters", "Mixer", "Blender", string.IsNullOrEmpty(guid) ? "Untitled" : guid, "blend~"));
             Directory.CreateDirectory(folder);
-            return Path.Combine(folder, Orbiters.Toolkit.Editor.Meshes.MeshAssets.Clean(name) + ".blend");
+            return Path.Combine(folder, name + ".blend");
         }
 
         /// <summary>Starts Blender on the active scene's project. Returns an error text, or null.</summary>
@@ -52,6 +56,7 @@ namespace Orbiters.Mixer.Editor
         {
             string blender = BlenderInstalls.GetSelectedExecutablePath();
             if (string.IsNullOrEmpty(blender) || !File.Exists(blender)) return "Blender was not found. Pick its executable in the Orbiters settings.";
+            if (EditorApplication.isPlayingOrWillChangePlaymode) return "The Blender link waits while Unity plays: stop Play first.";
             MixerLinkService.Enabled = true;
             MixerLinkService.EnsureRunning();
             if (!MixerLinkService.Running) return "The Blender link could not listen; see the Console.";

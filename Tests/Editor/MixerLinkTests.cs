@@ -289,6 +289,18 @@ namespace Orbiters.Mixer.Editor.Tests
             var weights = MeshDataCodec.EncodeWeights("m", "g", true, -1, 1UL, new[] { 1, 2 }, new[] { 1f, 1f });
             BitConverter.GetBytes(1 << 29).CopyTo(weights, weights.Length - 2 * 8 - 4);
             Assert.Throws<InvalidDataException>(() => MeshDataCodec.DecodeWeights(weights));
+            // A Link section that says it is 1 byte long and holds 10: it would be read again from inside itself.
+            var rewinding = new MemoryStream();
+            using (var w = new BinaryWriter(rewinding))
+            {
+                w.Write((ushort)1); w.Write((byte)'m'); w.Write((ushort)0);
+                w.Write(0); w.Write(0); w.Write(0); // vertices, corners, faces
+                w.Write((byte)0); // no skin
+                w.Write((ushort)0); w.Write((ushort)0); // shapes, groups
+                w.Write((ushort)1);
+                w.Write(MeshDataCodec.LinkSection); w.Write(1); w.Write(7UL); w.Write((ushort)0);
+            }
+            Assert.Throws<InvalidDataException>(() => MeshDataCodec.Decode(rewinding.ToArray()), "a section that holds more than its length");
         }
 
         [Test]
@@ -485,6 +497,80 @@ namespace Orbiters.Mixer.Editor.Tests
             }
         }
 
+        // Live positions of a shape Unity deleted meanwhile do not bring it back, as a whole mesh does not.
+        [Test]
+        public void LivePositionsDoNotBringBackAShapeUnityDeleted()
+        {
+            using (var host = MixerLinkHost.OpenPrivate(scene))
+            using (var blender = new FakeBlender(host))
+            {
+                blender.Hello();
+                blender.Pump(5, MixerLinkProtocol.FrameType.MeshData);
+                blender.Claim(renderer);
+                var target = MixerSession.TargetOf(renderer);
+                var doc = target.Document;
+                doc.DeleteShape("Wide");
+                var n = doc.LinkWeld;
+                var moved = Enumerable.Range(0, n.WeldedCount).Select(w => doc.Positions[n.Representative[w]] + Vector3.up).ToArray();
+                blender.SendAndPump(MixerLinkProtocol.FrameType.Positions, MeshDataCodec.EncodePositions(MixerLinkService.MeshIdOf(renderer), "Wide", MeshDataCodec.Topology(doc), moved), 0.5);
+                Assert.That(doc.HasShape("Wide"), Is.False, "the deleted shape stays deleted");
+                blender.Release(renderer);
+            }
+        }
+
+        // A shape Unity deletes while Blender holds the mesh reaches Blender once it lets go (the check of the shape list
+        // waits for the release instead of being skipped).
+        [Test]
+        public void ShapesUnityChangedWhileBlenderHeldTheMeshGoAfterItsRelease()
+        {
+            using (var host = MixerLinkHost.OpenPrivate(scene))
+            using (var blender = new FakeBlender(host))
+            {
+                blender.Hello();
+                blender.Pump(5, MixerLinkProtocol.FrameType.MeshData);
+                blender.Claim(renderer);
+                var target = MixerSession.TargetOf(renderer);
+                string meshId = MixerLinkService.MeshIdOf(renderer);
+                var blenderCopy = MeshDataCodec.Encode(MeshDataCodec.Snapshot(meshId, target));
+                target.Document.DeleteShape("Wide");
+                blender.Pump(0.5);
+                blender.Send(MixerLinkProtocol.FrameType.MeshData, blenderCopy);
+                var frames = blender.Release(renderer);
+                if (!frames.Any(f => f.type == MixerLinkProtocol.FrameType.MeshData)) frames.AddRange(blender.Pump(5, MixerLinkProtocol.FrameType.MeshData));
+                var resent = frames.Where(f => f.type == MixerLinkProtocol.FrameType.MeshData).Select(f => MeshDataCodec.Decode(f.payload)).LastOrDefault();
+                Assert.That(resent, Is.Not.Null, "Blender gets the mesh again");
+                Assert.That(resent.Shapes.Any(s => s.name == "Wide"), Is.False, "without the shape Unity deleted");
+            }
+        }
+
+        // A mesh Unity sent as Blender claimed it is dropped by Blender: Unity does not count its shapes as Blender's, so
+        // the one Unity added is not taken for one Blender deleted.
+        [Test]
+        public void AMeshSentAsBlenderClaimsIsNotCountedAsBlenders()
+        {
+            using (var host = MixerLinkHost.OpenPrivate(scene))
+            using (var blender = new FakeBlender(host))
+            {
+                blender.Hello();
+                blender.Pump(5, MixerLinkProtocol.FrameType.MeshData);
+                var target = MixerSession.Edit(renderer);
+                string meshId = MixerLinkService.MeshIdOf(renderer);
+                blender.Pump(0.3);
+                var blenderCopy = MeshDataCodec.Encode(MeshDataCodec.Snapshot(meshId, target));
+                target.Document.Shape("Added", create: true);
+                target.Document.Revision++;
+                blender.Acknowledge = false;
+                var frames = blender.Pump(5, MixerLinkProtocol.FrameType.MeshData);
+                Assert.That(frames.Any(f => f.type == MixerLinkProtocol.FrameType.MeshData && MeshDataCodec.Decode(f.payload).Shapes.Any(s => s.name == "Added")), Is.True, "the mesh with the new shape went");
+                blender.Claim(renderer);
+                blender.Acknowledge = true;
+                blender.Send(MixerLinkProtocol.FrameType.MeshReceived, MixerLinkProtocol.Json(new MixerLinkProtocol.MeshReceived { id = meshId }));
+                blender.Send(MixerLinkProtocol.FrameType.MeshData, blenderCopy);
+                blender.Release(renderer);
+                Assert.That(target.Document.HasShape("Added"), Is.True, "Unity's new shape stays");
+            }
+        }
+
         /// <summary>A Blender extension speaking the link over a real socket, pumping the host by hand (a test has no editor loop).</summary>
         private sealed class FakeBlender : IDisposable
         {
@@ -495,6 +581,8 @@ namespace Orbiters.Mixer.Editor.Tests
             private readonly List<byte> incoming = new List<byte>();
             private readonly MeshChunkAssembler chunks = new MeshChunkAssembler();
             private readonly System.Reflection.MethodInfo pumpServer;
+            /// <summary>Whether meshes are acknowledged as they come, as Blender does (off: still on their way).</summary>
+            public bool Acknowledge = true;
 
             public FakeBlender(MixerLinkHost host)
             {
@@ -544,10 +632,10 @@ namespace Orbiters.Mixer.Editor.Tests
                 return Pump(1.0);
             }
 
-            public void Release(Renderer target)
+            public List<(MixerLinkProtocol.FrameType type, byte[] payload)> Release(Renderer target)
             {
                 Send(MixerLinkProtocol.FrameType.Release, MixerLinkProtocol.Json(new MixerLinkProtocol.Ownership { id = SceneGraphExporter.IdOf(target.gameObject), meshId = MixerLinkService.MeshIdOf(target), side = "blender" }));
-                Pump(1.0);
+                return Pump(1.0);
             }
 
             /// <summary>Pumps the host and reads its frames for a while, or until every type of <paramref name="until"/> came; meshes are acknowledged as Blender does.</summary>
@@ -577,7 +665,7 @@ namespace Orbiters.Mixer.Editor.Tests
                                 frameType = MixerLinkProtocol.FrameType.MeshData;
                             }
                             frames.Add((frameType, payload));
-                            if (frameType == MixerLinkProtocol.FrameType.MeshData)
+                            if (frameType == MixerLinkProtocol.FrameType.MeshData && Acknowledge)
                                 Send(MixerLinkProtocol.FrameType.MeshReceived, MixerLinkProtocol.Json(new MixerLinkProtocol.MeshReceived { id = MeshDataCodec.PeekId(payload) }));
                         }
                     }

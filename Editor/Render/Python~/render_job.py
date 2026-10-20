@@ -41,27 +41,39 @@ try:
     with open(request_path, "r", encoding="utf-8") as handle:
         request = json.load(handle)
     extension = load_extension()
+    with open(endpoint_path, "r", encoding="utf-8") as handle:
+        endpoint = json.load(handle)
+    # An extension of another link protocol (one installed before, never updated through Mixer) would not be welcomed,
+    # and an empty scene would be rendered.
+    protocol = importlib.import_module(extension.__name__ + ".protocol")
+    if getattr(protocol, "PROTOCOL_VERSION", None) != endpoint.get("protocolVersion"):
+        raise RuntimeError("The installed Mixer extension speaks link protocol %s, Unity's Mixer %s: open the scene in Blender from Mixer once to update it."
+                           % (getattr(protocol, "PROTOCOL_VERSION", "?"), endpoint.get("protocolVersion")))
     link = importlib.import_module(extension.__name__ + ".link")
     scene_sync = importlib.import_module(extension.__name__ + ".scene_sync")
     render_server = importlib.import_module(extension.__name__ + ".render_server")
     bpy.ops.wm.read_homefile(use_empty=True)
     settings = bpy.context.scene.orbiters_mixer
-    with open(endpoint_path, "r", encoding="utf-8") as handle:
-        endpoint = json.load(handle)
     settings.scene_guid = endpoint.get("sceneGuid", "")
+    settings.project_path = endpoint.get("projectPath", "")
     settings.endpoint_path = endpoint_path
     settings.auto_connect = True
+    # As a press of Connect: this very editor's endpoint, an unsaved scene (no GUID) included.
+    link.connect_now(manual=True)
     deadline = time.monotonic() + 600.0
-    ready = False
+    ready = linked = False
     while time.monotonic() < deadline:
         wait = link.tick()
         state, _, _, messages, _ = link.state()
+        linked = linked or link.connected()
         if any("meshes done" in m for m in messages):
             ready = True
             break
-        if state not in ("connecting", "connected") and time.monotonic() > deadline - 580:
+        if state not in ("connecting", "checking Unity", "connected") and time.monotonic() > deadline - 580:
             raise RuntimeError("Unity's link is not reachable: " + state)
         time.sleep(min(0.05, wait))
+    if not linked:
+        raise RuntimeError("Unity's link did not take this Blender: " + link.state()[0])
     if not ready:
         log("the scene did not finish arriving; rendering what came")
     log("scene has %d objects" % len([o for o in bpy.data.objects if scene_sync.is_unity_object(o)]))

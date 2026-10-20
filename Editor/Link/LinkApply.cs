@@ -107,12 +107,12 @@ namespace Orbiters.Mixer.Editor
             return recorder;
         }
 
-        // A shape Blender has that Unity does not (or deleted before): made, with an entry so the undo takes it away again.
+        // A shape Blender has that Unity does not (never one Unity deleted: the callers skip those): made, with an entry so
+        // the undo takes it away again.
         private static void EnsureShape(BlenderEdit edit, string name)
         {
             var doc = edit.Target.Document;
             if (doc.HasShape(name)) return;
-            doc.DeletedShapes.Remove(name);
             string before = doc.Layer;
             var layer = doc.Shape(name, create: true);
             doc.Revision++;
@@ -143,6 +143,12 @@ namespace Orbiters.Mixer.Editor
                 if (frame.Shape != null && MeshDataCodec.IsInBetweenOf(doc, frame.Shape))
                 {
                     host.StatusThrottled(target.Id, frame.Shape + " is an in-between frame: it stays in Blender (Export for MCB writes it), Unity edits " + MeshDataCodec.InBetweenBase(frame.Shape) + "'s last frame.", "warning");
+                    continue;
+                }
+                // As for a whole mesh: a shape Unity deleted or renamed meanwhile is not brought back.
+                if (frame.Shape != null && doc.DeletedShapes.Contains(frame.Shape))
+                {
+                    host.StatusThrottled(target.Id, "Unity deleted or renamed " + frame.Shape + " meanwhile: Blender's edits of it are not brought back.", "info");
                     continue;
                 }
                 var edit = EditOf(target, frame.Id);

@@ -702,6 +702,8 @@ namespace Orbiters.Mixer.Editor
                                 break;
                         }
                         if (end > reader.BaseStream.Length) throw new InvalidDataException("A section runs past the payload.");
+                        // A section read past its own length would be read again from inside it, as often as it says.
+                        if (reader.BaseStream.Position > end) throw new InvalidDataException("A section holds more than its length.");
                         reader.BaseStream.Position = end;
                     }
                     return d;

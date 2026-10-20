@@ -65,14 +65,16 @@ namespace Orbiters.Mixer.Editor.MCP
                     {
                         var target = TargetOf(p);
                         string name = target.Name;
-                        if (!target.Document.Changed)
+                        if (MixerLinkService.IsBlenderOwned(target)) throw new InvalidOperationException(name + " is being edited in Blender: leave its edit mode there first, then commit.");
+                        var mesh = MixerSession.Commit(target);
+                        if (mesh == null)
                         {
-                            MixerSession.Commit(target);
+                            // Commit gives nothing either for a session without differences (closed) or when it did not commit.
+                            if (MixerSession.Targets.Contains(target)) throw new InvalidOperationException("Nothing was committed: " + name + "'s Mixer session is still open.");
                             return new SuccessResponse(name + " had no edits: nothing was written, its Mixer session is closed and its own mesh stays.", new { asset = (string)null, status = Status() });
                         }
-                        var mesh = MixerSession.Commit(target);
-                        string path = mesh != null ? AssetDatabase.GetAssetPath(mesh) : null;
-                        return new SuccessResponse("Committed " + name + (path != null ? " to " + path : "") + ".", new { asset = path, vertices = mesh != null ? mesh.vertexCount : 0, blendShapes = mesh != null ? mesh.blendShapeCount : 0, status = Status() });
+                        string path = AssetDatabase.GetAssetPath(mesh);
+                        return new SuccessResponse("Committed " + name + " to " + path + ".", new { asset = path, vertices = mesh.vertexCount, blendShapes = mesh.blendShapeCount, status = Status() });
                     }
                     case "revert":
                     {

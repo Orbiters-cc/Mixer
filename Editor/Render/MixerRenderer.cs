@@ -73,6 +73,8 @@ namespace Orbiters.Mixer.Editor
         public static string Render(Settings settings)
         {
             if (Current != null && !Current.Done) return "A render is running: cancel it first.";
+            // The Blender link waits while Unity plays (it does not mirror Play mode).
+            if (EditorApplication.isPlayingOrWillChangePlaymode) return "Mixer renders outside Play mode: stop Play first.";
             Directory.CreateDirectory(Folder);
             Prune();
             // Milliseconds and a random tail: two renders within a second never share files or a job id.

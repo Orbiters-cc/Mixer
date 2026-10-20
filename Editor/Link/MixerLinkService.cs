@@ -25,6 +25,7 @@ namespace Orbiters.Mixer.Editor
     /// stroke runs on it, and Blender takes no claim then. A session in Mixer alone does not hold the mesh, so both sides
     /// can take turns on the same document.
     /// </para>
+    /// The link does not listen in Play mode: Blender keeps the edit-mode scene and waits for Play to end.
     /// Tests open hosts of their own (<see cref="MixerLinkHost.OpenPrivate"/>): no endpoint file, another token and
     /// port, and the user's Blender link untouched.
     /// </summary>
@@ -73,8 +74,25 @@ namespace Orbiters.Mixer.Editor
             // Blender's edit in progress is not turned into history here (the history does not survive the reload): its
             // positions so far are in the session, which the reload keeps.
             AssemblyReloadEvents.beforeAssemblyReload += () => { live?.Dispose(deleteEndpoint: false, endEdits: false); live = null; };
+            EditorApplication.playModeStateChanged += OnPlayMode;
             MixerSession.Changed += () => ForEach(h => h.MarkGraphDirty(0.3));
             if (Enabled) EditorApplication.delayCall += EnsureRunning;
+        }
+
+        // Play mode is not mirrored (Blender would get the play-mode scene and lose what Play destroys): the link lets
+        // Blender go when Play starts, as for a script reload (Blender keeps its edits and claims them again), and listens
+        // again when Play ends.
+        private static void OnPlayMode(PlayModeStateChange change)
+        {
+            if (change == PlayModeStateChange.ExitingEditMode && live != null)
+            {
+                var host = live;
+                live = null;
+                host.Status("link", "Unity entered Play mode: the link is back when Play ends.", "info");
+                host.Dispose(deleteEndpoint: false, endEdits: false);
+                RaiseChanged();
+            }
+            else if (change == PlayModeStateChange.EnteredEditMode && Enabled) EnsureRunning();
         }
 
         private static void ForEach(Action<MixerLinkHost> action)
@@ -88,7 +106,7 @@ namespace Orbiters.Mixer.Editor
 
         public static void EnsureRunning()
         {
-            if (live != null || !Enabled) return;
+            if (live != null || !Enabled || EditorApplication.isPlayingOrWillChangePlaymode) return;
             string token = SessionState.GetString(TokenKey, null);
             if (string.IsNullOrEmpty(token))
             {
@@ -286,6 +304,8 @@ namespace Orbiters.Mixer.Editor
         private System.Threading.Tasks.Task encoding;
         private string inFlight;
         private double inFlightSince;
+        // What Blender had of the mesh in flight before it (null: nothing known), for when Blender drops that mesh.
+        private SentMesh inFlightBefore;
         private bool meshesAnnounced;
         private uint nextTransfer = 1;
         private Dictionary<string, string> heldByBlender;
@@ -430,6 +450,7 @@ namespace Orbiters.Mixer.Editor
             queuedMeshes.Clear();
             while (encoded.TryDequeue(out _)) { }
             inFlight = null;
+            inFlightBefore = null;
             assembler.Reset();
             positionsDue.Clear();
             unityEditing = unityEditingNode = null;
@@ -470,7 +491,7 @@ namespace Orbiters.Mixer.Editor
                         break;
                     }
                     case MixerLinkProtocol.FrameType.RequestMesh: { var r = MixerLinkProtocol.Read<MixerLinkProtocol.RequestMesh>(frame.Payload); if (r != null) SendMesh(r.id); break; }
-                    case MixerLinkProtocol.FrameType.MeshReceived: { var r = MixerLinkProtocol.Read<MixerLinkProtocol.MeshReceived>(frame.Payload); if (r != null && r.id == inFlight) inFlight = null; break; }
+                    case MixerLinkProtocol.FrameType.MeshReceived: { var r = MixerLinkProtocol.Read<MixerLinkProtocol.MeshReceived>(frame.Payload); if (r != null && r.id == inFlight) { inFlight = null; inFlightBefore = null; } break; }
                     case MixerLinkProtocol.FrameType.RenderResult: if (IsLive) MixerRenderer.OnResult(MixerLinkProtocol.Read<MixerLinkProtocol.RenderResult>(frame.Payload)); break;
                 }
             }
@@ -537,6 +558,7 @@ namespace Orbiters.Mixer.Editor
         private void OnClaim(MixerLinkProtocol.Ownership claim)
         {
             if (claim == null || string.IsNullOrEmpty(claim.id) || (claim.side != null && claim.side != "blender")) return;
+            if (!string.IsNullOrEmpty(claim.meshId)) ForgetInFlight(claim.meshId);
             var go = SceneGraphExporter.Resolve(claim.id) as GameObject;
             var r = go != null ? go.GetComponent<Renderer>() : null;
             if (r == null) { Refuse(claim, "Unity has no renderer for this object."); return; }
@@ -564,6 +586,15 @@ namespace Orbiters.Mixer.Editor
             Status(claim.id, "Blender edits " + r.name + ".", "info");
             Say("Blender edits " + r.name + ".");
             RaiseChanged();
+        }
+
+        // Blender claimed the mesh before the copy in flight reached it (frames come in order, and Blender had not said
+        // it arrived): Blender drops that copy, its own being the newer, so what it has is what it had before.
+        private void ForgetInFlight(string meshId)
+        {
+            if (inFlight != meshId) return;
+            if (inFlightBefore != null) sent[meshId] = inFlightBefore; else sent.Remove(meshId);
+            inFlightBefore = null;
         }
 
         // Blender's claim does not hold: Blender lets go of it (its edits in that mode are not sent) and says why.
@@ -855,6 +886,8 @@ namespace Orbiters.Mixer.Editor
             while (encoded.TryDequeue(out var job))
             {
                 if (job.Connection != connection || !Connected) continue;
+                // Blender claimed the mesh while it was being written: its own copy is the newer one.
+                if (OwnsMesh(job.MeshId)) continue;
                 if (job.Error != null) { Fail(job.NodeId, job.Name, job.Error); continue; }
                 if (job.Payload.Length > MixerLinkProtocol.MaxMeshBytes)
                 {
@@ -862,6 +895,7 @@ namespace Orbiters.Mixer.Editor
                     continue;
                 }
                 if (!SendMeshPayload(job.Payload)) { Say("The mesh of " + job.Name + " was not sent: Blender is gone."); continue; }
+                inFlightBefore = sent.TryGetValue(job.MeshId, out var before) ? before : null;
                 sent[job.MeshId] = job.Sent;
                 inFlight = job.MeshId;
                 inFlightSince = EditorApplication.timeSinceStartup;
@@ -923,9 +957,10 @@ namespace Orbiters.Mixer.Editor
                 if (!target.Alive || !graphNodes.Contains(target.Id)) continue;
                 var doc = target.Document;
                 if (checkedRevision.TryGetValue(target.Id, out int revision) && revision == doc.Revision) continue;
-                checkedRevision[target.Id] = doc.Revision;
                 string meshId = MixerLinkService.MeshIdOf(target);
+                // Not compared while Blender holds the mesh or it waits to go: the revision is checked once it can be.
                 if (meshId == null || OwnsMesh(meshId) || queuedMeshes.Contains(target.Id) || !sent.TryGetValue(meshId, out var info)) continue;
+                checkedRevision[target.Id] = doc.Revision;
                 var shapes = new HashSet<string>(doc.ShapeOrder.Where(doc.HasShape));
                 var groups = new HashSet<string>(doc.Groups.Select(g => g.Name));
                 if (shapes.SetEquals(info.Shapes) && groups.SetEquals(info.Groups)) continue;
