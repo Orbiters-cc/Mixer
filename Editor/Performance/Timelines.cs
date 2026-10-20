@@ -56,7 +56,12 @@ namespace Orbiters.Mixer.Editor.Performance
 
         public const string ParametersPrefix = "/avatar/parameters/";
 
-        public static ParameterTimeline Build(PerformanceSession session)
+        /// <summary>
+        /// The timeline of a session. Parameters after an avatar change belong to that avatar: when
+        /// <paramref name="avatarId"/> (a blueprint id) is one of the avatars the session saw, the avatar parameters
+        /// recorded while another one was worn are left out (everything else, such as VRChat's poses, stays).
+        /// </summary>
+        public static ParameterTimeline Build(PerformanceSession session, string avatarId = null)
         {
             var timeline = new ParameterTimeline();
             if (session.Parameters == null) return timeline;
@@ -67,10 +72,18 @@ namespace Orbiters.Mixer.Editor.Performance
                 byId[p.Id] = track;
                 timeline.Tracks[p.Name] = track;
             }
+            var worn = session.Parameters.Avatars.Where(a => a != null).OrderBy(a => a.TimeNs).ToList();
+            bool filter = !string.IsNullOrEmpty(avatarId) && worn.Any(a => a.Id == avatarId) && worn.Any(a => a.Id != avatarId);
+            int w = 0;
             // Initial values come first at time 0; the rest is in arrival order. A stable sort keeps both.
             foreach (var c in session.Changes.Select((c, i) => (c, i)).OrderBy(x => x.c.TimeNs).ThenBy(x => x.i).Select(x => x.c))
             {
                 if (!byId.TryGetValue(c.Id, out var track)) continue;
+                if (filter && track.IsAvatarParameter)
+                {
+                    while (w + 1 < worn.Count && worn[w + 1].TimeNs <= c.TimeNs) w++;
+                    if (worn[w].Id != avatarId) continue;
+                }
                 track.Times.Add(c.TimeNs * 1e-9);
                 track.Values.Add(c.AsFloat);
                 track.Kinds.Add(c.Kind);
@@ -84,11 +97,95 @@ namespace Orbiters.Mixer.Editor.Performance
         public bool Has(string name) => Tracks.TryGetValue(name, out var t) && t.Times.Count > 0;
     }
 
+    /// <summary>
+    /// Plays parameter tracks into the animator frame by frame. A parameter the animator takes as an int, bool or
+    /// trigger that changes more than once within a frame (a button pressed and let go) gets every value to the
+    /// animator: the graph steps to the moment of each change, so transitions on short pulses still fire. Floats pass
+    /// their latest value only.
+    /// </summary>
+    internal sealed class ParameterSteps
+    {
+        readonly List<ParameterTimeline.Track> tracks;
+        readonly bool[] discrete;
+        readonly int[] next;
+        readonly List<(double time, int track, int index)> events = new List<(double, int, int)>();
+        readonly HashSet<int> touched = new HashSet<int>();
+
+        public ParameterSteps(List<ParameterTimeline.Track> tracks, bool[] discrete)
+        {
+            this.tracks = tracks;
+            this.discrete = discrete;
+            next = new int[tracks.Count];
+        }
+
+        /// <summary>The latest value of every parameter that changed up to <paramref name="time"/>.</summary>
+        public void Latest(double time, Action<string, float> set)
+        {
+            for (int k = 0; k < tracks.Count; k++)
+            {
+                var track = tracks[k];
+                int i = next[k];
+                if (i >= track.Times.Count || track.Times[i] > time) continue;
+                while (i + 1 < track.Times.Count && track.Times[i + 1] <= time) i++;
+                set(track.Name, track.Values[i]);
+                next[k] = i + 1;
+            }
+        }
+
+        /// <summary>
+        /// The changes since the last call up to <paramref name="to"/>, with the graph advanced (<paramref name="evaluate"/>)
+        /// from <paramref name="from"/> to <paramref name="to"/>: in one step, or in steps that add up to it around pulses.
+        /// </summary>
+        public void Through(double from, double to, Action<string, float> set, Action<float> evaluate)
+        {
+            bool pulse = false;
+            for (int k = 0; k < tracks.Count && !pulse; k++)
+                pulse = discrete[k] && next[k] + 1 < tracks[k].Times.Count && tracks[k].Times[next[k] + 1] <= to;
+            if (!pulse)
+            {
+                Latest(to, set);
+                evaluate((float)(to - from));
+                return;
+            }
+            events.Clear();
+            for (int k = 0; k < tracks.Count; k++)
+            {
+                var track = tracks[k];
+                int i = next[k];
+                if (i >= track.Times.Count || track.Times[i] > to) continue;
+                int last = i;
+                while (last + 1 < track.Times.Count && track.Times[last + 1] <= to) last++;
+                for (int j = discrete[k] ? i : last; j <= last; j++) events.Add((track.Times[j], k, j));
+                next[k] = last + 1;
+            }
+            events.Sort((a, b) => a.time != b.time ? a.time.CompareTo(b.time) : a.track != b.track ? a.track.CompareTo(b.track) : a.index.CompareTo(b.index));
+            double done = from;
+            touched.Clear();
+            foreach (var (time, k, index) in events)
+            {
+                if (!touched.Add(k))
+                {
+                    // Its earlier value reaches the animator before this one replaces it.
+                    double at = Math.Max(done, Math.Min(time, to));
+                    evaluate((float)(at - done));
+                    done = at;
+                    touched.Clear();
+                    touched.Add(k);
+                }
+                set(tracks[k].Name, tracks[k].Values[index]);
+            }
+            evaluate((float)(to - done));
+        }
+    }
+
     /// <summary>Device poses as functions of time (play space, Unity conventions).</summary>
     internal interface IPoseSource
     {
         /// <summary>The device's pose at a time; false without a sample close enough.</summary>
         bool TryPose(int device, double seconds, out Vector3 position, out Quaternion rotation);
+
+        /// <summary>The device's first pose; false when it has none.</summary>
+        bool TryFirstPose(int device, out Vector3 position, out Quaternion rotation);
     }
 
     /// <summary>The SteamVR device poses as functions of time, interpolated between samples.</summary>
@@ -115,6 +212,14 @@ namespace Orbiters.Mixer.Editor.Performance
 
         /// <summary>The device number with this role (<c>head</c>, <c>left_hand</c>, ...), or -1.</summary>
         public int FindRole(string role) => Devices.Devices.FindIndex(d => d.Role == role);
+
+        public bool TryFirstPose(int device, out Vector3 position, out Quaternion rotation)
+        {
+            bool has = device >= 0 && device < perDevice.Length && perDevice[device].Count > 0;
+            position = has ? Position(perDevice[device][0]) : default;
+            rotation = has ? Rotation(perDevice[device][0]) : Quaternion.identity;
+            return has;
+        }
 
         public static Vector3 Position(TrackingSample s) => new Vector3(s.PositionX, s.PositionY, s.PositionZ);
         public static Quaternion Rotation(TrackingSample s) => new Quaternion(s.RotationX, s.RotationY, s.RotationZ, s.RotationW);
@@ -208,6 +313,14 @@ namespace Orbiters.Mixer.Editor.Performance
         public bool Has(int part) => samples[part].Count > 0;
 
         public IReadOnlyList<Sample> Samples(int part) => samples[part];
+
+        public bool TryFirstPose(int device, out Vector3 position, out Quaternion rotation)
+        {
+            bool has = device >= 0 && device < samples.Length && samples[device].Count > 0;
+            position = has ? samples[device][0].Position : default;
+            rotation = has ? samples[device][0].Rotation : Quaternion.identity;
+            return has;
+        }
 
         /// <summary>The pose at a time, interpolated between messages, held <see cref="MaxHold"/> after the last.</summary>
         public bool TryPose(int device, double seconds, out Vector3 position, out Quaternion rotation)

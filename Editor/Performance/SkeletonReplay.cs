@@ -40,7 +40,11 @@ namespace Orbiters.Mixer.Editor.Performance
             return d;
         }
 
-        /// <summary>Poses the copy at session time <paramref name="seconds"/>; false in a gap.</summary>
+        /// <summary>
+        /// Poses the copy at session time <paramref name="seconds"/>, interpolated between frames. In a gap (and before
+        /// the first frame or after the last) the pose holds at the frame before it (the first one before the start)
+        /// and the result is false: snapping back to the animation would put the body at the copy's origin.
+        /// </summary>
         public bool Apply(double seconds)
         {
             if (frames.Count == 0) return false;
@@ -57,8 +61,9 @@ namespace Orbiters.Mixer.Editor.Performance
             if (a.TimeNs > t) b = a;
             double span = (b.TimeNs - a.TimeNs) * 1e-9;
             double away = a.TimeNs > t ? (a.TimeNs - t) * 1e-9 : (t - a.TimeNs) * 1e-9;
-            if (span > MaxGap * 2 || (span == 0 && away > MaxGap)) return false;
-            float k = span > 0 ? Mathf.Clamp01((float)((t - a.TimeNs) * 1e-9 / span)) : 0f;
+            bool gap = span > MaxGap * 2 || (span == 0 && away > MaxGap);
+            if (gap) b = a;
+            float k = !gap && span > 0 ? Mathf.Clamp01((float)((t - a.TimeNs) * 1e-9 / span)) : 0f;
             foreach (var (bone, transform) in order)
             {
                 var qa = a.Pose.Rotations[bone];
@@ -70,7 +75,7 @@ namespace Orbiters.Mixer.Editor.Performance
             }
             if (hips != null)
                 hips.position = Vector3.Lerp(new Vector3(a.Pose.HipsX, a.Pose.HipsY, a.Pose.HipsZ), new Vector3(b.Pose.HipsX, b.Pose.HipsY, b.Pose.HipsZ), k);
-            return true;
+            return !gap;
         }
     }
 }

@@ -38,7 +38,15 @@ namespace Orbiters.Mixer.Editor.Performance.Tests
             created.Clear();
             foreach (var root in scene.GetRootGameObjects()) Undo.ClearUndo(root);
             EditorSceneManager.ClosePreviewScene(scene);
-            if (AssetDatabase.IsValidFolder(Folder)) AssetDatabase.DeleteAsset(Folder);
+            if (AssetDatabase.IsValidFolder(Folder))
+            {
+                // A kit made again records its assets' old contents for Undo.
+                foreach (string guid in AssetDatabase.FindAssets("", new[] { Folder }))
+                    foreach (var asset in AssetDatabase.LoadAllAssetsAtPath(AssetDatabase.GUIDToAssetPath(guid)))
+                        if (asset != null)
+                            Undo.ClearUndo(asset);
+                AssetDatabase.DeleteAsset(Folder);
+            }
         }
 
         [Test]
@@ -166,6 +174,48 @@ namespace Orbiters.Mixer.Editor.Performance.Tests
             Assert.AreEqual(CaptureKit.Reach.NearYou, CaptureKit.Inspect(descriptor).Reach);
             CaptureKit.Remove(descriptor);
             Assert.IsNull(CaptureKit.Find(descriptor));
+        }
+
+        [Test]
+        public void ARenamedAvatarNeedsTheKitAgain()
+        {
+            var avatar = TestAvatar.Build(scene);
+            var descriptor = avatar.GetComponent<VRCAvatarDescriptor>();
+            CaptureKit.Build(descriptor, CaptureKit.Reach.NearYou, Folder);
+            var state = CaptureKit.Inspect(descriptor);
+            Assert.IsTrue(state.Installed && !state.Stale);
+            // The kit records the avatar's identity (its name's): recordings after a rename would not match it.
+            avatar.name = "Renamed avatar";
+            Assert.IsTrue(CaptureKit.Inspect(descriptor).Stale);
+        }
+
+        [Test]
+        public void TheKitGoesOnlyOnAvatarsInAScene()
+        {
+            if (!AssetDatabase.IsValidFolder(Folder)) AssetDatabase.CreateFolder("Assets", Folder.Substring("Assets/".Length));
+            var source = new GameObject("Prefab avatar");
+            SceneManager.MoveGameObjectToScene(source, scene);
+            source.AddComponent<Animator>();
+            source.AddComponent<VRCAvatarDescriptor>();
+            var prefab = PrefabUtility.SaveAsPrefabAsset(source, Folder + "/Prefab avatar.prefab");
+            var descriptor = prefab.GetComponent<VRCAvatarDescriptor>();
+            var e = Assert.Throws<System.InvalidOperationException>(() => CaptureKit.Build(descriptor, CaptureKit.Reach.NearYou, Folder));
+            StringAssert.Contains("prefab asset", e.Message);
+            Assert.Throws<System.InvalidOperationException>(() => CaptureKit.Remove(descriptor));
+            Assert.IsFalse(SceneManager.GetActiveScene().GetRootGameObjects().Any(g => g.name == CaptureKit.ObjectName), "nothing left in the open scene");
+        }
+
+        [Test]
+        public void ASharedMenuMissingItsSubmenuIsMadeAgain()
+        {
+            var (menu, parameters) = CaptureKit.SharedMenu(Folder);
+            Assert.IsTrue(CaptureKit.Complete(menu, parameters));
+            AssetDatabase.DeleteAsset(Folder + "/Capture kit Orbiters menu.asset");
+            Assert.IsFalse(CaptureKit.Complete(menu, parameters), "the Orbiters submenu would be empty in VRChat");
+            var (again, againParameters) = CaptureKit.SharedMenu(Folder);
+            Assert.AreSame(menu, again, "made again in place");
+            Assert.AreSame(parameters, againParameters);
+            Assert.IsTrue(CaptureKit.Complete(again, againParameters));
         }
 
         /// <summary>

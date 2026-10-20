@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.IO;
+using Orbiters.Toolkit.Storage;
 using UnityEditor;
 using UnityEngine;
 #if MIXER_PERFORMANCE_TIMELINE
@@ -17,6 +18,7 @@ namespace Orbiters.Mixer.Editor.Performance
 #if MIXER_PERFORMANCE_TIMELINE
             var asset = ScriptableObject.CreateInstance<TimelineAsset>();
             string path = AssetDatabase.GenerateUniqueAssetPath(folder + "/" + Path.GetFileNameWithoutExtension(AssetDatabase.GetAssetPath(clip)) + ".playable");
+            SafePaths.RequireLength(Path.GetFullPath(path));
             AssetDatabase.CreateAsset(asset, path);
             var animation = asset.CreateTrack<AnimationTrack>(null, avatarName);
             animation.CreateClip(clip).start = 0;

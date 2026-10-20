@@ -317,6 +317,263 @@ namespace Orbiters.Mixer.Editor.Performance.Tests
             Assert.IsFalse(replay.Apply(3.0), "after the last frame by more than the gap");
         }
 
+        [Test]
+        public void SkeletonGapsHoldTheLastPose()
+        {
+            var avatar = TestAvatar.Build(scene);
+            var animator = avatar.GetComponent<Animator>();
+            var hips = animator.GetBoneTransform(HumanBodyBones.Hips);
+            SkeletonFrame Frame(double t, float x)
+            {
+                var f = new SkeletonFrame { TimeNs = (ulong)(t * 1e9) };
+                f.Pose.HipsX = x;
+                f.Pose.HipsY = 0.95f;
+                f.Pose.HipsZ = 120f;
+                for (int b = 0; b < SkeletonPose.Bones; b++)
+                    if (animator.GetBoneTransform((HumanBodyBones)b) != null)
+                        f.Pose.Rotations[b] = new[] { 0f, 0f, 0f, 1f };
+                return f;
+            }
+            var replay = new SkeletonReplay(new List<SkeletonFrame> { Frame(1.0, 0f), Frame(1.1, 1f), Frame(3.0, 2f) }, animator);
+            hips.position = Vector3.zero;
+            Assert.IsFalse(replay.Apply(2.0), "a gap");
+            Assert.Less(Vector3.Distance(new Vector3(1f, 0.95f, 120f), hips.position), 1e-4f, "held at the frame before the gap, not back at the origin");
+            hips.position = Vector3.zero;
+            Assert.IsFalse(replay.Apply(0.0));
+            Assert.AreEqual(0f, hips.position.x, 1e-5f, "before the first frame: the first frame's pose");
+            Assert.AreEqual(120f, hips.position.z, 1e-5f);
+            Assert.IsTrue(replay.Apply(3.05));
+            Assert.AreEqual(2f, hips.position.x, 1e-5f);
+        }
+
+        [Test]
+        public void TrackingGapsHoldTheLastPose()
+        {
+            // The person walks a metre forward (+Z) in the first second, VRChat's poses stop for two seconds, then come
+            // back where the person stands.
+            var head = new Vector3(0f, 1.75f, 0f);
+            (Vector3, Quaternion) Pose(double t, int part)
+            {
+                var at = head + Vector3.forward * Mathf.Clamp01((float)t);
+                if (part == VrChatPoses.Head) return (at, Quaternion.identity);
+                return (at + new Vector3(part == VrChatPoses.LeftWrist ? -0.2f : 0.2f, -0.45f, 0.3f), Quaternion.identity);
+            }
+            var session = VrChatSession(4.0, Pose);
+            session.Changes.RemoveAll(c => c.TimeNs > 1_000_000_000 && c.TimeNs < 3_000_000_000);
+            var avatar = TestAvatar.Build(scene);
+            var result = PerformanceBaker.Bake(session, avatar.GetComponent<VRCAvatarDescriptor>(), new BakeOptions { FrameRate = 30f, End = 4.0, Face = false, Audio = false, Timeline = false, OutputFolder = Folder });
+            Assert.IsTrue(result.BodyFromVrChat, string.Join("\n", result.Warnings));
+            Assert.IsTrue(result.Warnings.Any(w => w.Contains("headset's pose was missing")), string.Join("\n", result.Warnings));
+            var bindings = AnimationUtility.GetCurveBindings(result.Clip);
+            var z = AnimationUtility.GetEditorCurve(result.Clip, bindings.First(b => b.propertyName == "RootT.z"));
+            Assert.Less(z.Evaluate(0f), 0.3f);
+            Assert.Greater(z.Evaluate(2f), 0.6f, "the body waits where the person was, not back at the start");
+            Assert.AreEqual(z.Evaluate(1f), z.Evaluate(2f), 0.05f);
+        }
+
+        [Test]
+        public void FeetGoWithTheHipsWhenThePersonWalks()
+        {
+            var avatar = TestAvatar.Build(scene);
+            var rig = new BodyRig(avatar.GetComponent<Animator>());
+            var solver = new BodySolver(rig);
+            // The headset a metre ahead of where the copy stands, no foot trackers.
+            var targets = new Dictionary<BodyTarget, BodySolver.Pose>
+            {
+                [BodyTarget.Head] = new BodySolver.Pose { Valid = true, Position = rig.Head.position + Vector3.forward, Rotation = rig.Head.rotation },
+            };
+            solver.Solve(targets, new TrackingState(), 1f / 60f);
+            Vector3 feet = (rig.LeftFoot.position + rig.RightFoot.position) / 2f;
+            Assert.AreEqual(1f, rig.Hips.position.z, 0.05f);
+            Assert.Less(Vector2.Distance(new Vector2(feet.x, feet.z), new Vector2(rig.Hips.position.x, rig.Hips.position.z)), 0.1f, "the feet stand under the hips");
+            Assert.AreEqual(0.08f, rig.LeftFoot.position.y, 0.02f, "on the floor");
+        }
+
+        [Test]
+        public void ParametersOfAnotherAvatarAreLeftOut()
+        {
+            var session = Session((0.5, 0, 1f), (1.5, 0, 0.3f), (2.5, 0, 0.7f));
+            session.Parameters.Parameters.Add(new ParameterTable.ParameterInfo { Id = 9, Name = "/tracking/vrsystem/head/pose[0]", Address = "/tracking/vrsystem/head/pose", Kind = "float" });
+            session.Changes.Add(ParameterChange.Float(1_500_000_000, 9, 4f));
+            session.Parameters.Avatars.Add(new ParameterTable.AvatarChange { TimeNs = 0, Id = "avtr_A" });
+            session.Parameters.Avatars.Add(new ParameterTable.AvatarChange { TimeNs = 1_000_000_000, Id = "avtr_B" });
+            session.Parameters.Avatars.Add(new ParameterTable.AvatarChange { TimeNs = 2_000_000_000, Id = "avtr_A" });
+
+            var ours = ParameterTimeline.Build(session, "avtr_A");
+            CollectionAssert.AreEqual(new[] { 1f, 0.7f }, ours.Tracks["Smile"].Values, "B's value is not A's");
+            Assert.AreEqual(1f, ours.ValueAt("Smile", 1.6), "held while B was worn");
+            Assert.IsTrue(ours.Has("/tracking/vrsystem/head/pose[0]"), "the person's poses are no avatar's");
+            Assert.AreEqual(3, ParameterTimeline.Build(session).Tracks["Smile"].Values.Count);
+            Assert.AreEqual(3, ParameterTimeline.Build(session, "avtr_C").Tracks["Smile"].Values.Count, "an avatar the session never saw: everything");
+
+            var warnings = new List<string>();
+            PerformanceBaker.AvatarChanges(ours, "avtr_A", "A", warnings);
+            StringAssert.Contains("while A was worn", warnings.Single());
+            warnings.Clear();
+            PerformanceBaker.AvatarChanges(ours, null, "A", warnings);
+            StringAssert.Contains("0:01 (to avtr_B)", warnings.Single());
+            warnings.Clear();
+            session.Parameters.Avatars.RemoveRange(1, 2);
+            PerformanceBaker.AvatarChanges(ParameterTimeline.Build(session), null, "A", warnings);
+            CollectionAssert.IsEmpty(warnings, "one avatar all along");
+        }
+
+        [Test]
+        public void TheSkeletonOfAnotherAvatarIsLeftOut()
+        {
+            SkeletonFrame Frame(double t, ushort avatar) => new SkeletonFrame { TimeNs = (ulong)(t * 1e9), Pose = { Avatar = avatar } };
+            var frames = new List<SkeletonFrame> { Frame(0, 7), Frame(1, 8), Frame(2, 7) };
+            var warnings = new List<string>();
+            CollectionAssert.AreEqual(new ulong[] { 0, 2_000_000_000 }, PerformanceBaker.SkeletonFrames(frames, 7, "A", warnings).Select(f => f.TimeNs));
+            Assert.AreEqual(1, warnings.Count);
+            warnings.Clear();
+            Assert.AreEqual(3, PerformanceBaker.SkeletonFrames(frames, 9, "A", warnings).Count, "none of this avatar's: all, with a warning");
+            StringAssert.Contains("another avatar than A", warnings.Single());
+        }
+
+        [Test]
+        public void ShortPulsesReachTheAnimator()
+        {
+            var button = new ParameterTimeline.Track { Name = "Button", IsAvatarParameter = true };
+            var face = new ParameterTimeline.Track { Name = "Face", IsAvatarParameter = true };
+            foreach (var (t, v) in new[] { (0.0, 0f), (0.010, 1f), (0.015, 0f), (0.050, 1f) })
+            {
+                button.Times.Add(t);
+                button.Values.Add(v);
+            }
+            foreach (var (t, v) in new[] { (0.005, 0.2f), (0.012, 0.5f) })
+            {
+                face.Times.Add(t);
+                face.Values.Add(v);
+            }
+            var steps = new ParameterSteps(new List<ParameterTimeline.Track> { button, face }, new[] { true, false });
+            var log = new List<string>();
+            void Set(string name, float value) => log.Add(name + "=" + value.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture));
+            float stepped = 0f;
+            void Evaluate(float dt)
+            {
+                stepped += dt;
+                log.Add("step");
+            }
+            const double frame = 1.0 / 30.0;
+            steps.Latest(0.0, Set);
+            CollectionAssert.AreEqual(new[] { "Button=0.0" }, log);
+            log.Clear();
+            steps.Through(0.0, frame, Set, Evaluate);
+            // Pressed and let go within the frame: the animator sees the press for a step; the face only its latest value.
+            CollectionAssert.AreEqual(new[] { "Button=1.0", "Face=0.5", "step", "Button=0.0", "step" }, log);
+            Assert.AreEqual((float)frame, stepped, 1e-6f, "the steps add up to the frame");
+            log.Clear();
+            stepped = 0f;
+            steps.Through(frame, 2 * frame, Set, Evaluate);
+            CollectionAssert.AreEqual(new[] { "Button=1.0", "step" }, log, "one change: one step, as before");
+            Assert.AreEqual((float)frame, stepped, 1e-6f);
+        }
+
+        [Test]
+        public void RandomDriversFollowTheParametersType()
+        {
+            if (!AssetDatabase.IsValidFolder(Folder)) AssetDatabase.CreateFolder("Assets", Folder.Substring("Assets/".Length));
+            var avatar = TestAvatar.Build(scene);
+            var descriptor = avatar.GetComponent<VRCAvatarDescriptor>();
+            var controller = AnimatorController.CreateAnimatorControllerAtPath(Folder + "/Random.controller");
+            controller.AddParameter("Blink", AnimatorControllerParameterType.Bool);
+            controller.AddParameter("Idle", AnimatorControllerParameterType.Int);
+            controller.AddParameter("Sway", AnimatorControllerParameterType.Float);
+            var layers = descriptor.baseAnimationLayers;
+            for (int i = 0; i < layers.Length; i++)
+                if (layers[i].type == VRCAvatarDescriptor.AnimLayerType.FX)
+                    layers[i] = new VRCAvatarDescriptor.CustomAnimLayer { type = VRCAvatarDescriptor.AnimLayerType.FX, isDefault = false, isEnabled = true, animatorController = controller };
+            descriptor.baseAnimationLayers = layers;
+            var stack = VrcLayerStack.Build(descriptor, avatar.GetComponent<Animator>(), Viewer.Local, null);
+            try
+            {
+                VRC_AvatarParameterDriver.Parameter Roll(string name, float min, float max, float chance = 0f, bool preventRepeats = false) => new VRC_AvatarParameterDriver.Parameter
+                {
+                    name = name, type = VRC_AvatarParameterDriver.ChangeType.Random, valueMin = min, valueMax = max, chance = chance, preventRepeats = preventRepeats,
+                };
+                const int rolls = 10000;
+                var blink = Enumerable.Range(0, rolls).Select(_ => stack.RandomValue(Roll("Blink", 0f, 0f, 0.3f))).ToList();
+                CollectionAssert.IsSubsetOf(blink.Distinct(), new[] { 0f, 1f });
+                Assert.AreEqual(0.3, blink.Count(v => v > 0.5f) / (double)rolls, 0.03, "a bool is on with the chance");
+                var idle = Enumerable.Range(0, rolls).Select(_ => stack.RandomValue(Roll("Idle", 0f, 3f))).ToList();
+                CollectionAssert.AreEquivalent(new[] { 0f, 1f, 2f, 3f }, idle.Distinct(), "an int from min to max, both included");
+                Assert.Greater(idle.Count(v => v == 3f), rolls / 5);
+                stack.Set("Idle", 2f);
+                var others = Enumerable.Range(0, rolls).Select(_ => stack.RandomValue(Roll("Idle", 0f, 3f, preventRepeats: true))).ToList();
+                CollectionAssert.AreEquivalent(new[] { 0f, 1f, 3f }, others.Distinct(), "never the current value");
+                var sway = Enumerable.Range(0, rolls).Select(_ => stack.RandomValue(Roll("Sway", 0.2f, 0.8f))).ToList();
+                Assert.IsTrue(sway.All(v => v >= 0.2f && v <= 0.8f));
+                Assert.Greater(sway.Distinct().Count(), 100);
+            }
+            finally
+            {
+                stack.Dispose();
+            }
+        }
+
+        [Test]
+        public void SilIsAShapeToo()
+        {
+            var avatar = TestAvatar.Build(scene);
+            var visemes = new VisemeEmulator(avatar.GetComponent<VRCAvatarDescriptor>(), avatar.transform);
+            visemes.Step(0, 0f, 1f);
+            Assert.Greater(visemes.Weight(0), 0.99f, "VRChat raises sil in silence");
+            visemes.Step(10, 1f, 1f);
+            Assert.Less(visemes.Weight(0), 0.01f);
+            Assert.Greater(visemes.Weight(10), 0.99f);
+        }
+
+        [Test]
+        public void AnOldCalibrationGivesWayToVrChatsPoses()
+        {
+            var head = new Vector3(0f, 1.75f, 0f);
+            (Vector3, Quaternion) Pose(double t, int part) => part == VrChatPoses.Head ? (head, Quaternion.identity) : (head + new Vector3(part == VrChatPoses.LeftWrist ? -0.2f : 0.2f, -0.45f, 0.3f), Quaternion.identity);
+            PerformanceSession Recorded(long calibratedNs, string role)
+            {
+                var s = VrChatSession(1.0, Pose);
+                s.Devices = new TrackingDevices();
+                s.Devices.Devices.Add(new TrackingDevices.Device { Class = role == "head" ? "hmd" : "controller", Role = role, Serial = "D" });
+                for (int i = 0; i <= 10; i++)
+                    s.Samples.Add(new TrackingSample { TimeNs = (ulong)(i * 100_000_000L), Device = 0, Flags = TrackingSample.FlagPoseValid | TrackingSample.FlagConnected, Result = 200, PositionY = 1.75f, RotationW = 1f });
+                s.Calibrations = new Calibrations();
+                s.Calibrations.Items.Add(new Calibrations.Calibration
+                {
+                    TimeNs = calibratedNs, HeadHeightM = 1.75f, Source = "overlay",
+                    Devices = { new Calibrations.DevicePose { Index = 0, Class = s.Devices.Devices[0].Class, Role = role, Serial = "D", Position = new[] { 3f, 1.75f, 3f }, Rotation = new[] { 0f, 0f, 0f, 1f } } },
+                });
+                return s;
+            }
+            var descriptor = TestAvatar.Build(scene).GetComponent<VRCAvatarDescriptor>();
+            var options = new BakeOptions { FrameRate = 30f, End = 1.0, Face = false, Audio = false, Timeline = false, OutputFolder = Folder };
+
+            // Made a day before the session (Orbiters desktop copies the latest one in).
+            var old = Recorded(-86_400_000_000_000L, "head");
+            Assert.AreSame(old.Calibrations.Items[0], old.CalibrationAt(0.0));
+            Assert.IsNull(old.CalibrationAt(0.0, beforeSession: false));
+            var result = PerformanceBaker.Bake(old, descriptor, options);
+            Assert.IsTrue(result.BodyFromVrChat, string.Join("\n", result.Warnings));
+            Assert.IsFalse(result.BodyFromTracking);
+
+            // Made in the session, but unusable: VRChat's poses still move the body.
+            result = PerformanceBaker.Bake(Recorded(0, "left_hand"), descriptor, options);
+            Assert.IsTrue(result.BodyFromVrChat, string.Join("\n", result.Warnings));
+            Assert.IsTrue(result.Warnings.Contains("The calibration has no headset pose."));
+        }
+
+        [Test]
+        public void AnUnfinishedSessionSaysWhatIsMissing()
+        {
+            var session = new PerformanceSession { Name = "Still recording" };
+            session.Changes.Add(ParameterChange.Float(500_000_000, 0, 1f));
+            session.Samples.Add(new TrackingSample { TimeNs = 500_000_000, Device = 0, Flags = TrackingSample.FlagPoseValid, RotationW = 1f });
+            Assert.IsTrue(session.MissingParameterTable && session.MissingDeviceTable);
+            var avatar = TestAvatar.Build(scene);
+            var result = PerformanceBaker.Bake(session, avatar.GetComponent<VRCAvatarDescriptor>(), new BakeOptions { FrameRate = 30f, Audio = false, Timeline = false, OutputFolder = Folder });
+            Assert.IsTrue(result.Warnings.Any(w => w.Contains("parameters.json")), string.Join("\n", result.Warnings));
+            Assert.IsTrue(result.Warnings.Any(w => w.Contains("tracking.json")), string.Join("\n", result.Warnings));
+        }
+
         // ------------------------------------------------------------------------------------------- audio
 
         [Test]
@@ -350,6 +607,73 @@ namespace Orbiters.Mixer.Editor.Performance.Tests
                 Assert.AreEqual(252.5f / 10000f * 32767f, Sample(0), 2f);
                 // At 1.25 s (output 750) the source is exactly at frame 1010.
                 Assert.AreEqual(1010f / 10000f * 32767f, Sample(750), 2f);
+            }
+            finally
+            {
+                Directory.Delete(dir, true);
+            }
+        }
+
+        [Test]
+        public void LongAudioIsStreamedAcrossBlocks()
+        {
+            string dir = Path.Combine(Path.GetTempPath(), "mixer-performance-audio-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(Path.Combine(dir, "audio"));
+            try
+            {
+                // Stereo, more frames than one block: frame n holds (n % 1000) / 1000 on the left and its negative on the right.
+                const int rate = 48000, frames = 150000;
+                using (var w = new BinaryWriter(File.Create(Path.Combine(dir, "audio", "game.wav"))))
+                {
+                    w.Write(WavHeader(rate, 2, frames));
+                    for (int n = 0; n < frames; n++)
+                    {
+                        w.Write((n % 1000) / 1000f);
+                        w.Write(-(n % 1000) / 1000f);
+                    }
+                }
+                var track = new AudioTracks.Track { File = "audio/game.wav", Kind = "game", SampleRate = rate, Channels = 2, Frames = frames, FirstFrameNs = 0 };
+                string output = Path.Combine(dir, "aligned.wav");
+                AudioAlign.Write(track, dir, 0.0, 3.25, output);
+                var bytes = File.ReadAllBytes(output);
+                Assert.AreEqual((int)Math.Ceiling(3.25 * rate) * 2 * 2, BitConverter.ToInt32(bytes, 40));
+                foreach (int n in new[] { 0, 999, 65535, 65536, 65537, 131071, 131072, frames - 2 })
+                {
+                    float want = (n % 1000) / 1000f * 32767f;
+                    Assert.AreEqual(want, BitConverter.ToInt16(bytes, 44 + n * 4), 1.01f, "left " + n);
+                    Assert.AreEqual(-want, BitConverter.ToInt16(bytes, 44 + n * 4 + 2), 1.01f, "right " + n);
+                }
+                Assert.AreEqual(0, BitConverter.ToInt16(bytes, 44 + (frames + 10) * 4), "silence after the track");
+            }
+            finally
+            {
+                Directory.Delete(dir, true);
+            }
+        }
+
+        [Test]
+        public void BrokenWaveChunksAreRefused()
+        {
+            string dir = Path.Combine(Path.GetTempPath(), "mixer-performance-audio-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(Path.Combine(dir, "audio"));
+            try
+            {
+                var track = new AudioTracks.Track { File = "audio/mic.wav", Kind = "mic", SampleRate = 1000, Channels = 1, Frames = 10 };
+                string file = Path.Combine(dir, "audio", "mic.wav"), output = Path.Combine(dir, "aligned.wav");
+                // A chunk claiming 4 GB - 8 (-8 as a signed size: the old reader stood still on it forever).
+                var bytes = new List<byte>();
+                bytes.AddRange(System.Text.Encoding.ASCII.GetBytes("RIFF"));
+                bytes.AddRange(BitConverter.GetBytes(100));
+                bytes.AddRange(System.Text.Encoding.ASCII.GetBytes("WAVEjunk"));
+                bytes.AddRange(BitConverter.GetBytes(0xFFFFFFF8u));
+                bytes.AddRange(new byte[64]);
+                File.WriteAllBytes(file, bytes.ToArray());
+                Assert.Throws<InvalidDataException>(() => AudioAlign.Write(track, dir, 0.0, 0.01, output));
+                // A fmt chunk too short for its fields.
+                var header = WavHeader(1000, 1, 10);
+                BitConverter.GetBytes(2).CopyTo(header, 16);
+                File.WriteAllBytes(file, header.Concat(new byte[40]).ToArray());
+                Assert.Throws<InvalidDataException>(() => AudioAlign.Write(track, dir, 0.0, 0.01, output));
             }
             finally
             {

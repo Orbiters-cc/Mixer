@@ -49,7 +49,8 @@ namespace Orbiters.Mixer.Editor.Performance
             float k = 1f - Mathf.Exp(-dt / (Ease / 3f));
             for (int i = 0; i < Count; i++)
             {
-                float target = i == viseme && viseme > 0 ? 1f : 0f;
+                // sil (0) is a shape too: VRChat raises it in silence.
+                float target = i == viseme ? 1f : 0f;
                 weights[i] += (target - weights[i]) * k;
             }
             open += (Mathf.Clamp01(voice) - open) * k;

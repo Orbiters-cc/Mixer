@@ -2,10 +2,14 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using Orbiters.Contracts;
+using Orbiters.Toolkit.Editor.Storage;
+using Orbiters.Toolkit.Storage;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using VRC.Core;
 using VRC.SDK3.Avatars.Components;
 using VRC.SDKBase;
 using Object = UnityEngine.Object;
@@ -71,7 +75,13 @@ namespace Orbiters.Mixer.Editor.Performance
             result.Frames = frames;
             result.Seconds = (frames - 1) / rate;
 
-            var timeline = ParameterTimeline.Build(session);
+            if (session.MissingParameterTable)
+                result.Warnings.Add("This session has no parameters.json yet (it is still recording, or Orbiters desktop stopped before ending it): the face, gestures, toggles and VRChat's head and hand poses cannot be read.");
+            if (session.MissingDeviceTable)
+                result.Warnings.Add("This session has no tracking.json yet (it is still recording, or Orbiters desktop stopped before ending it): the SteamVR tracking cannot be read.");
+            string blueprint = BlueprintId(avatar);
+            var timeline = ParameterTimeline.Build(session, blueprint);
+            AvatarChanges(timeline, blueprint, avatar.name, result.Warnings);
             var tracking = new TrackingTimeline(session);
             var recorded = new HashSet<string>(timeline.Tracks.Values.Where(t => t.IsAvatarParameter).Select(t => t.Name));
             var scene = EditorSceneManager.NewPreviewScene();
@@ -97,27 +107,27 @@ namespace Orbiters.Mixer.Editor.Performance
                 BodyCalibration calibration = null;
                 BodySolver solver = null;
                 IPoseSource devices = tracking;
-                SkeletonReplay skeleton = options.Body && humanoid && session.HasSkeleton ? new SkeletonReplay(session.Skeleton, animator) : null;
+                SkeletonReplay skeleton = null;
+                if (options.Body && humanoid && session.HasSkeleton)
+                    skeleton = new SkeletonReplay(SkeletonFrames(session.Skeleton, CaptureKit.Identity(avatar), avatar.name, result.Warnings), animator);
                 result.BodyFromSkeleton = skeleton != null;
-                ushort identity = CaptureKit.Identity(avatar);
-                if (skeleton != null && session.Skeleton.All(f => f.Pose.Avatar != identity))
-                    result.Warnings.Add("The capture kit in this session was on another avatar than " + avatar.name + ": its pose may not fit this armature.");
                 if (skeleton == null && options.Body && humanoid && rig.Valid)
                 {
                     Vector3 eye = copy.transform.TransformPoint(descriptor.ViewPosition);
-                    var c = session.HasTracking ? session.CalibrationAt(start) : null;
                     var vrchat = new VrChatPoses(timeline);
+                    bool fromVrChat = vrchat.Has(VrChatPoses.Head);
+                    // A calibration from before the session (Orbiters desktop copies the latest one into every session) may be
+                    // days old, from another play space or other trackers: VRChat's own poses go first then.
+                    var c = session.HasTracking ? session.CalibrationAt(start, beforeSession: !fromVrChat) : null;
                     if (c != null)
-                    {
                         calibration = BodyCalibration.Build(c, tracking.Devices, rig, eye, result.Warnings);
-                    }
-                    else if (vrchat.Has(VrChatPoses.Head))
+                    if (calibration == null && fromVrChat)
                     {
                         calibration = BodyCalibration.FromVrChat(vrchat, rig, eye, start, result.Warnings);
                         devices = vrchat;
                         result.BodyFromVrChat = calibration != null;
                     }
-                    else if (session.HasTracking)
+                    else if (c == null && session.HasTracking)
                     {
                         result.Warnings.Add("No T-pose calibration in this session: the body follows the animation only. Calibrate in Orbiters' SteamVR tab before recording (in VRChat there is no need: it sends its head and hand poses).");
                     }
@@ -147,25 +157,31 @@ namespace Orbiters.Mixer.Editor.Performance
                 }
 
                 var tracks = timeline.Tracks.Values.Where(t => t.IsAvatarParameter && t.Times.Count > 0).ToList();
-                var cursors = new int[tracks.Count];
+                var steps = new ParameterSteps(tracks, tracks.Select(t => stack.TypeOf(t.Name) != AnimatorControllerParameterType.Float).ToArray());
                 var locomotion = new Locomotion();
                 bool moveWithVelocity = options.Locomotion && solver != null && (timeline.Has("VelocityX") || timeline.Has("VelocityZ"));
                 var targets = new Dictionary<BodyTarget, BodySolver.Pose>();
+                // The last pose of each target, held through dropouts and pauses (the first one before it starts).
+                var held = new Dictionary<BodyTarget, BodySolver.Pose>();
+                if (solver != null)
+                    foreach (var pair in calibration.Bindings)
+                        if (devices.TryFirstPose(pair.Value.Device, out var p0, out var r0))
+                            held[pair.Key] = Target(calibration, pair.Value, p0, r0);
+                int headHeld = 0, skeletonHeld = 0;
                 for (int f = 0; f < frames; f++)
                 {
                     double t = start + f / rate;
                     float time = (float)(f / rate);
                     // Every change up to now (at the first frame: the initial values and whatever happened before start).
-                    for (int k = 0; k < tracks.Count; k++)
+                    if (f == 0)
                     {
-                        var track = tracks[k];
-                        int i = cursors[k];
-                        if (i >= track.Times.Count || track.Times[i] > t) continue;
-                        while (i + 1 < track.Times.Count && track.Times[i + 1] <= t) i++;
-                        stack.Set(track.Name, track.Values[i]);
-                        cursors[k] = i + 1;
+                        steps.Latest(t, stack.Set);
+                        stack.Evaluate(0f);
                     }
-                    stack.Evaluate(f == 0 ? 0f : dt);
+                    else
+                    {
+                        steps.Through(t - 1.0 / rate, t, stack.Set, stack.Evaluate);
+                    }
 
                     if (emulateVisemes)
                     {
@@ -175,21 +191,19 @@ namespace Orbiters.Mixer.Editor.Performance
 
                     if (skeleton != null)
                     {
-                        skeleton.Apply(t);
+                        if (!skeleton.Apply(t)) skeletonHeld++;
                     }
                     else if (solver != null)
                     {
                         targets.Clear();
                         foreach (var pair in calibration.Bindings)
                         {
-                            if (!devices.TryPose(pair.Value.Device, t, out var p, out var r))
-                            {
-                                targets[pair.Key] = default;
-                                continue;
-                            }
-                            Vector3 dp = calibration.ToAvatar(p);
-                            Quaternion dr = calibration.ToAvatar(r);
-                            targets[pair.Key] = new BodySolver.Pose { Valid = true, Position = dp + dr * pair.Value.PositionOffset, Rotation = dr * pair.Value.RotationOffset };
+                            if (devices.TryPose(pair.Value.Device, t, out var p, out var r))
+                                held[pair.Key] = Target(calibration, pair.Value, p, r);
+                            else if (pair.Key == BodyTarget.Head)
+                                headHeld++;
+                            // Snapping back to the animation would put the body at the copy's origin.
+                            targets[pair.Key] = held.TryGetValue(pair.Key, out var last) ? last : default;
                         }
                         if (moveWithVelocity && targets.TryGetValue(BodyTarget.Head, out var head) && head.Valid)
                         {
@@ -227,6 +241,11 @@ namespace Orbiters.Mixer.Editor.Performance
                         throw new OperationCanceledException();
                 }
 
+                if (skeletonHeld > 0)
+                    result.Warnings.Add("The capture kit's pose was missing for " + (skeletonHeld / rate).ToString("0.0") + " s of the bake (VRChat's camera did not see the kit, or the session was paused): the body holds its last pose there.");
+                if (headHeld > 0)
+                    result.Warnings.Add("The headset's pose was missing for " + (headHeld / rate).ToString("0.0") + " s of the bake (tracking was lost, or the session was paused): the body holds its last pose there.");
+
                 progress?.Invoke(0.92f, "Writing the clip");
                 var clip = new AnimationClip { name = session.Name + " · " + avatar.name, frameRate = options.FrameRate };
                 result.Keys = curves.WriteTo(clip);
@@ -234,8 +253,10 @@ namespace Orbiters.Mixer.Editor.Performance
                 var settings = AnimationUtility.GetAnimationClipSettings(clip);
                 settings.loopTime = false;
                 AnimationUtility.SetAnimationClipSettings(clip, settings);
-                string folder = EnsureFolder(options.OutputFolder.TrimEnd('/') + "/" + Safe(session.Name));
-                result.ClipPath = AssetDatabase.GenerateUniqueAssetPath(folder + "/" + Safe(avatar.name) + ".anim");
+                string folder = AssetPaths.Normalize(options.OutputFolder) + "/" + SafePaths.FileName(session.Name, "Session");
+                if (!AssetPaths.EnsureFolder(folder)) throw new IOException("Could not create " + folder + ".");
+                result.ClipPath = AssetDatabase.GenerateUniqueAssetPath(folder + "/" + SafePaths.FileName(avatar.name, "Avatar") + ".anim");
+                SafePaths.RequireLength(Path.GetFullPath(result.ClipPath));
                 AssetDatabase.CreateAsset(clip, result.ClipPath);
                 result.Clip = clip;
 
@@ -245,9 +266,10 @@ namespace Orbiters.Mixer.Editor.Performance
                     foreach (var track in session.Audio.Tracks)
                     {
                         string label = track.Kind == "mic" ? "voice" : track.Kind == "game" ? "VRChat sound" : track.Kind;
-                        string path = AssetDatabase.GenerateUniqueAssetPath(folder + "/" + Safe(avatar.name) + " " + label + ".wav");
+                        string path = AssetDatabase.GenerateUniqueAssetPath(folder + "/" + SafePaths.FileName(avatar.name, "Avatar") + " " + label + ".wav");
                         try
                         {
+                            SafePaths.RequireLength(Path.GetFullPath(path));
                             AudioAlign.Write(track, session.Folder, start, result.Seconds + dt, Path.GetFullPath(path));
                             AssetDatabase.ImportAsset(path);
                             result.AudioPaths.Add(path);
@@ -387,23 +409,52 @@ namespace Orbiters.Mixer.Editor.Performance
             return samplers;
         }
 
-        static string Safe(string name)
+        static BodySolver.Pose Target(BodyCalibration calibration, BodyCalibration.Binding binding, Vector3 position, Quaternion rotation)
         {
-            foreach (char c in Path.GetInvalidFileNameChars()) name = name.Replace(c, '_');
-            return name.Trim().TrimEnd('.');
+            Vector3 dp = calibration.ToAvatar(position);
+            Quaternion dr = calibration.ToAvatar(rotation);
+            return new BodySolver.Pose { Valid = true, Position = dp + dr * binding.PositionOffset, Rotation = dr * binding.RotationOffset };
         }
 
-        static string EnsureFolder(string folder)
+        /// <summary>The avatar's blueprint id (what VRChat's <c>/avatar/change</c> names), or null before its first upload.</summary>
+        internal static string BlueprintId(Component avatar)
         {
-            string[] parts = folder.Split('/');
-            string path = parts[0];
-            for (int i = 1; i < parts.Length; i++)
-            {
-                string next = path + "/" + parts[i];
-                if (!AssetDatabase.IsValidFolder(next)) AssetDatabase.CreateFolder(path, parts[i]);
-                path = next;
-            }
-            return path;
+            var pipeline = avatar.GetComponent<PipelineManager>();
+            return pipeline != null && !string.IsNullOrWhiteSpace(pipeline.blueprintId) ? pipeline.blueprintId.Trim() : null;
         }
+
+        /// <summary>Says when the session changed avatars, and whether only this avatar's part is baked.</summary>
+        internal static void AvatarChanges(ParameterTimeline timeline, string blueprint, string avatarName, List<string> warnings)
+        {
+            var changes = timeline.Avatars.OrderBy(a => a.time).ToList();
+            if (changes.Select(a => a.id).Distinct().Count() < 2) return;
+            if (!string.IsNullOrEmpty(blueprint) && changes.Any(a => a.id == blueprint))
+            {
+                warnings.Add("Avatars changed during the session: only what was recorded while " + avatarName + " was worn drives it, its other parameters hold their values meanwhile.");
+                return;
+            }
+            var other = changes.Skip(1).FirstOrDefault(a => a.id != changes[0].id);
+            string why = string.IsNullOrEmpty(blueprint) ? " " + avatarName + " has no blueprint id yet (it was never uploaded), so Mixer cannot tell which part is its own." : "";
+            warnings.Add("The avatar changed at " + Clock(other.time) + " (to " + other.id + "): the parameters after that belong to another avatar." + why);
+        }
+
+        /// <summary>
+        /// The skeleton frames to replay: the capture kit's on this avatar (<paramref name="identity"/>) when the session
+        /// has some, leaving out another avatar's; all of them, with a warning, when none are this avatar's.
+        /// </summary>
+        internal static List<SkeletonFrame> SkeletonFrames(List<SkeletonFrame> frames, ushort identity, string avatarName, List<string> warnings)
+        {
+            bool ours = frames.Any(f => f.Pose.Avatar == identity), others = frames.Any(f => f.Pose.Avatar != identity);
+            if (!ours)
+            {
+                warnings.Add("The capture kit in this session was on another avatar than " + avatarName + ": its pose may not fit this armature.");
+                return frames;
+            }
+            if (!others) return frames;
+            warnings.Add("The capture kit was on another avatar for part of the session: those frames are left out, and the body holds its pose there.");
+            return frames.Where(f => f.Pose.Avatar == identity).ToList();
+        }
+
+        static string Clock(double seconds) => (int)(seconds / 60) + ":" + ((int)seconds % 60).ToString("00");
     }
 }

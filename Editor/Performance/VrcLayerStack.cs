@@ -325,8 +325,7 @@ namespace Orbiters.Mixer.Editor.Performance
                         Set(p.name, Get(p.name) + p.value);
                         break;
                     case VRC_AvatarParameterDriver.ChangeType.Random:
-                        if (random.NextDouble() <= p.chance || p.chance <= 0f)
-                            Set(p.name, p.valueMin + (float)random.NextDouble() * (p.valueMax - p.valueMin));
+                        Set(p.name, RandomValue(p));
                         break;
                     case VRC_AvatarParameterDriver.ChangeType.Copy:
                         float v = Get(p.source);
@@ -334,6 +333,43 @@ namespace Orbiters.Mixer.Editor.Performance
                         Set(p.name, v);
                         break;
                 }
+            }
+        }
+
+        /// <summary>The type the layers give a parameter (the first that has it); Float when none has it.</summary>
+        internal AnimatorControllerParameterType TypeOf(string name)
+        {
+            foreach (var layer in layers)
+                if (layer.Parameters.TryGetValue(name, out var type))
+                    return type;
+            return AnimatorControllerParameterType.Float;
+        }
+
+        /// <summary>
+        /// A Random driver's value the way VRChat picks it for the parameter's type: a bool (or trigger) is on with the
+        /// driver's chance and off otherwise, an int is a whole number from min to max (both included; with Prevent
+        /// Repeats never the current one), a float anything between min and max.
+        /// </summary>
+        internal float RandomValue(VRC_AvatarParameterDriver.Parameter p)
+        {
+            switch (TypeOf(p.name))
+            {
+                case AnimatorControllerParameterType.Bool:
+                case AnimatorControllerParameterType.Trigger:
+                    return random.NextDouble() < p.chance ? 1f : 0f;
+                case AnimatorControllerParameterType.Int:
+                    int min = (int)p.valueMin, max = (int)p.valueMax;
+                    if (max < min) (min, max) = (max, min);
+                    int current = Mathf.RoundToInt(Get(p.name));
+                    if (p.preventRepeats && max > min && current >= min && current <= max)
+                    {
+                        // One of the others, all equally likely.
+                        int other = random.Next(min, max);
+                        return other >= current ? other + 1 : other;
+                    }
+                    return random.Next(min, max + 1);
+                default:
+                    return p.valueMin + (float)random.NextDouble() * (p.valueMax - p.valueMin);
             }
         }
 

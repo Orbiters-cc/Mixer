@@ -333,7 +333,7 @@ namespace Orbiters.Mixer.Editor.Performance
             else if (!human) kitInfo.text = "The kit draws a humanoid's bones: this avatar is not humanoid.";
             else if (!kit.VrcFury) kitInfo.text = "The kit's Action Menu toggles are merged by VRCFury: add VRCFury to the project.";
             else if (!kit.Installed) kitInfo.text = "Not installed. With it, VRChat's own pose of your body goes into the recording, exactly as others saw it.";
-            else if (kit.Stale) kitInfo.text = "The armature changed since the kit was made: install it again, then upload.";
+            else if (kit.Stale) kitInfo.text = "The armature or the avatar's name changed since the kit was made: install it again, then upload.";
             else
                 kitInfo.text = "Installed · " + kit.Bones + " bones · drawn " + (kit.Reach == CaptureKit.Reach.Everywhere ? "everywhere" : "near you") +
                                ". In VRChat, Action Menu › Orbiters › Record shows it and starts Orbiters desktop's recording.";
@@ -358,8 +358,16 @@ namespace Orbiters.Mixer.Editor.Performance
         void RemoveKit()
         {
             if (avatar == null) return;
-            CaptureKit.Remove(avatar);
-            toasts.Show("Capture kit removed from " + avatar.name + ".");
+            try
+            {
+                CaptureKit.Remove(avatar);
+                toasts.Show("Capture kit removed from " + avatar.name + ".");
+            }
+            catch (Exception e)
+            {
+                Debug.LogException(e);
+                toasts.Show("The capture kit could not be removed: " + e.Message, true);
+            }
             Refresh();
         }
 

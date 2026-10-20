@@ -31,6 +31,15 @@ namespace Orbiters.Mixer.Editor.Performance
         public bool HasCalibration => Calibrations != null && Calibrations.Items.Count > 0;
         public bool HasSkeleton => Skeleton.Count > 0;
 
+        /// <summary>
+        /// Values were recorded but the table that names them (<c>parameters.json</c>) is missing: Orbiters desktop writes
+        /// it when the session ends, so the session is still recording or Orbiters desktop stopped first.
+        /// </summary>
+        public bool MissingParameterTable => Parameters == null && Changes.Count > 0;
+
+        /// <summary>Poses were recorded but <c>tracking.json</c>, the devices they belong to, is missing (written at the end too).</summary>
+        public bool MissingDeviceTable => Devices == null && Samples.Count > 0;
+
         /// <summary>Seconds covered by the streams (the manifest's duration when it is longer).</summary>
         public double Duration
         {
@@ -74,15 +83,19 @@ namespace Orbiters.Mixer.Editor.Performance
             return s;
         }
 
-        /// <summary>The calibration to use: the latest one made before <paramref name="seconds"/>, else the first one.</summary>
-        public Calibrations.Calibration CalibrationAt(double seconds)
+        /// <summary>
+        /// The calibration to use: the latest one made before <paramref name="seconds"/>, else the first one. Without
+        /// <paramref name="beforeSession"/>, calibrations made before the session started (the latest one is copied into
+        /// every session) are left out.
+        /// </summary>
+        public Calibrations.Calibration CalibrationAt(double seconds, bool beforeSession = true)
         {
             if (!HasCalibration) return null;
             Calibrations.Calibration best = null;
             foreach (var c in Calibrations.Items)
-                if (c.TimeNs * 1e-9 <= seconds && (best == null || c.TimeNs > best.TimeNs))
+                if ((beforeSession || c.TimeNs >= 0) && c.TimeNs * 1e-9 <= seconds && (best == null || c.TimeNs > best.TimeNs))
                     best = c;
-            return best ?? Calibrations.Items.OrderBy(c => c.TimeNs).First();
+            return best ?? Calibrations.Items.Where(c => beforeSession || c.TimeNs >= 0).OrderBy(c => c.TimeNs).FirstOrDefault();
         }
 
         /// <summary>Sessions with performance streams under a library folder, newest first.</summary>

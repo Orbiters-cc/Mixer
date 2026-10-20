@@ -59,7 +59,8 @@ namespace Orbiters.Mixer.Editor.Performance
             public bool Installed;
             public int Bones;
             public Reach Reach;
-            /// <summary>The armature has other humanoid bones than when the kit was made: install it again.</summary>
+            /// <summary>The armature has other humanoid bones than when the kit was made, or the avatar another name (the
+            /// identity the kit records): install it again.</summary>
             public bool Stale;
             public bool VrcFury;
         }
@@ -94,8 +95,10 @@ namespace Orbiters.Mixer.Editor.Performance
             float scale = hips != null ? Mathf.Abs(hips.lossyScale.x) : 1f;
             state.Reach = smr.localBounds.size.x * scale > NearSize * 2f ? Reach.Everywhere : Reach.NearYou;
             var animator = avatar.GetComponent<Animator>();
-            state.Stale = animator == null || !animator.isHuman || !smr.sharedMaterial.HasProperty(BoneMaskId) ||
-                          smr.sharedMaterial.GetVector(BoneMaskId) != MaskWords(Mask(animator)) || smr.bones.Any(b => b == null);
+            var material = smr.sharedMaterial;
+            state.Stale = animator == null || !animator.isHuman || !material.HasProperty(BoneMaskId) ||
+                          material.GetVector(BoneMaskId) != MaskWords(Mask(animator)) || smr.bones.Any(b => b == null) ||
+                          !material.HasProperty(AvatarId) || Mathf.RoundToInt(material.GetFloat(AvatarId)) != Identity(avatar);
             return state;
         }
 
@@ -124,6 +127,7 @@ namespace Orbiters.Mixer.Editor.Performance
         /// <summary>Takes the kit off <paramref name="avatar"/>, with Undo. Its assets stay.</summary>
         public static void Remove(Component avatar)
         {
+            RequireSceneObject(avatar);
             var kit = Find(avatar);
             if (kit != null) Undo.DestroyObjectImmediate(kit.gameObject);
         }
@@ -135,6 +139,7 @@ namespace Orbiters.Mixer.Editor.Performance
         internal static SkinnedMeshRenderer Build(VRCAvatarDescriptor avatar, Reach reach, string root)
         {
             if (avatar == null) throw new ArgumentNullException(nameof(avatar));
+            RequireSceneObject(avatar);
             var animator = avatar.GetComponent<Animator>();
             if (animator == null || animator.avatar == null || !animator.isHuman)
                 throw new InvalidOperationException(avatar.name + " is not humanoid: the capture kit draws a humanoid's bones.");
@@ -179,6 +184,13 @@ namespace Orbiters.Mixer.Editor.Performance
             smr.motionVectorGenerationMode = MotionVectorGenerationMode.ForceNoMotion;
             smr.enabled = false;
             return smr;
+        }
+
+        /// <summary>The kit goes on the avatar in a scene: a prefab asset's objects cannot take it (nor lose it) from here.</summary>
+        static void RequireSceneObject(Component avatar)
+        {
+            if (avatar != null && (EditorUtility.IsPersistent(avatar) || !avatar.gameObject.scene.IsValid()))
+                throw new InvalidOperationException(avatar.name + " is a prefab asset: pick the avatar in the scene (or open the prefab) to change its capture kit.");
         }
 
         /// <summary>
@@ -243,8 +255,9 @@ namespace Orbiters.Mixer.Editor.Performance
         internal static Vector4 MaskWords(ulong mask) =>
             new Vector4((mask >> 48) & 0xFFFF, (mask >> 32) & 0xFFFF, (mask >> 16) & 0xFFFF, mask & 0xFFFF);
 
-        // A kit made again keeps its assets (the renderer an Undo brings back still finds them): new contents, same file.
-        // Named after the file, as Unity expects of a main asset.
+        // A kit made again keeps its assets (the renderer an Undo brings back still finds them): new contents, same file,
+        // with Undo, so that renderer gets the contents it was made for back too. Named after the file, as Unity expects
+        // of a main asset.
         static T SaveInPlace<T>(T asset, string path) where T : Object
         {
             asset.name = System.IO.Path.GetFileNameWithoutExtension(path);
@@ -254,6 +267,7 @@ namespace Orbiters.Mixer.Editor.Performance
                 AssetDatabase.CreateAsset(asset, path);
                 return asset;
             }
+            Undo.RegisterCompleteObjectUndo(existing, "Install the capture kit");
             EditorUtility.CopySerialized(asset, existing);
             existing.name = asset.name;
             Object.DestroyImmediate(asset);
@@ -317,7 +331,8 @@ namespace Orbiters.Mixer.Editor.Performance
             string menuPath = root + "/Capture kit menu.asset", subPath = root + "/Capture kit Orbiters menu.asset", parametersPath = root + "/Capture kit parameters.asset";
             var menu = AssetDatabase.LoadAssetAtPath<VRCExpressionsMenu>(menuPath);
             var parameters = AssetDatabase.LoadAssetAtPath<VRCExpressionParameters>(parametersPath);
-            if (menu != null && parameters != null) return (menu, parameters);
+            // A part deleted or edited away (the Orbiters submenu, a toggle, a parameter) is made again, in place.
+            if (menu != null && parameters != null && Complete(menu, parameters)) return (menu, parameters);
             if (!AssetPaths.EnsureFolder(root)) throw new InvalidOperationException("Could not create " + root + ".");
             parameters = ScriptableObject.CreateInstance<VRCExpressionParameters>();
             parameters.parameters = new[]
@@ -342,6 +357,15 @@ namespace Orbiters.Mixer.Editor.Performance
             };
             menu = SaveInPlace(menu, menuPath);
             return (menu, parameters);
+        }
+
+        /// <summary>Whether the shared menu still opens the Orbiters submenu with both toggles, and the parameters hold both.</summary>
+        internal static bool Complete(VRCExpressionsMenu menu, VRCExpressionParameters parameters)
+        {
+            var sub = menu.controls?.FirstOrDefault(c => c != null && c.type == VRCExpressionsMenu.Control.ControlType.SubMenu)?.subMenu;
+            bool Declared(string name) => parameters.parameters != null && parameters.parameters.Any(p => p != null && p.name == name);
+            bool Toggled(string name) => sub.controls != null && sub.controls.Any(c => c != null && c.parameter != null && c.parameter.name == name);
+            return sub != null && Declared(RecordParameter) && Declared(DepthParameter) && Toggled(RecordParameter) && Toggled(DepthParameter);
         }
 
         // Orbiters desktop listens for these names: VRCFury must not give them a namespace of their own.

@@ -312,8 +312,8 @@ namespace Orbiters.Mixer.Editor.Performance
     /// Poses the avatar copy from the device targets, on top of the animated pose (fingers and anything untracked keep
     /// the animation): hips from a hip tracker, else under the head with the body turning after the head like VRChat's
     /// three-point IK; the spine bends so the head reaches the headset; two-bone IK for arms and legs (elbow and knee
-    /// trackers as hints); without foot trackers the feet stay where the animation put them. Parts VRChat's Tracking
-    /// Control handed to the animation are left alone.
+    /// trackers as hints); without foot trackers the feet go where the animation put them, carried along with the hips.
+    /// Parts VRChat's Tracking Control handed to the animation are left alone.
     /// </summary>
     internal sealed class BodySolver
     {
@@ -345,6 +345,8 @@ namespace Orbiters.Mixer.Editor.Performance
             var animRightKnee = rig.RightLowerLeg.position;
             var animLeftElbow = rig.LeftLowerArm.position;
             var animRightElbow = rig.RightLowerArm.position;
+            var animHips = rig.Hips.position;
+            float animHipsYaw = YawOf(rig.Hips.rotation);
 
             // Hips.
             if (Has(BodyTarget.Hips) && tracking.Hip)
@@ -368,6 +370,24 @@ namespace Orbiters.Mixer.Editor.Performance
                 rig.Hips.position = head.Position + yaw * hipsBelowHead;
             }
             started = true;
+
+            // The animation plays in place at the copy's origin, while VRChat carries the whole avatar under the head:
+            // what the animation put around the hips goes (and turns) with them. Feet and knees stay at the animation's
+            // height above the floor; the elbows hang from the shoulders, so they move with the hips in full.
+            Vector3 moved = rig.Hips.position - animHips;
+            var turn = Quaternion.Euler(0f, Mathf.DeltaAngle(animHipsYaw, YawOf(rig.Hips.rotation)), 0f);
+            Vector3 Carry(Vector3 p, bool onFloor)
+            {
+                Vector3 c = animHips + turn * (p - animHips) + moved;
+                if (onFloor) c.y = p.y;
+                return c;
+            }
+            animLeftFoot = (Carry(animLeftFoot.position, true), turn * animLeftFoot.rotation);
+            animRightFoot = (Carry(animRightFoot.position, true), turn * animRightFoot.rotation);
+            animLeftKnee = Carry(animLeftKnee, true);
+            animRightKnee = Carry(animRightKnee, true);
+            animLeftElbow = Carry(animLeftElbow, false);
+            animRightElbow = Carry(animRightElbow, false);
 
             // Chest from a tracker, then the spine bends so the head reaches the headset.
             if (Has(BodyTarget.Chest) && tracking.Hip)
