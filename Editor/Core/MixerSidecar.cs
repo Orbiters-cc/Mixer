@@ -68,6 +68,8 @@ namespace Orbiters.Mixer.Editor
                     for (int i = 0; i < gd.indices.Count && i < gd.weights.Count; i++) if (gd.indices[i] >= 0 && gd.indices[i] < doc.VertexCount) g.Weights[gd.indices[i]] = gd.weights[i];
                     doc.Groups.Add(g);
                 }
+                // What a commit compares the groups with: loaded groups alone are no edit.
+                doc.MarkGroupsLoaded();
                 return true;
             }
             catch (Exception e)

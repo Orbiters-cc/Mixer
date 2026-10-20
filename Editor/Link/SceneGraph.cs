@@ -15,7 +15,16 @@ namespace Orbiters.Mixer.Editor
         public string sceneGuid;
         public List<SceneNode> nodes = new List<SceneNode>();
         public List<SceneMaterial> materials = new List<SceneMaterial>();
+        /// <summary>
+        /// Renderers left out of the graph (kept out of Blender, inactive or EditorOnly when those are excluded) that a
+        /// tool marked with a target FBX: the Mixer extension's Export for MCB lists them as missing instead of writing an
+        /// FBX that silently lacks them.
+        /// </summary>
+        public List<SceneKeptOut> keptOut = new List<SceneKeptOut>();
     }
+
+    [Serializable]
+    internal sealed class SceneKeptOut { public string id; public string name; public string targetFbx; }
 
     [Serializable]
     internal sealed class SceneNode
@@ -70,9 +79,15 @@ namespace Orbiters.Mixer.Editor
         public List<SceneNodeName> renamed = new List<SceneNodeName>();
         public List<SceneNodeParent> reparented = new List<SceneNodeParent>();
         public List<string> removed = new List<string>();
-        /// <summary>Nodes added or changed in kind (resent whole).</summary>
+        /// <summary>Nodes added or changed in kind or mesh (resent whole, their meshes too).</summary>
         public List<SceneNode> added = new List<SceneNode>();
-        public bool Empty => transforms.Count == 0 && active.Count == 0 && renamed.Count == 0 && reparented.Count == 0 && removed.Count == 0 && added.Count == 0;
+        /// <summary>Nodes whose other properties changed (materials, target FBX, bones, root bone, light, camera): resent whole, their meshes not.</summary>
+        public List<SceneNode> changed = new List<SceneNode>();
+        /// <summary>The materials the added and changed nodes use.</summary>
+        public List<SceneMaterial> materials = new List<SceneMaterial>();
+        /// <summary>The graph's kept-out renderers when they changed, else null.</summary>
+        public List<SceneKeptOut> keptOut;
+        public bool Empty => transforms.Count == 0 && active.Count == 0 && renamed.Count == 0 && reparented.Count == 0 && removed.Count == 0 && added.Count == 0 && changed.Count == 0 && keptOut == null;
     }
 
     [Serializable] internal sealed class SceneNodeTransform { public string id; public float[] p; public float[] r; public float[] s; }
@@ -114,7 +129,19 @@ namespace Orbiters.Mixer.Editor
             var materials = new Dictionary<int, SceneMaterial>();
             var boneIds = new HashSet<Transform>();
             var transforms = new List<Transform>();
-            foreach (var root in scene.GetRootGameObjects()) Collect(root.transform, excluded, transforms, settings);
+            var left = new List<Transform>();
+            foreach (var root in scene.GetRootGameObjects()) Collect(root.transform, excluded, transforms, left, settings);
+            var resolver = MixerLink.TargetFbxResolver;
+            if (resolver != null)
+            {
+                foreach (var t in left)
+                    foreach (var r in t.GetComponentsInChildren<Renderer>(true))
+                    {
+                        if (!(r is SkinnedMeshRenderer) && !(r is MeshRenderer)) continue;
+                        string target = resolver(r);
+                        if (!string.IsNullOrEmpty(target)) graph.keptOut.Add(new SceneKeptOut { id = IdOf(r.gameObject), name = r.name, targetFbx = target });
+                    }
+            }
             // Bones first: every transform a skinned renderer uses, so Blender builds armatures for them.
             foreach (var t in transforms)
             {
@@ -169,17 +196,22 @@ namespace Orbiters.Mixer.Editor
             return graph;
         }
 
-        private static void Collect(Transform t, HashSet<string> excluded, List<Transform> into, MixerLinkSettings settings)
+        // Into: what goes to Blender; left: the roots of what the user's exclusions keep out (Mixer's own helpers are neither).
+        private static void Collect(Transform t, HashSet<string> excluded, List<Transform> into, List<Transform> left, MixerLinkSettings settings)
         {
             if (t == null) return;
             string name = t.name;
             foreach (string prefix in HelperPrefixes) if (name.StartsWith(prefix, StringComparison.Ordinal)) return;
             if (t.gameObject.hideFlags != HideFlags.None && (t.gameObject.hideFlags & HideFlags.HideInHierarchy) != 0) return;
-            if (excluded.Contains(IdOf(t.gameObject))) return;
-            if (settings != null && settings.excludeInactive && !t.gameObject.activeInHierarchy) return;
-            if (settings != null && settings.excludeEditorOnly && t.CompareTag("EditorOnly")) return;
+            if (excluded.Contains(IdOf(t.gameObject)) ||
+                (settings != null && settings.excludeInactive && !t.gameObject.activeInHierarchy) ||
+                (settings != null && settings.excludeEditorOnly && t.CompareTag("EditorOnly")))
+            {
+                left.Add(t);
+                return;
+            }
             into.Add(t);
-            for (int i = 0; i < t.childCount; i++) Collect(t.GetChild(i), excluded, into, settings);
+            for (int i = 0; i < t.childCount; i++) Collect(t.GetChild(i), excluded, into, left, settings);
         }
 
         private static string[] MaterialIds(Material[] sharedMaterials, Dictionary<int, SceneMaterial> materials)
@@ -234,19 +266,55 @@ namespace Orbiters.Mixer.Editor
         public static SceneDelta Diff(SceneGraph before, SceneGraph after)
         {
             var delta = new SceneDelta();
-            var old = before.nodes.ToDictionary(n => n.id);
+            var old = new Dictionary<string, SceneNode>();
+            foreach (var n in before.nodes) old[n.id] = n;
             var seen = new HashSet<string>();
+            var usedMaterials = new HashSet<string>();
             foreach (var node in after.nodes)
             {
                 seen.Add(node.id);
-                if (!old.TryGetValue(node.id, out var was) || was.type != node.type || was.meshId != node.meshId || !SameStrings(was.materials, node.materials)) { delta.added.Add(node); continue; }
+                if (!old.TryGetValue(node.id, out var was) || was.type != node.type || was.meshId != node.meshId || was.vertexCount != node.vertexCount)
+                {
+                    delta.added.Add(node);
+                    if (node.materials != null) usedMaterials.UnionWith(node.materials);
+                    continue;
+                }
+                if (!SameStrings(was.materials, node.materials) || was.targetFbx != node.targetFbx || !SameStrings(was.bones, node.bones) || was.rootBone != node.rootBone
+                    || !SameLight(was.light, node.light) || !SameCamera(was.camera, node.camera))
+                {
+                    delta.changed.Add(node);
+                    if (node.materials != null) usedMaterials.UnionWith(node.materials);
+                }
                 if (was.name != node.name) delta.renamed.Add(new SceneNodeName { id = node.id, name = node.name });
                 if (was.parent != node.parent) delta.reparented.Add(new SceneNodeParent { id = node.id, parent = node.parent });
                 if (was.active != node.active) delta.active.Add(new SceneNodeFlag { id = node.id, active = node.active });
                 if (!Same(was.p, node.p) || !Same(was.r, node.r) || !Same(was.s, node.s)) delta.transforms.Add(new SceneNodeTransform { id = node.id, p = node.p, r = node.r, s = node.s });
             }
             foreach (var id in old.Keys) if (!seen.Contains(id)) delta.removed.Add(id);
+            foreach (var material in after.materials) if (material != null && usedMaterials.Contains(material.id)) delta.materials.Add(material);
+            if (!SameKeptOut(before.keptOut, after.keptOut)) delta.keptOut = after.keptOut ?? new List<SceneKeptOut>();
             return delta;
+        }
+
+        private static bool SameLight(SceneLight a, SceneLight b)
+        {
+            if (a == null || b == null) return a == b;
+            return a.type == b.type && Same(a.color, b.color) && Mathf.Abs(a.intensity - b.intensity) <= 1e-6f && Mathf.Abs(a.range - b.range) <= 1e-6f && Mathf.Abs(a.spot - b.spot) <= 1e-6f;
+        }
+
+        private static bool SameCamera(SceneCamera a, SceneCamera b)
+        {
+            if (a == null || b == null) return a == b;
+            return Mathf.Abs(a.fov - b.fov) <= 1e-6f && Mathf.Abs(a.near - b.near) <= 1e-6f && Mathf.Abs(a.far - b.far) <= 1e-6f && a.ortho == b.ortho && Mathf.Abs(a.size - b.size) <= 1e-6f;
+        }
+
+        private static bool SameKeptOut(List<SceneKeptOut> a, List<SceneKeptOut> b)
+        {
+            int na = a?.Count ?? 0, nb = b?.Count ?? 0;
+            if (na != nb) return false;
+            for (int i = 0; i < na; i++)
+                if (a[i].id != b[i].id || a[i].name != b[i].name || a[i].targetFbx != b[i].targetFbx) return false;
+            return true;
         }
 
         private static bool Same(float[] a, float[] b)

@@ -87,14 +87,32 @@ namespace Orbiters.Mixer.Editor
             return null;
         }
 
-        /// <summary>Saves the renderer's Mixer edits as a native mesh asset shown on the renderer (one Undo step). Null when nothing is being edited.</summary>
+        /// <summary>
+        /// Saves the renderer's Mixer edits as a native mesh asset shown on the renderer (one Undo step) and returns it.
+        /// Null when nothing is being edited, when nothing changed (the session is closed then, the renderer keeps its
+        /// mesh) and while Blender edits the mesh (leave the edit mode there first).
+        /// </summary>
         public static Mesh Commit(Renderer renderer)
         {
             var target = renderer != null ? MixerSession.TargetOf(renderer) : null;
-            return target != null && target.Alive ? MixerSession.Commit(target) : null;
+            if (target == null || !target.Alive) return null;
+            if (MixerLinkService.IsBlenderOwned(target))
+            {
+                MixerSession.Say(target.Name + " is being edited in Blender: leave its edit mode there first, then commit.", true);
+                return null;
+            }
+            if (!target.Document.Changed)
+            {
+                MixerSession.Revert(target);
+                return null;
+            }
+            return MixerSession.Commit(target);
         }
 
-        /// <summary>Puts the renderer's original mesh back and closes its Mixer session. False when nothing was being edited.</summary>
+        /// <summary>
+        /// Puts the renderer's original mesh back and closes its Mixer session. False when nothing was being edited. While
+        /// Blender edits the mesh, Blender is told: what it edits in that mode is not taken any more, and it gets the mesh again.
+        /// </summary>
         public static bool Revert(Renderer renderer)
         {
             var target = renderer != null ? MixerSession.TargetOf(renderer) : null;
@@ -120,7 +138,9 @@ namespace Orbiters.Mixer.Editor
         /// <summary>
         /// Names the project file (a Unity path, e.g. a custom base's target FBX) a renderer's mesh stands for, for the
         /// tool that sets it: Blender gets it as the node's targetFbx, and the Mixer extension's Export for MCB groups
-        /// meshes by it. Null means unknown. Setting it sends the scene to Blender again.
+        /// meshes by it. Null means unknown. Setting it sends what changed to Blender. The link asks it again whenever the
+        /// scene changes (and once more 2.5 s later, for resolvers that answer from a cache); a tool whose answers change
+        /// otherwise calls <see cref="RefreshScene"/>.
         /// </summary>
         public static Func<Renderer, string> TargetFbxResolver
         {
@@ -130,10 +150,10 @@ namespace Orbiters.Mixer.Editor
 
         private static Func<Renderer, string> targetFbxResolver;
 
-        /// <summary>Sends the scene graph to Blender again when it is connected (for a tool whose answers changed).</summary>
+        /// <summary>Sends Blender what changed in the scene graph when it is connected (for a tool whose answers changed): the nodes, not their meshes.</summary>
         public static void RefreshScene()
         {
-            if (Connected) MixerLinkService.SendGraph(force: true);
+            if (Connected) MixerLinkService.SendGraph(force: false);
         }
 
         /// <summary>A status Blender sent, as (id, message): the Mixer extension's Export for MCB reports "mcb.export" with the manifest's path.</summary>

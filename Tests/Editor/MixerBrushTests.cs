@@ -190,5 +190,14 @@ namespace Orbiters.Mixer.Editor.Tests
             Assert.That(asset.blendShapeCount, Is.EqualTo(1));
             Assert.That(asset.GetBlendShapeName(0), Is.EqualTo("Bump"));
         }
+
+        [Test]
+        public void ABrushNamedByACallerIsThatBrushOrNone()
+        {
+            Assert.That(Brushes.TryNamed("smooth"), Is.SameAs(Brushes.Named("Smooth")), "any case");
+            Assert.That(Brushes.TryNamed(" Clay "), Is.SameAs(Brushes.Named("Clay")));
+            Assert.That(Brushes.TryNamed("Smoosh"), Is.Null, "an unknown name is no brush (the MCP tool refuses it), never Grab");
+            Assert.That(Brushes.Named("Smoosh"), Is.SameAs(Brushes.All[0]), "a saved preference naming an old brush falls back to Grab");
+        }
     }
 }

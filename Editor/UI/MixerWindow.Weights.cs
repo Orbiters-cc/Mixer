@@ -39,7 +39,15 @@ namespace Orbiters.Mixer.Editor
             boneList.selectionType = SelectionType.Single;
             boneList.selectionChanged += items =>
             {
-                if (items.FirstOrDefault() is int bone && bone >= 0) { MixerSceneTool.SetChannel(WeightChannel.OfBone(bone)); WakeGlow(); }
+                var target = bonesOf;
+                if (!(items.FirstOrDefault() is int bone) || bone < 0 || target == null || !target.Alive || !MixerSession.Targets.Contains(target)) return;
+                // The list shows this mesh's bones: the index is one of its own, so the mesh becomes the painted one first.
+                MixerSceneTool.FocusTarget = target;
+                // In Weight Paint the list picks the bone as the Scene view and the hierarchy do: sub-selected, with its handle.
+                var skinned = target.Skinned;
+                var picked = skinned != null && bone < skinned.bones.Length ? skinned.bones[bone] : null;
+                if (!BoneSubSelection.Pick(picked)) MixerSceneTool.SetChannel(target, WeightChannel.OfBone(bone));
+                WakeGlow();
             };
             boneBody.Add(boneList);
             hoverCaption = MixerUi.Text("", "mx-caption");
@@ -80,7 +88,7 @@ namespace Orbiters.Mixer.Editor
             brushBody.Add(MixerUi.Setting("Strength", "How fast a stroke gets there", Pair(weightStrengthSlider, weightStrengthValue)));
             normalizeSwitch = new ToggleSwitch(MixerSceneTool.AutoNormalize, on => MixerSceneTool.AutoNormalize = on);
             brushBody.Add(MixerUi.Setting("Auto normalize", "Keep each vertex's bone weights summing to 1: the other bones give way", normalizeSwitch));
-            brushBody.Add(MixerUi.Text("Drag on the mesh in the Scene view; the overlay colours the painted bone from blue (0) to red (1). Click a bone in the Scene view or the list to paint it; with symmetry the mirror bone takes the same on the other side.", "mx-caption"));
+            brushBody.Add(MixerUi.Text("Drag on the mesh in the Scene view; the overlay colours the painted bone from blue (0) to red (1). Click a bone in the Scene view, the Mixer Hierarchy or the list to paint it: the mesh stays selected and the bone gets a handle to pose it (a click on empty space drops it). With symmetry the mirror bone takes the same on the other side.", "mx-caption"));
 
             var groups = MixerUi.Card("VERTEX GROUPS", out var groupBody);
             page.Add(groups);
@@ -120,7 +128,8 @@ namespace Orbiters.Mixer.Editor
             if (target == null || target.Skinned == null || bone < 0 || bone >= target.Skinned.bones.Length) { name.text = ""; count.text = ""; return; }
             var t = target.Skinned.bones[bone];
             name.text = t != null ? t.name : "(missing bone " + bone + ")";
-            bool active = MixerSceneTool.Channel.Bone == bone && !MixerSceneTool.Channel.IsGroup;
+            var on = MixerSceneTool.ChannelOn(target);
+            bool active = !on.IsGroup && on.Bone == bone;
             row.EnableInClassList("mx-bone--on", active);
             dot.EnableInClassList("mx-dot--green", active);
             count.text = "";
@@ -135,8 +144,7 @@ namespace Orbiters.Mixer.Editor
             var group = MixerSession.AddGroup(target, name);
             if (group == null) return;
             newGroupField.value = string.Empty;
-            MixerSceneTool.FocusTarget = target;
-            MixerSceneTool.SetChannel(WeightChannel.OfGroup(name));
+            MixerSceneTool.SetChannel(target, WeightChannel.OfGroup(name));
             toasts.Show("Group " + name + ": paint it with the weight brushes.");
         }
 
@@ -161,7 +169,8 @@ namespace Orbiters.Mixer.Editor
             }
             boneList.itemsSource = shownBones;
             boneList.Rebuild();
-            int selected = shownBones.IndexOf(MixerSceneTool.Channel.IsGroup ? -1 : MixerSceneTool.Channel.Bone);
+            var channel = MixerSceneTool.ChannelOn(target);
+            int selected = shownBones.IndexOf(channel.IsGroup ? -1 : channel.Bone);
             boneList.SetSelectionWithoutNotify(selected >= 0 ? new[] { selected } : new int[0]);
             if (selected >= 0) boneList.ScrollToItem(selected);
         }
@@ -176,12 +185,12 @@ namespace Orbiters.Mixer.Editor
             if (Math.Abs(weightStrengthSlider.value - MixerSceneTool.Strength) > 1e-4f) weightStrengthSlider.SetValueWithoutNotify(MixerSceneTool.Strength);
             weightStrengthValue.text = MixerUi.Percent(MixerSceneTool.Strength);
             normalizeSwitch.SetValueWithoutNotify(MixerSceneTool.AutoNormalize);
-            var channel = MixerSceneTool.Channel;
+            var channel = MixerSceneTool.ChannelOn(target);
             if (target == null) boneCaption.text = "Edit a skinned mesh to paint its bone weights.";
             else if (target.Skinned == null || !target.Document.HasSkin) boneCaption.text = target.Name + " has no bones: paint vertex groups below.";
             else if (channel.IsGroup) boneCaption.text = "Painting the vertex group " + channel.Group + ". Pick a bone to paint its weights instead.";
             else if (channel.Bone >= 0) boneCaption.text = "Painting " + WeightStroke.BoneName(target, channel.Bone) + (MixerSceneTool.Symmetry ? ", mirrored onto " + WeightStroke.BoneName(target, WeightStroke.MirrorBone(target, channel.Bone)) : "") + ".";
-            else boneCaption.text = "Pick a bone to paint: click it in the list, or in the Scene view.";
+            else boneCaption.text = "Pick a bone to paint: click it in the list, the Scene view or the Mixer Hierarchy.";
             hoverCaption.text = MixerSceneTool.HoverWeight >= 0f ? "Under the cursor: " + MixerSceneTool.HoverWeight.ToString("0.00") : "";
             RefreshBoneList(false);
             groupChips.Clear();
@@ -192,7 +201,7 @@ namespace Orbiters.Mixer.Editor
             {
                 var group = g;
                 bool on = channel.IsGroup && channel.Group == g.Name;
-                var chip = Chip(g.Name + " · " + MixerUi.Count(g.Weights.Count), on, () => { MixerSceneTool.FocusTarget = target; MixerSceneTool.SetChannel(WeightChannel.OfGroup(group.Name)); }, null);
+                var chip = Chip(g.Name + " · " + MixerUi.Count(g.Weights.Count), on, () => MixerSceneTool.SetChannel(target, WeightChannel.OfGroup(group.Name)), null);
                 chip.AddManipulator(new ContextualMenuManipulator(evt =>
                 {
                     evt.menu.AppendAction("Rename…", _ => AskName("Rename " + group.Name, group.Name, value => MixerSession.RenameGroup(target, group.Name, value)));

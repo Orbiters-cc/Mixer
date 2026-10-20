@@ -1,5 +1,4 @@
 using System;
-using Unity.Collections;
 using UnityEngine;
 
 namespace Orbiters.Mixer.Editor
@@ -13,14 +12,31 @@ namespace Orbiters.Mixer.Editor
     internal sealed class SkinningMap
     {
         public Matrix4x4[] ToWorld;
-        public Matrix4x4[] ToMesh;
+        /// <summary>The inverse of <see cref="ToWorld"/> per vertex, computed when first read after a change (only sculpting needs it).</summary>
+        public Matrix4x4[] ToMesh
+        {
+            get
+            {
+                if (toMeshStale && ToWorld != null)
+                {
+                    if (toMesh == null || toMesh.Length != ToWorld.Length) toMesh = new Matrix4x4[ToWorld.Length];
+                    for (int v = 0; v < ToWorld.Length; v++) toMesh[v] = Inverse(ToWorld[v]);
+                    toMeshStale = false;
+                }
+                return toMesh;
+            }
+        }
+        private Matrix4x4[] toMesh;
+        private bool toMeshStale = true;
         /// <summary>Per bone, the matrix that takes mesh space to the world (bone to world times bind pose), as of the last refresh.</summary>
         public Matrix4x4[] Combined => boneMatrices;
         /// <summary>The bone matrices the map was built from, to tell when the pose changed.</summary>
         private Matrix4x4[] boneMatrices;
         private Matrix4x4 transformMatrix;
-        private NativeArray<BoneWeight1> weights;
-        private NativeArray<byte> bonesPerVertex;
+        // Copies of the mesh's influences. The arrays Unity returns are views into the mesh that die as soon as anything
+        // touches it (the weight overlay's copy of the mesh, an upload): kept across refreshes they threw on the next pose.
+        private BoneWeight1[] weights;
+        private byte[] bonesPerVertex;
         private bool skinned;
 
         public static SkinningMap For(Renderer renderer, Mesh mesh)
@@ -31,19 +47,20 @@ namespace Orbiters.Mixer.Editor
         }
 
         /// <summary>Recomputes the matrices when the pose or the transform moved; true when something changed.</summary>
-        public bool Refresh(Renderer renderer, Mesh mesh) => Rebuild(renderer, mesh, weightsStale);
+        public bool Refresh(Renderer renderer, Mesh mesh) => Rebuild(renderer, mesh, weightsStale || stale);
 
-        private bool weightsStale;
+        private bool weightsStale, stale;
 
         /// <summary>The mesh's bone weights changed: the next refresh reads them again.</summary>
         public void InvalidateWeights()
         {
             weightsStale = true;
-            if (weights.IsCreated) weights.Dispose();
-            if (bonesPerVertex.IsCreated) bonesPerVertex.Dispose();
-            weights = default;
-            bonesPerVertex = default;
+            weights = null;
+            bonesPerVertex = null;
         }
+
+        /// <summary>The bind poses changed: the next refresh recomputes the matrices (the weights stay).</summary>
+        public void MarkStale() => stale = true;
 
         private bool Rebuild(Renderer renderer, Mesh mesh, bool force)
         {
@@ -57,10 +74,12 @@ namespace Orbiters.Mixer.Editor
             {
                 if (!force && !skinned && ToWorld != null && transformMatrix == world) return false;
                 skinned = false;
+                stale = false;
+                weightsStale = false;
                 transformMatrix = world;
-                if (ToWorld == null || ToWorld.Length != count) { ToWorld = new Matrix4x4[count]; ToMesh = new Matrix4x4[count]; }
-                var inverse = world.inverse;
-                for (int v = 0; v < count; v++) { ToWorld[v] = world; ToMesh[v] = inverse; }
+                if (ToWorld == null || ToWorld.Length != count) ToWorld = new Matrix4x4[count];
+                for (int v = 0; v < count; v++) ToWorld[v] = world;
+                toMeshStale = true;
                 return true;
             }
 
@@ -76,12 +95,13 @@ namespace Orbiters.Mixer.Editor
             skinned = true;
             boneMatrices = current;
             weightsStale = false;
-            if (!weights.IsCreated || weights.Length == 0)
+            stale = false;
+            if (weights == null || weights.Length == 0)
             {
-                weights = mesh.GetAllBoneWeights();
-                bonesPerVertex = mesh.GetBonesPerVertex();
+                weights = mesh.GetAllBoneWeights().ToArray();
+                bonesPerVertex = mesh.GetBonesPerVertex().ToArray();
             }
-            if (ToWorld == null || ToWorld.Length != count) { ToWorld = new Matrix4x4[count]; ToMesh = new Matrix4x4[count]; }
+            if (ToWorld == null || ToWorld.Length != count) ToWorld = new Matrix4x4[count];
             int cursor = 0;
             for (int v = 0; v < count; v++)
             {
@@ -98,9 +118,17 @@ namespace Orbiters.Mixer.Editor
                 cursor += n;
                 if (total <= 1e-6f) m = world; else if (Math.Abs(total - 1f) > 1e-4f) Scale(ref m, 1f / total);
                 ToWorld[v] = m;
-                ToMesh[v] = m.inverse;
             }
+            toMeshStale = true;
             return true;
+        }
+
+        // Blends of affine matrices are affine: the cheaper affine inverse, the full one when it does not apply.
+        private static Matrix4x4 Inverse(Matrix4x4 m)
+        {
+            var result = Matrix4x4.identity;
+            if (m.m30 == 0f && m.m31 == 0f && m.m32 == 0f && Mathf.Abs(m.m33 - 1f) < 1e-5f && Matrix4x4.Inverse3DAffine(m, ref result)) return result;
+            return m.inverse;
         }
 
         private static void Accumulate(ref Matrix4x4 m, Matrix4x4 b, float w)

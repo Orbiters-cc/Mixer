@@ -63,6 +63,7 @@ namespace Orbiters.Mixer.Editor
             ArmatureEdit.Changed -= MarkChrome;
             Selection.selectionChanged -= MarkChrome;
             Undo.undoRedoPerformed -= MarkChrome;
+            MixerRenderer.Changed -= OnRenderChanged;
         }
 
         private void OnBecameVisible() { visible = true; MarkChrome(); }
@@ -163,7 +164,7 @@ namespace Orbiters.Mixer.Editor
             footer.Add(MixerUi.Spacer());
             footerRight = MixerUi.Text("", "mx-footer__text mx-footer__text--right");
             footer.Add(footerRight);
-            revertButton = MixerUi.Pill("Revert", RevertAll, "ghost", null, "Put the original meshes back and drop every edit");
+            revertButton = MixerUi.Pill("Revert", RevertAll, "ghost", null, "Put the original meshes back and drop every edit (asks first when edits would be lost)", destructive: true);
             revertButton.AddToClassList("mx-footer__button");
             commitButton = MixerUi.Pill("Commit", CommitAll, "primary", IconGlyph.Check, "Save the edited meshes as assets and show them on the renderers");
             commitButton.AddToClassList("mx-footer__button");
@@ -220,11 +221,15 @@ namespace Orbiters.Mixer.Editor
             var target = CurrentTarget();
             RefreshHero(target);
             RefreshTargets();
-            RefreshSculptPage(target);
-            RefreshWeightsPage(target);
-            RefreshArmaturePage(target);
-            RefreshJoinPage();
-            RefreshRenderPage();
+            // Only the page on screen: the others refresh when they are picked (SelectMode marks the chrome).
+            switch (modeIndex)
+            {
+                case 0: RefreshSculptPage(target); break;
+                case 1: RefreshWeightsPage(target); break;
+                case 2: RefreshArmaturePage(target); break;
+                case 3: RefreshJoinPage(); break;
+                case 4: RefreshRenderPage(); break;
+            }
             undoButton.SetEnabled(MixerHistory.CanUndo);
             undoButton.tooltip = MixerHistory.CanUndo ? "Undo " + MixerHistory.UndoLabel + " (Ctrl+Z)" : "Nothing to undo";
             redoButton.SetEnabled(MixerHistory.CanRedo);
@@ -240,12 +245,15 @@ namespace Orbiters.Mixer.Editor
             RefreshLinkPill();
         }
 
-        /// <summary>The target the pages show: the hovered one, else the selected renderer's, else the first.</summary>
+        /// <summary>
+        /// The target the pages show and act on: the focused one (last stroked, picked or selected), else the selected
+        /// renderer's, else the first. Never merely the one the pointer last passed over in the Scene view.
+        /// </summary>
         internal static EditTarget CurrentTarget()
         {
             if (!MixerSession.Active) return null;
-            var hovered = MixerSceneTool.HoverTarget;
-            if (hovered != null && hovered.Alive && MixerSession.Targets.Contains(hovered)) return hovered;
+            var focus = MixerSceneTool.FocusTarget;
+            if (focus != null) return focus;
             var selected = Selection.activeGameObject;
             if (selected != null)
             {
@@ -265,7 +273,7 @@ namespace Orbiters.Mixer.Editor
                 {
                     if (!(renderer is SkinnedMeshRenderer) && !(renderer is MeshRenderer)) continue;
                     if (MixerSession.TargetOf(renderer) != null) continue;
-                    if (renderer.name.StartsWith(MixerInfo.HelperPrefix, StringComparison.Ordinal) || renderer.name.StartsWith("__XRayGizmos_", StringComparison.Ordinal)) continue;
+                    if (MixerModes.IsHelper(renderer)) continue;
                     MixerSession.CanEdit(renderer, out string reason);
                     if (!result.Any(r => r.Item1 == renderer)) result.Add((renderer, reason));
                 }
@@ -284,8 +292,8 @@ namespace Orbiters.Mixer.Editor
 
         private void RevertAll()
         {
-            foreach (var t in MixerSession.Targets.ToList()) MixerSession.Revert(t);
-            toasts.Show("Original meshes are back.");
+            int reverted = MixerConfirm.Revert(MixerSession.Targets.ToList());
+            if (reverted > 0) toasts.Show(reverted == 1 ? "The original mesh is back." : "Original meshes are back.");
         }
 
         internal void Edit(Renderer renderer)
@@ -293,6 +301,7 @@ namespace Orbiters.Mixer.Editor
             try
             {
                 var target = MixerSession.Edit(renderer);
+                MixerSceneTool.FocusTarget = target;
                 if (MixerSceneTool.Mode == MixerMode.None) SelectMode(modeIndex <= 2 ? modeIndex : 0, true, applyToTool: true);
                 toasts.Show("Editing " + target.Name + ": sculpt it in the Scene view.");
                 WakeGlow();

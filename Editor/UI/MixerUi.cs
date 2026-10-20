@@ -50,6 +50,33 @@ namespace Orbiters.Mixer.Editor
             });
         }
 
+        /// <summary>
+        /// For actions that lose something or open a dialog (Revert, Unload, Save as): the press shows at once, the action
+        /// runs on the click (released over the same element), so a double click, or a button that slides under the
+        /// pointer when another hides itself, never fires it by accident. Keyboard activation still works.
+        /// </summary>
+        internal static void Click(VisualElement element, Action action)
+        {
+            element.AddToClassList(PressableClass);
+            element.RegisterCallback<PointerDownEvent>(evt =>
+            {
+                if (evt.button == 0 && element.enabledInHierarchy && !OnInnerButton(element, evt.target as VisualElement)) element.AddToClassList(PressedClass);
+            }, TrickleDown.TrickleDown);
+            element.RegisterCallback<PointerUpEvent>(_ => element.RemoveFromClassList(PressedClass));
+            element.RegisterCallback<PointerLeaveEvent>(_ => element.RemoveFromClassList(PressedClass));
+            element.RegisterCallback<PointerCaptureOutEvent>(_ => element.RemoveFromClassList(PressedClass));
+            if (element is Button button)
+            {
+                button.clicked += () => action?.Invoke();
+                return;
+            }
+            element.RegisterCallback<ClickEvent>(evt => { if (evt.button == 0 && !OnInnerButton(element, evt.target as VisualElement)) action?.Invoke(); });
+            element.RegisterCallback<KeyDownEvent>(evt =>
+            {
+                if (evt.keyCode == KeyCode.Return || evt.keyCode == KeyCode.KeypadEnter || evt.keyCode == KeyCode.Space) { action?.Invoke(); evt.StopPropagation(); }
+            });
+        }
+
         private static bool OnInnerButton(VisualElement element, VisualElement target)
         {
             for (var current = target; current != null && current != element; current = current.parent)
@@ -76,8 +103,11 @@ namespace Orbiters.Mixer.Editor
             return button;
         }
 
-        /// <summary>A rounded button; variants: primary, ghost, danger, accent.</summary>
-        internal static Button Pill(string text, Action action, string variant = null, IconGlyph? glyph = null, string tooltip = null)
+        /// <summary>
+        /// A rounded button; variants: primary, ghost, danger, accent. A <paramref name="destructive"/> one runs on the
+        /// click instead of the press (<see cref="Click"/>).
+        /// </summary>
+        internal static Button Pill(string text, Action action, string variant = null, IconGlyph? glyph = null, string tooltip = null, bool destructive = false)
         {
             var button = new Button { text = string.Empty, tooltip = tooltip };
             button.AddToClassList("mx-button");
@@ -92,7 +122,7 @@ namespace Orbiters.Mixer.Editor
             var label = new Label(text) { pickingMode = PickingMode.Ignore };
             label.AddToClassList("mx-button__label");
             button.Add(label);
-            Press(button, action);
+            if (destructive) Click(button, action); else Press(button, action);
             return button;
         }
 

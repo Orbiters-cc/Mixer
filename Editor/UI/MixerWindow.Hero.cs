@@ -24,7 +24,8 @@ namespace Orbiters.Mixer.Editor
             heroFrame.Add(glow);
             var top = MixerUi.Box("mx-hero__top");
             heroFrame.Add(top);
-            heroBadge = new MixerPreviewBadge();
+            // The badge renders only while the window is on screen (a docked tab behind another one is not).
+            heroBadge = new MixerPreviewBadge { Shown = () => visible };
             heroBadge.AddToClassList("mx-hero__badge");
             top.Add(heroBadge);
             var texts = MixerUi.Box("mx-hero__texts");
@@ -123,7 +124,7 @@ namespace Orbiters.Mixer.Editor
                 row.Add(texts);
                 var actions = MixerUi.Row("mx-setting__control");
                 actions.Add(MixerUi.Pill("Select", () => { Selection.activeGameObject = target.Renderer.gameObject; }, "ghost", null, "Select the mesh"));
-                actions.Add(MixerUi.Pill("Revert", () => MixerSession.Revert(target), "ghost", null, "Put the original mesh back"));
+                actions.Add(MixerUi.Pill("Revert", () => { if (MixerConfirm.Revert(target) > 0) toasts.Show("The original mesh of " + target.Name + " is back."); }, "ghost", null, "Put the original mesh back (asks first when edits would be lost)", destructive: true));
                 var commit = MixerUi.Pill("Commit", () =>
                 {
                     try { MixerSession.Commit(target); }

@@ -12,18 +12,14 @@ namespace Orbiters.Mixer.Editor
     /// <summary>
     /// The meshes being edited in this editor: each shows a working copy on its renderer while its document takes the
     /// edits, flushed to the copy once a frame. Nothing is written to assets until <see cref="Commit"/>, which saves
-    /// the result as a native mesh asset; <see cref="Revert"/> puts the original back. The list survives script
-    /// reloads (the working meshes do, the documents are rebuilt from them and the autosave).
+    /// the result as a native mesh asset; <see cref="Revert"/> puts the original back. Sessions survive script reloads,
+    /// Play, closing and reopening their scene, a deleted object brought back by Undo, and a crash (see
+    /// MixerSession.Lifecycle.cs); scene saves and uploads always get the originals.
     /// </summary>
     [InitializeOnLoad]
-    internal static class MixerSession
+    internal static partial class MixerSession
     {
-        private const string StateKey = "Orbiters.Mixer.Session";
         private static readonly List<EditTarget> targets = new List<EditTarget>();
-        private static readonly HashSet<string> pendingRestore = new HashSet<string>();
-        private static double lastAutosave;
-        private static bool dirtySinceAutosave;
-        private static bool restoring;
 
         /// <summary>Raised when a target is added, committed or reverted, or an edit changed what the window shows.</summary>
         public static event Action Changed;
@@ -33,12 +29,9 @@ namespace Orbiters.Mixer.Editor
         static MixerSession()
         {
             EditorApplication.update += Tick;
-            // The scene file gets the originals and the renderers' own weights of the shapes being edited (held at 0 while shown).
-            EditorSceneManager.sceneSaving += (scene, path) => { foreach (var t in targets) if (t.Alive) { t.Show(t.Original); t.ReleaseLayerWeight(); } };
-            EditorSceneManager.sceneSaved += scene => { foreach (var t in targets) if (t.Alive) { t.Show(t.Working); t.HoldLayerWeight(); } };
-            AssemblyReloadEvents.beforeAssemblyReload += SaveState;
             MixerHistory.Notice += text => Notice?.Invoke(text, false);
-            LoadState();
+            MixerMeshGuard.AdoptCopy = AdoptCopy;
+            HookLifecycle();
         }
 
         public static IReadOnlyList<EditTarget> Targets => targets;
@@ -47,6 +40,7 @@ namespace Orbiters.Mixer.Editor
 
         public static EditTarget TargetOf(Renderer renderer)
         {
+            if (renderer == null) return null;
             foreach (var t in targets) if (t.Renderer == renderer) return t;
             return null;
         }
@@ -55,6 +49,11 @@ namespace Orbiters.Mixer.Editor
         public static bool CanEdit(Renderer renderer, out string reason)
         {
             reason = null;
+            if (renderer == null) { reason = "No renderer."; return false; }
+            // A prefab asset's renderer (the Project window): Mixer edits objects of a scene.
+            if (EditorUtility.IsPersistent(renderer)) { reason = "Mixer edits meshes in scenes: put the prefab in a scene and edit it there."; return false; }
+            // Play mode's objects go when it ends, and the edits with them.
+            if (EditorApplication.isPlayingOrWillChangePlaymode) { reason = "Mixer edits meshes outside Play mode: stop Play first."; return false; }
             var mesh = MeshOf(renderer);
             if (mesh == null) { reason = "No mesh."; return false; }
             // Prefab Mode saves the prefab on its own (auto-save): it would write the working copy, which is never saved.
@@ -64,38 +63,57 @@ namespace Orbiters.Mixer.Editor
             return true;
         }
 
-        private static Mesh MeshOf(Renderer renderer)
-        {
-            if (renderer is SkinnedMeshRenderer skinned) return skinned.sharedMesh;
-            if (renderer is MeshRenderer) return renderer.GetComponent<MeshFilter>()?.sharedMesh;
-            return null;
-        }
+        // The mesh a renderer shows (a MeshRenderer without a MeshFilter shows none: no fake-null component reached).
+        private static Mesh MeshOf(Renderer renderer) => MixerModes.MeshOf(renderer);
 
         /// <summary>Starts editing <paramref name="renderer"/> (or returns its target when it already is).</summary>
         public static EditTarget Edit(Renderer renderer)
         {
             var existing = TargetOf(renderer);
             if (existing != null) return existing;
+            // A renderer left on a working mesh no session shows (an undo, a copy) gets the right mesh first, and a
+            // waiting session of it comes back with its edits rather than a new one starting over them.
+            if (renderer != null) MixerMeshGuard.RepairUnder(renderer.gameObject);
+            if (waiting.Count > 0) TryRecover();
+            existing = TargetOf(renderer);
+            if (existing != null) return existing;
             if (!CanEdit(renderer, out string reason)) throw new InvalidOperationException(reason);
+            existing = ResumeParked(renderer);
+            if (existing != null) return existing;
             var shown = MeshOf(renderer);
+            // A copy of an edited object shows its source's working mesh: it gets a session of its own with the same edits.
+            var owner = targets.FirstOrDefault(t => t.Working == shown);
+            if (owner != null && AdoptCopy(renderer, shown)) return TargetOf(renderer);
             var original = MixerMeshGuard.OriginalOf(shown) ?? shown;
             Mesh working;
             if (original != shown) working = shown;
-            else
-            {
-                working = Object.Instantiate(original);
-                working.name = original.name + " (Mixer working)";
-                working.hideFlags = HideFlags.HideAndDontSave;
-            }
+            else working = NewWorking(original);
             var target = new EditTarget(renderer, original, working);
             if (original == shown) target.Show(working);
-            MixerMeshGuard.Shown(working, original);
+            MixerMeshGuard.Shown(working, original, renderer);
             MixerSidecar.Load(original, target.Document);
             targets.Add(target);
             SaveState();
             MixerLinkService.ClaimForUnity(target);
+            NotePreviewed(target.Renderer);
             Changed?.Invoke();
             return target;
+        }
+
+        // Other tools following the avatar's meshes (My Avatar's Painter link): it shows Mixer's working copies now, or
+        // its own meshes again. They wait for the edits to pause.
+        private static void NotePreviewed(Renderer renderer)
+        {
+            var root = RootOf(renderer);
+            if (root != null) AvatarMeshEdits.NotifyPreviewed(root);
+        }
+
+        private static Mesh NewWorking(Mesh from)
+        {
+            var working = Object.Instantiate(from);
+            working.name = from.name.Replace(" (Mixer working)", "") + " (Mixer working)";
+            working.hideFlags = HideFlags.HideAndDontSave;
+            return working;
         }
 
         // ---- Vertex groups ----------------------------------------------------------------------------------------
@@ -148,66 +166,220 @@ namespace Orbiters.Mixer.Editor
             NoteEdited(target);
         }
 
-        /// <summary>Puts the original back and drops every edit of the target.</summary>
+        // ---- Revert and Commit -------------------------------------------------------------------------------------
+
+        /// <summary>
+        /// Puts the original back and drops every edit of the target: a rest-pose edit's bones go back where they were
+        /// (rig mates keep their skin where it is, so their rest pose goes back too) and leaf bones it added leave.
+        /// </summary>
         public static void Revert(EditTarget target)
         {
             if (target == null || !targets.Contains(target)) return;
-            MixerLinkService.ReleaseForUnity(target);
-            MixerHistory.Forget(target);
             if (target.Renderer != null)
             {
+                RevertRestPose(target);
+                RemoveAddedBones(target);
                 target.ShowChannel(WeightChannel.None);
                 target.RestoreWeights();
                 target.Show(target.Original);
+                NotePreviewed(target.Renderer);
             }
-            MixerMeshGuard.Released(target.Working);
-            if (target.Working != null) Object.DestroyImmediate(target.Working);
-            MixerAutosave.Delete(target.Id);
-            targets.Remove(target);
-            SaveState();
-            Changed?.Invoke();
+            EndSession(target, target.Original, deleteAutosave: true);
         }
 
-        /// <summary>Builds the final mesh, saves it as an asset and shows it on the renderer, in one Undo step.</summary>
+        // The bones this target's rest-pose edits moved go back where the original bind poses want them; the rig mates
+        // still being edited keep their skin where it is through the move (their bind poses follow, as in rest-pose
+        // editing), which gives them their original rest pose back as well.
+        private static void RevertRestPose(EditTarget target)
+        {
+            if (!RestPosePlacement.TryRigOf(target, out var rig)) return;
+            // Mates whose bind poses the same rest-pose edits changed follow; a mesh posed by the move (opened without
+            // rest-pose editing) simply goes back with the bones.
+            var mates = targets.Where(t => t != target && t.Alive && t.Skinned != null && t.Document.HasSkin && t.Document.BindPosesEdited).ToList();
+            var rigs = new List<RestPosePlacement.Rig> { rig };
+            rigs.AddRange(RestPosePlacement.RigsOf(mates.Where(m => m.Skinned.bones.Any(b => b != null && rig.Bones.Contains(b)))));
+            var place = RestPosePlacement.AsOriginal(rigs);
+            if (place.Count == 0) return;
+            var worldsBefore = mates.ToDictionary(m => m, m => m.Skinned.bones.Select(b => b != null ? b.localToWorldMatrix : Matrix4x4.identity).ToArray());
+            RestPosePlacement.Apply(place);
+            foreach (var mate in mates)
+            {
+                var bones = mate.Skinned.bones;
+                var before = worldsBefore[mate];
+                var doc = mate.Document;
+                int changed = 0;
+                for (int i = 0; i < bones.Length && i < doc.BindPoses.Length; i++)
+                {
+                    if (bones[i] == null) continue;
+                    var after = bones[i].localToWorldMatrix;
+                    if (RestPosePlacement.Same(after, before[i]) || after.determinant == 0f) continue;
+                    doc.BindPoses[i] = after.inverse * before[i] * doc.BindPoses[i];
+                    changed++;
+                }
+                if (changed == 0) continue;
+                doc.BindPosesDirty = true;
+                doc.BindPosesEdited = true;
+                doc.Revision++;
+                ArmatureEdit.StoreBindPoses(mate);
+                mate.FlushBindposes();
+            }
+            foreach (var t in targets) if (t != target) ArmatureEdit.Snapshot(t);
+            NoteArmatureEdited();
+        }
+
+        // Leaf bones the session added leave the renderer, and the scene when nothing else uses them.
+        private static void RemoveAddedBones(EditTarget target)
+        {
+            var added = ArmatureEdit.AddedBones(target);
+            if (added.Count == 0) return;
+            var skinned = target.Skinned;
+            skinned.bones = skinned.bones.Take(target.Document.OriginalBoneCount).ToArray();
+            foreach (var bone in added)
+            {
+                if (bone == null || bone.childCount > 0 || bone.GetComponents<Component>().Length > 1) continue;
+                bool used = false;
+                foreach (var other in bone.root.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+                    if (other != skinned && other.bones.Contains(bone)) { used = true; break; }
+                if (!used) Object.DestroyImmediate(bone.gameObject);
+            }
+        }
+
+        /// <summary>
+        /// Builds the final mesh, saves it as an asset and shows it on the renderer, in one Undo step (Ctrl+Z shows the
+        /// mesh the renderer had before the session; Ctrl+Y the committed one). Rig mates whose rest pose was edited with it
+        /// are committed in the same step, so the bones they share stay right for all of them. Nothing different from the
+        /// original (edits all undone): the session closes, nothing is saved and null is returned.
+        /// </summary>
         public static Mesh Commit(EditTarget target, string owner = null)
         {
             if (target == null || !targets.Contains(target) || !target.Alive) return null;
-            var doc = target.Document;
-            if (!doc.Changed)
+            if (MixerLinkService.IsBlenderOwned(target))
+            {
+                Say(target.Name + " is being edited in Blender: leave its edit mode there first, then commit.", true);
+                return null;
+            }
+            if (!target.Document.HasDifferences())
             {
                 Revert(target);
-                return target.Original;
+                Say("Nothing to commit on " + target.Name + ": it is as it was.", false);
+                return null;
             }
-            string name = target.Original.name;
-            if (MixerMeshGuard.IsWorking(target.Original)) name = name.Replace(" (Mixer working)", "");
+            var batch = new List<EditTarget> { target };
+            if (target.Document.BindPosesEdited && target.Skinned != null)
+            {
+                var bones = new HashSet<Transform>(target.Skinned.bones.Where(b => b != null));
+                foreach (var t in targets)
+                    if (t != target && t.Alive && t.Skinned != null && t.Document.BindPosesEdited && t.Skinned.bones.Any(b => b != null && bones.Contains(b))
+                        && !MixerLinkService.IsBlenderOwned(t) && t.Document.HasDifferences())
+                        batch.Add(t);
+            }
+            Undo.IncrementCurrentGroup();
+            Undo.SetCurrentGroupName("Mixer: Commit " + target.Name + (batch.Count > 1 ? " and " + (batch.Count - 1) + " more" : ""));
+            Mesh result = null;
+            var saved = new List<string>();
+            foreach (var t in batch)
+            {
+                var asset = CommitOne(t, t == target ? owner : null);
+                if (t == target) result = asset;
+                if (asset != null) saved.Add(AssetDatabase.GetAssetPath(asset));
+            }
+            Undo.IncrementCurrentGroup();
+            Notice?.Invoke("Saved " + string.Join(", ", saved), false);
+            Changed?.Invoke();
+            return result;
+        }
+
+        private static Mesh CommitOne(EditTarget target, string owner)
+        {
+            var doc = target.Document;
+            string name = target.Original.name.Replace(" (Mixer working)", "");
             owner = owner ?? OwnerName(target.Renderer);
+            if (!SameMeshAsStart(target))
+                Say(target.Name + "'s mesh changed on disk while it was edited (reimported?): the commit keeps the mesh as you edited it.", false);
             var built = MeshBuilder.Build(target);
-            // A mesh Mixer saved before is updated in place (what points at it follows); any other gets a file of its
-            // own, never one another mesh of the same name already has.
-            var asset = MeshAssets.IsOwnedBy(target.Original, "Mixer")
-                ? MeshAssets.Replace(built, target.Original)
-                : MeshAssets.Save(built, MeshAssets.Folder("Mixer", owner), name);
+            // A mesh Mixer saved before is updated in place (what points at it follows), unless something else uses it
+            // too (another avatar, another session): then the edit gets a file of its own and the others keep theirs.
+            bool inPlace = MeshAssets.IsOwnedBy(target.Original, "Mixer") && !UsedElsewhere(target);
+            Mesh asset;
+            if (inPlace)
+            {
+                long expected = MixerAutosave.FingerprintOf(doc.Positions);
+                asset = MeshAssets.Replace(built, target.Original);
+                // The asset must hold the edits now; if it does not, they go to a file of their own rather than nowhere.
+                if (asset.vertexCount != doc.VertexCount || MixerAutosave.FingerprintOf(asset.vertices) != expected)
+                {
+                    Debug.LogWarning("[Mixer] '" + AssetDatabase.GetAssetPath(asset) + "' could not be updated in place: the commit of " + target.Name + " goes to a file of its own.");
+                    asset = MeshAssets.Save(MeshBuilder.Build(target), MeshAssets.Folder("Mixer", owner), name);
+                }
+            }
+            else asset = MeshAssets.Save(built, MeshAssets.Folder("Mixer", owner), name);
             MixerSidecar.Save(AssetDatabase.GetAssetPath(asset), doc);
             target.ShowChannel(WeightChannel.None);
-            Undo.IncrementCurrentGroup();
-            Undo.SetCurrentGroupName("Mixer: Commit " + name);
             target.RestoreWeights();
+            var weights = target.WeightsByName();
+            // The step remembers the renderer as it was before the session (the original, its weights): the working mesh
+            // is destroyed below, and an undo must never put a renderer on it.
+            target.Show(target.Original);
             Object holder = target.Filter != null ? (Object)target.Filter : target.Renderer;
             Undo.RecordObject(holder, "Mixer: Commit " + name);
             target.Show(asset);
+            // The renderer's weights go with the shapes by name (a deleted or renamed shape moves the others' indices).
+            var skinned = target.Skinned;
+            if (skinned != null)
+                for (int i = 0; i < asset.blendShapeCount; i++)
+                    skinned.SetBlendShapeWeight(i, weights.TryGetValue(asset.GetBlendShapeName(i), out float w) ? w : 0f);
             EditorUtility.SetDirty(holder);
             if (target.Renderer.gameObject.scene.IsValid()) EditorSceneManager.MarkSceneDirty(target.Renderer.gameObject.scene);
+            var root = RootOf(target.Renderer);
+            EndSession(target, asset, deleteAutosave: true, notify: false);
+            AvatarMeshEdits.NotifyApplied(root);
+            return asset;
+        }
+
+        // Another renderer of the open scenes (or of the target's own scene, a preview one too), or another session,
+        // shows this Mixer asset too.
+        private static bool UsedElsewhere(EditTarget target)
+        {
+            var mesh = target.Original;
+            foreach (var t in targets) if (t != target && t.Original == mesh) return true;
+            bool Uses(SkinnedMeshRenderer r) => r != null && r != target.Renderer && r.sharedMesh == mesh;
+            bool UsesFilter(MeshFilter f) => f != null && f != target.Filter && f.sharedMesh == mesh;
+            foreach (var r in Object.FindObjectsOfType<SkinnedMeshRenderer>(true)) if (Uses(r)) return true;
+            foreach (var f in Object.FindObjectsOfType<MeshFilter>(true)) if (UsesFilter(f)) return true;
+            var scene = target.Renderer.gameObject.scene;
+            if (scene.IsValid() && scene.isLoaded)
+                foreach (var go in scene.GetRootGameObjects())
+                {
+                    foreach (var r in go.GetComponentsInChildren<SkinnedMeshRenderer>(true)) if (Uses(r)) return true;
+                    foreach (var f in go.GetComponentsInChildren<MeshFilter>(true)) if (UsesFilter(f)) return true;
+                }
+            return false;
+        }
+
+        // The original still has the vertices the session started from (not reimported with other ones).
+        private static bool SameMeshAsStart(EditTarget target)
+        {
+            var original = target.Original;
+            if (original == null || original.vertexCount != target.Document.VertexCount) return false;
+            return MixerAutosave.FingerprintOf(original.vertices) == MixerAutosave.FingerprintOf(target.Document.OriginalPositions);
+        }
+
+        /// <summary>
+        /// Ends a session: its history and link claim go, the guard learns what replaces its working mesh (wherever an
+        /// undo brings it back), the working mesh is destroyed.
+        /// </summary>
+        private static void EndSession(EditTarget target, Mesh replacement, bool deleteAutosave, bool notify = true)
+        {
             MixerHistory.Forget(target);
-            MixerMeshGuard.Released(target.Working);
-            Object.DestroyImmediate(target.Working);
-            MixerAutosave.Delete(target.Id);
+            MixerLinkService.ReleaseForUnity(target);
+            ArmatureEdit.Forget(target);
+            // Also when something else destroyed the working mesh: the guard still knows its id.
+            if ((object)target.Working != null) MixerMeshGuard.Released(target.Working, replacement);
+            if (target.Working != null) Object.DestroyImmediate(target.Working);
+            if (deleteAutosave) MixerAutosave.Delete(target.Id);
             targets.Remove(target);
             SaveState();
-            MixerLinkService.ReleaseForUnity(target);
-            AvatarMeshEdits.NotifyApplied(RootOf(target.Renderer));
-            Notice?.Invoke("Saved " + AssetDatabase.GetAssetPath(asset), false);
-            Changed?.Invoke();
-            return asset;
+            if (notify) Changed?.Invoke();
         }
 
         private static Transform RootOf(Renderer renderer) => renderer != null ? renderer.transform.root : null;
@@ -224,129 +396,17 @@ namespace Orbiters.Mixer.Editor
         {
             dirtySinceAutosave = true;
             if (!MixerLinkService.IsBlenderOwned(target)) MixerLinkService.NotePositions(target);
+            if (target != null) NotePreviewed(target.Renderer);
             Changed?.Invoke();
         }
 
-        private static void Tick()
+        /// <summary>Bind poses changed (a rest-pose edit, its undo): once per change however many rig mates it touched.</summary>
+        public static void NoteArmatureEdited()
         {
-            if (restoring) return;
-            if (pendingRestore.Count > 0) RestorePending();
-            bool any = false;
-            for (int i = targets.Count - 1; i >= 0; i--)
-            {
-                var t = targets[i];
-                if (!t.Alive)
-                {
-                    // The renderer or its working mesh is gone (deleted, scene closed): nothing to show any more.
-                    MixerHistory.Forget(t);
-                    if (t.Working != null) { MixerMeshGuard.Released(t.Working); Object.DestroyImmediate(t.Working); }
-                    targets.RemoveAt(i);
-                    SaveState();
-                    Changed?.Invoke();
-                    continue;
-                }
-                any |= t.Flush();
-            }
-            if (any) SceneView.RepaintAll();
-            double now = EditorApplication.timeSinceStartup;
-            if (dirtySinceAutosave && now - lastAutosave > 3.0 && !MixerSceneTool.Stroking)
-            {
-                lastAutosave = now;
-                dirtySinceAutosave = false;
-                foreach (var t in targets) if (t.Alive && t.Document.Changed) MixerAutosave.Write(t);
-            }
-        }
-
-        // ---- Reloads ---------------------------------------------------------------------------------------------
-
-        private static void SaveState()
-        {
-            var lines = new List<string>();
-            foreach (var t in targets)
-            {
-                if (!t.Alive) continue;
-                lines.Add(t.Id + "\t" + t.Working.GetInstanceID() + "\t" + SceneGraphExporter.IdOf(t.Original) + "\t" + (t.Document.Layer ?? "") + "\t" + HeldText(t.HeldWeights));
-            }
-            SessionState.SetString(StateKey, string.Join("\n", lines));
-        }
-
-        // Held weights as "index:weight" pairs (only the held ones), invariant culture.
-        private static string HeldText(float[] held)
-        {
-            if (held == null) return "";
-            var pairs = new List<string>();
-            for (int i = 0; i < held.Length; i++)
-                if (!float.IsNaN(held[i])) pairs.Add(i + ":" + held[i].ToString("R", System.Globalization.CultureInfo.InvariantCulture));
-            return string.Join(",", pairs);
-        }
-
-        private static float[] ParseHeld(string text, int count)
-        {
-            if (string.IsNullOrEmpty(text) || count <= 0) return null;
-            var held = new float[count];
-            for (int i = 0; i < count; i++) held[i] = float.NaN;
-            foreach (string pair in text.Split(','))
-            {
-                int colon = pair.IndexOf(':');
-                if (colon > 0 && int.TryParse(pair.Substring(0, colon), out int index) && index >= 0 && index < count
-                    && float.TryParse(pair.Substring(colon + 1), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float weight))
-                    held[index] = weight;
-            }
-            return held;
-        }
-
-        private static void LoadState()
-        {
-            foreach (string line in SessionState.GetString(StateKey, "").Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries))
-                pendingRestore.Add(line);
-        }
-
-        // After a script reload the working meshes still show on their renderers (HideAndDontSave objects survive);
-        // the documents are rebuilt from the originals and the autosave, and the working meshes refreshed from them.
-        private static void RestorePending()
-        {
-            restoring = true;
-            try
-            {
-                foreach (string line in pendingRestore)
-                {
-                    var parts = line.Split('\t');
-                    if (parts.Length < 3) continue;
-                    var holder = SceneGraphExporter.Resolve(parts[0]) as GameObject;
-                    var renderer = holder != null ? holder.GetComponent<Renderer>() : SceneGraphExporter.Resolve(parts[0]) as Renderer;
-                    var original = SceneGraphExporter.Resolve(parts[2]) as Mesh;
-                    if (renderer == null || original == null) continue;
-                    int workingId = int.Parse(parts[1]);
-                    var working = EditorUtility.InstanceIDToObject(workingId) as Mesh;
-                    if (working == null)
-                    {
-                        working = Object.Instantiate(original);
-                        working.name = original.name + " (Mixer working)";
-                        working.hideFlags = HideFlags.HideAndDontSave;
-                    }
-                    var target = new EditTarget(renderer, original, working);
-                    target.Show(working);
-                    MixerMeshGuard.Shown(working, original);
-                    targets.Add(target);
-                    string layer = parts.Length > 3 && parts[3].Length > 0 ? parts[3] : null;
-                    if (MixerAutosave.Restore(target)) target.Document.Layer = layer != null && target.Document.HasShape(layer) ? layer : null;
-                    target.FlushBindposes();
-                    // The renderer shows 0 for the shape being edited: its own weight comes from before the reload.
-                    target.HoldLayerWeight(parts.Length > 4 ? ParseHeld(parts[4], working.blendShapeCount) : null);
-                    target.AfterLayerChange();
-                }
-            }
-            catch (Exception e)
-            {
-                Debug.LogException(e);
-            }
-            finally
-            {
-                pendingRestore.Clear();
-                restoring = false;
-                SaveState();
-                Changed?.Invoke();
-            }
+            dirtySinceAutosave = true;
+            MixerLinkService.NoteArmatureChanged();
+            foreach (var root in targets.Where(t => t.Alive).Select(t => RootOf(t.Renderer)).Distinct()) if (root != null) AvatarMeshEdits.NotifyPreviewed(root);
+            Changed?.Invoke();
         }
 
         /// <summary>Picks the layer a target is edited on: null for the base mesh, else a shape (created when new).</summary>
@@ -375,8 +435,9 @@ namespace Orbiters.Mixer.Editor
             var doc = target.Document;
             var layer = doc.Shape(shape);
             string before = doc.Layer;
+            int index = doc.ShapeOrder.IndexOf(shape);
             doc.DeleteShape(shape);
-            MixerHistory.Push(new ShapeListEdit { Target = target, Label = "Delete shape " + shape, Name = shape, Layer = layer, Created = false, LayerBefore = before });
+            MixerHistory.Push(new ShapeListEdit { Target = target, Label = "Delete shape " + shape, Name = shape, Layer = layer, Created = false, LayerBefore = before, OrderIndex = index });
             target.AfterLayerChange();
             SaveState();
             NoteEdited(target);
@@ -425,7 +486,9 @@ namespace Orbiters.Mixer.Editor
             var layer = doc.Shape(name);
             var mirror = target.Mirror;
             var n = doc.Neighbors;
-            var original = doc.Original.vertices;
+            var original = doc.OriginalPositions;
+            // The same tolerance the mirror map pairs vertices with: within it a vertex is on the centre line.
+            float centre = Mathf.Max(1e-6f, doc.Original.bounds.size.magnitude * 1e-4f);
             var indices = new List<int>();
             var before = new List<Vector3>();
             var after = new List<Vector3>();
@@ -433,12 +496,27 @@ namespace Orbiters.Mixer.Editor
             {
                 int rep = n.Representative[w];
                 float x = original[rep].x;
-                bool destination = fromPositiveX ? x < -1e-6f : x > 1e-6f;
+                if (Mathf.Abs(x) <= centre)
+                {
+                    // On the centre line a symmetric shape does not move sideways.
+                    foreach (int v in n.Members[w])
+                    {
+                        var d = layer.Deltas[v];
+                        if (d.x == 0f) continue;
+                        var centred = new Vector3(0f, d.y, d.z);
+                        indices.Add(v);
+                        before.Add(doc.Positions[v] + d);
+                        after.Add(doc.Positions[v] + centred);
+                        layer.Deltas[v] = centred;
+                    }
+                    continue;
+                }
+                bool destination = fromPositiveX ? x < 0f : x > 0f;
                 if (!destination) continue;
                 int source = mirror.Of[w];
                 if (source < 0) continue;
-                var d = layer.Deltas[n.Representative[source]];
-                var flipped = new Vector3(-d.x, d.y, d.z);
+                var sd = layer.Deltas[n.Representative[source]];
+                var flipped = new Vector3(-sd.x, sd.y, sd.z);
                 foreach (int v in n.Members[w])
                 {
                     if (layer.Deltas[v] == flipped) continue;

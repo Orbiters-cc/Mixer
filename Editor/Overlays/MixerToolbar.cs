@@ -14,7 +14,8 @@ namespace Orbiters.Mixer.Editor
         {
             XRayExternalGizmoRegistry.Register("orbiters.mixer.sculpt", "Mixer sculpt",
                 () => MixerSceneTool.Mode == MixerMode.Sculpt,
-                on => { MixerSceneTool.Mode = on ? MixerMode.Sculpt : MixerMode.None; if (on && !MixerSession.Active) MixerWindow.Open(); },
+                // As the mode strip does: Sculpt opens the selected mesh in Mixer (or says why it cannot).
+                on => { if (on) MixerModes.Enter(MixerMode.Sculpt); else if (MixerSceneTool.Mode == MixerMode.Sculpt) MixerModes.Enter(MixerMode.None); },
                 "Sculpt the edited meshes with the Mixer brushes");
             MixerSceneTool.Changed += XRayExternalGizmoRegistry.NotifyChanged;
         }

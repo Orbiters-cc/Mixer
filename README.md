@@ -69,7 +69,59 @@ saved as a native mesh asset when you commit.
   flight, waypoints or an orbit), renders it as VRChat's Stream camera sees the capture avatar (strip, depth frames,
   optional PPv2) into a raw capture with ground truth under Documents/Orbiters/Raw captures for Orbiters desktop, then
   decodes a sample back and checks it bit for bit. Formats come from the OrbitersContracts submodule in `Contracts/`.
-- Requires Orbiters Toolkit 0.4.0, which now holds the avatar gizmos (bones, weight paint, mesh edges, avatar budget).
+- Weight Paint sub-selects bones, as Blender does: a click on a bone in the Scene view's armature overlay, in the
+  Mixer Hierarchy or in the bone list makes it the painted bone and the one the weight overlay shows, at once, while
+  Unity's selection and the inspectors stay on the painted mesh. The bone is highlighted in the overlay and in the
+  hierarchy (with a "painting" badge) and gets a handle in the Scene view to pose it and try the weights: Unity's move
+  handle with the Move tool, rotation rings with the others (without the free-rotation ball, so a stroke can still
+  start over the joint), along the toolbar's pivot rotation and with Undo; Unity's own handle of the mesh hides
+  meanwhile. A click on empty space, a vertex group, another selection or leaving the mode drops it. Shift and Ctrl
+  clicks still select in Unity; in the hierarchy a double click or F frames the bone. A bone of the rig the mesh is not
+  skinned to can be posed, not painted.
+- Review fixes (2026-10-20), data safety: nothing done just before a script reload, Play, closing a scene or quitting is
+  lost (edits are saved at once), and after a crash or restart they come back by themselves. Play shows the committed
+  meshes; the edits come back when it stops. Ctrl+Z after a Commit or a Revert never leaves a mesh missing; an edited
+  object deleted and brought back with Undo keeps its edits; undo past a session's start sets it aside, with its edits
+  and history, until the mesh is edited again (Redo resumes it where the redo gives back the working mesh); a Ctrl+D copy of an edited object keeps the edits in a session of its own. Scene saves and uploads made during
+  rest-pose editing get the original, undeformed avatar. Undoing a bone move or an added bone gives the bind poses back
+  too, also after a reload; Revert puts moved bones back and removes added leaf bones; rig mates are committed together.
+  Commits keep blendshape weights by name and a renamed shape's in-betweens, recompute tangents where the mesh moved,
+  give a Mixer mesh used elsewhere a file of its own, and save nothing when every edit was undone. A commit of a skinned
+  mesh Mixer saved before really updates it in place (it kept the old shape: Orbiters Toolkit 0.4.1). A deleted shape's name
+  can be used again. Normals stay hard at hard edges and on double-sided cloth, and the display shows the normals the
+  commit writes. Join keeps in-between frames and every UV channel, turns mirrored parts the right way, and joins meshes
+  being edited as a commit would. Renders can be cancelled, survive a reload, and old render files are cleaned up.
+- Review fixes, the window and the Scene view: Weight Paint's painted bone belongs to its mesh and follows to other
+  meshes by the bone itself; a stroke on a mesh without that bone is refused instead of painting another one. Every
+  Revert runs on the click and asks once when uncommitted edits would be lost (Unity's "don't show again" box turns it
+  off). Edit Armature always edits the rest pose. The Scene view's Commit and Revert act on the focused or selected mesh
+  only; selecting an edited mesh makes it the one the window and overlays act on (the last mesh hovered no longer
+  counts). Brushes do nothing in Prefab Mode. Join takes the active object's space and keeps Unity's order. Mixer's own
+  Undo and Redo act only on Mixer's steps. Flat frames throughout (no 1 px borders); brush settings are no longer
+  written to EditorPrefs on every slider move; the preview badge rests while hidden.
+- Review fixes, the Mixer Hierarchy: rows drag into Inspector fields and other windows; eye and lock act on the branch
+  (Alt: the object alone), as in Unity; folds and filters show at once; Backspace alone no longer deletes; Copy, Cut,
+  Paste, Load Scene, Set as Default Parent and Unity's GameObject menu (ReFit, My Avatar, VRCFury...) added; Unload and
+  Remove Scene ask about Mixer edits and unsaved changes; DontDestroyOnLoad objects in Play mode; prefab-instance
+  children, cross-scene moves and Prefab Mode handled; exclusions kept per scene; folds kept across editor starts; two
+  Unity Hierarchies become two Mixer Hierarchies, and Unity's Hierarchy comes back when the setting is turned off.
+  Inspector: Edit Bounds handle, the shape list no longer rebuilds on every click, Escape cancels a rename, shape
+  weights outside 0-100, prefab assets refused, readable in the light skin. `mixer_tool`: start refuses assets, stroke
+  checks the brush, radius, strength and the Blender claim, a root target picks its edited mesh.
+- Review fixes, the Blender link (protocol 3, Mixer extension 0.2.0, installed by Open scene in Blender): Unity and
+  Blender check each other's protocol and say which side to update instead of reconnecting in a loop; the extension
+  asks Unity to prove it holds the link's token before sending anything. A mesh has one editing side at a time: Blender
+  while one of its objects is in an edit mode, Unity while a Mixer stroke runs on it, so a Mixer session no longer locks
+  Blender out and Blender's own edit is no longer taken back. Nothing from Blender is applied to a mesh it does not
+  hold, or to a session of another topology. Committing or reverting a mesh Blender edits ends that edit and sends
+  Unity's mesh again; Commit refuses while Blender edits. Meshes larger than a frame travel in chunks (up to 384 MB a
+  mesh), one at a time, and a mesh Unity cannot send is reported. A Blender edit is one undo step with every layer it
+  touched, deletes the shapes and groups deleted in Blender, and never brings back shapes Unity deleted or renamed
+  meanwhile. Nodes whose target FBX, materials, bones, light or camera changed are resent; renderers kept out of
+  Blender are listed as missing by Export for MCB (MCB refuses such an import instead of losing them). A `.blend` never
+  opened from Mixer links only when you press Connect. `MixerLink.Commit` returns null when nothing changed.
+- Requires Orbiters Toolkit 0.4.1, which holds the avatar gizmos (bones, weight paint, mesh edges, avatar budget) and
+  lets Mixer take the armature overlay's bone clicks.
 
 ## Get started
 

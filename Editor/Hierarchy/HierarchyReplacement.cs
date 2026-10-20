@@ -12,10 +12,12 @@ namespace Orbiters.Mixer.Editor
     /// <summary>
     /// "Replace Unity's Hierarchy" (on by default, off in the Orbiters settings): the Mixer Hierarchy takes the place
     /// of Unity's Hierarchy window, as the Logger does with the Console. Once the layout is loaded, every Hierarchy
-    /// docked somewhere gets a Mixer Hierarchy tab at its place (selected only if it was) and is closed; a Hierarchy
-    /// opened later (Window › General › Hierarchy, Ctrl+4, a layout change) is swapped the same way, half a second
-    /// later. Docking goes through Unity's internal <c>DockArea</c>; when a Unity version changes it the Mixer
-    /// Hierarchy opens as a window of its own, Unity's stays, and one warning says so.
+    /// docked somewhere gets a Mixer Hierarchy tab of its own at its place (selected only if it was) and is closed, so
+    /// two Hierarchies stay two; a Hierarchy opened later (Window › General › Hierarchy, Ctrl+4, a layout change) is
+    /// swapped the same way, half a second later, except one opened from the Mixer Hierarchy's "Open Unity's
+    /// Hierarchy". Turning the setting off puts Unity's Hierarchy back in each Mixer Hierarchy's place. Docking goes
+    /// through Unity's internal <c>DockArea</c>; when a Unity version changes it the Mixer Hierarchy opens as a window
+    /// of its own, Unity's stays, and one warning says so.
     /// </summary>
     [InitializeOnLoad]
     internal static class HierarchyReplacement
@@ -25,6 +27,8 @@ namespace Orbiters.Mixer.Editor
         private const string LoadedKey = "Orbiters.Mixer.HierarchyReplacement.Loaded";
         private const string PendingKey = "Orbiters.Mixer.HierarchyReplacement.StartupPending";
         private const string KnownKey = "Orbiters.Mixer.HierarchyReplacement.Known";
+        // Unity Hierarchies the user opened on purpose: kept for the whole editor session (script reloads included).
+        private const string KeptKey = "Orbiters.Mixer.HierarchyReplacement.Kept";
         private const string WarnedKey = "Orbiters.Mixer.HierarchyReplacement.Warned";
         private const BindingFlags Instance = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
         private const BindingFlags Static = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
@@ -32,12 +36,10 @@ namespace Orbiters.Mixer.Editor
         private static readonly Type HierarchyType;
         private static readonly Type DockAreaType;
         private static readonly FieldInfo ParentField;
-        private static readonly PropertyInfo LastInteractedProperty;
         private static readonly FieldInfo PanesField;
         private static readonly PropertyInfo SelectedProperty;
         private static readonly PropertyInfo ActualViewProperty;
         private static readonly MethodInfo AddTabMethod;
-        private static readonly MethodInfo RemoveTabMethod;
         private static readonly PropertyInfo MainWindowProperty;
 
         private static bool enabled;
@@ -55,12 +57,10 @@ namespace Orbiters.Mixer.Editor
                 var hostType = assembly.GetType("UnityEditor.HostView");
                 var containerType = assembly.GetType("UnityEditor.ContainerWindow");
                 ParentField = typeof(EditorWindow).GetField("m_Parent", Instance);
-                LastInteractedProperty = HierarchyType?.GetProperty("lastInteractedHierarchyWindow", Static);
                 PanesField = DockAreaType?.GetField("m_Panes", Instance);
                 SelectedProperty = DockAreaType?.GetProperty("selected", Instance);
                 ActualViewProperty = hostType?.GetProperty("actualView", Instance);
                 AddTabMethod = DockAreaType?.GetMethod("AddTab", Instance, null, new[] { typeof(int), typeof(EditorWindow), typeof(bool) }, null);
-                RemoveTabMethod = DockAreaType?.GetMethod("RemoveTab", Instance, null, new[] { typeof(EditorWindow), typeof(bool), typeof(bool) }, null);
                 MainWindowProperty = containerType?.GetProperty("mainWindow", Static);
             }
             catch (Exception) { }
@@ -78,13 +78,50 @@ namespace Orbiters.Mixer.Editor
         }
 
         internal static bool Enabled => enabled;
-        internal static bool CanDock => ParentField != null && DockAreaType != null && PanesField != null && SelectedProperty != null && ActualViewProperty != null && AddTabMethod != null && RemoveTabMethod != null;
+        internal static bool CanDock => ParentField != null && DockAreaType != null && PanesField != null && SelectedProperty != null && ActualViewProperty != null && AddTabMethod != null;
 
         internal static void SetEnabled(bool on)
         {
+            bool was = enabled;
             enabled = on;
             EditorPrefs.SetBool(PrefKey, on);
-            if (on) { SessionState.EraseString(KnownKey); ReplaceOpenHierarchies(); }
+            if (on) { SessionState.EraseString(KnownKey); SessionState.EraseString(KeptKey); ReplaceOpenHierarchies(); }
+            else if (was) RestoreUnityHierarchies();
+        }
+
+        /// <summary>Opens Unity's own Hierarchy beside the Mixer one and leaves it there for this editor session.</summary>
+        internal static void OpenUnityHierarchy()
+        {
+            EditorApplication.ExecuteMenuItem("Window/General/Hierarchy");
+            foreach (var hierarchy in OpenHierarchies()) Keep(hierarchy);
+        }
+
+        // The setting turned off: Unity's Hierarchy comes back where each docked Mixer Hierarchy is, and that one closes.
+        private static void RestoreUnityHierarchies()
+        {
+            if (!CanDock || HierarchyType == null) return;
+            foreach (var mine in Resources.FindObjectsOfTypeAll<MixerHierarchyWindow>())
+            {
+                if (mine == null || IsHidden(mine)) continue;
+                var area = DockAreaOf(mine);
+                if (area == null) continue;
+                try
+                {
+                    var unity = (EditorWindow)ScriptableObject.CreateInstance(HierarchyType);
+                    int index = IndexOf(area, mine);
+                    bool selected = ReferenceEquals(ActualViewProperty.GetValue(area), mine);
+                    int shown = (int)SelectedProperty.GetValue(area);
+                    AddTabMethod.Invoke(area, new object[] { index, unity, true });
+                    if (!selected) SelectedProperty.SetValue(area, shown >= index ? shown + 1 : shown);
+                    Keep(unity);
+                    mine.Close();
+                }
+                catch (Exception exception)
+                {
+                    var cause = exception is TargetInvocationException { InnerException: { } inner } ? inner : exception;
+                    Debug.LogWarning("[Mixer] Couldn't put Unity's Hierarchy back in the Mixer Hierarchy's place (" + cause.Message + "): open it from Window › General › Hierarchy.");
+                }
+            }
         }
 
         internal static void ReplaceOpenHierarchies()
@@ -114,7 +151,7 @@ namespace Orbiters.Mixer.Editor
             nextScan = EditorApplication.timeSinceStartup + 0.5;
             foreach (var hierarchy in OpenHierarchies())
             {
-                if (IsKnown(hierarchy)) continue;
+                if (IsKnown(hierarchy) || IsKept(hierarchy)) continue;
                 Replace(hierarchy, hierarchy == EditorWindow.focusedWindow);
                 break;
             }
@@ -123,33 +160,26 @@ namespace Orbiters.Mixer.Editor
         internal static bool Replace(EditorWindow hierarchy, bool focus)
         {
             if (hierarchy == null) return false;
-            var mine = FindMine();
+            MixerHierarchyWindow mine = null;
             try
             {
                 if (!CanDock) throw new NotSupportedException("this Unity version has no DockArea.AddTab");
                 var area = DockAreaOf(hierarchy);
-                var myArea = mine != null ? DockAreaOf(mine) : null;
-                bool selected = area == null || ReferenceEquals(ActualViewProperty.GetValue(area), hierarchy);
-                if (mine != null && area != null && ReferenceEquals(area, myArea))
+                if (area != null)
                 {
-                    if (selected) SelectedProperty.SetValue(area, IndexOf(area, mine));
-                }
-                else if (mine != null)
-                {
-                    if (selected && myArea != null && area != null)
+                    // Each Hierarchy gets the Mixer Hierarchy of its own dock area: another area never loses its tab (and
+                    // its split never collapses) because a second Hierarchy was swapped.
+                    mine = MineIn(area);
+                    bool selected = ReferenceEquals(ActualViewProperty.GetValue(area), hierarchy);
+                    if (mine == null)
                     {
-                        RemoveTabMethod.Invoke(myArea, new object[] { mine, true, true });
-                        AddTabMethod.Invoke(area, new object[] { IndexOf(area, hierarchy), mine, true });
+                        mine = ScriptableObject.CreateInstance<MixerHierarchyWindow>();
+                        int index = IndexOf(area, hierarchy);
+                        int shown = (int)SelectedProperty.GetValue(area);
+                        AddTabMethod.Invoke(area, new object[] { index, mine, true });
+                        if (!selected) SelectedProperty.SetValue(area, shown >= index ? shown + 1 : shown);
                     }
-                    else if (selected && myArea != null) SelectedProperty.SetValue(myArea, IndexOf(myArea, mine));
-                }
-                else if (area != null)
-                {
-                    mine = ScriptableObject.CreateInstance<MixerHierarchyWindow>();
-                    int index = IndexOf(area, hierarchy);
-                    int shown = (int)SelectedProperty.GetValue(area);
-                    AddTabMethod.Invoke(area, new object[] { index, mine, true });
-                    if (!selected) SelectedProperty.SetValue(area, shown >= index ? shown + 1 : shown);
+                    else if (selected) SelectedProperty.SetValue(area, IndexOf(area, mine));
                 }
                 else
                 {
@@ -179,17 +209,13 @@ namespace Orbiters.Mixer.Editor
             Debug.LogWarning("[Mixer] Couldn't put the Mixer Hierarchy in the Hierarchy's place (" + cause.Message + "), so Unity's stays open. Turn off \"Replace Unity's Hierarchy\" in the Mixer Hierarchy's menu to stop trying.");
         }
 
-        private static MixerHierarchyWindow FindMine()
+        // The Mixer Hierarchy docked in that area, if there is one.
+        private static MixerHierarchyWindow MineIn(object area)
         {
-            MixerHierarchyWindow first = null;
-            foreach (var window in Resources.FindObjectsOfTypeAll<MixerHierarchyWindow>())
-            {
-                if (window == null || IsHidden(window)) continue;
-                var area = DockAreaOf(window);
-                if (area == null || ReferenceEquals(ActualViewProperty.GetValue(area), window)) return window;
-                first ??= window;
-            }
-            return first;
+            if (!(PanesField.GetValue(area) is IList panes)) return null;
+            foreach (var pane in panes)
+                if (pane is MixerHierarchyWindow window && window != null && !IsHidden(window)) return window;
+            return null;
         }
 
         private static List<EditorWindow> OpenHierarchies()
@@ -229,5 +255,16 @@ namespace Orbiters.Mixer.Editor
         }
 
         private static string[] Known() => SessionState.GetString(KnownKey, string.Empty).Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+
+        private static bool IsKept(Object window) =>
+            Array.IndexOf(SessionState.GetString(KeptKey, string.Empty).Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries), window.GetInstanceID().ToString(CultureInfo.InvariantCulture)) >= 0;
+
+        private static void Keep(Object window)
+        {
+            if (window == null || IsKept(window)) return;
+            string kept = SessionState.GetString(KeptKey, string.Empty);
+            string id = window.GetInstanceID().ToString(CultureInfo.InvariantCulture);
+            SessionState.SetString(KeptKey, kept.Length == 0 ? id : kept + "," + id);
+        }
     }
 }

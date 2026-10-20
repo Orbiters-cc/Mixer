@@ -11,11 +11,11 @@ using UnityEngine;
 namespace Orbiters.Mixer.Editor.MCP
 {
     [McpForUnityTool("mixer_tool", Description =
-        "Drive and verify Orbiters Mixer (Blender's tools inside the Unity editor) without the desktop; never changes the selection or the user's windows. " +
+        "Drive and verify Orbiters Mixer (Blender's tools inside the Unity editor) without the desktop; never changes the selection. start switches the Scene view's Mixer mode as the mode strip does (the Mixer window and overlays follow). " +
         "status: the open sessions (targets with vertices, shapes, layer, bones), the Scene tool's mode and brush, Mixer's history and the Blender link. " +
-        "start {target, mode?}: edit a renderer's mesh in Mixer (target: instance ID, Mixer node id or hierarchy path 'Root/Child' / 'Scene:Root/Child'; an object without a renderer takes its largest skinned mesh) and pick the mode sculpt | weights | armature | none. " +
-        "stroke {brush?, from, to, radius?, strength?, steps?, invert?, target?}: a sculpt stroke in world space between two points ([x,y,z]), recorded as one Undo step like a mouse stroke; brushes Grab, Smooth, Inflate, Flatten, Clay, Pinch, Crease, Mask. " +
-        "undo / redo: Mixer's history through Unity's Undo. commit {target?}: save the edits as a native mesh asset shown on the renderer (one Undo step); revert {target?}: the original mesh back. " +
+        "start {target, mode?}: edit a renderer's mesh in Mixer (target: an object of an open scene by instance ID, Mixer node id or hierarchy path 'Root/Child' / 'Scene:Root/Child'; an object without a renderer takes its largest skinned mesh) and pick the mode sculpt | weights | armature (rest-pose editing) | none. " +
+        "stroke {brush?, from, to, radius?, strength?, steps?, invert?, target?}: a sculpt stroke in world space between two points ([x,y,z]), recorded as one Undo step like a mouse stroke; brushes Grab, Smooth, Inflate, Flatten, Clay, Pinch, Crease, Mask; radius 0.001..5 m, strength 0..1. " +
+        "undo / redo: Mixer's history through Unity's Undo. commit {target?}: save the edits as a native mesh asset shown on the renderer (one Undo step; a mesh without edits just leaves Mixer); revert {target?}: the original mesh back, every edit dropped (no undo). target defaults to the focused mesh; an object holding several edited meshes must name one. " +
         "link_status: the Blender link (port, peer, meshes waiting, log tail). hierarchy {search?, limit?}: the scene objects with Mixer's flags (kept out of Blender, edited in Blender, edited in Mixer); search takes words, t:Type and c:Component like the Mixer Hierarchy. " +
         "exclude {target, excluded}: keep an object and its children out of the Blender project, or send them back.")]
     public static class MixerMcpTool
@@ -65,6 +65,11 @@ namespace Orbiters.Mixer.Editor.MCP
                     {
                         var target = TargetOf(p);
                         string name = target.Name;
+                        if (!target.Document.Changed)
+                        {
+                            MixerSession.Commit(target);
+                            return new SuccessResponse(name + " had no edits: nothing was written, its Mixer session is closed and its own mesh stays.", new { asset = (string)null, status = Status() });
+                        }
                         var mesh = MixerSession.Commit(target);
                         string path = mesh != null ? AssetDatabase.GetAssetPath(mesh) : null;
                         return new SuccessResponse("Committed " + name + (path != null ? " to " + path : "") + ".", new { asset = path, vertices = mesh != null ? mesh.vertexCount : 0, blendShapes = mesh != null ? mesh.blendShapeCount : 0, status = Status() });
@@ -95,6 +100,9 @@ namespace Orbiters.Mixer.Editor.MCP
         {
             if (EditorApplication.isCompiling || EditorApplication.isUpdating) throw new InvalidOperationException("Wait for Unity to be idle.");
             var go = ResolveObject(p.target) ?? throw new ArgumentException("target not found: give an instance ID, a Mixer node id or a hierarchy path such as 'Avatar/Body'.");
+            // Only objects of an open scene: a prefab or model asset would get a working mesh that is never saved.
+            if (EditorUtility.IsPersistent(go) || !go.scene.IsValid() || !go.scene.isLoaded)
+                throw new ArgumentException(go.name + " is an asset, not an object of an open scene: put it in a scene and edit that instance.");
             var renderer = RendererOf(go) ?? throw new ArgumentException(go.name + " has no mesh to edit (no SkinnedMeshRenderer or MeshFilter on it or under it).");
             var target = MixerSession.TargetOf(renderer);
             if (target == null)
@@ -103,8 +111,9 @@ namespace Orbiters.Mixer.Editor.MCP
                 target = MixerSession.Edit(renderer);
             }
             var mode = ParseMode(p.mode) ?? (MixerSceneTool.Mode == MixerMode.None ? MixerMode.Sculpt : MixerSceneTool.Mode);
-            MixerSceneTool.Mode = mode;
+            // The focus first: Weight Paint then shows (and paints) this mesh's own bones.
             MixerSceneTool.FocusTarget = target;
+            MixerSceneTool.Mode = mode;
             return new SuccessResponse("Editing " + renderer.name + " in Mixer (" + mode + " mode): " + target.Document.VertexCount + " vertices, " + target.Document.ShapeOrder.Count + " blendshapes, " + target.Document.BoneCount + " bones.", Status());
         }
 
@@ -112,10 +121,14 @@ namespace Orbiters.Mixer.Editor.MCP
         {
             var target = TargetOf(p);
             if (p.from == null || p.from.Length != 3 || p.to == null || p.to.Length != 3) throw new ArgumentException("from and to are world positions [x,y,z].");
-            var brush = string.IsNullOrEmpty(p.brush) ? MixerSceneTool.ActiveBrush : Brushes.Named(p.brush);
+            if (p.from.Concat(p.to).Any(v => float.IsNaN(v) || float.IsInfinity(v))) throw new ArgumentException("from and to must be finite numbers.");
+            var brush = string.IsNullOrEmpty(p.brush) ? MixerSceneTool.ActiveBrush : Brushes.TryNamed(p.brush);
             if (brush == null) throw new ArgumentException("Unknown brush '" + p.brush + "'. Brushes: " + string.Join(", ", Brushes.All.Select(b => b.Name)) + ".");
+            if (MixerLinkService.IsBlenderOwned(target)) throw new InvalidOperationException(target.Name + " is being edited in Blender: leave its edit mode there first.");
             float radius = p.radius ?? MixerSceneTool.Radius;
             float strength = p.strength ?? MixerSceneTool.Strength;
+            if (float.IsNaN(radius) || radius < 0.001f || radius > 5f) throw new ArgumentException("radius is in metres, from 0.001 to 5 (got " + radius + ").");
+            if (float.IsNaN(strength) || strength < 0f || strength > 1f) throw new ArgumentException("strength goes from 0 to 1 (got " + strength + ").");
             int steps = Mathf.Clamp(p.steps ?? 8, 1, 256);
             var from = new Vector3(p.from[0], p.from[1], p.from[2]);
             var to = new Vector3(p.to[0], p.to[1], p.to[2]);
@@ -138,11 +151,20 @@ namespace Orbiters.Mixer.Editor.MCP
                 if (token.StartsWith("t:", StringComparison.OrdinalIgnoreCase) || token.StartsWith("c:", StringComparison.OrdinalIgnoreCase)) types.Add(token.Substring(2));
                 else words.Add(token);
             }
-            var settings = MixerLinkService.SettingsFor(UnityEngine.SceneManagement.SceneManager.GetActiveScene(), create: false);
-            var excludedIds = new HashSet<string>(settings != null ? settings.excludedIds : new List<string>());
-            var owned = new HashSet<string>(MixerLinkService.BlenderOwned);
+            // Exclusions live in each object's own scene; both sets are resolved once to objects (an id per object
+            // would cost a GlobalObjectId lookup for every object of the scene).
+            var excludedObjects = new HashSet<GameObject>();
+            foreach (var scene in SceneReference.Loaded())
+            {
+                var settings = MixerLinkService.SettingsFor(scene, create: false);
+                if (settings == null) continue;
+                foreach (string id in settings.excludedIds)
+                    if (SceneGraphExporter.Resolve(id) is GameObject excludedObject && excludedObject.scene == scene) excludedObjects.Add(excludedObject);
+            }
+            var ownedObjects = new HashSet<GameObject>();
+            foreach (string id in MixerLinkService.BlenderOwned)
+                if (SceneGraphExporter.Resolve(id) is GameObject ownedObject) ownedObjects.Add(ownedObject);
             var edited = new HashSet<GameObject>(MixerSession.Targets.Where(t => t.Alive).Select(t => t.Renderer.gameObject));
-            bool needIds = excludedIds.Count > 0 || owned.Count > 0;
             var rows = new List<object>();
             int total = 0;
             Action<Transform, int, string, bool> walk = null;
@@ -151,8 +173,7 @@ namespace Orbiters.Mixer.Editor.MCP
                 var go = t.gameObject;
                 if ((go.hideFlags & HideFlags.HideInHierarchy) != 0) return;
                 string path = string.IsNullOrEmpty(parentPath) ? go.name : parentPath + "/" + go.name;
-                string id = needIds ? SceneGraphExporter.IdOf(go) : null;
-                bool excluded = excludedByParent || (id != null && excludedIds.Contains(id));
+                bool excluded = excludedByParent || excludedObjects.Contains(go);
                 bool matches = words.All(w => go.name.IndexOf(w, StringComparison.OrdinalIgnoreCase) >= 0)
                                && types.All(name => go.GetComponents<Component>().Any(c => c != null && (c.GetType().Name.Equals(name, StringComparison.OrdinalIgnoreCase) || c.GetType().FullName.EndsWith("." + name, StringComparison.OrdinalIgnoreCase))));
                 if (matches)
@@ -164,7 +185,7 @@ namespace Orbiters.Mixer.Editor.MCP
                             name = go.name, path = go.scene.name + ":" + path, instanceId = go.GetInstanceID(), depth, active = go.activeInHierarchy,
                             children = t.childCount, prefab = PrefabUtility.IsPartOfPrefabInstance(go),
                             renderer = go.GetComponent<SkinnedMeshRenderer>() != null ? "skinned" : go.GetComponent<MeshFilter>() != null ? "mesh" : null,
-                            excludedFromBlender = excluded, editedInBlender = id != null && owned.Contains(id), editedInMixer = edited.Contains(go),
+                            excludedFromBlender = excluded, editedInBlender = ownedObjects.Contains(go), editedInMixer = edited.Contains(go),
                         });
                 }
                 for (int i = 0; i < t.childCount; i++) walk(t.GetChild(i), depth + 1, path, excluded);
@@ -179,8 +200,17 @@ namespace Orbiters.Mixer.Editor.MCP
             if (!string.IsNullOrEmpty(p.target))
             {
                 var go = ResolveObject(p.target) ?? throw new ArgumentException("target not found: " + p.target);
-                var renderer = RendererOf(go);
-                var found = renderer != null ? MixerSession.TargetOf(renderer) : null;
+                // The object's own mesh, else the edited meshes under it (an avatar root): the focused one, or the only one.
+                var own = go.GetComponent<Renderer>();
+                var found = own != null ? MixerSession.TargetOf(own) : null;
+                if (found == null)
+                {
+                    var under = MixerSession.Targets.Where(t => t.Alive && t.Renderer.transform.IsChildOf(go.transform)).ToList();
+                    var focus = MixerSceneTool.FocusTarget;
+                    if (focus != null && under.Contains(focus)) found = focus;
+                    else if (under.Count == 1) found = under[0];
+                    else if (under.Count > 1) throw new ArgumentException(go.name + " holds " + under.Count + " edited meshes (" + string.Join(", ", under.Select(t => t.Name)) + "): name one.");
+                }
                 if (found == null) throw new InvalidOperationException(go.name + " is not being edited in Mixer: call start first.");
                 return found;
             }
@@ -206,9 +236,9 @@ namespace Orbiters.Mixer.Editor.MCP
         private static Renderer RendererOf(GameObject go)
         {
             var own = go.GetComponent<Renderer>();
-            if (own is SkinnedMeshRenderer || (own is MeshRenderer && go.GetComponent<MeshFilter>() != null)) return own;
-            return go.GetComponentsInChildren<SkinnedMeshRenderer>(true).Where(s => s.sharedMesh != null).OrderByDescending(s => s.sharedMesh.vertexCount).FirstOrDefault()
-                   ?? (Renderer)go.GetComponentsInChildren<MeshRenderer>(true).FirstOrDefault(m => m.GetComponent<MeshFilter>()?.sharedMesh != null);
+            if ((own is SkinnedMeshRenderer || own is MeshRenderer) && MixerModes.MeshOf(own) != null) return own;
+            return go.GetComponentsInChildren<SkinnedMeshRenderer>(true).Where(s => s.sharedMesh != null && !MixerModes.IsHelper(s)).OrderByDescending(s => s.sharedMesh.vertexCount).FirstOrDefault()
+                   ?? (Renderer)go.GetComponentsInChildren<MeshRenderer>(true).FirstOrDefault(m => !MixerModes.IsHelper(m) && MixerModes.MeshOf(m) != null);
         }
 
         private static MixerMode? ParseMode(string mode)

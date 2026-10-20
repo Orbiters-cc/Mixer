@@ -20,7 +20,16 @@ namespace Orbiters.Mixer.Editor
     internal static class BlenderProjectLauncher
     {
         public const string ExtensionId = "orbiters_mixer";
-        public const string ExtensionVersion = "0.1.0";
+        /// <summary>
+        /// The extension this Mixer needs (it speaks <see cref="MixerLinkProtocol.ProtocolVersion"/>). The version goes up
+        /// with every change of the link protocol, so Open scene in Blender replaces an older extension.
+        /// </summary>
+        public const string ExtensionVersion = "0.2.0";
+        /// <summary>
+        /// SHA-256 (hex) of the release zip of <see cref="ExtensionVersion"/>: a downloaded zip that does not match is not
+        /// installed. Filled in by the release; empty, the download is installed after a warning in Blender's console.
+        /// </summary>
+        public const string ExtensionSha256 = "";
         private const string ReleaseUrlTemplate = "https://github.com/Orbiters-cc/Mixer-Blender-Add-on/releases/download/v{0}/orbiters_mixer-{0}.zip";
         public const string ZipPref = "Orbiters.Mixer.BlenderExtensionZip";
         public const string SourcePref = "Orbiters.Mixer.BlenderExtensionSource";
@@ -71,6 +80,8 @@ namespace Orbiters.Mixer.Editor
                     repository = Repository,
                     downloadUrl = DownloadUrl,
                     zipPath = EditorPrefs.GetString(ZipPref, ""),
+                    // Only the release's own zip has a known checksum (a URL of the user's own is theirs to trust).
+                    sha256 = EditorPrefs.HasKey(UrlPref) ? "" : ExtensionSha256,
                     sourceDir = EditorPrefs.GetString(SourcePref, ""),
                 },
             };
@@ -106,6 +117,7 @@ import json
 import os
 import subprocess
 import sys
+import hashlib
 import tempfile
 import traceback
 import urllib.request
@@ -152,6 +164,17 @@ def _zip_for(extension):
     target = os.path.join(tempfile.gettempdir(), os.path.basename(url.split('?')[0]) or 'extension.zip')
     _log('Downloading ' + url)
     urllib.request.urlretrieve(url, target)
+    expected = (extension.get('sha256') or '').strip().lower()
+    if expected:
+        digest = hashlib.sha256()
+        with open(target, 'rb') as handle:
+            for block in iter(lambda: handle.read(1 << 20), b''):
+                digest.update(block)
+        if digest.hexdigest() != expected:
+            os.remove(target)
+            raise RuntimeError('The downloaded extension does not match the checksum Mixer expects: not installed.')
+    else:
+        _log('No checksum is known for ' + url + ': installed as downloaded.')
     return target
 
 

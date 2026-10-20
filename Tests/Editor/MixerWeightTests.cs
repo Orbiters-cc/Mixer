@@ -144,6 +144,63 @@ namespace Orbiters.Mixer.Editor.Tests
             Assert.That(again.Document.Group("Sash"), Is.Not.Null, "removing a group undoes");
         }
 
+        // Another skinned cylinder of the fixture on the given bones (of the body's rig, or its own).
+        private SkinnedMeshRenderer Skinned(string name, Transform[] bones)
+        {
+            var go = new GameObject(name);
+            go.transform.SetParent(root.transform, false);
+            var skinned = go.AddComponent<SkinnedMeshRenderer>();
+            var m = MixerCoreTestsFixtures.Cylinder(16, 8, 0.35f, 2f);
+            AssetDatabase.CreateAsset(m, "Assets/Orbiters/MixerTests/" + name + "Fixture.asset");
+            skinned.sharedMesh = m;
+            skinned.bones = bones;
+            skinned.rootBone = bones[0];
+            return skinned;
+        }
+
+        [Test]
+        public void TheWeightChannelBelongsToItsMesh()
+        {
+            var lower = root.transform.Find("Leg_L");
+            var upper = root.transform.Find("Leg_R");
+            var hand = new GameObject("Hand").transform;
+            hand.SetParent(root.transform, false);
+            // The shirt lists the same two bones the other way round; the glove has Leg_L and a Hand the body has not.
+            var shirt = MixerSession.Edit(Skinned("Shirt", new[] { upper, lower }));
+            var glove = MixerSession.Edit(Skinned("Glove", new[] { lower, hand }));
+            var body = MixerSession.Edit(renderer);
+            MixerSceneTool.FocusTarget = body;
+            MixerSceneTool.Mode = MixerMode.Weights;
+            MixerSceneTool.SetChannel(body, WeightChannel.OfBone(1));
+            Assert.That(MixerSceneTool.Channel.Bone, Is.EqualTo(1), "the body paints Leg_R");
+            Assert.That(MixerSceneTool.ChannelOn(shirt).Bone, Is.EqualTo(0), "the shirt reads the same bone at its own index");
+            Assert.That(MixerSceneTool.ChannelOn(glove).IsNone, Is.True, "the glove's index 1 is its Hand, not Leg_R");
+
+            var on = MixerSceneTool.WeightStrokeChannel(shirt, out string refusal);
+            Assert.That(refusal, Is.Null);
+            Assert.That(on.Bone, Is.EqualTo(0), "a stroke on the shirt paints its Leg_R");
+            Assert.That(MixerSceneTool.FocusTarget, Is.SameAs(shirt), "the stroked mesh becomes the focus");
+            Assert.That(MixerSceneTool.Channel.Bone, Is.EqualTo(0));
+
+            on = MixerSceneTool.WeightStrokeChannel(glove, out refusal);
+            Assert.That(refusal, Is.Not.Null, "the glove's stroke is refused instead of painting its Hand");
+            Assert.That(on.IsNone, Is.True);
+            Assert.That(MixerSceneTool.FocusTarget, Is.SameAs(glove), "the glove's own weights show");
+            var shown = MixerSceneTool.Channel;
+            Assert.That(shown.IsNone, Is.False, "with its heaviest bone");
+            on = MixerSceneTool.WeightStrokeChannel(glove, out refusal);
+            Assert.That(refusal, Is.Null, "the next stroke paints what the glove shows");
+            Assert.That(on.Bone, Is.EqualTo(shown.Bone));
+
+            // A vertex group goes along by name, only to a mesh that has it.
+            MixerSession.AddGroup(body, "Belt");
+            MixerSceneTool.SetChannel(body, WeightChannel.OfGroup("Belt"));
+            Assert.That(MixerSceneTool.FocusTarget, Is.SameAs(body), "picking a channel of a mesh focuses it");
+            Assert.That(MixerSceneTool.ChannelOn(shirt).IsNone, Is.True, "the shirt has no Belt group");
+            MixerSession.AddGroup(shirt, "Belt");
+            Assert.That(MixerSceneTool.ChannelOn(shirt).Group, Is.EqualTo("Belt"));
+        }
+
         [Test]
         public void MirrorBoneNamesFollowTheUsualConventions()
         {

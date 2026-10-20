@@ -27,7 +27,8 @@ namespace Orbiters.Mixer.Editor
             var doc = Target.Document;
             for (int i = 0; i < Indices.Length; i++) doc.SetInfluences(Indices[i], values[i]);
             doc.Revision++;
-            Target.FlushWeights(force: true);
+            // Undone with others (a jump in the Undo History window), the upload and skinning wait for the last one.
+            if (!MixerHistory.Applying) Target.FlushWeights(force: true);
         }
     }
 

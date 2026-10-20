@@ -10,7 +10,7 @@ namespace Orbiters.Mixer.Editor
     /// <summary>
     /// One renderer being edited: its original mesh (untouched), the working mesh shown in its place, the document
     /// the tools edit, and the world-space picture of it brushes aim at (positions through the skinning and the
-    /// other blendshapes, indexed by a BVH).
+    /// other blendshapes, indexed by a BVH built when a brush first needs it).
     /// </summary>
     internal sealed class EditTarget
     {
@@ -20,8 +20,9 @@ namespace Orbiters.Mixer.Editor
         public readonly Mesh Working;
         public readonly MeshDocument Document;
         public readonly string Id;
+        /// <summary>The renderer's instance id, to find it again when an undo brings it back.</summary>
+        public readonly int RendererId;
         public SkinningMap Skin;
-        public MeshBvh Bvh;
         /// <summary>World position of every vertex as shown (active layer + the other shapes' weights, skinned).</summary>
         public Vector3[] World;
         private readonly Vector3[] display;
@@ -31,21 +32,49 @@ namespace Orbiters.Mixer.Editor
         private MirrorMap mirror;
         private int flushedRevision = -1;
         private int flushes;
+        private MeshBvh bvh;
+        private bool worldStale;
+
+        /// <summary>The original's id (<see cref="SceneGraphExporter.IdOf"/>), read once.</summary>
+        public string OriginalId => originalId ?? (originalId = SceneGraphExporter.IdOf(Original));
+        private string originalId;
 
         public string Name => Renderer != null ? Renderer.name : "(gone)";
         public bool Alive => Renderer != null && Working != null;
         public SkinnedMeshRenderer Skinned => Renderer as SkinnedMeshRenderer;
-        public MirrorMap Mirror => mirror ?? (mirror = MirrorMap.Build(Document.Original.vertices, Document.Neighbors, Document.Original.bounds.size.magnitude * 1e-4f));
+        public MirrorMap Mirror => mirror ?? (mirror = MirrorMap.Build(Document.OriginalPositions, Document.Neighbors, Document.Original.bounds.size.magnitude * 1e-4f));
+
+        /// <summary>
+        /// The triangles of the world picture, for brushes and picking (built on first use). After a weight upload during a
+        /// stroke the picture catches up at the stroke's end or the next <see cref="RefreshWorld"/>, not on every query.
+        /// </summary>
+        public MeshBvh Bvh
+        {
+            get
+            {
+                if (bvh == null) { bvh = MeshBvh.Build(World, Document.Triangles); bvh.Mirrored = Mirrored(); }
+                return bvh;
+            }
+        }
+
+        // A negative scale turns the front faces round in the world picture: raycasts and face normals follow.
+        private bool Mirrored()
+        {
+            var toWorld = Skin?.ToWorld;
+            float determinant = toWorld != null && toWorld.Length > 0 ? toWorld[0].determinant : Renderer != null ? Renderer.transform.localToWorldMatrix.determinant : 1f;
+            return determinant < 0f;
+        }
 
         public EditTarget(Renderer renderer, Mesh original, Mesh working)
         {
             Renderer = renderer;
+            RendererId = renderer.GetInstanceID();
             Filter = renderer is MeshRenderer ? renderer.GetComponent<MeshFilter>() : null;
             Original = original;
             Working = working;
             // The object's id (what the link and the hierarchy call the node), with a fallback for objects that have none.
             Id = SceneGraphExporter.IdOf(renderer.gameObject);
-            Document = new MeshDocument(original);
+            Document = new MeshDocument(original, working);
             display = new Vector3[Document.VertexCount];
             Document.DisplayPositions(display);
             World = new Vector3[Document.VertexCount];
@@ -64,10 +93,30 @@ namespace Orbiters.Mixer.Editor
         /// <summary>Brings the world picture up to date with the pose and shape weights; true when it changed.</summary>
         public bool RefreshWorld()
         {
-            bool changed = Skin.Refresh(Renderer, Working);
+            bool changed = Skin.Refresh(Renderer, Working) || worldStale;
+            worldStale = false;
             changed |= RefreshShapeOffset();
             if (changed) RebuildWorld();
+            if (bvh != null) bvh.Mirrored = Mirrored();
             return changed;
+        }
+
+        /// <summary>The skin changed in a way the next <see cref="RefreshWorld"/> (or a brush) catches up with, not now.</summary>
+        public void MarkWorldStale()
+        {
+            Skin.MarkStale();
+            worldStale = true;
+        }
+
+        // The working mesh's shapes the renderer must not show: the edited layer (shown through the working vertices),
+        // the original a renamed active layer carries, and deleted shapes no live shape carries.
+        private bool Hidden(string name)
+        {
+            var doc = Document;
+            if (name == doc.Layer) return true;
+            if (!doc.DeletedShapes.Contains(name)) return false;
+            if (doc.Layer != null && doc.ShapeEdits.TryGetValue(doc.Layer, out var active) && active.Source == name) return true;
+            return !doc.IsCarried(name);
         }
 
         // The other blendshapes at their renderer weights, in mesh space, added before skinning as Unity does.
@@ -85,7 +134,7 @@ namespace Orbiters.Mixer.Editor
                     if (w != 0f) hash = unchecked(hash * 31 + i * 7919 + (int)(w * 1000f));
                 }
             }
-            hash = unchecked(hash * 31 + (Document.Layer != null ? Document.Layer.GetHashCode() : 0));
+            hash = unchecked(hash * 31 + (Document.Layer != null ? Document.Layer.GetHashCode() : 0) + Document.DeletedShapes.Count * 104729);
             if (shapeOffset != null && hash == shapeOffsetHash) return false;
             shapeOffsetHash = hash;
             if (shapeOffset == null) shapeOffset = new Vector3[Document.VertexCount];
@@ -97,7 +146,7 @@ namespace Orbiters.Mixer.Editor
                 float w = skinned.GetBlendShapeWeight(i) / 100f;
                 if (w == 0f) continue;
                 string name = mesh.GetBlendShapeName(i);
-                if (name == Document.Layer) continue;
+                if (Hidden(name)) continue;
                 int frame = mesh.GetBlendShapeFrameCount(i) - 1;
                 mesh.GetBlendShapeFrameVertices(i, frame, deltas, null, null);
                 for (int v = 0; v < deltas.Length; v++) shapeOffset[v] += deltas[v] * w;
@@ -115,14 +164,15 @@ namespace Orbiters.Mixer.Editor
                 if (shapeOffset != null) p += shapeOffset[v];
                 World[v] = toWorld[v].MultiplyPoint3x4(p);
             }
-            if (Bvh == null) Bvh = MeshBvh.Build(World, Document.Triangles); else Bvh.Refit();
+            bvh?.Refit();
         }
 
         /// <summary>Applies the document's dirty vertices to the world picture (after a brush step or an undo).</summary>
         public void AfterEdit(IReadOnlyList<int> moved, bool fullRefresh = false)
         {
-            if (fullRefresh)
+            if (fullRefresh || worldStale)
             {
+                if (worldStale) { Skin.Refresh(Renderer, Working); worldStale = false; }
                 RefreshShapeOffset();
                 RebuildWorld();
                 return;
@@ -135,33 +185,32 @@ namespace Orbiters.Mixer.Editor
                 if (shapeOffset != null) p += shapeOffset[v];
                 World[v] = toWorld[v].MultiplyPoint3x4(p);
             }
-            Bvh.RefitVertices(moved, Document.Neighbors);
+            bvh?.RefitVertices(moved, Document.Neighbors);
         }
 
-        /// <summary>The active layer changed: the shown positions and the other shapes' weights are different now.</summary>
+        /// <summary>The active layer changed: the shown positions, normals and the other shapes' weights are different now.</summary>
         public void AfterLayerChange()
         {
             ApplyLayerWeight();
             shapeOffsetHash = 0;
             RefreshShapeOffset();
             RebuildWorld();
-            Document.MarkEdited(new int[0]);
-            for (int v = 0; v < Document.VertexCount; v++) Document.Dirty.Add(v);
-            Document.RefreshNormals(new List<int>(), display);
+            Document.MarkAllDirty();
             RecomputeAllNormals();
         }
 
         // While a shape is edited the renderer shows it at 100 % through the working vertices, so its own weight is held
-        // at 0 (else it would show twice); the weight it had comes back when another layer is picked.
+        // at 0 (else it would show twice); the weight it had comes back when another layer is picked. Deleted shapes are
+        // held at 0 too, as they will not be in the commit.
         private void ApplyLayerWeight()
         {
             var skinned = Skinned;
-            if (skinned == null) return;
-            if (savedWeight == null) { savedWeight = new float[Working.blendShapeCount]; for (int i = 0; i < savedWeight.Length; i++) savedWeight[i] = float.NaN; }
+            if (skinned == null || Working == null) return;
+            if (savedWeight == null || savedWeight.Length != Working.blendShapeCount) { savedWeight = new float[Working.blendShapeCount]; for (int i = 0; i < savedWeight.Length; i++) savedWeight[i] = float.NaN; }
             for (int i = 0; i < Working.blendShapeCount; i++)
             {
                 string name = Working.GetBlendShapeName(i);
-                if (name == Document.Layer)
+                if (Hidden(name))
                 {
                     if (float.IsNaN(savedWeight[i])) savedWeight[i] = skinned.GetBlendShapeWeight(i);
                     skinned.SetBlendShapeWeight(i, 0f);
@@ -178,7 +227,7 @@ namespace Orbiters.Mixer.Editor
         public void RestoreWeights()
         {
             var skinned = Skinned;
-            if (skinned == null || savedWeight == null) return;
+            if (skinned == null || savedWeight == null || Working == null) return;
             for (int i = 0; i < savedWeight.Length && i < Working.blendShapeCount; i++)
                 if (!float.IsNaN(savedWeight[i])) { skinned.SetBlendShapeWeight(i, savedWeight[i]); savedWeight[i] = float.NaN; }
         }
@@ -202,27 +251,61 @@ namespace Orbiters.Mixer.Editor
             ApplyLayerWeight();
         }
 
+        /// <summary>
+        /// The renderer's weight for each shape a commit writes, by name: what it shows now for a shape kept or renamed
+        /// (with the held weights given back), 0 for a new one. Call after <see cref="RestoreWeights"/>.
+        /// </summary>
+        public Dictionary<string, float> WeightsByName()
+        {
+            var result = new Dictionary<string, float>();
+            var skinned = Skinned;
+            if (skinned == null || Working == null) return result;
+            var doc = Document;
+            foreach (string name in doc.LiveShapes())
+            {
+                string source = doc.ShapeEdits.TryGetValue(name, out var layer) ? layer.Source : name;
+                int index = source != null ? Working.GetBlendShapeIndex(source) : -1;
+                float weight = index >= 0 ? skinned.GetBlendShapeWeight(index) : 0f;
+                if (index >= 0 && savedWeight != null && index < savedWeight.Length && !float.IsNaN(savedWeight[index])) weight = savedWeight[index];
+                result[name] = weight;
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// The normals as a commit would make them, for the active layer: the original's, recomputed where the base
+        /// moved, plus the active shape's turn of the welded normals (what its normal deltas will be).
+        /// </summary>
         public void RecomputeAllNormals()
         {
             var doc = Document;
-            Document.DisplayPositions(display);
+            doc.DisplayPositions(display);
             var normals = doc.Normals;
-            Array.Clear(normals, 0, normals.Length);
-            var tris = doc.Triangles;
-            for (int t = 0; t < tris.Length; t += 3)
+            Array.Copy(doc.OriginalNormals, normals, normals.Length);
+            bool layerMoves = false;
+            Vector3[] deltas = null;
+            if (doc.Layer != null && doc.ShapeEdits.TryGetValue(doc.Layer, out var layer))
             {
-                int a = tris[t], b = tris[t + 1], c = tris[t + 2];
-                var n = Vector3.Cross(display[b] - display[a], display[c] - display[a]);
-                normals[a] += n; normals[b] += n; normals[c] += n;
+                deltas = layer.Deltas;
+                for (int v = 0; v < deltas.Length && !layerMoves; v++) layerMoves = deltas[v].sqrMagnitude > 0f;
             }
-            var neighbors = doc.Neighbors;
-            for (int w = 0; w < neighbors.WeldedCount; w++)
+            if (doc.MovedBase.Count > 0 || layerMoves)
             {
-                var sum = Vector3.zero;
-                foreach (int m in neighbors.Members[w]) sum += normals[m];
-                if (sum.sqrMagnitude < 1e-20f) continue;
-                sum.Normalize();
-                foreach (int m in neighbors.Members[w]) normals[m] = sum;
+                var weldedBase = MeshBuilder.WeldedNormals(doc.Positions, doc);
+                if (doc.MovedBase.Count > 0)
+                    foreach (int v in MeshBuilder.MovedRing(doc)) normals[v] = weldedBase[v];
+                if (layerMoves)
+                {
+                    var shaped = MeshBuilder.WeldedNormals(display, doc);
+                    for (int v = 0; v < normals.Length; v++)
+                    {
+                        var d = shaped[v] - weldedBase[v];
+                        if (d.sqrMagnitude < 1e-12f) continue;
+                        var n = normals[v] + d;
+                        float length = Mathf.Sqrt(n.sqrMagnitude);
+                        if (length > 0f) normals[v] = n / length;
+                    }
+                }
             }
             for (int v = 0; v < normals.Length; v++) doc.Dirty.Add(v);
         }
@@ -251,7 +334,11 @@ namespace Orbiters.Mixer.Editor
         public WeightChannel ShownChannel = WeightChannel.None;
         private double lastWeightUpload;
 
-        /// <summary>Uploads the influences to the working mesh when they changed (throttled unless forced), and refreshes the skinning and overlay.</summary>
+        /// <summary>
+        /// Uploads the influences to the working mesh when they changed (throttled unless forced) and refreshes the
+        /// overlay. Forced (a stroke's end, an undo) it also brings the skinning and the world picture up to date; while a
+        /// stroke paints they catch up at its end, so a stroke over a large mesh stays light.
+        /// </summary>
         public void FlushWeights(bool force)
         {
             var doc = Document;
@@ -264,21 +351,27 @@ namespace Orbiters.Mixer.Editor
             finally { perVertex.Dispose(); weights.Dispose(); }
             doc.WeightsDirty = false;
             Skin.InvalidateWeights();
-            Skin.Refresh(Renderer, Working);
-            RebuildWorld();
+            if (force)
+            {
+                Skin.Refresh(Renderer, Working);
+                worldStale = false;
+                RebuildWorld();
+            }
+            else worldStale = true;
             RefreshOverlay();
         }
 
-        /// <summary>Uploads the document's bind poses to the working mesh and refreshes the skinning.</summary>
+        /// <summary>
+        /// Uploads the document's bind poses to the working mesh. The world picture catches up when a brush or the next
+        /// <see cref="RefreshWorld"/> needs it (a bone drag in rest-pose editing uploads every frame for every rig mate).
+        /// </summary>
         public void FlushBindposes()
         {
             var doc = Document;
             if (!doc.BindPosesDirty || Working == null) return;
             Working.bindposes = doc.BindPoses;
             doc.BindPosesDirty = false;
-            Skin.InvalidateWeights();
-            Skin.Refresh(Renderer, Working);
-            RebuildWorld();
+            MarkWorldStale();
         }
 
         /// <summary>A vertex group changed: the overlay shows it when it is the shown channel.</summary>

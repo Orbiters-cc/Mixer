@@ -37,11 +37,8 @@ namespace Orbiters.Mixer.Editor
             var saveRow = MixerUi.Row();
             saveRow.style.marginTop = 8;
             saveRow.Add(MixerUi.Spacer());
-            saveAsButton = MixerUi.Pill("Save as…", () =>
-            {
-                string path = EditorUtility.SaveFilePanel("Save render", "", "render.png", "png");
-                if (!string.IsNullOrEmpty(path) && MixerRenderer.LastPath != null) { File.Copy(MixerRenderer.LastPath, path, true); toasts.Show("Saved " + Path.GetFileName(path)); }
-            }, "ghost", IconGlyph.Download, "Save the PNG anywhere");
+            // A file dialog opens on the click, not the press (a dialog under a held button swallows its release).
+            saveAsButton = MixerUi.Pill("Save as…", SaveRenderAs, "ghost", IconGlyph.Download, "Save the PNG anywhere", destructive: true);
             saveProjectButton = MixerUi.Pill("Save to project", () => { string p = MixerRenderer.SaveToProject(); if (p != null) toasts.Show("Saved " + p); }, "ghost", IconGlyph.Plus, "Copy the PNG under Assets/Orbiters/Mixer/Renders");
             saveRow.Add(saveAsButton);
             saveRow.Add(saveProjectButton);
@@ -76,7 +73,25 @@ namespace Orbiters.Mixer.Editor
             actions.Add(renderButton);
             actions.style.marginTop = 8;
             body.Add(actions);
+            MixerRenderer.Changed -= OnRenderChanged;
             MixerRenderer.Changed += OnRenderChanged;
+        }
+
+        private void SaveRenderAs()
+        {
+            string from = MixerRenderer.LastPath;
+            if (string.IsNullOrEmpty(from) || !File.Exists(from)) { toasts.Show("The last render is gone: render again.", true); return; }
+            string path = EditorUtility.SaveFilePanel("Save render", "", "render.png", "png");
+            if (string.IsNullOrEmpty(path)) return;
+            try
+            {
+                File.Copy(from, path, true);
+                toasts.Show("Saved " + Path.GetFileName(path));
+            }
+            catch (Exception e)
+            {
+                toasts.Show("Could not save " + Path.GetFileName(path) + ": " + e.Message, true);
+            }
         }
 
         private void StartRender()

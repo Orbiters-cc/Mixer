@@ -17,7 +17,7 @@ namespace Orbiters.Mixer.Editor
         {
             var box = new VisualElement();
             box.Add(Feature("Replace Unity's Hierarchy",
-                "The Mixer Hierarchy takes the Hierarchy window's place, like the Logger does with the Console: search by type and component, kind filters, prefab and missing-script badges, the Blender state of each object. Off, both stay available in the Window menu.",
+                "The Mixer Hierarchy takes each Hierarchy window's place, like the Logger does with the Console: search by type and component, kind filters, prefab and missing-script badges, the Blender state of each object. Off, Unity's Hierarchy comes back in its place; the Mixer Hierarchy stays in the Window menu, and its menu opens Unity's beside it.",
                 HierarchyReplacement.Enabled, on => HierarchyReplacement.SetEnabled(on), first: true));
             box.Add(Feature("Blender link",
                 "Mixer listens for the Mixer extension of Blender and streams the scene both ways. Off, nothing listens and Open scene in Blender turns it on again.",

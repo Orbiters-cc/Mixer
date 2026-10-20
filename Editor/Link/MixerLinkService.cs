@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using Orbiters.Toolkit.Editor;
 using Orbiters.Toolkit.Editor.LiveLink;
 using Orbiters.Toolkit.Editor.Meshes;
@@ -13,11 +15,18 @@ using UnityEngine.SceneManagement;
 namespace Orbiters.Mixer.Editor
 {
     /// <summary>
-    /// The live link to Blender: one server per editor, found by the extension through an endpoint file. On connect
-    /// Unity sends the scene graph and the meshes; afterwards it streams what changes (transforms, hierarchy, Mixer
-    /// strokes) and applies what Blender sends back (edited meshes, weights, transforms) through the Mixer session,
-    /// so Blender's edits show at once, undo like strokes and are committed like them. Each mesh has an owner side;
-    /// the other side only previews it.
+    /// The live link to Blender: one server per editor (<see cref="MixerLinkHost"/>), found by the extension through an
+    /// endpoint file. On connect Unity sends the scene graph and the meshes; afterwards it streams what changes
+    /// (transforms, hierarchy, Mixer strokes) and applies what Blender sends back (edited meshes, weights, transforms)
+    /// through the Mixer session, so Blender's edits show at once, undo like strokes and are committed like them.
+    /// <para>
+    /// Each mesh has one editing side at a time: Blender claims a mesh while one of its objects is in an edit mode, and
+    /// Unity applies nothing of Blender's for a mesh it has not let Blender claim; Unity holds a mesh while a Mixer
+    /// stroke runs on it, and Blender takes no claim then. A session in Mixer alone does not hold the mesh, so both sides
+    /// can take turns on the same document.
+    /// </para>
+    /// Tests open hosts of their own (<see cref="MixerLinkHost.OpenPrivate"/>): no endpoint file, another token and
+    /// port, and the user's Blender link untouched.
     /// </summary>
     [InitializeOnLoad]
     internal static class MixerLinkService
@@ -25,18 +34,13 @@ namespace Orbiters.Mixer.Editor
         private const string TokenKey = "Orbiters.Mixer.Link.Token";
         private const string PortKey = "Orbiters.Mixer.Link.Port";
         private const string EnabledPref = "Orbiters.Mixer.Link.Enabled";
+        private const double RetrySeconds = 10.0;
 
-        private static LiveLinkServer server;
-        private static string token;
-        private static SceneGraph lastGraph;
-        private static double graphDueAt;
-        private static bool graphDirty;
-        private static readonly Dictionary<string, double> positionsDue = new Dictionary<string, double>();
-        private static readonly HashSet<string> blenderOwned = new HashSet<string>();
+        private static MixerLinkHost live;
+        private static readonly List<MixerLinkHost> hosts = new List<MixerLinkHost>();
         private static readonly List<string> log = new List<string>();
-        private static MixerLinkProtocol.Hello peer;
-        private static int connection = -1;
-        private static double lastEndpointWrite;
+        private static double nextStart;
+        private static readonly ConditionalWeakTable<EditTarget, string> targetMeshIds = new ConditionalWeakTable<EditTarget, string>();
 
         public static event Action Changed;
         /// <summary>A Status frame Blender sent (the Mixer extension's Export for MCB reports its manifest this way).</summary>
@@ -45,76 +49,110 @@ namespace Orbiters.Mixer.Editor
         public static bool Enabled
         {
             get => EditorPrefs.GetBool(EnabledPref, true);
-            set { EditorPrefs.SetBool(EnabledPref, value); if (value) EnsureRunning(); else Stop(); Changed?.Invoke(); }
+            set { EditorPrefs.SetBool(EnabledPref, value); if (value) EnsureRunning(); else Stop(); RaiseChanged(); }
         }
 
-        public static bool Running => server != null;
-        public static bool Connected => server != null && connection >= 0;
-        public static int Port => server != null ? server.Port : 0;
-        public static MixerLinkProtocol.Hello Peer => peer;
+        public static bool Running => live != null;
+        /// <summary>A Blender of this link protocol is connected (its Hello was accepted).</summary>
+        public static bool Connected => live != null && live.Connected;
+        public static int Port => live != null ? live.Port : 0;
+        public static MixerLinkProtocol.Hello Peer => live?.Peer;
         public static IReadOnlyList<string> Log => log;
-        /// <summary>Mesh ids (renderer GlobalObjectIds) Blender is editing now.</summary>
-        public static IReadOnlyCollection<string> BlenderOwned => blenderOwned;
+        /// <summary>Node ids (renderer GameObjects' GlobalObjectIds) of the renderers whose mesh Blender is editing now.</summary>
+        public static IReadOnlyCollection<string> BlenderOwned => live != null ? live.BlenderOwnedNodes : (IReadOnlyCollection<string>)Array.Empty<string>();
+        public static int MeshesWaiting => live != null ? live.MeshesWaiting : 0;
 
         static MixerLinkService()
         {
             EditorApplication.update += Tick;
-            EditorApplication.hierarchyChanged += () => MarkGraphDirty(0.25);
+            EditorApplication.hierarchyChanged += () => ForEach(h => h.MarkGraphDirty(0.25));
             ObjectChangeEvents.changesPublished += OnChanges;
-            EditorSceneManager.activeSceneChangedInEditMode += (a, b) => { lastGraph = null; MarkGraphDirty(0.1); };
+            EditorSceneManager.activeSceneChangedInEditMode += (a, b) => ForEach(h => h.SceneSwitched());
             EditorApplication.quitting += Stop;
-            AssemblyReloadEvents.beforeAssemblyReload += () => { server?.Dispose(); server = null; };
-            MixerSession.Changed += () => MarkGraphDirty(0.3);
+            // The endpoint file stays: after the reload the link listens again on the same port with the same token.
+            // Blender's edit in progress is not turned into history here (the history does not survive the reload): its
+            // positions so far are in the session, which the reload keeps.
+            AssemblyReloadEvents.beforeAssemblyReload += () => { live?.Dispose(deleteEndpoint: false, endEdits: false); live = null; };
+            MixerSession.Changed += () => ForEach(h => h.MarkGraphDirty(0.3));
             if (Enabled) EditorApplication.delayCall += EnsureRunning;
         }
 
+        private static void ForEach(Action<MixerLinkHost> action)
+        {
+            for (int i = hosts.Count - 1; i >= 0; i--)
+                if (i < hosts.Count) action(hosts[i]);
+        }
+
+        internal static void Register(MixerLinkHost host) { if (!hosts.Contains(host)) hosts.Add(host); }
+        internal static void Unregister(MixerLinkHost host) => hosts.Remove(host);
+
         public static void EnsureRunning()
         {
-            if (server != null || !Enabled) return;
-            token = SessionState.GetString(TokenKey, null);
+            if (live != null || !Enabled) return;
+            string token = SessionState.GetString(TokenKey, null);
             if (string.IsNullOrEmpty(token))
             {
-                var bytes = new byte[24];
-                using (var rng = System.Security.Cryptography.RandomNumberGenerator.Create()) rng.GetBytes(bytes);
-                token = Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+                token = MixerLinkHost.NewToken();
                 SessionState.SetString(TokenKey, token);
             }
             try
             {
-                server = new LiveLinkServer(MixerLinkProtocol.Format, token, SessionState.GetInt(PortKey, 0), singleClient: true, accept: Accept, collapseKey: CollapseKey, closingType: (byte)MixerLinkProtocol.FrameType.Bye, threadName: "Mixer Blender link");
-                SessionState.SetInt(PortKey, server.Port);
-                server.Received += OnReceived;
-                server.ConnectionChanged += OnConnection;
-                WriteEndpoint();
-                Say("Listening on port " + server.Port + ".");
+                live = new MixerLinkHost(isLive: true, SceneManager.GetActiveScene, token, SessionState.GetInt(PortKey, 0), writeEndpoint: true, log);
+                SessionState.SetInt(PortKey, live.Port);
+                Register(live);
+                nextStart = 0;
+                live.Say("Listening on port " + live.Port + ".");
             }
             catch (Exception e)
             {
-                Debug.LogWarning("[Mixer] The Blender link could not listen: " + e.Message);
-                server = null;
+                // The host let go of whatever it had opened; the link tries again in a while.
+                Debug.LogWarning("[Mixer] The Blender link could not listen: " + e.Message + " (it tries again in " + RetrySeconds.ToString("0") + " s).");
+                live = null;
+                nextStart = EditorApplication.timeSinceStartup + RetrySeconds;
             }
-            Changed?.Invoke();
+            RaiseChanged();
         }
 
         public static void Stop()
         {
-            if (server == null) return;
-            server.Dispose();
-            server = null;
-            connection = -1;
-            peer = null;
-            LiveLinkEndpointFile.Delete(MixerLinkProtocol.EndpointPath);
-            Changed?.Invoke();
+            nextStart = 0;
+            if (live == null) return;
+            var host = live;
+            live = null;
+            host.Dispose(deleteEndpoint: true);
+            RaiseChanged();
         }
 
-        private static void Say(string text)
+        internal static void RaiseChanged() => Changed?.Invoke();
+        internal static void RaiseStatus(MixerLinkProtocol.StatusMessage status) => StatusReceived?.Invoke(status);
+
+        private static void Tick()
         {
-            log.Add(DateTime.Now.ToString("HH:mm:ss") + "  " + text);
-            while (log.Count > 60) log.RemoveAt(0);
-            Changed?.Invoke();
+            if (live == null && Enabled && nextStart > 0 && EditorApplication.timeSinceStartup >= nextStart)
+            {
+                nextStart = 0;
+                EnsureRunning();
+            }
+            ForEach(h => h.Tick());
         }
 
-        // ---- Endpoint ----------------------------------------------------------------------------------------------
+        private static void OnChanges(ref ObjectChangeEventStream stream)
+        {
+            if (hosts.Count == 0) return;
+            for (int i = 0; i < stream.length; i++)
+            {
+                var kind = stream.GetEventType(i);
+                if (kind == ObjectChangeKind.ChangeGameObjectOrComponentProperties || kind == ObjectChangeKind.ChangeGameObjectParent || kind == ObjectChangeKind.CreateGameObjectHierarchy ||
+                    kind == ObjectChangeKind.DestroyGameObjectHierarchy || kind == ObjectChangeKind.ChangeGameObjectStructure || kind == ObjectChangeKind.ChangeGameObjectStructureHierarchy ||
+                    kind == ObjectChangeKind.UpdatePrefabInstances || kind == ObjectChangeKind.ChangeScene)
+                {
+                    ForEach(h => h.MarkGraphDirty(0.12));
+                    return;
+                }
+            }
+        }
+
+        // ---- Settings ------------------------------------------------------------------------------------------------
 
         public static MixerLinkSettings SettingsFor(Scene scene, bool create)
         {
@@ -133,16 +171,211 @@ namespace Orbiters.Mixer.Editor
             return settings;
         }
 
-        private static void WriteEndpoint()
+        // ---- Ids -----------------------------------------------------------------------------------------------------
+
+        /// <summary>The id a mesh travels under: its asset's GlobalObjectId (shared by every renderer showing it).</summary>
+        public static string MeshIdOf(Renderer renderer)
         {
-            if (server == null) return;
-            var scene = SceneManager.GetActiveScene();
-            var settings = SettingsFor(scene, false);
+            if (renderer == null) return null;
+            var shown = renderer is SkinnedMeshRenderer s ? s.sharedMesh : renderer.GetComponent<MeshFilter>()?.sharedMesh;
+            var mesh = MixerMeshGuard.OriginalOf(shown) ?? shown;
+            return mesh != null ? SceneGraphExporter.IdOf(mesh) : null;
+        }
+
+        /// <summary>The id of the mesh a session edits (its original's), kept for the session's life.</summary>
+        public static string MeshIdOf(EditTarget target)
+        {
+            if (target == null || target.Original == null) return null;
+            return targetMeshIds.GetValue(target, t => SceneGraphExporter.IdOf(MixerMeshGuard.OriginalOf(t.Original) ?? t.Original));
+        }
+
+        // ---- What the rest of Mixer tells the link --------------------------------------------------------------------
+
+        public static bool Send(MixerLinkProtocol.FrameType type, byte[] payload = null) => live != null && live.Send(type, payload);
+
+        public static void Status(string id, string message, string level) => live?.Status(id, message, level);
+
+        /// <summary>Sends the whole graph, or the delta since the last one.</summary>
+        public static void SendGraph(bool force) => live?.SendGraph(force);
+
+        /// <summary>Queues the mesh of a node for Blender.</summary>
+        public static void SendMesh(string nodeId) => live?.SendMesh(nodeId);
+
+        /// <summary>Bones moved in rest-pose mode or were added: Blender gets the graph again and rebuilds its armatures.</summary>
+        public static void NoteArmatureChanged() => ForEach(h => h.MarkGraphDirty(0.4));
+
+        /// <summary>The exclusions changed: the hierarchy and the popup refresh.</summary>
+        public static void NoteSettingsChanged() => RaiseChanged();
+
+        /// <summary>A Mixer stroke moved a target: Blender gets the new positions soon (collapsed, at most every 100 ms).</summary>
+        public static void NotePositions(EditTarget target) => ForEach(h => h.NotePositions(target));
+
+        /// <summary>A Mixer stroke changed weights: Blender gets the sparse change now.</summary>
+        public static void SendWeights(EditTarget target, WeightChannel channel, IReadOnlyList<int> vertices) => ForEach(h => h.SendWeights(target, channel, vertices));
+
+        /// <summary>A Mixer session opened. It does not hold the mesh against Blender (a stroke does, while it runs).</summary>
+        public static void ClaimForUnity(EditTarget target) => ForEach(h => h.SessionOpened(target));
+
+        /// <summary>A Mixer session was committed or reverted: Blender gets the mesh Unity shows now, and lets go of its own edit of it.</summary>
+        public static void ReleaseForUnity(EditTarget target) => ForEach(h => h.SessionClosed(target));
+
+        /// <summary>Blender is editing this session's mesh (one of its objects is in an edit mode).</summary>
+        public static bool IsBlenderOwned(EditTarget target)
+        {
+            if (target == null) return false;
+            for (int i = 0; i < hosts.Count; i++) if (hosts[i].IsBlenderOwned(target)) return true;
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// One Blender link server and what it knows of its Blender: the connection, the meshes sent and in flight, what
+    /// Blender claimed. The editor's own is <see cref="MixerLinkService"/>'s; tests open private ones.
+    /// </summary>
+    internal sealed class MixerLinkHost : IDisposable
+    {
+        private sealed class SentMesh
+        {
+            public string Key;
+            public HashSet<string> Shapes = new HashSet<string>();
+            public HashSet<string> Groups = new HashSet<string>();
+        }
+
+        private sealed class Encoded
+        {
+            public int Connection;
+            public string MeshId, NodeId, Name;
+            public byte[] Payload;
+            public Exception Error;
+            public SentMesh Sent;
+        }
+
+        /// <summary>How long Unity waits for Blender to say a mesh arrived before it sends the next one anyway.</summary>
+        private const double InFlightSeconds = 60.0;
+        /// <summary>Bump when the link's weld changes: Blender's copies keyed with another weld are sent again.</summary>
+        private const int WeldVersion = 2;
+
+        public readonly bool IsLive;
+        private readonly Func<Scene> sceneOf;
+        private readonly bool writesEndpoint;
+        private readonly List<string> log;
+        internal LiveLinkServer Server { get; private set; }
+        public string Token { get; }
+        public int Port => Server != null ? Server.Port : 0;
+        public MixerLinkProtocol.Hello Peer { get; private set; }
+        private int connection = -1;
+        private bool handshaken;
+        public bool Connected => Server != null && connection >= 0 && handshaken;
+        private double lastEndpointWrite;
+
+        // Ownership: mesh id -> the node Blender named in its claim; the mesh Unity strokes now.
+        private readonly Dictionary<string, string> blenderMeshes = new Dictionary<string, string>();
+        private string unityEditing, unityEditingNode;
+        private readonly Dictionary<string, (string message, double at)> throttled = new Dictionary<string, (string, double)>();
+
+        // The graph Blender has.
+        private SceneGraph lastGraph;
+        private readonly HashSet<string> graphNodes = new HashSet<string>();
+        private double graphDueAt, recheckAt;
+        private bool graphDirty, sceneSwitched;
+
+        // Meshes going out: queued by node, encoded (on a thread for assets), one in flight until Blender says it arrived.
+        private readonly Queue<string> meshQueue = new Queue<string>();
+        private readonly HashSet<string> queuedMeshes = new HashSet<string>();
+        private readonly ConcurrentQueue<Encoded> encoded = new ConcurrentQueue<Encoded>();
+        private System.Threading.Tasks.Task encoding;
+        private string inFlight;
+        private double inFlightSince;
+        private bool meshesAnnounced;
+        private uint nextTransfer = 1;
+        private Dictionary<string, string> heldByBlender;
+        private readonly Dictionary<string, SentMesh> sent = new Dictionary<string, SentMesh>();
+        private readonly Dictionary<string, double> positionsDue = new Dictionary<string, double>();
+        private readonly Dictionary<string, int> checkedRevision = new Dictionary<string, int>();
+
+        private readonly MeshChunkAssembler assembler = new MeshChunkAssembler();
+
+        public MixerLinkHost(bool isLive, Func<Scene> sceneOf, string token, int port, bool writeEndpoint, List<string> log)
+        {
+            IsLive = isLive;
+            this.sceneOf = sceneOf ?? throw new ArgumentNullException(nameof(sceneOf));
+            Token = token ?? throw new ArgumentNullException(nameof(token));
+            writesEndpoint = writeEndpoint;
+            this.log = log ?? new List<string>();
+            Server = new LiveLinkServer(MixerLinkProtocol.Format, token, port, singleClient: true, accept: Accept, collapseKey: CollapseKey,
+                closingType: (byte)MixerLinkProtocol.FrameType.Bye, threadName: isLive ? "Mixer Blender link" : "Mixer Blender link (test)");
+            try
+            {
+                Server.Received += OnReceived;
+                Server.ConnectionChanged += OnConnection;
+                if (writesEndpoint) WriteEndpoint();
+            }
+            catch
+            {
+                // Nothing of a half-made host stays: no listener, no pump hook, no handlers holding the token.
+                Server.Dispose();
+                Server = null;
+                throw;
+            }
+        }
+
+        /// <summary>A host of a test: its own scene, token and port, no endpoint file, ticked with the editor's like the live one.</summary>
+        internal static MixerLinkHost OpenPrivate(Scene scene)
+        {
+            var host = new MixerLinkHost(isLive: false, () => scene, NewToken(), 0, writeEndpoint: false, null);
+            MixerLinkService.Register(host);
+            return host;
+        }
+
+        internal static string NewToken()
+        {
+            var bytes = new byte[24];
+            using (var rng = System.Security.Cryptography.RandomNumberGenerator.Create()) rng.GetBytes(bytes);
+            return Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        }
+
+        public IReadOnlyList<string> Log => log;
+
+        public void Dispose() => Dispose(deleteEndpoint: !IsLive);
+
+        public void Dispose(bool deleteEndpoint, bool endEdits = true)
+        {
+            MixerLinkService.Unregister(this);
+            if (Server == null) return;
+            // What Blender edited so far becomes history, as when it leaves.
+            if (endEdits) foreach (string mesh in blenderMeshes.Keys.ToList()) ReleaseFromBlender(mesh);
+            blenderMeshes.Clear();
+            var server = Server;
+            Server = null;
+            connection = -1;
+            handshaken = false;
+            Peer = null;
+            server.Dispose();
+            if (deleteEndpoint && writesEndpoint) LiveLinkEndpointFile.Delete(MixerLinkProtocol.EndpointPath);
+        }
+
+        internal void Say(string text)
+        {
+            log.Add(DateTime.Now.ToString("HH:mm:ss") + "  " + text);
+            while (log.Count > 60) log.RemoveAt(0);
+            if (IsLive) MixerLinkService.RaiseChanged();
+        }
+
+        private void RaiseChanged() { if (IsLive) MixerLinkService.RaiseChanged(); }
+
+        // ---- Endpoint ------------------------------------------------------------------------------------------------
+
+        private void WriteEndpoint()
+        {
+            if (Server == null) return;
+            var scene = sceneOf();
+            var settings = MixerLinkService.SettingsFor(scene, false);
             var endpoint = new MixerLinkProtocol.Endpoint
             {
                 pid = System.Diagnostics.Process.GetCurrentProcess().Id,
-                port = server.Port,
-                token = token,
+                port = Server.Port,
+                token = Token,
+                proof = MixerLinkProtocol.ServerProvesToken,
                 projectPath = Path.GetFullPath(Path.Combine(Application.dataPath, "..")),
                 sceneGuid = AssetDatabase.AssetPathToGUID(scene.path),
                 sceneName = scene.name,
@@ -153,7 +386,7 @@ namespace Orbiters.Mixer.Editor
             lastEndpointWrite = EditorApplication.timeSinceStartup;
         }
 
-        // ---- Frames in ----------------------------------------------------------------------------------------------
+        // ---- Frames in -------------------------------------------------------------------------------------------------
 
         private static bool Accept(LiveLinkFrame raw)
         {
@@ -161,30 +394,53 @@ namespace Orbiters.Mixer.Editor
             var frame = new MixerLinkFrame { Type = type, Payload = raw.Payload };
             if (type == MixerLinkProtocol.FrameType.MeshData || type == MixerLinkProtocol.FrameType.Positions || type == MixerLinkProtocol.FrameType.Weights)
                 frame.MeshId = MeshDataCodec.PeekId(raw.Payload);
+            if (type == MixerLinkProtocol.FrameType.Positions) frame.Shape = MeshDataCodec.PeekShape(raw.Payload);
             raw.Decoded = frame;
             return true;
         }
 
+        // The newest positions of one shape of one mesh replace older ones waiting: another shape's never do.
         private static string CollapseKey(LiveLinkFrame raw) =>
-            raw.Decoded is MixerLinkFrame frame && frame.Type == MixerLinkProtocol.FrameType.Positions && frame.MeshId != null ? "pos:" + frame.MeshId : null;
+            raw.Decoded is MixerLinkFrame frame && frame.Type == MixerLinkProtocol.FrameType.Positions && frame.MeshId != null ? "pos:" + frame.MeshId + "\n" + (frame.Shape ?? "") : null;
 
-        private static void OnConnection(int id, bool up)
+        private void OnConnection(int id, bool up)
         {
-            if (up) { connection = id; Say("Blender connected."); }
+            if (up)
+            {
+                connection = id;
+                handshaken = false;
+                Peer = null;
+                Say("Blender connected.");
+            }
             else if (id == connection)
             {
-                connection = -1; peer = null;
-                meshQueue.Clear();
-                queuedMeshes.Clear();
-                foreach (string owned in blenderOwned.ToList()) ReleaseFromBlender(owned);
+                connection = -1;
+                handshaken = false;
+                Peer = null;
+                ResetOutgoing();
+                foreach (string owned in blenderMeshes.Keys.ToList()) ReleaseFromBlender(owned);
                 Say("Blender left.");
             }
-            Changed?.Invoke();
+            RaiseChanged();
         }
 
-        private static void OnReceived(LiveLinkFrame raw)
+        private void ResetOutgoing()
+        {
+            meshQueue.Clear();
+            queuedMeshes.Clear();
+            while (encoded.TryDequeue(out _)) { }
+            inFlight = null;
+            assembler.Reset();
+            positionsDue.Clear();
+            unityEditing = unityEditingNode = null;
+        }
+
+        private void OnReceived(LiveLinkFrame raw)
         {
             if (!(raw.Decoded is MixerLinkFrame frame)) return;
+            // Only the connection that is Blender now counts (a replaced one's frames may still be waiting).
+            if (raw.Connection != connection) return;
+            if (!handshaken && frame.Type != MixerLinkProtocol.FrameType.Hello) return;
             try
             {
                 switch (frame.Type)
@@ -192,119 +448,273 @@ namespace Orbiters.Mixer.Editor
                     case MixerLinkProtocol.FrameType.Hello: OnHello(MixerLinkProtocol.Read<MixerLinkProtocol.Hello>(frame.Payload)); break;
                     case MixerLinkProtocol.FrameType.Claim: OnClaim(MixerLinkProtocol.Read<MixerLinkProtocol.Ownership>(frame.Payload)); break;
                     case MixerLinkProtocol.FrameType.Release: OnRelease(MixerLinkProtocol.Read<MixerLinkProtocol.Ownership>(frame.Payload)); break;
-                    case MixerLinkProtocol.FrameType.Positions: LinkApply.Positions(MeshDataCodec.DecodePositions(frame.Payload)); break;
-                    case MixerLinkProtocol.FrameType.MeshData: LinkApply.Mesh(MeshDataCodec.Decode(frame.Payload)); break;
-                    case MixerLinkProtocol.FrameType.Weights: LinkApply.Weights(MeshDataCodec.DecodeWeights(frame.Payload)); break;
+                    case MixerLinkProtocol.FrameType.Positions: LinkApply.Positions(this, MeshDataCodec.DecodePositions(frame.Payload)); break;
+                    case MixerLinkProtocol.FrameType.MeshData: ApplyMesh(frame.Payload); break;
+                    case MixerLinkProtocol.FrameType.MeshChunk:
+                    {
+                        byte[] whole;
+                        try { whole = assembler.Add(frame.Payload); }
+                        catch (InvalidDataException e) { Say("A mesh from Blender did not arrive whole: " + e.Message); Status("link", "Unity dropped a mesh from Blender: " + e.Message, "error"); break; }
+                        if (whole != null) ApplyMesh(whole);
+                        break;
+                    }
+                    case MixerLinkProtocol.FrameType.Weights: LinkApply.Weights(this, MeshDataCodec.DecodeWeights(frame.Payload)); break;
                     case MixerLinkProtocol.FrameType.SceneDelta: LinkApply.Delta(MixerLinkProtocol.Read<SceneDelta>(frame.Payload)); break;
-                    case MixerLinkProtocol.FrameType.Status: { var s = MixerLinkProtocol.Read<MixerLinkProtocol.StatusMessage>(frame.Payload); Say("Blender: " + s.message); if (s.level == "error") MixerSession.Say(s.message, true); StatusReceived?.Invoke(s); break; }
-                    case MixerLinkProtocol.FrameType.RequestMesh: { var r = MixerLinkProtocol.Read<MixerLinkProtocol.RequestMesh>(frame.Payload); SendMesh(r.id); break; }
-                    case MixerLinkProtocol.FrameType.RenderResult: MixerRenderer.OnResult(MixerLinkProtocol.Read<MixerLinkProtocol.RenderResult>(frame.Payload)); break;
+                    case MixerLinkProtocol.FrameType.Status:
+                    {
+                        var s = MixerLinkProtocol.Read<MixerLinkProtocol.StatusMessage>(frame.Payload);
+                        if (s == null) break;
+                        Say("Blender: " + s.message);
+                        if (s.level == "error") MixerSession.Say(s.message, true);
+                        if (IsLive) MixerLinkService.RaiseStatus(s);
+                        break;
+                    }
+                    case MixerLinkProtocol.FrameType.RequestMesh: { var r = MixerLinkProtocol.Read<MixerLinkProtocol.RequestMesh>(frame.Payload); if (r != null) SendMesh(r.id); break; }
+                    case MixerLinkProtocol.FrameType.MeshReceived: { var r = MixerLinkProtocol.Read<MixerLinkProtocol.MeshReceived>(frame.Payload); if (r != null && r.id == inFlight) inFlight = null; break; }
+                    case MixerLinkProtocol.FrameType.RenderResult: if (IsLive) MixerRenderer.OnResult(MixerLinkProtocol.Read<MixerLinkProtocol.RenderResult>(frame.Payload)); break;
                 }
             }
             catch (Exception e)
             {
                 Debug.LogException(e);
                 Say("A " + frame.Type + " frame failed: " + e.Message);
+                Status("link", "Unity could not apply a " + frame.Type + " frame: " + e.Message, "error");
             }
         }
 
-        private static void OnHello(MixerLinkProtocol.Hello hello)
+        private void ApplyMesh(byte[] payload)
         {
-            peer = hello;
-            Say("Blender " + hello.blender + ", extension " + hello.extension + (string.IsNullOrEmpty(hello.blendPath) ? "" : " (" + Path.GetFileName(hello.blendPath) + ")"));
-            var scene = SceneManager.GetActiveScene();
-            Send(MixerLinkProtocol.FrameType.Welcome, MixerLinkProtocol.Json(new MixerLinkProtocol.Welcome
+            var data = MeshDataCodec.Decode(payload);
+            LinkApply.Mesh(this, data);
+        }
+
+        private void OnHello(MixerLinkProtocol.Hello hello)
+        {
+            if (hello == null) return;
+            Peer = hello;
+            var scene = sceneOf();
+            var welcome = new MixerLinkProtocol.Welcome
             {
                 unity = Application.unityVersion,
                 mixer = UnityEditor.PackageManager.PackageInfo.FindForAssembly(typeof(MixerLinkService).Assembly)?.version,
                 projectPath = Path.GetFullPath(Path.Combine(Application.dataPath, "..")),
                 sceneGuid = AssetDatabase.AssetPathToGUID(scene.path),
                 sceneName = scene.name,
-            }));
+            };
+            if (hello.protocolVersion != MixerLinkProtocol.ProtocolVersion)
+            {
+                // Told once, then left alone: the connection stays open (so the extension does not reconnect in a loop)
+                // and nothing else is sent or applied.
+                handshaken = false;
+                welcome.error = "Blender's Mixer extension " + (hello.extension ?? "?") + " speaks link protocol " + hello.protocolVersion + ", Unity's Mixer " + MixerLinkProtocol.ProtocolVersion
+                    + ": open the scene in Blender from Mixer to update the extension.";
+                Send(MixerLinkProtocol.FrameType.Welcome, MixerLinkProtocol.Json(welcome));
+                Send(MixerLinkProtocol.FrameType.Status, MixerLinkProtocol.Json(new MixerLinkProtocol.StatusMessage { id = "link", message = welcome.error, level = "error" }));
+                Say(welcome.error);
+                if (IsLive) MixerSession.Say(welcome.error, true);
+                RaiseChanged();
+                return;
+            }
+            handshaken = true;
+            Say("Blender " + hello.blender + ", extension " + hello.extension + (string.IsNullOrEmpty(hello.blendPath) ? "" : " (" + Path.GetFileName(hello.blendPath) + ")"));
+            Send(MixerLinkProtocol.FrameType.Welcome, MixerLinkProtocol.Json(welcome));
+            heldByBlender = hello.meshes;
             lastGraph = null;
             SendGraph(force: true);
             meshesAnnounced = false;
             SendAllMeshes();
-            Changed?.Invoke();
+            RaiseChanged();
         }
 
-        private static void OnClaim(MixerLinkProtocol.Ownership claim)
+        // ---- Ownership -------------------------------------------------------------------------------------------------
+
+        private bool UnityStrokes(string meshId)
         {
-            if (claim == null || string.IsNullOrEmpty(claim.id)) return;
-            var renderer = SceneGraphExporter.Resolve(claim.id) as GameObject;
-            var r = renderer != null ? renderer.GetComponent<Renderer>() : null;
-            if (r == null) { Status(claim.id, "Unity has no renderer for this object.", "error"); return; }
-            if (!MixerSession.CanEdit(r, out string reason)) { Status(claim.id, reason, "error"); return; }
-            try
+            var focus = MixerSceneTool.Stroking ? MixerSceneTool.FocusTarget : null;
+            return focus != null && focus.Alive && MixerLinkService.MeshIdOf(focus) == meshId;
+        }
+
+        private void OnClaim(MixerLinkProtocol.Ownership claim)
+        {
+            if (claim == null || string.IsNullOrEmpty(claim.id) || (claim.side != null && claim.side != "blender")) return;
+            var go = SceneGraphExporter.Resolve(claim.id) as GameObject;
+            var r = go != null ? go.GetComponent<Renderer>() : null;
+            if (r == null) { Refuse(claim, "Unity has no renderer for this object."); return; }
+            string meshId = MixerLinkService.MeshIdOf(r);
+            if (meshId == null) { Refuse(claim, r.name + " has no mesh in Unity."); return; }
+            if (!string.IsNullOrEmpty(claim.meshId) && claim.meshId != meshId)
             {
-                var target = MixerSession.Edit(r);
-                if (MixerSceneTool.Stroking && MixerSceneTool.FocusTarget == target) { Status(claim.id, "Unity is editing this mesh.", "error"); return; }
-                blenderOwned.Add(claim.id);
-                Status(claim.id, "Blender edits " + r.name + ".", "info");
-                Say("Blender edits " + r.name + ".");
+                Refuse(claim, r.name + " shows another mesh in Unity now (committed or replaced): Blender gets it again. Enter the mode again once it arrived.");
+                SendMesh(claim.id);
+                return;
             }
-            catch (Exception e) { Status(claim.id, e.Message, "error"); }
-            Changed?.Invoke();
+            if (blenderMeshes.ContainsKey(meshId)) { blenderMeshes[meshId] = claim.id; RaiseChanged(); return; }
+            if (meshId == unityEditing || UnityStrokes(meshId)) { Refuse(claim, "Unity is editing " + r.name + " right now: leave the mode in Blender and enter it again."); return; }
+            if (!MixerSession.CanEdit(r, out string reason)) { Refuse(claim, reason); return; }
+            // Held before the session opens: the session's own notices then know Blender edits it.
+            blenderMeshes[meshId] = claim.id;
+            try { MixerSession.Edit(r); }
+            catch (Exception e)
+            {
+                blenderMeshes.Remove(meshId);
+                Refuse(claim, e.Message);
+                return;
+            }
+            positionsDue.Remove(claim.id);
+            Status(claim.id, "Blender edits " + r.name + ".", "info");
+            Say("Blender edits " + r.name + ".");
+            RaiseChanged();
         }
 
-        private static void OnRelease(MixerLinkProtocol.Ownership release)
+        // Blender's claim does not hold: Blender lets go of it (its edits in that mode are not sent) and says why.
+        private void Refuse(MixerLinkProtocol.Ownership claim, string reason)
         {
-            if (release == null) return;
-            ReleaseFromBlender(release.id);
+            Send(MixerLinkProtocol.FrameType.Release, MixerLinkProtocol.Json(new MixerLinkProtocol.Ownership { id = claim.id, meshId = claim.meshId, side = "blender", reason = reason }));
+            Say("Blender's edit refused: " + reason);
         }
 
-        private static void ReleaseFromBlender(string id)
+        private void OnRelease(MixerLinkProtocol.Ownership release)
         {
-            if (!blenderOwned.Remove(id)) return;
-            LinkApply.EndBlenderEdit(id);
-            Changed?.Invoke();
+            if (release == null || (release.side != null && release.side != "blender")) return;
+            string meshId = release.meshId;
+            if (string.IsNullOrEmpty(meshId))
+            {
+                var go = SceneGraphExporter.Resolve(release.id) as GameObject;
+                meshId = go != null ? MixerLinkService.MeshIdOf(go.GetComponent<Renderer>()) : null;
+            }
+            if (meshId != null) ReleaseFromBlender(meshId);
         }
 
-        public static bool IsBlenderOwned(EditTarget target) => target != null && blenderOwned.Contains(target.Id);
-
-        // ---- Frames out ---------------------------------------------------------------------------------------------
-
-        public static bool Send(MixerLinkProtocol.FrameType type, byte[] payload = null)
+        private void ReleaseFromBlender(string meshId)
         {
-            if (server == null || connection < 0) return false;
-            return server.Send(connection, (byte)type, payload);
+            if (!blenderMeshes.ContainsKey(meshId)) return;
+            // Still held while the history is written, so nothing of it echoes back to Blender.
+            LinkApply.EndBlenderEdit(meshId);
+            blenderMeshes.Remove(meshId);
+            RaiseChanged();
         }
 
-        public static void Status(string id, string message, string level) =>
+        public bool OwnsMesh(string meshId) => meshId != null && blenderMeshes.ContainsKey(meshId);
+
+        public bool IsBlenderOwned(EditTarget target) => target != null && blenderMeshes.Count > 0 && OwnsMesh(MixerLinkService.MeshIdOf(target));
+
+        public IReadOnlyCollection<string> BlenderOwnedNodes
+        {
+            get
+            {
+                var nodes = new HashSet<string>(blenderMeshes.Values);
+                if (blenderMeshes.Count > 0)
+                    foreach (var t in MixerSession.Targets)
+                        if (t.Alive && OwnsMesh(MixerLinkService.MeshIdOf(t))) nodes.Add(t.Id);
+                return nodes;
+            }
+        }
+
+        public void SessionOpened(EditTarget target) { }
+
+        public void SessionClosed(EditTarget target)
+        {
+            if (target == null) return;
+            string meshId = MixerLinkService.MeshIdOf(target);
+            if (meshId != null && blenderMeshes.TryGetValue(meshId, out string node))
+            {
+                // Unity's commit or revert wins: Blender is told that what it edits in this mode is not taken any more.
+                LinkApply.DropBlenderEdit(meshId);
+                blenderMeshes.Remove(meshId);
+                Send(MixerLinkProtocol.FrameType.Release, MixerLinkProtocol.Json(new MixerLinkProtocol.Ownership
+                {
+                    id = node, meshId = meshId, side = "blender",
+                    reason = target.Name + " was committed or reverted in Unity: what you edit in this mode is not sent, and Blender gets Unity's mesh again.",
+                }));
+                RaiseChanged();
+            }
+            positionsDue.Remove(target.Id);
+            checkedRevision.Remove(target.Id);
+            // A revert (or a commit into the same asset) leaves the mesh id as it was: Blender gets that mesh again. A commit
+            // into a new asset changes the node's mesh, which the graph's delta sends.
+            if (Connected && graphNodes.Contains(target.Id) && target.Renderer != null && MixerLinkService.MeshIdOf(target.Renderer) == meshId) SendMesh(target.Id);
+        }
+
+        // Unity holds a mesh while a Mixer stroke runs on it: Blender shows it as taken and does not claim it meanwhile.
+        private void UpdateUnityClaim()
+        {
+            var focus = MixerSceneTool.Stroking ? MixerSceneTool.FocusTarget : null;
+            string meshId = focus != null && focus.Alive && graphNodes.Contains(focus.Id) && !IsBlenderOwned(focus) ? MixerLinkService.MeshIdOf(focus) : null;
+            if (meshId == unityEditing) return;
+            if (unityEditing != null)
+                Send(MixerLinkProtocol.FrameType.Release, MixerLinkProtocol.Json(new MixerLinkProtocol.Ownership { id = unityEditingNode, meshId = unityEditing, side = "unity" }));
+            unityEditing = meshId;
+            unityEditingNode = meshId != null ? focus.Id : null;
+            if (meshId != null)
+                Send(MixerLinkProtocol.FrameType.Claim, MixerLinkProtocol.Json(new MixerLinkProtocol.Ownership { id = focus.Id, meshId = meshId, side = "unity" }));
+        }
+
+        // ---- What Blender was sent ---------------------------------------------------------------------------------------
+
+        /// <summary>The shapes Blender last had of this mesh (sent, or as Blender sent them back); null when unknown.</summary>
+        public IReadOnlyCollection<string> SentShapes(string meshId) => sent.TryGetValue(meshId, out var info) ? info.Shapes : null;
+        public IReadOnlyCollection<string> SentGroups(string meshId) => sent.TryGetValue(meshId, out var info) ? info.Groups : null;
+
+        /// <summary>Blender sent its whole mesh: these are the shapes and groups it has now.</summary>
+        public void NoteBlenderHas(string meshId, IEnumerable<string> shapes, IEnumerable<string> groups)
+        {
+            if (!sent.TryGetValue(meshId, out var info)) sent[meshId] = info = new SentMesh();
+            info.Shapes = new HashSet<string>(shapes);
+            info.Groups = new HashSet<string>(groups);
+        }
+
+        public void NoteUnclaimed(string meshId)
+        {
+            double now = EditorApplication.timeSinceStartup;
+            if (throttled.TryGetValue("unclaimed:" + meshId, out var last) && now - last.at < 10.0) return;
+            throttled["unclaimed:" + meshId] = ("", now);
+            Say("Blender sent an edit of a mesh it does not hold (its claim was refused or ended): not applied.");
+        }
+
+        // ---- Frames out --------------------------------------------------------------------------------------------------
+
+        public bool Send(MixerLinkProtocol.FrameType type, byte[] payload = null)
+        {
+            if (Server == null || connection < 0) return false;
+            return Server.Send(connection, (byte)type, payload);
+        }
+
+        public void Status(string id, string message, string level) =>
             Send(MixerLinkProtocol.FrameType.Status, MixerLinkProtocol.Json(new MixerLinkProtocol.StatusMessage { id = id, message = message, level = level }));
 
-        private static void MarkGraphDirty(double delay)
+        /// <summary>A status sent at most every 5 s with the same text for the same id (problems repeat with every frame).</summary>
+        public void StatusThrottled(string id, string message, string level)
+        {
+            double now = EditorApplication.timeSinceStartup;
+            if (throttled.TryGetValue(id ?? "", out var last) && last.message == message && now - last.at < 5.0) return;
+            throttled[id ?? ""] = (message, now);
+            Status(id, message, level);
+            Say(message);
+        }
+
+        public void MarkGraphDirty(double delay)
         {
             graphDirty = true;
             graphDueAt = Math.Max(graphDueAt, EditorApplication.timeSinceStartup + delay);
         }
 
-        private static void OnChanges(ref ObjectChangeEventStream stream)
+        public void SceneSwitched()
         {
-            if (!Connected) return;
-            for (int i = 0; i < stream.length; i++)
-            {
-                var kind = stream.GetEventType(i);
-                if (kind == ObjectChangeKind.ChangeGameObjectOrComponentProperties || kind == ObjectChangeKind.ChangeGameObjectParent || kind == ObjectChangeKind.CreateGameObjectHierarchy ||
-                    kind == ObjectChangeKind.DestroyGameObjectHierarchy || kind == ObjectChangeKind.ChangeGameObjectStructure || kind == ObjectChangeKind.ChangeGameObjectStructureHierarchy ||
-                    kind == ObjectChangeKind.UpdatePrefabInstances || kind == ObjectChangeKind.ChangeScene)
-                { MarkGraphDirty(0.12); return; }
-            }
+            lastGraph = null;
+            sceneSwitched = true;
+            MarkGraphDirty(0.1);
         }
 
-        /// <summary>Bones moved in rest-pose mode or were added: Blender gets the graph again and rebuilds its armatures.</summary>
-        public static void NoteArmatureChanged() => MarkGraphDirty(0.4);
+        /// <summary>Sends the whole graph, or the delta since the last one (and checks once more a little later: tools answer from caches).</summary>
+        public void SendGraph(bool force) => SendGraph(force, recheck: !force);
 
-        /// <summary>The exclusions changed: the hierarchy and the popup refresh.</summary>
-        public static void NoteSettingsChanged() => Changed?.Invoke();
-
-        /// <summary>Sends the whole graph, or the delta since the last one.</summary>
-        public static void SendGraph(bool force)
+        private void SendGraph(bool force, bool recheck)
         {
             if (!Connected) return;
-            var scene = SceneManager.GetActiveScene();
-            var graph = SceneGraphExporter.Build(scene, SettingsFor(scene, false));
-            if (force || lastGraph == null || lastGraph.sceneGuid != graph.sceneGuid)
+            var scene = sceneOf();
+            var graph = SceneGraphExporter.Build(scene, MixerLinkService.SettingsFor(scene, false));
+            bool whole = force || lastGraph == null || lastGraph.sceneGuid != graph.sceneGuid;
+            if (whole)
             {
                 Send(MixerLinkProtocol.FrameType.SceneGraph, MixerLinkProtocol.Json(graph));
             }
@@ -318,38 +728,73 @@ namespace Orbiters.Mixer.Editor
                 }
             }
             lastGraph = graph;
+            graphNodes.Clear();
+            foreach (var node in graph.nodes) graphNodes.Add(node.id);
             graphDirty = false;
+            if (sceneSwitched && whole)
+            {
+                sceneSwitched = false;
+                meshesAnnounced = false;
+                heldByBlender = null;
+                SendAllMeshes();
+            }
+            if (recheck && recheckAt <= 0) recheckAt = EditorApplication.timeSinceStartup + 2.5;
         }
 
-        private static readonly Queue<string> meshQueue = new Queue<string>();
-        private static readonly HashSet<string> queuedMeshes = new HashSet<string>();
-        private static System.Threading.Tasks.Task encoding;
-        private static bool meshesAnnounced;
-
-        private static void SendAllMeshes()
+        private void SendAllMeshes()
         {
             if (lastGraph == null) return;
-            var sent = new HashSet<string>();
+            var seen = new HashSet<string>();
             foreach (var node in lastGraph.nodes)
             {
-                if (node.meshId == null || !sent.Add(node.meshId)) continue;
+                if (node.meshId == null || !seen.Add(node.meshId)) continue;
+                if (BlenderHolds(node)) continue;
                 SendMesh(node.id);
             }
         }
 
-        /// <summary>Queues the mesh of a node; one leaves per editor tick, welded and encoded on a thread of its own.</summary>
-        public static void SendMesh(string nodeId)
+        // Blender kept this asset mesh from before (a reconnect after a script reload) and it has not changed: not sent again.
+        private bool BlenderHolds(SceneNode node)
+        {
+            if (heldByBlender == null || !heldByBlender.TryGetValue(node.meshId, out string key) || string.IsNullOrEmpty(key)) return false;
+            var go = SceneGraphExporter.Resolve(node.id) as GameObject;
+            var renderer = go != null ? go.GetComponent<Renderer>() : null;
+            if (renderer == null || MixerSession.TargetOf(renderer) != null) return false;
+            var mesh = renderer is SkinnedMeshRenderer s ? s.sharedMesh : renderer.GetComponent<MeshFilter>()?.sharedMesh;
+            if (mesh == null || KeyOf(mesh) != key) return false;
+            var info = new SentMesh { Key = key };
+            for (int i = 0; i < mesh.blendShapeCount; i++) info.Shapes.Add(mesh.GetBlendShapeName(i));
+            sent[node.meshId] = info;
+            return true;
+        }
+
+        /// <summary>What identifies an asset mesh's content for the link (null when it cannot be told: not an asset, or changed in memory).</summary>
+        internal static string KeyOf(Mesh mesh)
+        {
+            if (mesh == null || EditorUtility.IsDirty(mesh)) return null;
+            string path = AssetDatabase.GetAssetPath(mesh);
+            if (string.IsNullOrEmpty(path)) return null;
+            var hash = AssetDatabase.GetAssetDependencyHash(path);
+            if (!hash.isValid) return null;
+            return MixerLinkProtocol.ProtocolVersion + "." + WeldVersion + ":" + hash + ":" + SceneGraphExporter.IdOf(mesh);
+        }
+
+        /// <summary>Queues the mesh of a node; one leaves at a time, and the next once Blender said it arrived.</summary>
+        public void SendMesh(string nodeId)
         {
             if (!Connected || string.IsNullOrEmpty(nodeId)) return;
             if (queuedMeshes.Add(nodeId)) meshQueue.Enqueue(nodeId);
         }
 
-        public static int MeshesWaiting => meshQueue.Count + (encoding != null && !encoding.IsCompleted ? 1 : 0);
+        public int MeshesWaiting => meshQueue.Count + (encoding != null && !encoding.IsCompleted ? 1 : 0) + encoded.Count + (inFlight != null ? 1 : 0);
 
-        // The main thread only reads the mesh's arrays (milliseconds); welding and writing the bytes happen on a dedicated thread.
-        private static void SendNextMesh()
+        private void SendNextMesh()
         {
+            DrainEncoded();
+            if (inFlight != null && EditorApplication.timeSinceStartup - inFlightSince < InFlightSeconds) return;
+            inFlight = null;
             if (encoding != null && !encoding.IsCompleted) return;
+            if (!encoded.IsEmpty) return;
             if (meshQueue.Count == 0)
             {
                 if (!meshesAnnounced && Connected) { meshesAnnounced = true; Status("link", "meshes done", "info"); }
@@ -357,55 +802,105 @@ namespace Orbiters.Mixer.Editor
             }
             string nodeId = meshQueue.Dequeue();
             queuedMeshes.Remove(nodeId);
-            if (!Connected) return;
             var go = SceneGraphExporter.Resolve(nodeId) as GameObject;
             var renderer = go != null ? go.GetComponent<Renderer>() : null;
             if (renderer == null) return;
+            string meshId = MixerLinkService.MeshIdOf(renderer);
+            // Blender edits it: its own copy is the newer one.
+            if (meshId == null || OwnsMesh(meshId)) return;
             var target = MixerSession.TargetOf(renderer);
-            string meshId = MeshIdOf(renderer);
+            int connectionId = connection;
+            string name = renderer.name;
             try
             {
-                if (target != null)
+                MeshDataCodec.MeshSnapshot snapshot;
+                if (target != null && target.Alive) snapshot = MeshDataCodec.Snapshot(meshId, target);
+                else
                 {
-                    Send(MixerLinkProtocol.FrameType.MeshData, MeshDataCodec.Encode(meshId, target));
-                    return;
+                    var mesh = renderer is SkinnedMeshRenderer s ? s.sharedMesh : renderer.GetComponent<MeshFilter>()?.sharedMesh;
+                    if (mesh == null) return;
+                    snapshot = MeshDataCodec.Snapshot(meshId, mesh, renderer as SkinnedMeshRenderer);
+                    snapshot.Key = KeyOf(mesh);
                 }
-                var mesh = renderer is SkinnedMeshRenderer s ? s.sharedMesh : renderer.GetComponent<MeshFilter>()?.sharedMesh;
-                if (mesh == null) return;
-                var snapshot = MeshDataCodec.Snapshot(meshId, mesh, renderer as SkinnedMeshRenderer);
-                var connectionServer = server;
-                int connectionId = connection;
-                encoding = DedicatedTask.Run(() =>
+                var info = new SentMesh { Key = snapshot.Key };
+                foreach (var shape in snapshot.Shapes) info.Shapes.Add(shape.Name);
+                foreach (var (group, _) in snapshot.Groups) info.Groups.Add(group);
+                var job = new Encoded { Connection = connectionId, MeshId = meshId, NodeId = nodeId, Name = name, Sent = info };
+                if (target != null && target.Alive)
                 {
-                    var payload = MeshDataCodec.Encode(snapshot);
-                    if (connectionServer == server && connectionId == connection && connection >= 0) connectionServer.Send(connectionId, (byte)MixerLinkProtocol.FrameType.MeshData, payload);
-                });
+                    // A document's arrays change with every stroke: it is written here, at once.
+                    job.Payload = MeshDataCodec.Encode(snapshot);
+                    encoded.Enqueue(job);
+                    DrainEncoded();
+                }
+                else
+                {
+                    // An asset's arrays were copied above: welding and writing happen on a thread of their own.
+                    encoding = DedicatedTask.Run(() =>
+                    {
+                        try { job.Payload = MeshDataCodec.Encode(snapshot); }
+                        catch (Exception e) { job.Error = e; }
+                        encoded.Enqueue(job);
+                    });
+                }
             }
-            catch (Exception e) { Say("Mesh of " + renderer.name + " not sent: " + e.Message); }
+            catch (Exception e)
+            {
+                Fail(nodeId, name, e);
+            }
         }
 
-        /// <summary>The id a mesh travels under: its asset's GlobalObjectId (shared by every renderer showing it).</summary>
-        public static string MeshIdOf(Renderer renderer)
+        private void DrainEncoded()
         {
-            var shown = renderer is SkinnedMeshRenderer s ? s.sharedMesh : renderer.GetComponent<MeshFilter>()?.sharedMesh;
-            var mesh = MixerMeshGuard.OriginalOf(shown) ?? shown;
-            return mesh != null ? SceneGraphExporter.IdOf(mesh) : null;
+            while (encoded.TryDequeue(out var job))
+            {
+                if (job.Connection != connection || !Connected) continue;
+                if (job.Error != null) { Fail(job.NodeId, job.Name, job.Error); continue; }
+                if (job.Payload.Length > MixerLinkProtocol.MaxMeshBytes)
+                {
+                    Fail(job.NodeId, job.Name, new InvalidDataException("its " + MixerLinkProtocol.Megabytes(job.Payload.Length) + " are more than the link carries (" + MixerLinkProtocol.Megabytes(MixerLinkProtocol.MaxMeshBytes) + "). Keep it out of Blender, or edit it there through an FBX."));
+                    continue;
+                }
+                if (!SendMeshPayload(job.Payload)) { Say("The mesh of " + job.Name + " was not sent: Blender is gone."); continue; }
+                sent[job.MeshId] = job.Sent;
+                inFlight = job.MeshId;
+                inFlightSince = EditorApplication.timeSinceStartup;
+            }
+        }
+
+        private bool SendMeshPayload(byte[] payload)
+        {
+            if (payload.Length <= MixerLinkProtocol.MaxPayloadBytes) return Send(MixerLinkProtocol.FrameType.MeshData, payload);
+            uint transfer = nextTransfer++;
+            foreach (var chunk in MixerLinkProtocol.Chunks(payload, transfer))
+                if (!Send(MixerLinkProtocol.FrameType.MeshChunk, chunk)) return false;
+            return true;
+        }
+
+        // Loud on every side: the Console, the link's log, and Blender (whose copy of the mesh stays as it was).
+        private void Fail(string nodeId, string name, Exception e)
+        {
+            string text = "The mesh of " + name + " was not sent to Blender: " + e.Message;
+            Debug.LogWarning("[Mixer] " + text);
+            Say(text);
+            Status(nodeId, "Unity could not send " + name + ": " + e.Message, "error");
         }
 
         /// <summary>A Mixer stroke moved a target: Blender gets the new positions soon (collapsed, at most every 100 ms).</summary>
-        public static void NotePositions(EditTarget target)
+        public void NotePositions(EditTarget target)
         {
-            if (!Connected || target == null) return;
+            if (!Connected || target == null || !graphNodes.Contains(target.Id) || IsBlenderOwned(target)) return;
             positionsDue[target.Id] = Math.Min(positionsDue.TryGetValue(target.Id, out double due) ? due : double.MaxValue, EditorApplication.timeSinceStartup + 0.1);
         }
 
         /// <summary>A Mixer stroke changed weights: Blender gets the sparse change now.</summary>
-        public static void SendWeights(EditTarget target, WeightChannel channel, IReadOnlyList<int> vertices)
+        public void SendWeights(EditTarget target, WeightChannel channel, IReadOnlyList<int> vertices)
         {
-            if (!Connected || target == null || channel.IsNone) return;
+            if (!Connected || target == null || channel.IsNone || !graphNodes.Contains(target.Id) || IsBlenderOwned(target)) return;
             var doc = target.Document;
             var n = doc.LinkWeld;
-            string name = channel.IsGroup ? channel.Group : WeightStroke.BoneName(target, channel.Bone);
+            var bones = target.Skinned != null ? target.Skinned.bones : null;
+            string name = channel.IsGroup ? channel.Group : (bones != null && channel.Bone >= 0 && channel.Bone < bones.Length ? MeshDataCodec.BoneName(bones[channel.Bone]) : "");
             var indices = new List<int>(); var weights = new List<float>();
             var seen = new HashSet<int>();
             foreach (int v in vertices)
@@ -416,42 +911,55 @@ namespace Orbiters.Mixer.Editor
                 int rep = n.Representative[w];
                 weights.Add(channel.IsGroup ? (doc.Group(channel.Group)?.Weights.TryGetValue(rep, out float gw) == true ? gw : 0f) : doc.BoneWeight(rep, channel.Bone));
             }
-            Send(MixerLinkProtocol.FrameType.Weights, MeshDataCodec.EncodeWeights(MeshIdOf(target.Renderer), name, channel.IsGroup, indices, weights));
+            Send(MixerLinkProtocol.FrameType.Weights, MeshDataCodec.EncodeWeights(MixerLinkService.MeshIdOf(target), name, channel.IsGroup, channel.Bone, MeshDataCodec.Topology(doc), indices, weights));
         }
 
-        /// <summary>Unity starts editing a target: Blender shows it as taken.</summary>
-        public static void ClaimForUnity(EditTarget target)
+        // A session whose shapes or groups changed in Unity (deleted, renamed, duplicated...) is sent whole: Blender would
+        // keep the old ones otherwise, and bring them back with its next edit.
+        private void CheckShapeLists()
         {
-            if (!Connected || target == null) return;
-            Send(MixerLinkProtocol.FrameType.Claim, MixerLinkProtocol.Json(new MixerLinkProtocol.Ownership { id = target.Id, side = "unity" }));
-        }
-
-        public static void ReleaseForUnity(EditTarget target)
-        {
-            if (!Connected || target == null) return;
-            Send(MixerLinkProtocol.FrameType.Release, MixerLinkProtocol.Json(new MixerLinkProtocol.Ownership { id = target.Id, side = "unity" }));
-        }
-
-        private static void Tick()
-        {
-            if (server == null) return;
-            double now = EditorApplication.timeSinceStartup;
-            if (now - lastEndpointWrite > 10.0) WriteEndpoint();
-            if (!Connected) return;
-            SendNextMesh();
-            if (graphDirty && now >= graphDueAt) SendGraph(force: false);
-            if (positionsDue.Count > 0)
+            foreach (var target in MixerSession.Targets)
             {
-                foreach (var pair in positionsDue.Where(p => p.Value <= now).ToList())
-                {
-                    positionsDue.Remove(pair.Key);
-                    var target = MixerSession.Targets.FirstOrDefault(t => t.Id == pair.Key);
-                    if (target == null || !target.Alive) continue;
-                    var n = target.Document.LinkWeld;
-                    var positions = new Vector3[n.WeldedCount];
-                    for (int w = 0; w < positions.Length; w++) positions[w] = target.Document.LayerPosition(n.Representative[w]);
-                    Send(MixerLinkProtocol.FrameType.Positions, MeshDataCodec.EncodePositions(MeshIdOf(target.Renderer), target.Document.Layer, positions));
-                }
+                if (!target.Alive || !graphNodes.Contains(target.Id)) continue;
+                var doc = target.Document;
+                if (checkedRevision.TryGetValue(target.Id, out int revision) && revision == doc.Revision) continue;
+                checkedRevision[target.Id] = doc.Revision;
+                string meshId = MixerLinkService.MeshIdOf(target);
+                if (meshId == null || OwnsMesh(meshId) || queuedMeshes.Contains(target.Id) || !sent.TryGetValue(meshId, out var info)) continue;
+                var shapes = new HashSet<string>(doc.ShapeOrder.Where(doc.HasShape));
+                var groups = new HashSet<string>(doc.Groups.Select(g => g.Name));
+                if (shapes.SetEquals(info.Shapes) && groups.SetEquals(info.Groups)) continue;
+                positionsDue.Remove(target.Id);
+                SendMesh(target.Id);
+            }
+        }
+
+        internal void Tick()
+        {
+            if (Server == null) return;
+            double now = EditorApplication.timeSinceStartup;
+            if (writesEndpoint && now - lastEndpointWrite > 10.0)
+            {
+                try { WriteEndpoint(); }
+                catch (Exception e) { lastEndpointWrite = now; Debug.LogWarning("[Mixer] The Blender link's endpoint file could not be written: " + e.Message); }
+            }
+            if (!Connected) return;
+            UpdateUnityClaim();
+            SendNextMesh();
+            if (graphDirty && now >= graphDueAt) SendGraph(force: false, recheck: true);
+            else if (recheckAt > 0 && now >= recheckAt) { recheckAt = 0; SendGraph(force: false, recheck: false); }
+            CheckShapeLists();
+            if (positionsDue.Count == 0) return;
+            foreach (var pair in positionsDue.Where(p => p.Value <= now).ToList())
+            {
+                positionsDue.Remove(pair.Key);
+                var target = MixerSession.Targets.FirstOrDefault(t => t.Id == pair.Key);
+                if (target == null || !target.Alive || IsBlenderOwned(target) || queuedMeshes.Contains(target.Id)) continue;
+                var doc = target.Document;
+                var n = doc.LinkWeld;
+                var positions = new Vector3[n.WeldedCount];
+                for (int w = 0; w < positions.Length; w++) positions[w] = doc.LayerPosition(n.Representative[w]);
+                Send(MixerLinkProtocol.FrameType.Positions, MeshDataCodec.EncodePositions(MixerLinkService.MeshIdOf(target), doc.Layer, MeshDataCodec.Topology(doc), positions));
             }
         }
     }

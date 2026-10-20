@@ -244,10 +244,16 @@ namespace Orbiters.Mixer.Editor
             new GrabBrush(), new SmoothBrush(), new InflateBrush(), new FlattenBrush(), new ClayBrush(), new PinchBrush(), new CreaseBrush(), new MaskBrush(),
         };
 
-        public static Brush Named(string name)
+        /// <summary>The brush of that name, else the first one (Grab): for saved preferences, which may name an old brush.</summary>
+        public static Brush Named(string name) => TryNamed(name) ?? All[0];
+
+        /// <summary>The brush of that name (any case), or null: for names given by a caller, which must not become Grab.</summary>
+        public static Brush TryNamed(string name)
         {
-            foreach (var b in All) if (b.Name == name) return b;
-            return All[0];
+            if (string.IsNullOrWhiteSpace(name)) return null;
+            name = name.Trim();
+            foreach (var b in All) if (string.Equals(b.Name, name, System.StringComparison.OrdinalIgnoreCase)) return b;
+            return null;
         }
     }
 }

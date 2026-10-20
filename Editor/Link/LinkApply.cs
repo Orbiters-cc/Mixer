@@ -7,69 +7,150 @@ using UnityEngine;
 namespace Orbiters.Mixer.Editor
 {
     /// <summary>
-    /// Puts what Blender sends into the scene: positions and meshes of claimed objects go into their Mixer documents
-    /// (shown at once; one history entry when Blender releases the object), weights and groups likewise, transforms
-    /// and names onto the objects with Unity's Undo. Blender's vertices are the welded ones: each lands on every
-    /// Unity vertex sharing its position.
+    /// Puts what Blender sends into the scene: positions and meshes of the meshes Blender claimed go into their Mixer
+    /// documents (shown at once; one undo step when Blender releases the mesh), weights and groups likewise, transforms
+    /// and names onto the objects with Unity's Undo. Blender's vertices are the welded ones: each lands on every Unity
+    /// vertex sharing its position. Nothing is applied to a mesh Blender has not claimed (or whose claim Unity refused),
+    /// nor to a document whose topology is not the one Blender's copy was made for.
     /// </summary>
     internal static class LinkApply
     {
         private sealed class BlenderEdit
         {
             public EditTarget Target;
-            public StrokeRecorder Positions;
-            public WeightRecorder Weights;
-            public readonly List<int> Touched = new List<int>();
-            public string Layer;
+            public string MeshId;
+            /// <summary>The base positions before Blender's edit (made on the base layer).</summary>
+            public StrokeRecorder Base;
+            /// <summary>Per shape edited: its deltas before Blender's edit (deltas, so moving the base meanwhile does not matter).</summary>
+            public readonly Dictionary<string, DeltaRecorder> Shapes = new Dictionary<string, DeltaRecorder>();
+            /// <summary>"" for the bones' influences, else "g:" and the group's name.</summary>
+            public readonly Dictionary<string, WeightRecorder> Weights = new Dictionary<string, WeightRecorder>();
+            /// <summary>Shapes and groups Blender's edit made (undone after its positions and weights).</summary>
+            public readonly List<HistoryEntry> Created = new List<HistoryEntry>();
+            /// <summary>Shapes and groups Blender's edit removed (undone first).</summary>
+            public readonly List<HistoryEntry> Removed = new List<HistoryEntry>();
         }
 
         private static readonly Dictionary<string, BlenderEdit> edits = new Dictionary<string, BlenderEdit>();
 
-        /// <summary>Every renderer showing a mesh with this mesh id, as edit targets (started when needed).</summary>
-        private static List<EditTarget> TargetsOfMesh(string meshId)
+        /// <summary>
+        /// The documents a frame of Blender's for this mesh goes into: every session showing the mesh, when Blender holds
+        /// the mesh's claim and its copy has the document's topology (and <paramref name="count"/> welded vertices, unless -1).
+        /// Never starts a session: Blender's claim does.
+        /// </summary>
+        private static List<EditTarget> TargetsOf(MixerLinkHost host, string meshId, ulong topology, int count)
         {
             var result = new List<EditTarget>();
-            foreach (var target in MixerSession.Targets)
-                if (target.Alive && MixerLinkService.MeshIdOf(target.Renderer) == meshId) result.Add(target);
-            if (result.Count > 0) return result;
-            var mesh = SceneGraphExporter.Resolve(meshId) as Mesh;
-            if (mesh == null) return result;
-            foreach (var renderer in UnityEngine.Object.FindObjectsOfType<Renderer>())
+            if (string.IsNullOrEmpty(meshId)) return result;
+            if (!host.OwnsMesh(meshId))
             {
-                var shown = renderer is SkinnedMeshRenderer s ? s.sharedMesh : renderer.GetComponent<MeshFilter>()?.sharedMesh;
-                if ((MixerMeshGuard.OriginalOf(shown) ?? shown) != mesh) continue;
-                if (!MixerSession.CanEdit(renderer, out _)) continue;
-                try { result.Add(MixerSession.Edit(renderer)); } catch (Exception) { }
-                break; // one working copy per mesh asset is enough: the others share it on commit
+                host.NoteUnclaimed(meshId);
+                return result;
+            }
+            foreach (var target in MixerSession.Targets)
+            {
+                if (!target.Alive || MixerLinkService.MeshIdOf(target) != meshId) continue;
+                var doc = target.Document;
+                int welded = doc.LinkWeld.WeldedCount;
+                if (count >= 0 && count != welded)
+                {
+                    host.StatusThrottled(target.Id, "Blender's " + target.Name + " has " + count + " vertices, Unity's " + welded + ": the topology changed, which the link does not apply. Undo the change in Blender, or export an FBX for it.", "error");
+                    continue;
+                }
+                if (topology != MeshDataCodec.Topology(doc))
+                {
+                    host.StatusThrottled(target.Id, "Blender's copy of " + target.Name + " was made for another topology of the mesh (faces or vertex order differ): its edits are not applied. Reload it from Unity in the Mixer panel.", "error");
+                    continue;
+                }
+                result.Add(target);
             }
             return result;
         }
 
-        private static BlenderEdit EditOf(EditTarget target)
+        private static BlenderEdit EditOf(EditTarget target, string meshId)
         {
-            if (!edits.TryGetValue(target.Id, out var edit))
+            if (!edits.TryGetValue(target.Id, out var edit) || edit.Target != target)
             {
-                edit = new BlenderEdit { Target = target, Layer = target.Document.Layer };
+                edit = new BlenderEdit { Target = target, MeshId = meshId };
                 edits[target.Id] = edit;
             }
             return edit;
         }
 
-        public static void Positions(MeshDataCodec.PositionsFrame frame)
+        // The base's recorder (made with the base as the document's layer, so it records the base), the shown layer kept.
+        private static StrokeRecorder BaseOf(BlenderEdit edit)
         {
-            foreach (var target in TargetsOfMesh(frame.Id))
+            if (edit.Base != null) return edit.Base;
+            var doc = edit.Target.Document;
+            string shown = doc.Layer;
+            doc.Layer = null;
+            edit.Base = new StrokeRecorder(edit.Target, "Blender edit of " + edit.Target.Name);
+            doc.Layer = shown;
+            return edit.Base;
+        }
+
+        private static DeltaRecorder ShapeOf(BlenderEdit edit, string shape)
+        {
+            if (!edit.Shapes.TryGetValue(shape, out var recorder))
+                edit.Shapes[shape] = recorder = new DeltaRecorder(edit.Target, shape, "Blender edit of " + edit.Target.Name + ": " + shape);
+            return recorder;
+        }
+
+        private static WeightRecorder WeightsOf(BlenderEdit edit, string group)
+        {
+            string key = group == null ? "" : "g:" + group;
+            if (!edit.Weights.TryGetValue(key, out var recorder))
+            {
+                recorder = new WeightRecorder(edit.Target, group, group == null ? "Blender weights of " + edit.Target.Name : "Blender group " + group);
+                edit.Weights[key] = recorder;
+            }
+            return recorder;
+        }
+
+        // A shape Blender has that Unity does not (or deleted before): made, with an entry so the undo takes it away again.
+        private static void EnsureShape(BlenderEdit edit, string name)
+        {
+            var doc = edit.Target.Document;
+            if (doc.HasShape(name)) return;
+            doc.DeletedShapes.Remove(name);
+            string before = doc.Layer;
+            var layer = doc.Shape(name, create: true);
+            doc.Revision++;
+            edit.Created.Add(new ShapeListEdit { Target = edit.Target, Label = "Blender: new shape " + name, Name = name, Layer = layer, Created = true, LayerBefore = before });
+        }
+
+        private static VertexGroup EnsureGroup(BlenderEdit edit, string name)
+        {
+            var doc = edit.Target.Document;
+            var group = doc.Group(name);
+            if (group != null || string.IsNullOrEmpty(name)) return group;
+            var before = new List<VertexGroup>(doc.Groups);
+            group = new VertexGroup { Name = name };
+            doc.Groups.Add(group);
+            doc.Revision++;
+            edit.Created.Add(new GroupListEdit { Target = edit.Target, Label = "Blender: new group " + name, Before = before, After = new List<VertexGroup>(doc.Groups) });
+            return group;
+        }
+
+        public static void Positions(MixerLinkHost host, MeshDataCodec.PositionsFrame frame)
+        {
+            foreach (var target in TargetsOf(host, frame.Id, frame.Topology, frame.Positions.Length))
             {
                 var doc = target.Document;
                 var n = doc.LinkWeld;
-                if (frame.Positions.Length != n.WeldedCount)
+                // Blender's in-between keys ("Smile @50") are frames of a shape, which stay in Blender (its Export for MCB
+                // writes them); Unity edits a shape's last frame.
+                if (frame.Shape != null && MeshDataCodec.IsInBetweenOf(doc, frame.Shape))
                 {
-                    MixerLinkService.Status(target.Id, "Blender's mesh has " + frame.Positions.Length + " vertices, Unity's " + n.WeldedCount + ": the topology changed, which the link does not apply yet. Commit the mesh in Blender and export it as FBX instead.", "error");
+                    host.StatusThrottled(target.Id, frame.Shape + " is an in-between frame: it stays in Blender (Export for MCB writes it), Unity edits " + MeshDataCodec.InBetweenBase(frame.Shape) + "'s last frame.", "warning");
                     continue;
                 }
-                var edit = EditOf(target);
-                if (frame.Shape != null && !doc.HasShape(frame.Shape)) doc.Shape(frame.Shape, create: true);
+                var edit = EditOf(target, frame.Id);
+                if (frame.Shape != null) EnsureShape(edit, frame.Shape);
+                // Unity shows the layer Blender edits.
                 if (doc.Layer != frame.Shape) { doc.Layer = frame.Shape; target.AfterLayerChange(); }
-                if (edit.Positions == null || edit.Layer != frame.Shape) { edit.Positions = new StrokeRecorder(target, "Blender edit of " + target.Name); edit.Layer = frame.Shape; }
+                var baseRecorder = frame.Shape == null ? BaseOf(edit) : null;
+                var shapeRecorder = frame.Shape != null ? ShapeOf(edit, frame.Shape) : null;
                 var moved = new List<int>();
                 for (int w = 0; w < n.WeldedCount; w++)
                 {
@@ -77,7 +158,7 @@ namespace Orbiters.Mixer.Editor
                     foreach (int v in n.Members[w])
                     {
                         if (doc.GetLayerPosition(frame.Shape, v) == p) continue;
-                        edit.Positions.Touch(v);
+                        if (baseRecorder != null) baseRecorder.Touch(v); else shapeRecorder.Touch(v);
                         doc.SetLayerPosition(frame.Shape, v, p);
                         moved.Add(v);
                     }
@@ -85,77 +166,110 @@ namespace Orbiters.Mixer.Editor
                 if (moved.Count == 0) continue;
                 doc.MarkEdited(moved);
                 target.AfterEdit(moved);
-                doc.RefreshNormals(moved, target.Display);
+                target.RefreshNormals(moved);
                 MixerSession.NoteEdited(target);
             }
         }
 
-        public static void Mesh(MeshDataCodec.Decoded data)
+        /// <summary>
+        /// A whole mesh from Blender (sent when it leaves an edit mode, or with Send to Unity): base positions, every
+        /// shape's deltas, the skin and the groups, recorded into the edit that ends with Blender's release. Shapes and
+        /// groups Blender was sent and no longer has are deleted; ones Unity deleted or renamed meanwhile are not brought
+        /// back. The layer Unity shows stays.
+        /// </summary>
+        public static void Mesh(MixerLinkHost host, MeshDataCodec.Decoded data)
         {
-            foreach (var target in TargetsOfMesh(data.Id))
+            // What Blender had before this mesh (what it deleted is what it had and no longer sends).
+            var sentShapes = host.SentShapes(data.Id)?.ToList();
+            var sentGroups = host.SentGroups(data.Id)?.ToList();
+            HashSet<string> blenderShapes = null, blenderGroups = null;
+            foreach (var target in TargetsOf(host, data.Id, data.Topology, data.Vertices.Length))
             {
                 var doc = target.Document;
                 var n = doc.LinkWeld;
-                if (data.Vertices.Length != n.WeldedCount)
+                var edit = EditOf(target, data.Id);
+                var touched = new HashSet<int>();
+
+                var baseRecorder = BaseOf(edit);
+                for (int w = 0; w < n.WeldedCount; w++)
                 {
-                    MixerLinkService.Status(target.Id, "Blender's mesh has " + data.Vertices.Length + " vertices, Unity's " + n.WeldedCount + ": the topology changed, which the link does not apply yet.", "error");
-                    continue;
+                    var p = data.Vertices[w];
+                    foreach (int v in n.Members[w])
+                    {
+                        if (doc.Positions[v] == p) continue;
+                        baseRecorder.Touch(v);
+                        doc.SetLayerPosition(null, v, p);
+                        touched.Add(v);
+                    }
                 }
-                Positions(new MeshDataCodec.PositionsFrame { Id = data.Id, Shape = null, Positions = data.Vertices });
-                // Shapes: each known shape's deltas, new shapes created.
+
+                var named = new HashSet<string>();
+                var notBack = new List<string>();
+                bool shapesChanged = false;
                 foreach (var (name, indices, deltas) in data.Shapes)
                 {
-                    // Blender's in-between keys ("Smile @50") stand for frames of a shape, not shapes of their own.
-                    if (MeshDataCodec.IsInBetweenKey(name)) continue;
-                    var layer = doc.Shape(name, create: true);
+                    if (string.IsNullOrEmpty(name) || MeshDataCodec.IsInBetweenOf(doc, name)) continue;
+                    named.Add(name);
+                    if (doc.DeletedShapes.Contains(name)) { notBack.Add(name); continue; }
+                    if (!doc.HasShape(name)) { EnsureShape(edit, name); shapesChanged = true; }
+                    var layer = doc.Shape(name);
                     var full = new Vector3[n.WeldedCount];
                     for (int i = 0; i < indices.Length; i++) if (indices[i] >= 0 && indices[i] < full.Length) full[indices[i]] = deltas[i];
-                    var edit = EditOf(target);
-                    var recorder = new StrokeRecorder(target, "Blender shape " + name);
-                    var changed = new List<int>();
-                    string previous = doc.Layer;
-                    doc.Layer = name;
+                    var recorder = ShapeOf(edit, name);
                     for (int w = 0; w < n.WeldedCount; w++)
                         foreach (int v in n.Members[w])
                         {
                             if (layer.Deltas[v] == full[w]) continue;
                             recorder.Touch(v);
-                            doc.SetLayerPosition(name, v, doc.Positions[v] + full[w]);
-                            changed.Add(v);
+                            layer.Deltas[v] = full[w];
+                            layer.Edited = true;
+                            doc.Dirty.Add(v);
+                            touched.Add(v);
                         }
-                    doc.Layer = previous;
-                    if (changed.Count > 0)
-                    {
-                        doc.MarkEdited(changed);
-                        var entry = recorder.Finish();
-                        if (entry != null) MixerHistory.Push(entry);
-                    }
                 }
+                // Shapes Blender was sent and deleted.
+                if (sentShapes != null)
+                    foreach (string name in sentShapes)
+                    {
+                        if (named.Contains(name) || !doc.HasShape(name)) continue;
+                        var layer = doc.Shape(name);
+                        string before = doc.Layer;
+                        doc.DeleteShape(name);
+                        edit.Removed.Add(new ShapeListEdit { Target = target, Label = "Blender: delete shape " + name, Name = name, Layer = layer, Created = false, LayerBefore = before });
+                        shapesChanged = true;
+                    }
+
                 if (data.Influences != null && doc.HasSkin && data.Bones != null)
                 {
-                    var skinned = target.Skinned;
+                    var bones = target.Skinned != null ? target.Skinned.bones : null;
                     var boneIndex = new int[data.Bones.Length];
-                    for (int b = 0; b < data.Bones.Length; b++) boneIndex[b] = skinned != null ? Array.FindIndex(skinned.bones, t => t != null && t.name == data.Bones[b]) : -1;
-                    var recorder = new WeightRecorder(target, null, "Blender weights of " + target.Name);
-                    for (int w = 0; w < n.WeldedCount; w++)
+                    for (int b = 0; b < data.Bones.Length; b++) boneIndex[b] = MeshDataCodec.ResolveBone(bones, b, data.Bones[b]);
+                    var recorder = WeightsOf(edit, null);
+                    bool any = false;
+                    for (int w = 0; w < n.WeldedCount && w < data.Influences.Length; w++)
                     {
                         var list = new List<MeshDocument.Influence>();
-                        foreach (var inf in data.Influences[w]) if (inf.Bone >= 0 && inf.Bone < boneIndex.Length && boneIndex[inf.Bone] >= 0 && inf.Weight > 0f) list.Add(new MeshDocument.Influence(boneIndex[inf.Bone], inf.Weight));
+                        foreach (var inf in data.Influences[w])
+                            if (inf.Bone >= 0 && inf.Bone < boneIndex.Length && boneIndex[inf.Bone] >= 0 && inf.Weight > 0f) list.Add(new MeshDocument.Influence(boneIndex[inf.Bone], inf.Weight));
                         foreach (int v in n.Members[w])
                         {
                             if (SameInfluences(doc.EnsureInfluences()[v], list)) continue;
                             recorder.Touch(v);
                             doc.SetInfluences(v, list.ToArray());
+                            any = true;
                         }
                     }
-                    var entry = recorder.Finish();
-                    if (entry != null) { target.FlushWeights(force: true); MixerHistory.Push(entry); }
+                    if (any) target.FlushWeights(force: true);
                 }
+
+                var groupNames = new HashSet<string>();
+                bool groupsChanged = false;
                 foreach (var (name, indices, weights) in data.Groups)
                 {
-                    var group = doc.Group(name) ?? MixerSession.AddGroup(target, name);
-                    if (group == null) continue;
-                    var recorder = new WeightRecorder(target, name, "Blender group " + name);
+                    if (string.IsNullOrEmpty(name)) continue;
+                    groupNames.Add(name);
+                    var group = EnsureGroup(edit, name);
+                    var recorder = WeightsOf(edit, name);
                     var full = new float[n.WeldedCount];
                     for (int i = 0; i < indices.Length; i++) if (indices[i] >= 0 && indices[i] < full.Length) full[indices[i]] = weights[i];
                     for (int w = 0; w < n.WeldedCount; w++)
@@ -165,12 +279,38 @@ namespace Orbiters.Mixer.Editor
                             if (Mathf.Abs(current - full[w]) < 1e-6f) continue;
                             recorder.Touch(v);
                             if (full[w] > 0f) group.Weights[v] = full[w]; else group.Weights.Remove(v);
+                            groupsChanged = true;
                         }
-                    var entry = recorder.Finish();
-                    if (entry != null) { target.GroupsChanged(); MixerHistory.Push(entry); }
                 }
+                if (sentGroups != null)
+                    foreach (string name in sentGroups)
+                    {
+                        var group = groupNames.Contains(name) ? null : doc.Group(name);
+                        if (group == null) continue;
+                        var before = new List<VertexGroup>(doc.Groups);
+                        doc.Groups.Remove(group);
+                        doc.Revision++;
+                        edit.Removed.Add(new GroupListEdit { Target = target, Label = "Blender: delete group " + name, Before = before, After = new List<VertexGroup>(doc.Groups) });
+                        groupsChanged = true;
+                    }
+
+                if (touched.Count > 0)
+                {
+                    var list = touched.ToList();
+                    doc.MarkEdited(list);
+                    target.AfterEdit(list);
+                    target.RefreshNormals(list);
+                }
+                if (shapesChanged) target.AfterLayerChange();
+                if (groupsChanged) { doc.Revision++; target.GroupsChanged(); }
+                if (notBack.Count > 0)
+                    host.Status(target.Id, "Unity deleted or renamed " + string.Join(", ", notBack.Take(5)) + (notBack.Count > 5 ? " and " + (notBack.Count - 5) + " more" : "") + " meanwhile: Blender's older copies are not brought back.", "info");
+                blenderShapes = named;
+                blenderGroups = groupNames;
                 MixerSession.NoteEdited(target);
             }
+            // What Blender holds now: when Unity's shapes or groups differ from it, Blender gets the mesh again.
+            if (blenderShapes != null) host.NoteBlenderHas(data.Id, blenderShapes, blenderGroups);
         }
 
         private static bool SameInfluences(List<MeshDocument.Influence> a, List<MeshDocument.Influence> b)
@@ -185,60 +325,111 @@ namespace Orbiters.Mixer.Editor
             return true;
         }
 
-        public static void Weights(MeshDataCodec.WeightsFrame frame)
+        /// <summary>
+        /// Live weights of one channel (only the vertices Blender changed): a group's, or a bone's (found by its index in
+        /// the bone list Blender was sent, then by name). Blender's values are kept as they are: Unity normalizes them when
+        /// it uploads the skin and on Commit, like every influence.
+        /// </summary>
+        public static void Weights(MixerLinkHost host, MeshDataCodec.WeightsFrame frame)
         {
-            foreach (var target in TargetsOfMesh(frame.Id))
+            foreach (var target in TargetsOf(host, frame.Id, frame.Topology, -1))
             {
                 var doc = target.Document;
                 var n = doc.LinkWeld;
-                var edit = EditOf(target);
+                var edit = EditOf(target, frame.Id);
+                bool any = false;
                 if (frame.IsGroup)
                 {
-                    var group = doc.Group(frame.Channel) ?? MixerSession.AddGroup(target, frame.Channel);
+                    var group = EnsureGroup(edit, frame.Channel);
                     if (group == null) continue;
-                    if (edit.Weights == null) edit.Weights = new WeightRecorder(target, frame.Channel, "Blender group " + frame.Channel);
+                    var recorder = WeightsOf(edit, frame.Channel);
                     for (int i = 0; i < frame.Indices.Length; i++)
                     {
                         int w = frame.Indices[i];
                         if (w < 0 || w >= n.WeldedCount) continue;
-                        foreach (int v in n.Members[w]) { edit.Weights.Touch(v); if (frame.Weights[i] > 0f) group.Weights[v] = frame.Weights[i]; else group.Weights.Remove(v); }
+                        float value = frame.Weights[i];
+                        foreach (int v in n.Members[w])
+                        {
+                            float current = group.Weights.TryGetValue(v, out float cw) ? cw : 0f;
+                            if (Mathf.Abs(current - value) < 1e-6f) continue;
+                            recorder.Touch(v);
+                            if (value > 0f) group.Weights[v] = value; else group.Weights.Remove(v);
+                            any = true;
+                        }
                     }
-                    target.GroupsChanged();
+                    if (any) target.GroupsChanged();
                 }
                 else
                 {
-                    var skinned = target.Skinned;
-                    int bone = skinned != null ? Array.FindIndex(skinned.bones, t => t != null && t.name == frame.Channel) : -1;
-                    if (bone < 0) { MixerLinkService.Status(target.Id, "No bone named " + frame.Channel + " on " + target.Name + ".", "warning"); continue; }
-                    if (edit.Weights == null) edit.Weights = new WeightRecorder(target, null, "Blender weights of " + target.Name);
+                    var bones = target.Skinned != null ? target.Skinned.bones : null;
+                    int bone = MeshDataCodec.ResolveBone(bones, frame.Bone, frame.Channel);
+                    if (bone < 0) { host.StatusThrottled(target.Id, "No bone named " + frame.Channel + " on " + target.Name + ".", "warning"); continue; }
+                    var recorder = WeightsOf(edit, null);
                     for (int i = 0; i < frame.Indices.Length; i++)
                     {
                         int w = frame.Indices[i];
                         if (w < 0 || w >= n.WeldedCount) continue;
-                        foreach (int v in n.Members[w]) { edit.Weights.Touch(v); doc.SetBoneWeight(v, bone, frame.Weights[i], normalize: false); }
+                        float value = Mathf.Clamp01(frame.Weights[i]);
+                        foreach (int v in n.Members[w])
+                        {
+                            if (Mathf.Abs(doc.BoneWeight(v, bone) - value) < 1e-6f) continue;
+                            recorder.Touch(v);
+                            doc.SetBoneWeight(v, bone, value, normalize: false);
+                            any = true;
+                        }
                     }
-                    target.FlushWeights(force: true);
+                    if (any) target.FlushWeights(force: true);
                 }
+                if (!any) continue;
                 doc.Revision++;
                 MixerSession.NoteEdited(target);
             }
         }
 
-        /// <summary>Blender released an object: what it changed becomes history entries.</summary>
-        public static void EndBlenderEdit(string nodeId)
+        /// <summary>
+        /// Blender released a mesh: what it changed becomes history entries, all in one Unity undo step (new shapes and
+        /// groups first, then positions and weights, then what it deleted, so an undo takes them back in reverse).
+        /// </summary>
+        public static void EndBlenderEdit(string meshId)
         {
             foreach (var pair in edits.ToList())
             {
                 var edit = pair.Value;
-                if (edit.Target.Id != nodeId && MixerLinkService.MeshIdOf(edit.Target.Renderer) != nodeId) continue;
+                if (edit.MeshId != meshId) continue;
                 edits.Remove(pair.Key);
-                if (!edit.Target.Alive) continue;
-                var positions = edit.Positions?.Finish();
-                if (positions != null) { edit.Target.FinishStroke(positions.Indices); MixerHistory.Push(positions); }
-                var weights = edit.Weights?.Finish();
-                if (weights != null) MixerHistory.Push(weights);
+                if (!edit.Target.Alive || !MixerSession.Targets.Contains(edit.Target)) continue;
+                var entries = new List<HistoryEntry>(edit.Created);
+                var moved = new List<int>();
+                var positions = edit.Base?.Finish();
+                if (positions != null) { entries.Add(positions); moved.AddRange(positions.Indices); }
+                foreach (var recorder in edit.Shapes.Values)
+                {
+                    var deltas = recorder.Finish();
+                    if (deltas == null) continue;
+                    entries.Add(deltas);
+                    moved.AddRange(deltas.Indices);
+                }
+                foreach (var recorder in edit.Weights.Values)
+                {
+                    var weights = recorder.Finish();
+                    if (weights != null) entries.Add(weights);
+                }
+                entries.AddRange(edit.Removed);
+                if (moved.Count > 0) edit.Target.FinishStroke(moved);
+                if (entries.Count == 0) continue;
+                Undo.IncrementCurrentGroup();
+                Undo.SetCurrentGroupName("Mixer: Blender edit of " + edit.Target.Name);
+                foreach (var entry in entries) MixerHistory.Push(entry, joinCurrentGroup: true);
+                Undo.IncrementCurrentGroup();
                 MixerSession.NoteEdited(edit.Target);
             }
+        }
+
+        /// <summary>The mesh's edit ends without history (its session was committed or reverted in Unity meanwhile).</summary>
+        public static void DropBlenderEdit(string meshId)
+        {
+            foreach (var pair in edits.ToList())
+                if (pair.Value.MeshId == meshId) edits.Remove(pair.Key);
         }
 
         /// <summary>Transforms, names and active flags Blender changed, with Undo.</summary>
@@ -247,7 +438,7 @@ namespace Orbiters.Mixer.Editor
             if (delta == null) return;
             Undo.IncrementCurrentGroup();
             Undo.SetCurrentGroupName("Blender: scene change");
-            foreach (var t in delta.transforms)
+            foreach (var t in delta.transforms ?? new List<SceneNodeTransform>())
             {
                 var go = SceneGraphExporter.Resolve(t.id) as GameObject;
                 if (go == null) continue;
@@ -256,27 +447,85 @@ namespace Orbiters.Mixer.Editor
                 go.transform.localRotation = SceneGraphExporter.ToQuaternion(t.r);
                 go.transform.localScale = t.s != null ? SceneGraphExporter.ToVector(t.s) : go.transform.localScale;
             }
-            foreach (var r in delta.renamed)
+            foreach (var r in delta.renamed ?? new List<SceneNodeName>())
             {
                 var go = SceneGraphExporter.Resolve(r.id) as GameObject;
                 if (go == null || string.IsNullOrEmpty(r.name)) continue;
                 Undo.RecordObject(go, "Blender: rename");
                 go.name = r.name;
             }
-            foreach (var a in delta.active)
+            foreach (var a in delta.active ?? new List<SceneNodeFlag>())
             {
                 var go = SceneGraphExporter.Resolve(a.id) as GameObject;
                 if (go == null) continue;
                 Undo.RecordObject(go, "Blender: " + (a.active ? "show" : "hide"));
                 go.SetActive(a.active);
             }
-            foreach (var p in delta.reparented)
+            foreach (var p in delta.reparented ?? new List<SceneNodeParent>())
             {
                 var go = SceneGraphExporter.Resolve(p.id) as GameObject;
                 var parent = p.parent != null ? SceneGraphExporter.Resolve(p.parent) as GameObject : null;
                 if (go == null || (p.parent != null && parent == null)) continue;
                 Undo.SetTransformParent(go.transform, parent != null ? parent.transform : null, "Blender: reparent");
             }
+        }
+    }
+
+    /// <summary>A shape's deltas changed (from Blender): before and after per vertex, whatever the base does meanwhile.</summary>
+    internal sealed class ShapeDeltaEdit : HistoryEntry
+    {
+        public string Shape;
+        public int[] Indices;
+        public Vector3[] Before, After;
+
+        public override long Bytes => Indices.Length * (4L + 24L) + 64;
+        public override void Undo() => Apply(Before);
+        public override void Redo() => Apply(After);
+
+        private void Apply(Vector3[] deltas)
+        {
+            var doc = Target.Document;
+            if (!doc.HasShape(Shape)) doc.RestoreShape(Shape, null);
+            var layer = doc.Shape(Shape, create: true);
+            for (int i = 0; i < Indices.Length; i++) layer.Deltas[Indices[i]] = deltas[i];
+            layer.Edited = true;
+            doc.MarkEdited(Indices);
+            Target.AfterEdit(Indices, fullRefresh: true);
+            Target.RefreshNormals(Indices);
+        }
+    }
+
+    /// <summary>Records the deltas of one shape an edit touches: the first touch of a vertex keeps its delta before.</summary>
+    internal sealed class DeltaRecorder
+    {
+        private readonly Dictionary<int, Vector3> before = new Dictionary<int, Vector3>();
+        private readonly EditTarget target;
+        private readonly string shape;
+        private readonly string label;
+
+        public DeltaRecorder(EditTarget target, string shape, string label) { this.target = target; this.shape = shape; this.label = label; }
+
+        public void Touch(int v)
+        {
+            if (before.ContainsKey(v)) return;
+            var layer = target.Document.Shape(shape, create: true);
+            before[v] = layer.Deltas[v];
+        }
+
+        public ShapeDeltaEdit Finish()
+        {
+            if (before.Count == 0) return null;
+            var layer = target.Document.Shape(shape, create: true);
+            var edit = new ShapeDeltaEdit { Target = target, Label = label, Shape = shape, Indices = new int[before.Count], Before = new Vector3[before.Count], After = new Vector3[before.Count] };
+            int i = 0;
+            foreach (var pair in before)
+            {
+                edit.Indices[i] = pair.Key;
+                edit.Before[i] = pair.Value;
+                edit.After[i] = layer.Deltas[pair.Key];
+                i++;
+            }
+            return edit;
         }
     }
 }

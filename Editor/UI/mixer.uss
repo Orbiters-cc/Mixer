@@ -1,6 +1,6 @@
 /* Mixer. The greys of the Unity editor and the Logger (a top bar continuing Unity's tab, panes at #2b2b2b with darker
    inset cards and fields), the Orbiters green, a violet for what Blender owns, frames at 16 px, cards at 12 px,
-   pills at 14 px, and presses that answer at once. */
+   pills at 14 px, presses that answer at once, and flat frames: fills tell surfaces apart, never a 1 px border. */
 
 .mx-root {
     --mx-bar: #3b3b3b;
@@ -71,13 +71,13 @@
 .mx-button--primary .mx-icon { --icon-color: #06140c; }
 .mx-button--ghost { background-color: rgba(255, 255, 255, 0.05); }
 .mx-button--ghost:hover { background-color: rgba(255, 255, 255, 0.1); }
-.mx-button--accent { background-color: rgba(0, 218, 109, 0.14); border-width: 1px; border-color: rgba(0, 218, 109, 0.5); }
+.mx-button--accent { background-color: rgba(0, 218, 109, 0.16); }
 .mx-button--accent .mx-button__label { color: #3cf29a; }
 .mx-button--accent .mx-icon { --icon-color: #3cf29a; }
-.mx-button--accent:hover { background-color: rgba(0, 218, 109, 0.22); }
+.mx-button--accent:hover { background-color: rgba(0, 218, 109, 0.24); }
 .mx-button--danger { background-color: rgba(255, 107, 107, 0.14); }
 .mx-button--danger .mx-button__label { color: #ff8f93; }
-.mx-button--violet { background-color: rgba(138, 125, 255, 0.16); border-width: 1px; border-color: rgba(138, 125, 255, 0.5); }
+.mx-button--violet { background-color: rgba(138, 125, 255, 0.18); }
 .mx-button--violet .mx-button__label { color: var(--mx-violet-text); }
 .mx-button--violet .mx-icon { --icon-color: #b9b1ff; }
 
@@ -99,10 +99,10 @@
 .mx-root--xs .mx-brand__name { display: none; }
 .mx-root--s .mx-modes .orb-segmented__label { display: none; }
 .mx-link-pill { margin-right: 6px; }
-.mx-link-pill--on { background-color: rgba(138, 125, 255, 0.18); border-width: 1px; border-color: rgba(138, 125, 255, 0.55); }
+.mx-link-pill--on, .mx-link-pill--on:hover { background-color: rgba(138, 125, 255, 0.2); }
 .mx-link-pill--on .mx-button__label { color: var(--mx-violet-text); }
 .mx-link-pill--on .mx-icon { --icon-color: #b9b1ff; }
-.mx-link-pill--busy { background-color: rgba(245, 183, 79, 0.16); border-width: 1px; border-color: rgba(245, 183, 79, 0.5); }
+.mx-link-pill--busy, .mx-link-pill--busy:hover { background-color: rgba(245, 183, 79, 0.18); }
 .mx-link-pill--busy .mx-button__label { color: #f5c26b; }
 
 /* ---- Body and pages ------------------------------------------------------------------------------ */
@@ -117,11 +117,11 @@
 
 /* ---- Hero ---------------------------------------------------------------------------------------- */
 
-.mx-hero { margin-bottom: 10px; padding: 16px 16px 16px 14px; border-radius: 16px; background-color: var(--mx-hero); border-width: 1px; border-color: rgba(255, 255, 255, 0.05); overflow: hidden; }
+.mx-hero { margin-bottom: 10px; padding: 16px 16px 16px 14px; border-radius: 16px; background-color: var(--mx-hero); overflow: hidden; }
 .mx-hero__glow { position: absolute; left: 0; right: 0; top: 0; bottom: 0; }
 .mx-hero__top { flex-direction: row; align-items: center; }
-.mx-hero__badge { width: 78px; height: 78px; flex-shrink: 0; margin-right: 16px; border-radius: 20px; background-color: rgba(0, 218, 109, 0.08); border-width: 1px; border-color: rgba(0, 218, 109, 0.25); overflow: hidden; align-items: center; justify-content: center; }
-.mx-badge__image { width: 76px; height: 76px; }
+.mx-hero__badge { width: 78px; height: 78px; flex-shrink: 0; margin-right: 16px; border-radius: 20px; background-color: rgba(0, 218, 109, 0.1); overflow: hidden; align-items: center; justify-content: center; }
+.mx-badge__image { width: 78px; height: 78px; }
 .mx-badge__logo { width: 40px; height: 40px; }
 .mx-hero__texts { flex-grow: 1; flex-shrink: 1; min-width: 0; }
 .mx-hero__eyebrow { margin: 0; padding: 0; font-size: 10px; letter-spacing: 1px; color: var(--mx-accent); -unity-font-style: bold; }
@@ -138,7 +138,7 @@
 
 /* ---- Cards and settings -------------------------------------------------------------------------- */
 
-.mx-card { margin-bottom: 10px; padding: 11px 13px; border-radius: 12px; background-color: var(--mx-card); border-width: 1px; border-color: rgba(255, 255, 255, 0.045); }
+.mx-card { margin-bottom: 10px; padding: 12px 14px; border-radius: 12px; background-color: var(--mx-card); }
 .mx-card__title { color: #9a9a9a; font-size: 10px; -unity-font-style: bold; letter-spacing: 0.6px; margin-bottom: 7px; }
 .mx-caption { margin: 4px 0 2px 0; padding: 0; color: #8f8f8f; font-size: 11px; white-space: normal; }
 .mx-setting { flex-direction: row; align-items: center; padding: 9px 0; border-top-width: 1px; border-top-color: rgba(255, 255, 255, 0.05); }
@@ -174,7 +174,7 @@
 .mx-chip--pick { transition-property: background-color, scale; transition-duration: 0.12s, 0.16s; transition-timing-function: ease-out, ease-out-back; }
 .mx-chip--pick:hover { background-color: #3f4047; }
 .mx-chip--pick.mx-pressed { scale: 0.95 0.95; }
-.mx-chip--on, .mx-chip--on:hover { background-color: rgba(0, 218, 109, 0.18); border-width: 1px; border-color: rgba(0, 218, 109, 0.5); }
+.mx-chip--on, .mx-chip--on:hover { background-color: rgba(0, 218, 109, 0.2); }
 .mx-chip--on .mx-chip__text { color: #3cf29a; }
 .mx-chip__remove { width: 18px; height: 18px; min-width: 18px; margin: 0 -4px 0 2px; }
 .mx-chip__remove .mx-icon { width: 10px; height: 10px; }
@@ -214,7 +214,7 @@
 
 .mx-join__thumb { width: 28px; height: 28px; margin-right: 10px; border-radius: 6px; flex-shrink: 0; }
 .mx-render-card { padding: 8px; }
-.mx-stage { height: 260px; border-radius: 16px; overflow: hidden; background-color: #161616; border-width: 1px; border-color: rgba(255, 255, 255, 0.06); align-items: center; justify-content: center; }
+.mx-stage { height: 260px; border-radius: 16px; overflow: hidden; background-color: #161616; align-items: center; justify-content: center; }
 .mx-stage__image { position: absolute; left: 0; top: 0; right: 0; bottom: 0; }
 .mx-stage__status { margin: 0; padding: 4px 10px; border-radius: 10px; color: #9a9a9a; font-size: 11px; }
 .mx-stage__status--over { position: absolute; right: 10px; bottom: 8px; background-color: rgba(0, 0, 0, 0.55); color: #e6e6e6; }
@@ -302,8 +302,9 @@
 .mx-shape__value { width: 40px; margin: 0; padding: 0; font-size: 11px; color: #9a9a9a; -unity-text-align: middle-right; }
 .mx-shape .mx-icon-button { width: 20px; height: 20px; margin-left: 2px; opacity: 0; }
 .mx-shape:hover .mx-icon-button, .mx-shape--on .mx-icon-button { opacity: 1; }
-.mx-inspector__tools { flex-direction: row; align-items: center; margin-top: 6px; }
-.mx-inspector__tools .mx-pill { margin-right: 6px; }
+/* The pills keep Mixer's 6 px gap; the row starts 6 px left so the first one lines up with the list above. */
+.mx-inspector__tools { flex-direction: row; align-items: center; margin-top: 6px; margin-left: -6px; }
+.mx-inspector__tools .mx-button { margin: 0 0 0 6px; }
 .mx-inspector__hint { margin: 6px 0 0 0; font-size: 11px; color: #8d8d8d; white-space: normal; }
 .mx-group { flex-direction: row; align-items: center; height: 22px; padding: 0 6px; }
 .mx-group:hover { background-color: var(--mx-hover); }
@@ -314,6 +315,10 @@
 .mx-inspector__search { margin: 4px 0 6px 0; }
 .mx-inspector__scroll { max-height: 264px; }
 .mx-inspector__scroll .unity-scroll-view__content-container { padding: 0; }
+/* Unity's light skin: the card and its texts on the light inspector (lists, fields and buttons keep their dark fills). */
+.mx-skin-light .mx-inspector { background-color: rgba(0, 0, 0, 0.06); }
+.mx-skin-light .mx-inspector__title { color: #3c3c3c; }
+.mx-skin-light .mx-inspector__count, .mx-skin-light .mx-inspector__hint, .mx-skin-light .mx-inspector .mx-caption { color: #505050; }
 
 /* ---- Footer -------------------------------------------------------------------------------------- */
 
@@ -327,11 +332,11 @@
 .mx-toasts { position: absolute; right: 14px; bottom: 46px; max-width: 420px; align-items: flex-end; }
 .mx-toast {
     flex-direction: row; align-items: center; min-height: 36px; margin-top: 8px; padding: 5px 5px 5px 12px;
-    border-radius: 12px; border-width: 1px; border-color: rgba(0, 218, 109, 0.4); background-color: #2f3d34;
+    border-radius: 12px; background-color: #2f4237;
     opacity: 1; translate: 0 0;
     transition-property: opacity, translate; transition-duration: 0.22s, 0.3s; transition-timing-function: ease-out, ease-out-back;
 }
-.mx-toast--error { border-color: rgba(255, 107, 107, 0.45); background-color: #45302f; }
+.mx-toast--error { background-color: #4a3130; }
 .mx-toast--enter { opacity: 0; translate: 0 14px; }
 .mx-toast--leave { opacity: 0; translate: 18px 0; }
 .mx-toast__icon { width: 15px; height: 15px; margin-right: 9px; --icon-color: #3cf29a; }

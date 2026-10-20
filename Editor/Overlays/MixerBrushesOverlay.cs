@@ -134,19 +134,22 @@ namespace Orbiters.Mixer.Editor
             return icon;
         }
 
-        /// <summary>Runs <paramref name="refresh"/> now and whenever the tool (and, with <paramref name="session"/>, a session) changes while the element is on screen.</summary>
+        /// <summary>
+        /// Runs <paramref name="refresh"/> now and whenever the tool (and, with <paramref name="session"/>, a session and
+        /// the selection) changes while the element is on screen.
+        /// </summary>
         public static void Follow(VisualElement element, Action refresh, bool session = false)
         {
             element.RegisterCallback<AttachToPanelEvent>(_ =>
             {
                 MixerSceneTool.Changed += refresh;
-                if (session) MixerSession.Changed += refresh;
+                if (session) { MixerSession.Changed += refresh; Selection.selectionChanged += refresh; }
                 refresh();
             });
             element.RegisterCallback<DetachFromPanelEvent>(_ =>
             {
                 MixerSceneTool.Changed -= refresh;
-                if (session) MixerSession.Changed -= refresh;
+                if (session) { MixerSession.Changed -= refresh; Selection.selectionChanged -= refresh; }
             });
             refresh();
         }

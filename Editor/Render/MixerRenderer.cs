@@ -1,5 +1,8 @@
 using System;
+using System.Globalization;
 using System.IO;
+using System.Linq;
+using System.Threading;
 using Orbiters.Toolkit.Editor.Processes;
 using UnityEditor;
 using UnityEngine;
@@ -10,9 +13,16 @@ namespace Orbiters.Mixer.Editor
     /// Renders the scene with Blender's engine. With Blender linked, the request goes over the link and Blender
     /// renders what it holds of the scene; otherwise a Blender runs in the background, connects to the link, receives
     /// the scene and renders it, then leaves. The result lands as a PNG under Library and is shown without any import.
+    /// A render can be cancelled; one that Blender leaving the link, a script reload or a time limit ends says so; the
+    /// last few renders are kept, older files go.
     /// </summary>
+    [InitializeOnLoad]
     internal static class MixerRenderer
     {
+        private const string JobKey = "Orbiters.Mixer.Render.Job";
+        private const int KeptRenders = 10;
+        private const double LinkTimeoutSeconds = 3600;
+
         public sealed class Settings
         {
             public string Engine = "eevee";
@@ -32,26 +42,47 @@ namespace Orbiters.Mixer.Editor
             public bool Done, Ok;
             public string Error;
             public bool Background;
+            internal string RequestPath;
+            internal CancellationTokenSource Cancellation;
+            /// <summary>The link was off and the render turned it on: it goes off again after.</summary>
+            internal bool LinkWasOff;
         }
 
         public static Job Current { get; private set; }
         public static Texture2D LastImage { get; private set; }
         public static string LastPath { get; private set; }
         public static event Action Changed;
+        /// <summary>A render is running and can be cancelled.</summary>
+        public static bool CanCancel => Current != null && !Current.Done;
 
         public static string Folder => Path.GetFullPath(Path.Combine(Application.dataPath, "..", "Library", "Orbiters", "Mixer", "render"));
+
+        private static double disconnectedSince = -1;
+
+        static MixerRenderer()
+        {
+            EditorApplication.update += Tick;
+            AssemblyReloadEvents.beforeAssemblyReload += SaveJob;
+            // A one-shot update, not delayCall: delayCall waits for a repaint, which an editor in the background never does.
+            EditorApplication.CallbackFunction once = null;
+            once = () => { EditorApplication.update -= once; LoadJob(); };
+            EditorApplication.update += once;
+        }
 
         /// <summary>Starts a render; returns an error text or null.</summary>
         public static string Render(Settings settings)
         {
-            if (Current != null && !Current.Done) return "A render is running.";
+            if (Current != null && !Current.Done) return "A render is running: cancel it first.";
             Directory.CreateDirectory(Folder);
-            var job = new Job { Id = DateTime.Now.ToString("yyyyMMdd-HHmmss"), Settings = settings, Started = DateTime.Now };
+            Prune();
+            // Milliseconds and a random tail: two renders within a second never share files or a job id.
+            var job = new Job { Id = DateTime.Now.ToString("yyyyMMdd-HHmmss-fff", CultureInfo.InvariantCulture) + "-" + Guid.NewGuid().ToString("N").Substring(0, 6), Settings = settings, Started = DateTime.Now };
             job.Output = Path.Combine(Folder, "render-" + job.Id + ".png");
             var request = Request(job);
             Current = job;
             if (MixerLinkService.Connected)
             {
+                disconnectedSince = -1;
                 MixerLinkService.Send(MixerLinkProtocol.FrameType.RenderRequest, MixerLinkProtocol.Json(request));
                 Changed?.Invoke();
                 return null;
@@ -59,25 +90,35 @@ namespace Orbiters.Mixer.Editor
             // No Blender linked: a background one takes the scene from the link and renders it.
             string blender = BlenderInstalls.GetSelectedExecutablePath();
             if (string.IsNullOrEmpty(blender) || !File.Exists(blender)) { Current = null; return "Blender was not found. Pick its executable in the Orbiters settings."; }
-            MixerLinkService.Enabled = true;
+            if (!MixerLinkService.Enabled) { job.LinkWasOff = true; MixerLinkService.Enabled = true; }
             MixerLinkService.EnsureRunning();
-            if (!MixerLinkService.Running) { Current = null; return "The Blender link could not listen."; }
-            string requestPath = Path.Combine(Folder, "request-" + job.Id + ".json");
-            File.WriteAllText(requestPath, Newtonsoft.Json.JsonConvert.SerializeObject(request));
+            if (!MixerLinkService.Running) { RestoreLink(job); Current = null; return "The Blender link could not listen."; }
+            job.RequestPath = Path.Combine(Folder, "request-" + job.Id + ".json");
+            File.WriteAllText(job.RequestPath, Newtonsoft.Json.JsonConvert.SerializeObject(request));
             string script = Path.GetFullPath(MixerInfo.BasePath + "/Editor/Render/Python~/render_job.py");
             job.Background = true;
+            job.Cancellation = new CancellationTokenSource();
             var cli = new BlenderCli.Job { Script = script, LogPath = Path.Combine(Folder, "render-" + job.Id + ".log"), TimeoutSeconds = 3600 };
-            cli.ScriptArguments.Add(requestPath);
+            cli.ScriptArguments.Add(job.RequestPath);
             cli.ScriptArguments.Add(MixerLinkProtocol.EndpointPath);
             cli.ScriptArguments.Add(EditorPrefs.GetString(BlenderProjectLauncher.SourcePref, ""));
             BlenderCli.Run(cli, result =>
             {
                 if (job != Current || job.Done) return;
                 if (File.Exists(job.Output)) Finish(job, true, null);
-                else Finish(job, false, result.Summary ?? "Blender rendered nothing; see " + cli.LogPath);
-            });
+                else Finish(job, false, result.Cancelled ? "Cancelled." : result.Summary ?? "Blender rendered nothing; see " + cli.LogPath);
+            }, job.Cancellation.Token);
             Changed?.Invoke();
             return null;
+        }
+
+        /// <summary>Stops the running render: a background Blender is ended, a linked Blender's result is not waited for.</summary>
+        public static void Cancel()
+        {
+            var job = Current;
+            if (job == null || job.Done) return;
+            try { job.Cancellation?.Cancel(); } catch (ObjectDisposedException) { }
+            Finish(job, false, "Cancelled.");
         }
 
         private static object Request(Job job)
@@ -110,8 +151,21 @@ namespace Orbiters.Mixer.Editor
             Finish(Current, result.ok && File.Exists(result.path ?? Current.Output), result.error);
         }
 
+        // A render over the link has no process to watch: Blender leaving the link or the time limit ends it.
+        private static void Tick()
+        {
+            var job = Current;
+            if (job == null || job.Done || job.Background) return;
+            double now = EditorApplication.timeSinceStartup;
+            if (MixerLinkService.Connected) disconnectedSince = -1;
+            else if (disconnectedSince < 0) disconnectedSince = now;
+            else if (now - disconnectedSince > 2.0) { Finish(job, false, "Blender left the link during the render."); return; }
+            if ((DateTime.Now - job.Started).TotalSeconds > LinkTimeoutSeconds) Finish(job, false, "Blender did not answer within an hour.");
+        }
+
         private static void Finish(Job job, bool ok, string error)
         {
+            if (job.Done) return;
             job.Done = true;
             job.Ok = ok;
             job.Error = error;
@@ -131,8 +185,72 @@ namespace Orbiters.Mixer.Editor
                 }
                 catch (Exception e) { job.Ok = false; job.Error = e.Message; }
             }
+            try { if (job.RequestPath != null && File.Exists(job.RequestPath)) File.Delete(job.RequestPath); } catch (Exception) { }
+            job.Cancellation?.Dispose();
+            job.Cancellation = null;
+            RestoreLink(job);
             MixerSession.Say(job.Ok ? "Rendered in " + (DateTime.Now - job.Started).TotalSeconds.ToString("0") + " s." : "Render failed: " + (job.Error ?? "unknown"), !job.Ok);
             Changed?.Invoke();
+        }
+
+        private static void RestoreLink(Job job)
+        {
+            if (!job.LinkWasOff) return;
+            job.LinkWasOff = false;
+            // Unless a Blender connected meanwhile for the user's own work.
+            if (!MixerLinkService.Connected) MixerLinkService.Enabled = false;
+        }
+
+        // ---- Reloads and files -------------------------------------------------------------------------------------
+
+        private static void SaveJob()
+        {
+            var job = Current;
+            if (job == null || job.Done) { SessionState.EraseString(JobKey); return; }
+            SessionState.SetString(JobKey, string.Join("\t", job.Id, job.Output, job.Started.Ticks.ToString(CultureInfo.InvariantCulture), job.Background ? "1" : "0", job.LinkWasOff ? "1" : "0", job.RequestPath ?? ""));
+        }
+
+        // A render running when the scripts reloaded: a linked Blender still answers it; a background one was ended.
+        private static void LoadJob()
+        {
+            string text = SessionState.GetString(JobKey, "");
+            SessionState.EraseString(JobKey);
+            if (string.IsNullOrEmpty(text)) return;
+            var p = text.Split('\t');
+            if (p.Length < 5 || !long.TryParse(p[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out long ticks)) return;
+            var job = new Job { Id = p[0], Output = p[1], Started = new DateTime(ticks), Background = p[3] == "1", LinkWasOff = p[4] == "1", RequestPath = p.Length > 5 && p[5].Length > 0 ? p[5] : null, Settings = new Settings() };
+            Current = job;
+            if (!job.Background) { Changed?.Invoke(); return; }
+            if (File.Exists(job.Output)) Finish(job, true, null);
+            else Finish(job, false, "A script reload stopped the background Blender: render again.");
+        }
+
+        // The newest renders stay; older images, logs and requests go.
+        private static void Prune()
+        {
+            try
+            {
+                var renders = new DirectoryInfo(Folder).GetFiles("render-*.png").OrderByDescending(f => f.LastWriteTimeUtc).Skip(KeptRenders).ToList();
+                foreach (var file in renders)
+                {
+                    if (string.Equals(file.FullName, LastPath, StringComparison.OrdinalIgnoreCase)) continue;
+                    string id = Path.GetFileNameWithoutExtension(file.Name).Substring("render-".Length);
+                    TryDelete(file.FullName);
+                    TryDelete(Path.Combine(Folder, "render-" + id + ".log"));
+                    TryDelete(Path.Combine(Folder, "request-" + id + ".json"));
+                }
+                var cutoff = DateTime.UtcNow.AddDays(-1);
+                foreach (var file in new DirectoryInfo(Folder).GetFiles())
+                    if ((file.Name.StartsWith("request-", StringComparison.Ordinal) || file.Name.EndsWith(".log", StringComparison.Ordinal)) && file.LastWriteTimeUtc < cutoff
+                        && !File.Exists(Path.Combine(Folder, Path.GetFileNameWithoutExtension(file.Name).Replace("request-", "render-") + ".png")))
+                        TryDelete(file.FullName);
+            }
+            catch (Exception) { }
+        }
+
+        private static void TryDelete(string path)
+        {
+            try { if (File.Exists(path)) File.Delete(path); } catch (Exception) { }
         }
 
         /// <summary>Copies the last render into the project (one PNG import, asked for by the user).</summary>

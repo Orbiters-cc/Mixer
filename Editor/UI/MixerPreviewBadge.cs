@@ -8,7 +8,8 @@ namespace Orbiters.Mixer.Editor
     /// <summary>
     /// The hero's badge: a live little picture of the mesh being edited, turned by dragging, refreshed while the
     /// document changes. Rendered with a PreviewRenderUtility on the working mesh (nothing in the scene moves); the
-    /// override lighting is restored after every render, as Unity requires.
+    /// override lighting is restored after every render, as Unity requires. Nothing is baked or rendered while the
+    /// window is hidden; a turn re-renders the last bake, and a stroke going on refreshes it four times a second.
     /// </summary>
     internal sealed class MixerPreviewBadge : VisualElement
     {
@@ -17,12 +18,16 @@ namespace Orbiters.Mixer.Editor
         private readonly Image image;
         private readonly MixerLogo.Element logo;
         private Vector2 angles = new Vector2(20f, -30f);
-        private int seenRevision = -1;
+        private int seenRevision = -1, bakedRevision = -1;
+        private EditTarget bakedFor;
         private double lastRender;
         private bool dragging;
         private Vector2 dragStart;
         private Material material;
         private Mesh baked;
+
+        /// <summary>Whether the badge's window is on screen; null counts as shown.</summary>
+        public Func<bool> Shown { get; set; }
 
         public MixerPreviewBadge()
         {
@@ -32,7 +37,7 @@ namespace Orbiters.Mixer.Editor
             logo = new MixerLogo.Element();
             logo.AddToClassList("mx-badge__logo");
             Add(logo);
-            RegisterCallback<PointerDownEvent>(evt => { if (evt.button != 0 || target == null) return; dragging = true; dragStart = evt.position; this.CapturePointer(evt.pointerId); });
+            RegisterCallback<PointerDownEvent>(evt => { if (evt.button != 0 || target == null) return; dragging = true; dragStart = evt.position; bakedRevision = -1; this.CapturePointer(evt.pointerId); });
             RegisterCallback<PointerMoveEvent>(evt =>
             {
                 if (!dragging) return;
@@ -58,9 +63,12 @@ namespace Orbiters.Mixer.Editor
         private void Tick()
         {
             if (target == null || !target.Alive || panel == null) return;
+            if (Shown != null && !Shown()) return;
+            if (resolvedStyle.display == DisplayStyle.None || image.resolvedStyle.display == DisplayStyle.None) return;
             int revision = target.Document.Revision;
             if (revision == seenRevision) return;
-            if (EditorApplication.timeSinceStartup - lastRender < 0.08) return;
+            double wait = MixerSceneTool.Stroking && !dragging ? 0.25 : 0.08;
+            if (EditorApplication.timeSinceStartup - lastRender < wait) return;
             seenRevision = revision;
             lastRender = EditorApplication.timeSinceStartup;
             try { Render(); } catch (Exception e) { Debug.LogException(e); target = null; }
@@ -96,7 +104,14 @@ namespace Orbiters.Mixer.Editor
             if (target.Skinned != null)
             {
                 if (baked == null) baked = new Mesh { hideFlags = HideFlags.HideAndDontSave };
-                target.Skinned.BakeMesh(baked, true);
+                // A turn of the badge only re-renders: the mesh is baked again when it changed.
+                int revision = target.Document.Revision;
+                if (bakedFor != target || bakedRevision != revision)
+                {
+                    target.Skinned.BakeMesh(baked, true);
+                    bakedFor = target;
+                    bakedRevision = revision;
+                }
                 mesh = baked;
                 orientation = target.Skinned.transform.rotation;
             }
@@ -136,6 +151,8 @@ namespace Orbiters.Mixer.Editor
             material = null;
             if (baked != null) UnityEngine.Object.DestroyImmediate(baked);
             baked = null;
+            bakedFor = null;
+            bakedRevision = -1;
         }
     }
 }

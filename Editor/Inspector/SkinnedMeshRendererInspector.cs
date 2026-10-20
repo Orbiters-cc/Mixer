@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using Orbiters.Toolkit.Editor;
 using Unity.Collections;
 using UnityEditor;
@@ -19,10 +20,13 @@ namespace Orbiters.Mixer.Editor
     internal sealed class SkinnedMeshRendererInspector : UnityEditor.Editor
     {
         private static readonly Type BuiltinType = typeof(UnityEditor.Editor).Assembly.GetType("UnityEditor.SkinnedMeshRendererEditor");
+        // Unity's inspector draws the bounds handle of its Edit Bounds button in its own OnSceneGUI.
+        private static readonly MethodInfo BuiltinSceneGui = BuiltinType?.GetMethod("OnSceneGUI", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, Type.EmptyTypes, null);
         // Loaded on first use: Unity refuses asset loads while a ScriptableObject (this editor) is being constructed.
         private static StyleSheet style;
         private static StyleSheet Style => style != null ? style : style = AssetDatabase.LoadAssetAtPath<StyleSheet>(MixerInfo.BasePath + "/Editor/UI/mixer.uss");
-        private static readonly Dictionary<int, int[]> BoneVertexCounts = new Dictionary<int, int[]>();
+        // How many vertices each bone weighs, per mesh and per state of its Mixer session (painting changes them).
+        private static readonly Dictionary<int, (long state, int[] counts)> BoneVertexCounts = new Dictionary<int, (long, int[])>();
 
         private UnityEditor.Editor builtin;
         private VisualElement root, shapesList, groupsList;
@@ -52,6 +56,13 @@ namespace Orbiters.Mixer.Editor
             builtin = null;
         }
 
+        private void OnSceneGUI()
+        {
+            if (builtin == null || BuiltinSceneGui == null) return;
+            try { BuiltinSceneGui.Invoke(builtin, null); }
+            catch (TargetInvocationException e) { Debug.LogException(e.InnerException ?? e); }
+        }
+
         public override VisualElement CreateInspectorGUI()
         {
             root = new VisualElement();
@@ -62,6 +73,7 @@ namespace Orbiters.Mixer.Editor
             }));
             if (targets.Length != 1 || Renderer == null) return root;
             if (Style != null) root.styleSheets.Add(Style);
+            if (!EditorGUIUtility.isProSkin) root.AddToClassList("mx-skin-light");
             root.Add(BuildShapeKeys());
             root.Add(BuildVertexGroups());
             MixerSession.Changed += Refresh;
@@ -91,7 +103,7 @@ namespace Orbiters.Mixer.Editor
             tools.Add(MixerUi.Pill("New", NewShape, "accent", IconGlyph.Plus, "A new, empty blendshape: Sculpt mode gives it its shape"));
             tools.Add(MixerUi.Pill("Sculpt", () => SculptShape(activeShape), "ghost", IconGlyph.Sculpt, "Sculpt the selected shape's deltas in the Scene view (the base mesh when none is selected)"));
             tools.Add(MixerUi.Spacer());
-            revertPill = MixerUi.Pill("Revert", () => { var t = MixerSession.TargetOf(Renderer); if (t != null) { MixerSession.Revert(t); MixerModes.Notify("Reverted " + Renderer.name); } }, "ghost", null, "The renderer's own mesh back; Mixer's edits are dropped");
+            revertPill = MixerUi.Pill("Revert", () => { var t = MixerSession.TargetOf(Renderer); if (t != null && MixerConfirm.Revert(t) > 0) MixerModes.Notify("Reverted " + Renderer.name); }, "ghost", null, "The renderer's own mesh back; Mixer's edits are dropped (asks first when there are any)", destructive: true);
             commitPill = MixerUi.Pill("Commit", () => { var t = MixerSession.TargetOf(Renderer); if (t != null) { var mesh = MixerSession.Commit(t); MixerModes.Notify(mesh != null ? "Committed " + Renderer.name : "Nothing to commit"); } }, "primary", IconGlyph.Check, "Save Mixer's edits of this mesh as its mesh asset, in one Undo step");
             tools.Add(revertPill);
             tools.Add(commitPill);
@@ -121,7 +133,8 @@ namespace Orbiters.Mixer.Editor
             string layer = session != null && session.Alive ? session.Document.Layer : null;
             string filter = (shapeSearch.value ?? string.Empty).Trim();
             var key = new System.Text.StringBuilder();
-            key.Append(mesh != null ? mesh.GetInstanceID() : 0).Append('|').Append(layer).Append('|').Append(activeShape).Append('|').Append(filter).Append('|');
+            // The picked shape is not part of the key: a click only moves the highlight, the list stays.
+            key.Append(mesh != null ? mesh.GetInstanceID() : 0).Append('|').Append(layer).Append('|').Append(filter).Append('|');
             foreach (string name in names) key.Append(name).Append(';');
             if (key.ToString() != shownShapes)
             {
@@ -137,16 +150,24 @@ namespace Orbiters.Mixer.Editor
                 }
                 if (names.Count > 0 && listed == 0) shapesList.Add(MixerUi.Text("Nothing matches.", "mx-caption"));
             }
-            // Values follow the renderer (an animation, another inspector).
+            // Values follow the renderer (an animation, another inspector); the shape Mixer edits shows its own weight,
+            // held while it is shown at 100 %.
+            var held = session != null && session.Alive ? session.HeldWeights : null;
             foreach (var row in shapesList.Children())
             {
+                row.EnableInClassList("mx-shape--on", (string)row.name == activeShape);
                 if (!(row.userData is int index) || index < 0 || mesh == null || index >= mesh.blendShapeCount) continue;
                 var slider = row.Q<Slider>(className: "mx-shape__slider");
                 var value = row.Q<Label>(className: "mx-shape__value");
-                float weight = renderer.GetBlendShapeWeight(index);
-                if (slider != null && Math.Abs(slider.value - weight) > 0.001f) slider.SetValueWithoutNotify(weight);
+                bool editing = (string)row.name == layer;
+                float weight = editing && held != null && index < held.Length && !float.IsNaN(held[index]) ? held[index] : renderer.GetBlendShapeWeight(index);
+                if (slider != null)
+                {
+                    FitRange(slider, weight);
+                    if (Math.Abs(slider.value - weight) > 0.001f) slider.SetValueWithoutNotify(weight);
+                    slider.SetEnabled(!editing);
+                }
                 if (value != null) value.text = weight.ToString("0");
-                row.EnableInClassList("mx-shape--on", (string)row.name == activeShape);
             }
             shapesCount.text = names.Count == 0 ? string.Empty : names.Count + (names.Count == 1 ? " shape" : " shapes");
             bool edits = session != null && session.Alive && session.Document.Changed;
@@ -172,13 +193,16 @@ namespace Orbiters.Mixer.Editor
             rename.AddToClassList("mx-shape__rename");
             MixerUi.Show(rename, false);
             row.Add(rename);
-            var slider = new Slider(0f, 100f) { value = index >= 0 ? Renderer.GetBlendShapeWeight(index) : 0f };
+            var slider = new Slider(0f, 100f);
+            if (index >= 0) { FitRange(slider, Renderer.GetBlendShapeWeight(index)); slider.SetValueWithoutNotify(Renderer.GetBlendShapeWeight(index)); }
             slider.AddToClassList("mx-shape__slider");
-            slider.SetEnabled(index >= 0);
-            slider.tooltip = index >= 0 ? "The shape's weight on the renderer" : "A new shape: it exists on the mesh asset after Commit";
+            slider.SetEnabled(index >= 0 && !editing);
+            slider.tooltip = index < 0 ? "A new shape: it exists on the mesh asset after Commit"
+                : editing ? "Shown at 100 % while Mixer edits it; its own weight comes back when you leave it"
+                : "The shape's weight on the renderer";
             slider.RegisterValueChangedCallback(evt =>
             {
-                if (index < 0) return;
+                if (index < 0 || name == MixerSession.TargetOf(Renderer)?.Document.Layer) return;
                 Undo.RecordObject(Renderer, "Shape key " + name);
                 Renderer.SetBlendShapeWeight(index, evt.newValue);
                 row.Q<Label>(className: "mx-shape__value").text = evt.newValue.ToString("0");
@@ -193,19 +217,24 @@ namespace Orbiters.Mixer.Editor
             {
                 if (evt.button != 0 || evt.target is Button || evt.target is Slider || rename.resolvedStyle.display == DisplayStyle.Flex) return;
                 activeShape = name;
-                RefreshShapes();
+                foreach (var other in shapesList.Children()) other.EnableInClassList("mx-shape--on", other.name == activeShape);
             });
+            bool renaming = false;
             row.RegisterCallback<ClickEvent>(evt =>
             {
                 if (evt.clickCount != 2 || evt.target is Button || evt.target is Slider) return;
+                renaming = true;
                 MixerUi.Show(label, false);
                 MixerUi.Show(rename, true);
                 rename.value = name;
                 rename.Focus();
                 rename.SelectAll();
             });
+            // Escape hides the field, whose focus-out then comes too: only the first of the two counts.
             void Commit(bool apply)
             {
+                if (!renaming) return;
+                renaming = false;
                 MixerUi.Show(rename, false);
                 MixerUi.Show(label, true);
                 string to = rename.value.Trim();
@@ -251,8 +280,7 @@ namespace Orbiters.Mixer.Editor
             {
                 if (name != null && t.Document.HasShape(name)) MixerSession.SetLayer(t, name, false);
                 else if (name == null) MixerSession.SetLayer(t, null, false);
-                MixerSceneTool.FocusTarget = t;
-                MixerModes.Enter(MixerMode.Sculpt);
+                MixerModes.Enter(MixerMode.Sculpt, t);
             }, "sculpt");
         }
 
@@ -262,6 +290,8 @@ namespace Orbiters.Mixer.Editor
             var session = MixerSession.TargetOf(renderer);
             if (session == null)
             {
+                // A prefab asset in the Project: Mixer's working copy would never be saved there.
+                if (EditorUtility.IsPersistent(renderer)) { MixerModes.Notify("Mixer edits meshes in a scene: put the prefab in one and edit that instance."); return; }
                 if (!MixerSession.CanEdit(renderer, out string reason)) { MixerModes.Notify(reason); return; }
                 session = MixerSession.Edit(renderer);
                 MixerSceneTool.FocusTarget = session;
@@ -292,7 +322,7 @@ namespace Orbiters.Mixer.Editor
                 MixerSession.AddGroup(t, name);
                 PaintChannel(t, WeightChannel.OfGroup(name));
             }, "add a vertex group"), "accent", IconGlyph.Plus, "A new vertex group (kept beside the committed mesh); Weight paint fills it"));
-            tools.Add(MixerUi.Pill("Weight paint", () => MixerModes.Enter(MixerMode.Weights), "ghost", IconGlyph.Weights, "Weight paint mode on this mesh"));
+            tools.Add(MixerUi.Pill("Weight paint", () => WithSession(t => MixerModes.Enter(MixerMode.Weights, t), "weight paint"), "ghost", IconGlyph.Weights, "Weight paint mode on this mesh"));
             body.Add(tools);
             return card;
         }
@@ -305,14 +335,18 @@ namespace Orbiters.Mixer.Editor
             var bones = renderer.bones ?? Array.Empty<Transform>();
             var groups = session != null && session.Alive ? session.Document.Groups.Select(g => g.Name).ToList() : new List<string>();
             string filter = (groupSearch.value ?? string.Empty).Trim();
-            var channel = session != null && MixerSceneTool.FocusTarget == session && MixerSceneTool.Mode == MixerMode.Weights ? MixerSceneTool.Channel : WeightChannel.None;
+            var channel = session != null && MixerSceneTool.FocusTarget == session && MixerSceneTool.Mode == MixerMode.Weights ? MixerSceneTool.ChannelOn(session) : WeightChannel.None;
+            // Painting gives a bone its first vertices (or takes its last): which bones weigh anything is part of the key.
+            long state = session != null && session.Alive ? ((long)session.Document.Revision << 32) ^ ((long)MixerHistory.Cursor << 16) ^ MixerHistory.Count : 0L;
+            var counts = VertexCounts(mesh, bones.Length, state);
+            int weightedHash = 17;
+            if (counts != null) for (int i = 0; i < counts.Length; i++) if (counts[i] > 0) weightedHash = unchecked(weightedHash * 31 + i);
             var key = new System.Text.StringBuilder();
-            key.Append(mesh != null ? mesh.GetInstanceID() : 0).Append('|').Append(filter).Append('|').Append(channel.Bone).Append('|').Append(channel.Group).Append('|').Append(bones.Length).Append('|');
+            key.Append(mesh != null ? mesh.GetInstanceID() : 0).Append('|').Append(filter).Append('|').Append(channel.Bone).Append('|').Append(channel.Group).Append('|').Append(bones.Length).Append('|').Append(weightedHash).Append('|');
             foreach (string g in groups) key.Append(g).Append(';');
             if (key.ToString() == shownGroups) return;
             shownGroups = key.ToString();
             groupsList.Clear();
-            var counts = VertexCounts(mesh, bones.Length);
             int shown = 0;
             for (int i = 0; i < bones.Length; i++)
             {
@@ -350,26 +384,34 @@ namespace Orbiters.Mixer.Editor
 
         private static void PaintChannel(EditTarget target, WeightChannel channel)
         {
-            MixerSceneTool.FocusTarget = target;
-            MixerSceneTool.SetChannel(channel);
-            MixerModes.Enter(MixerMode.Weights);
+            MixerSceneTool.SetChannel(target, channel);
+            MixerModes.Enter(MixerMode.Weights, target);
         }
 
-        // How many vertices each bone weighs, once per mesh.
-        private static int[] VertexCounts(Mesh mesh, int bones)
+        // How many vertices each bone weighs: once per mesh, again whenever its Mixer session changed (painting moves them).
+        private static int[] VertexCounts(Mesh mesh, int bones, long state)
         {
             if (mesh == null || bones == 0) return null;
             int key = mesh.GetInstanceID();
-            if (BoneVertexCounts.TryGetValue(key, out var cached) && cached.Length == bones) return cached;
+            if (BoneVertexCounts.TryGetValue(key, out var cached) && cached.state == state && cached.counts.Length == bones) return cached.counts;
             try
             {
                 var counts = new int[bones];
                 var all = mesh.GetAllBoneWeights();
                 for (int i = 0; i < all.Length; i++) { var w = all[i]; if (w.boneIndex >= 0 && w.boneIndex < bones && w.weight > 0f) counts[w.boneIndex]++; }
-                BoneVertexCounts[key] = counts;
+                if (BoneVertexCounts.Count > 64) BoneVertexCounts.Clear();
+                BoneVertexCounts[key] = (state, counts);
                 return counts;
             }
             catch (Exception) { return null; }
+        }
+
+        // Blendshape weights may go past 0..100 (Unity does not clamp them): the slider widens instead of clamping.
+        private static void FitRange(Slider slider, float weight)
+        {
+            float low = Mathf.Min(0f, weight), high = Mathf.Max(100f, weight);
+            if (!Mathf.Approximately(slider.lowValue, low)) slider.lowValue = low;
+            if (!Mathf.Approximately(slider.highValue, high)) slider.highValue = high;
         }
 
         // ---- Common -----------------------------------------------------------------------------------------------------

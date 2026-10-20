@@ -65,7 +65,7 @@ namespace Orbiters.Mixer.Editor
             {
                 var t = target;
                 menu.AddItem(new GUIContent("Commit " + t.Name), false, () => MixerSession.Commit(t));
-                menu.AddItem(new GUIContent("Revert " + t.Name), false, () => MixerSession.Revert(t));
+                menu.AddItem(new GUIContent("Revert " + t.Name), false, () => { if (MixerConfirm.Revert(t) > 0) MixerModes.Notify("Reverted " + t.Name); });
             }
             menu.AddSeparator(string.Empty);
             menu.AddItem(new GUIContent("Open scene in Blender"), false, () => { string error = BlenderProjectLauncher.Open(); if (error != null) MixerModes.Notify(error); });
@@ -231,7 +231,10 @@ namespace Orbiters.Mixer.Editor
         }
     }
 
-    /// <summary>Commit (save the edits of the focused mesh as its mesh asset); shown while a session holds edits.</summary>
+    /// <summary>
+    /// Commit (save the edits of the focused or selected edited mesh as its mesh asset); shown while that mesh holds edits.
+    /// Never another mesh: once the focused one is committed, it acts on the selection's edited mesh or hides.
+    /// </summary>
     [EditorToolbarElement(Id, typeof(SceneView))]
     internal sealed class MixerCommitButton : EditorToolbarButton
     {
@@ -244,24 +247,31 @@ namespace Orbiters.Mixer.Editor
             MixerOverlays.Dress(this, "mx-bar--group");
             MixerUi.Press(this, () =>
             {
-                var target = MixerSceneTool.FocusTarget ?? MixerSession.First;
+                var target = MixerModes.CommandTarget();
                 if (target == null) return;
+                string name = target.Name;
                 var mesh = MixerSession.Commit(target);
-                MixerModes.Notify(mesh != null ? "Committed " + target.Name : "Nothing to commit");
+                MixerModes.Notify(mesh != null ? "Committed " + name : "Nothing to commit");
             });
             MixerOverlays.Follow(this, Refresh, session: true);
-            // Edits change the document without a session event: look again twice a second.
-            RegisterCallback<AttachToPanelEvent>(_ => schedule.Execute(Refresh).Every(500));
+            // Edits change the document without a session event: look again twice a second (one poll, paused while
+            // the toolbar is not on screen).
+            IVisualElementScheduledItem poll = null;
+            RegisterCallback<AttachToPanelEvent>(_ => { if (poll == null) poll = schedule.Execute(Refresh).Every(500); else poll.Resume(); });
+            RegisterCallback<DetachFromPanelEvent>(_ => poll?.Pause());
         }
 
         private void Refresh()
         {
-            var target = MixerSceneTool.FocusTarget ?? MixerSession.First;
+            var target = MixerModes.CommandTarget();
             style.display = target != null && target.Alive && target.Document.Changed ? DisplayStyle.Flex : DisplayStyle.None;
         }
     }
 
-    /// <summary>Revert (the original mesh back); shown while a session is open.</summary>
+    /// <summary>
+    /// Revert (the original mesh back) of the focused or selected edited mesh; shown while there is one. It runs on the
+    /// click, not the press (it can slide under the pointer when Commit hides), and asks first when edits would be lost.
+    /// </summary>
     [EditorToolbarElement(Id, typeof(SceneView))]
     internal sealed class MixerRevertButton : EditorToolbarButton
     {
@@ -272,17 +282,16 @@ namespace Orbiters.Mixer.Editor
             text = "Revert";
             tooltip = "Put the edited mesh's own mesh back and close its Mixer session";
             MixerOverlays.Dress(this);
-            MixerUi.Press(this, () =>
+            MixerUi.Click(this, () =>
             {
-                var target = MixerSceneTool.FocusTarget ?? MixerSession.First;
+                var target = MixerModes.CommandTarget();
                 if (target == null) return;
                 string name = target.Name;
-                MixerSession.Revert(target);
-                MixerModes.Notify("Reverted " + name);
+                if (MixerConfirm.Revert(target) > 0) MixerModes.Notify("Reverted " + name);
             });
             MixerOverlays.Follow(this, () =>
             {
-                var target = MixerSceneTool.FocusTarget ?? MixerSession.First;
+                var target = MixerModes.CommandTarget();
                 style.display = target != null && target.Alive ? DisplayStyle.Flex : DisplayStyle.None;
             }, session: true);
         }

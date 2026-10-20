@@ -12,10 +12,18 @@ namespace Orbiters.Mixer.Editor
         public string Name;
         /// <summary>Delta per mesh vertex, dense (the mesh's own vertex order).</summary>
         public Vector3[] Deltas;
-        /// <summary>Made in this session (the original has no such shape).</summary>
+        /// <summary>Not in the original under this name: made, duplicated or renamed in this session.</summary>
         public bool IsNew;
         /// <summary>Changed since it was loaded or created.</summary>
         public bool Edited;
+        /// <summary>
+        /// The original's shape whose frames (in-betweens, frame weights, normals and tangents) this one carries: its own
+        /// name for a shape loaded from the original, the shape it was renamed or duplicated from, null for a new one.
+        /// </summary>
+        public string Source;
+        // What loading Source gives (its last frame), kept once read: the shape source never changes during a session.
+        internal Vector3[] Baseline;
+        internal string BaselineOf;
     }
 
     /// <summary>A named set of vertices with weights, as Blender's vertex groups; Unity has no such thing, so Mixer keeps them beside the mesh.</summary>
@@ -30,20 +38,33 @@ namespace Orbiters.Mixer.Editor
     /// renderer through its working <see cref="Mesh"/> once a frame (<see cref="MixerSession"/> flushes the dirty set).
     /// Positions are in the mesh's own space (bind space for a skinned mesh). The original mesh is never touched; the
     /// blendshapes it holds stay in it until a commit rebuilds the mesh, only the shapes being edited live here.
+    /// Everything read from the original is read when the document is made (or from <see cref="ShapeSource"/>, a copy
+    /// taken then), so an FBX reimported during the session changes nothing under the edits.
     /// </summary>
     internal sealed class MeshDocument
     {
         public readonly Mesh Original;
+        /// <summary>
+        /// Where shapes are loaded from: the working mesh, an exact copy of the original as the session began (Mixer never
+        /// changes its blendshapes), or the original itself when there is none.
+        /// </summary>
+        public readonly Mesh ShapeSource;
         public readonly int VertexCount;
         /// <summary>Base positions (the mesh's vertices), in mesh space.</summary>
         public readonly Vector3[] Positions;
+        /// <summary>The normals as shown (the active layer's).</summary>
         public readonly Vector3[] Normals;
+        /// <summary>The original's positions, normals and bind poses as the session began.</summary>
+        public readonly Vector3[] OriginalPositions, OriginalNormals;
+        public readonly Matrix4x4[] OriginalBindPoses;
+        /// <summary>Whether the original has normals of its own (else <see cref="OriginalNormals"/> are computed).</summary>
+        public readonly bool HasNormals;
         /// <summary>Every submesh's triangles in one array (the mesh's <c>triangles</c>).</summary>
         public readonly int[] Triangles;
-        public readonly MeshNeighbors Neighbors;
-        /// <summary>Shape names in the order they are committed: the original's, then the new ones.</summary>
+        /// <summary>Shape names in the order they are committed: the original's, then the new ones. Each name once.</summary>
         public readonly List<string> ShapeOrder = new List<string>();
         public readonly Dictionary<string, ShapeLayer> ShapeEdits = new Dictionary<string, ShapeLayer>();
+        /// <summary>The original's shapes left out of the commit (deleted, or renamed to another name).</summary>
         public readonly HashSet<string> DeletedShapes = new HashSet<string>();
         public readonly List<VertexGroup> Groups = new List<VertexGroup>();
         /// <summary>
@@ -56,7 +77,7 @@ namespace Orbiters.Mixer.Editor
             set { layer = value; if (value != null) Shape(value); }
         }
         private string layer;
-        /// <summary>Bumped by every applied edit.</summary>
+        /// <summary>Bumped by every change, edits and display alike (a picked layer, the mask): what views refresh on.</summary>
         public int Revision;
         /// <summary>Mesh vertices changed since the last flush to the working mesh.</summary>
         public readonly HashSet<int> Dirty = new HashSet<int>();
@@ -76,6 +97,8 @@ namespace Orbiters.Mixer.Editor
         public bool BindPosesDirty;
         public bool BindPosesEdited;
         public int BoneCount => BindPoses != null ? BindPoses.Length : 0;
+        /// <summary>Bones the original has (more on the renderer are leaf bones added in this session).</summary>
+        public int OriginalBoneCount => OriginalBindPoses.Length;
         public bool HasSkin => BoneCount > 0;
 
         public struct Influence
@@ -85,25 +108,22 @@ namespace Orbiters.Mixer.Editor
             public Influence(int bone, float weight) { Bone = bone; Weight = weight; }
         }
 
+        // Copies of the original's bone weights taken when the document is made: the original can be reimported or
+        // replaced during a session, and Unity's arrays are views into the mesh's memory.
+        private readonly byte[] originalPerVertex;
+        private readonly BoneWeight1[] originalWeights;
+        private readonly int[] originalStart;
+
         /// <summary>The influences, read from the original on first use.</summary>
         public List<Influence>[] EnsureInfluences()
         {
             if (Influences != null) return Influences;
             Influences = new List<Influence>[VertexCount];
-            if (!HasSkin)
-            {
-                for (int v = 0; v < VertexCount; v++) Influences[v] = new List<Influence>(1);
-                return Influences;
-            }
-            var perVertex = Original.GetBonesPerVertex();
-            var all = Original.GetAllBoneWeights();
-            int cursor = 0;
             for (int v = 0; v < VertexCount; v++)
             {
-                int n = v < perVertex.Length ? perVertex[v] : 0;
-                var list = new List<Influence>(n);
-                for (int k = 0; k < n; k++) { var bw = all[cursor + k]; if (bw.weight > 0f) list.Add(new Influence(bw.boneIndex, bw.weight)); }
-                cursor += n;
+                int start = originalStart != null ? originalStart[v] : 0, end = originalStart != null ? originalStart[v + 1] : 0;
+                var list = new List<Influence>(Math.Max(1, end - start));
+                for (int k = start; k < end; k++) { var bw = originalWeights[k]; if (bw.weight > 0f) list.Add(new Influence(bw.boneIndex, bw.weight)); }
                 Influences[v] = list;
             }
             return Influences;
@@ -117,23 +137,30 @@ namespace Orbiters.Mixer.Editor
             return 0f;
         }
 
-        // Copies, not views into the mesh's memory: the original can be reimported or replaced during a session.
-        private byte[] originalPerVertex;
-        private BoneWeight1[] originalWeights;
-        private int[] originalStart;
-
         private float OriginalBoneWeight(int v, int bone)
         {
-            if (!HasSkin) return 0f;
-            if (originalStart == null)
-            {
-                originalPerVertex = Original.GetBonesPerVertex().ToArray();
-                originalWeights = Original.GetAllBoneWeights().ToArray();
-                originalStart = new int[VertexCount + 1];
-                for (int i = 0; i < VertexCount; i++) originalStart[i + 1] = originalStart[i] + (i < originalPerVertex.Length ? originalPerVertex[i] : 0);
-            }
+            if (originalStart == null) return 0f;
             for (int k = originalStart[v]; k < originalStart[v + 1]; k++) if (originalWeights[k].boneIndex == bone) return originalWeights[k].weight;
             return 0f;
+        }
+
+        /// <summary>Whether a vertex's influences are the original's (same bones, same weights within a millionth).</summary>
+        public bool InfluencesAreOriginal(int v)
+        {
+            if (Influences == null) return true;
+            var list = Influences[v];
+            int start = originalStart != null ? originalStart[v] : 0, end = originalStart != null ? originalStart[v + 1] : 0;
+            int count = 0;
+            for (int k = start; k < end; k++)
+            {
+                var bw = originalWeights[k];
+                if (bw.weight <= 0f) continue;
+                count++;
+                bool found = false;
+                for (int i = 0; i < list.Count && !found; i++) found = list[i].Bone == bw.boneIndex && Mathf.Abs(list[i].Weight - bw.weight) < 1e-6f;
+                if (!found) return false;
+            }
+            return count == list.Count;
         }
 
         /// <summary>
@@ -181,7 +208,7 @@ namespace Orbiters.Mixer.Editor
         {
             var lists = EnsureInfluences();
             int total = 0;
-            for (int v = 0; v < VertexCount; v++) total += Math.Max(1, lists[v].Count);
+            for (int v = 0; v < VertexCount; v++) total += Math.Max(1, Math.Min(255, lists[v].Count));
             perVertex = new NativeArray<byte>(VertexCount, Allocator.Temp);
             weights = new NativeArray<BoneWeight1>(total, Allocator.Temp);
             int cursor = 0;
@@ -195,11 +222,12 @@ namespace Orbiters.Mixer.Editor
                     weights[cursor++] = new BoneWeight1 { boneIndex = 0, weight = 1f };
                     continue;
                 }
+                int count = Math.Min(255, list.Count);
                 float sum = 0f;
-                for (int i = 0; i < list.Count; i++) sum += list[i].Weight;
-                perVertex[v] = (byte)Math.Min(255, list.Count);
-                for (int i = 0; i < list.Count && i < 255; i++)
-                    weights[cursor++] = new BoneWeight1 { boneIndex = list[i].Bone, weight = sum > 0f ? list[i].Weight / sum : 1f / list.Count };
+                for (int i = 0; i < count; i++) sum += list[i].Weight;
+                perVertex[v] = (byte)count;
+                for (int i = 0; i < count; i++)
+                    weights[cursor++] = new BoneWeight1 { boneIndex = list[i].Bone, weight = sum > 0f ? list[i].Weight / sum : 1f / count };
             }
         }
 
@@ -209,8 +237,90 @@ namespace Orbiters.Mixer.Editor
             foreach (var g in Groups) if (g.Name == name) return g;
             return null;
         }
-        /// <summary>True once anything differs from the original.</summary>
-        public bool Changed => Revision > 0;
+
+        // ---- What changed ------------------------------------------------------------------------------------------
+
+        // The groups as loaded (from the sidecar), to tell a change of the groups alone.
+        private List<(string name, Dictionary<int, float> weights)> loadedGroups = new List<(string, Dictionary<int, float>)>();
+        private int groupsCheckedRevision = -1;
+        private bool groupsDiffer;
+
+        /// <summary>The groups as they are now are what the document started with (after <see cref="MixerSidecar.Load"/>).</summary>
+        public void MarkGroupsLoaded()
+        {
+            loadedGroups = new List<(string, Dictionary<int, float>)>();
+            foreach (var g in Groups) loadedGroups.Add((g.Name, new Dictionary<int, float>(g.Weights)));
+            groupsCheckedRevision = -1;
+        }
+
+        private bool GroupsDiffer()
+        {
+            if (groupsCheckedRevision == Revision) return groupsDiffer;
+            groupsCheckedRevision = Revision;
+            groupsDiffer = false;
+            if (loadedGroups.Count != Groups.Count) return groupsDiffer = true;
+            for (int i = 0; i < Groups.Count; i++)
+            {
+                var (name, weights) = loadedGroups[i];
+                var g = Groups[i];
+                if (g.Name != name || g.Weights.Count != weights.Count) return groupsDiffer = true;
+                foreach (var pair in g.Weights)
+                    if (!weights.TryGetValue(pair.Key, out float w) || Mathf.Abs(w - pair.Value) > 1e-6f) return groupsDiffer = true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// True once an edit a commit would write was made: moved vertices, shapes made, edited, renamed or deleted,
+        /// weights, bind poses, vertex groups. The mask and picking a layer are not edits.
+        /// </summary>
+        public bool Changed
+        {
+            get
+            {
+                if (MovedBase.Count > 0 || DeletedShapes.Count > 0 || WeightEdited.Count > 0 || BindPosesEdited) return true;
+                foreach (var l in ShapeEdits.Values) if (l.IsNew || l.Edited) return true;
+                return GroupsDiffer();
+            }
+        }
+
+        /// <summary>
+        /// Whether a commit would write anything that differs from the original, compared value by value (edits all
+        /// undone again are no difference): what <see cref="MixerSession.Commit"/> checks before it saves an asset.
+        /// </summary>
+        public bool HasDifferences()
+        {
+            foreach (int v in MovedBase) if (Differs(Positions[v], OriginalPositions[v])) return true;
+            if (DeletedShapes.Count > 0) return true;
+            foreach (var l in ShapeEdits.Values)
+            {
+                if (l.IsNew) return true;
+                if (!l.Edited) continue;
+                var baseline = BaselineDeltas(l);
+                for (int v = 0; v < VertexCount; v++) if (Differs(l.Deltas[v], baseline[v])) return true;
+            }
+            foreach (int v in WeightEdited) if (!InfluencesAreOriginal(v)) return true;
+            if (BindPosesEdited)
+            {
+                if (BindPoses.Length != OriginalBindPoses.Length) return true;
+                for (int i = 0; i < BindPoses.Length; i++) if (BindPoses[i] != OriginalBindPoses[i]) return true;
+            }
+            return GroupsDiffer();
+        }
+
+        /// <summary>Exactly unequal (Unity's == calls vectors a hundredth of a millimetre apart equal).</summary>
+        public static bool Differs(Vector3 a, Vector3 b) => a.x != b.x || a.y != b.y || a.z != b.z;
+
+        /// <summary>What a layer would hold freshly loaded: its source shape's last frame, or zeros for a new shape. Read only (cached).</summary>
+        public Vector3[] BaselineDeltas(ShapeLayer layer)
+        {
+            if (layer != null && layer.Baseline != null && layer.BaselineOf == layer.Source) return layer.Baseline;
+            var deltas = new Vector3[VertexCount];
+            int index = layer?.Source != null ? ShapeSource.GetBlendShapeIndex(layer.Source) : -1;
+            if (index >= 0) ShapeSource.GetBlendShapeFrameVertices(index, ShapeSource.GetBlendShapeFrameCount(index) - 1, deltas, null, null);
+            if (layer != null) { layer.Baseline = deltas; layer.BaselineOf = layer.Source; }
+            return deltas;
+        }
 
         public bool HasMask
         {
@@ -238,20 +348,49 @@ namespace Orbiters.Mixer.Editor
 
         public float[] EnsureMask() => Mask ?? (Mask = new float[VertexCount]);
 
-        public MeshDocument(Mesh original)
+        /// <param name="shapeSource">The working mesh (a copy of the original made when the session began), where shapes load from.</param>
+        public MeshDocument(Mesh original, Mesh shapeSource = null)
         {
             Original = original ?? throw new ArgumentNullException(nameof(original));
             // The editor reads meshes whether or not Read/Write is on (the flag matters in builds only).
             Positions = original.vertices;
             if (Positions == null || Positions.Length == 0) throw new InvalidOperationException("'" + original.name + "' has no vertex data the editor can read.");
-            Normals = original.normals;
-            if (Normals == null || Normals.Length != Positions.Length) Normals = new Vector3[Positions.Length];
             VertexCount = Positions.Length;
+            ShapeSource = shapeSource != null && shapeSource.vertexCount == VertexCount && shapeSource.blendShapeCount == original.blendShapeCount ? shapeSource : original;
+            OriginalPositions = (Vector3[])Positions.Clone();
             Triangles = original.triangles;
-            Neighbors = MeshNeighbors.Build(Positions, Triangles, WeldTolerance(original));
+            var normals = original.normals;
+            HasNormals = normals != null && normals.Length == VertexCount;
+            OriginalNormals = HasNormals ? normals : new Vector3[VertexCount];
+            Normals = (Vector3[])OriginalNormals.Clone();
             for (int i = 0; i < original.blendShapeCount; i++) ShapeOrder.Add(original.GetBlendShapeName(i));
-            BindPoses = original.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.BlendWeight) ? original.bindposes : new Matrix4x4[0];
+            bool skinned = original.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.BlendWeight);
+            OriginalBindPoses = skinned ? original.bindposes : new Matrix4x4[0];
+            BindPoses = (Matrix4x4[])OriginalBindPoses.Clone();
+            if (skinned && OriginalBindPoses.Length > 0)
+            {
+                originalPerVertex = original.GetBonesPerVertex().ToArray();
+                originalWeights = original.GetAllBoneWeights().ToArray();
+                originalStart = new int[VertexCount + 1];
+                for (int i = 0; i < VertexCount; i++) originalStart[i + 1] = originalStart[i] + (i < originalPerVertex.Length ? originalPerVertex[i] : 0);
+            }
+            weldTolerance = WeldTolerance(original);
+            if (!HasNormals) { var computed = MeshBuilder.WeldedNormals(OriginalPositions, this); Array.Copy(computed, OriginalNormals, VertexCount); Array.Copy(computed, Normals, VertexCount); }
         }
+
+        private readonly float weldTolerance;
+
+        /// <summary>The vertices welded by position, with their neighbours: what brushes move together (built on first use).</summary>
+        public MeshNeighbors Neighbors => neighbors ?? (neighbors = MeshNeighbors.Build(OriginalPositions, Triangles, weldTolerance));
+        private MeshNeighbors neighbors;
+
+        /// <summary>
+        /// The vertices welded for normals: at one place and with original normals less than 60 degrees apart, so UV seams
+        /// share a normal while hard edges stay hard and sheets that only touch (double-sided cloth, closed lips) keep
+        /// their own sides. Built on first use.
+        /// </summary>
+        public MeshNeighbors NormalWeld => normalWeld ?? (normalWeld = MeshNeighbors.Build(OriginalPositions, Triangles, weldTolerance, HasNormals ? OriginalNormals : null, HasNormals ? 0.5f : -1f));
+        private MeshNeighbors normalWeld;
 
         /// <summary>
         /// The vertices as the Blender link welds them: by place, normal, skin and shape motion
@@ -259,7 +398,7 @@ namespace Orbiters.Mixer.Editor
         /// open in a shape) stay apart in Blender. Built from the original, so its indices hold through the session and
         /// match what was sent before the mesh was opened in Mixer.
         /// </summary>
-        public MeshNeighbors LinkWeld => linkWeld ?? (linkWeld = MeshDataCodec.LinkWeld(Original.vertices, Triangles, Original.normals, WeldTolerance(Original), MeshDataCodec.LinkWeldKeys(Original)));
+        public MeshNeighbors LinkWeld => linkWeld ?? (linkWeld = MeshDataCodec.LinkWeld(OriginalPositions, Triangles, HasNormals ? OriginalNormals : new Vector3[0], weldTolerance, MeshDataCodec.LinkWeldKeys(Original)));
         private MeshNeighbors linkWeld;
 
         internal static float WeldTolerance(Mesh mesh)
@@ -268,44 +407,75 @@ namespace Orbiters.Mixer.Editor
             return Mathf.Max(1e-6f, size * 1e-6f);
         }
 
-        /// <summary>The shape layer by name, loaded from the original on first use; null for an unknown name.</summary>
+        // ---- Shapes ------------------------------------------------------------------------------------------------
+
+        /// <summary>Whether the original has a shape of this name.</summary>
+        public bool InSource(string name) => !string.IsNullOrEmpty(name) && ShapeSource.GetBlendShapeIndex(name) >= 0;
+
+        /// <summary>
+        /// The shape layer by name, loaded from the original on first use; null for an unknown name. With
+        /// <paramref name="create"/> an unknown name, or the name of a deleted shape, gets a new empty shape.
+        /// </summary>
         public ShapeLayer Shape(string name, bool create = false)
         {
             if (string.IsNullOrEmpty(name)) return null;
             if (ShapeEdits.TryGetValue(name, out var layer)) return layer;
-            int index = Original.GetBlendShapeIndex(name);
+            bool deleted = DeletedShapes.Contains(name);
+            int index = deleted ? -1 : ShapeSource.GetBlendShapeIndex(name);
             if (index < 0)
             {
                 if (!create) return null;
+                // A new shape; under a deleted shape's name it takes that shape's place in the order.
                 layer = new ShapeLayer { Name = name, Deltas = new Vector3[VertexCount], IsNew = true };
-                ShapeOrder.Add(name);
+                DeletedShapes.Remove(name);
+                if (!ShapeOrder.Contains(name)) ShapeOrder.Add(name);
             }
             else
             {
-                layer = new ShapeLayer { Name = name, Deltas = new Vector3[VertexCount] };
-                int frame = Original.GetBlendShapeFrameCount(index) - 1;
-                Original.GetBlendShapeFrameVertices(index, frame, layer.Deltas, null, null);
+                layer = new ShapeLayer { Name = name, Deltas = new Vector3[VertexCount], Source = name };
+                int frame = ShapeSource.GetBlendShapeFrameCount(index) - 1;
+                ShapeSource.GetBlendShapeFrameVertices(index, frame, layer.Deltas, null, null);
             }
             ShapeEdits[name] = layer;
             return layer;
         }
 
-        public bool HasShape(string name) => !string.IsNullOrEmpty(name) && !DeletedShapes.Contains(name) && (ShapeEdits.ContainsKey(name) || Original.GetBlendShapeIndex(name) >= 0);
+        public bool HasShape(string name) => !string.IsNullOrEmpty(name) && !DeletedShapes.Contains(name) && (ShapeEdits.ContainsKey(name) || ShapeSource.GetBlendShapeIndex(name) >= 0);
+
+        /// <summary>The shapes a commit would write, in order.</summary>
+        public List<string> LiveShapes()
+        {
+            var names = new List<string>(ShapeOrder.Count);
+            foreach (string n in ShapeOrder) if (HasShape(n)) names.Add(n);
+            return names;
+        }
+
+        /// <summary>Whether some live shape other than <paramref name="except"/> carries the original shape <paramref name="source"/>.</summary>
+        public bool IsCarried(string source, string except = null)
+        {
+            foreach (var l in ShapeEdits.Values) if (l.Source == source && l.Name != except && !DeletedShapes.Contains(l.Name)) return true;
+            return false;
+        }
 
         /// <summary>Removes a shape from the commit (an original one is left out of the rebuilt mesh).</summary>
         public void DeleteShape(string name)
         {
             if (!HasShape(name)) return;
-            if (ShapeEdits.TryGetValue(name, out var layer) && layer.IsNew) { ShapeEdits.Remove(name); ShapeOrder.Remove(name); }
-            else { ShapeEdits.Remove(name); DeletedShapes.Add(name); }
+            ShapeEdits.Remove(name);
+            if (InSource(name)) DeletedShapes.Add(name); else ShapeOrder.Remove(name);
             if (Layer == name) Layer = null;
             Revision++;
         }
 
-        public void RestoreShape(string name, ShapeLayer layer)
+        /// <summary>Puts a deleted shape back (an undo), at <paramref name="orderIndex"/> in the order when it had left it.</summary>
+        public void RestoreShape(string name, ShapeLayer layer, int orderIndex = -1)
         {
             DeletedShapes.Remove(name);
-            if (layer != null) { ShapeEdits[name] = layer; if (!ShapeOrder.Contains(name)) ShapeOrder.Add(name); }
+            if (layer != null) ShapeEdits[name] = layer;
+            if (!ShapeOrder.Contains(name))
+            {
+                if (orderIndex >= 0 && orderIndex <= ShapeOrder.Count) ShapeOrder.Insert(orderIndex, name); else ShapeOrder.Add(name);
+            }
             Revision++;
         }
 
@@ -335,34 +505,44 @@ namespace Orbiters.Mixer.Editor
             Revision++;
         }
 
-        /// <summary>Gives a shape a new name: an original shape is left out of the commit and re-added under the new name.</summary>
+        /// <summary>
+        /// Gives a shape a new name, in the same place of the order: an original shape is left out of the commit and its
+        /// frames go on under the new name (renaming back gives the original shape back).
+        /// </summary>
         public void RenameShape(string from, string to)
         {
             if (!HasShape(from) || string.IsNullOrEmpty(to) || from == to || HasShape(to)) return;
             var layer = Shape(from);
+            ShapeEdits.Remove(from);
             int index = ShapeOrder.IndexOf(from);
-            if (layer.IsNew) { ShapeEdits.Remove(from); ShapeOrder.Remove(from); }
-            else { ShapeEdits.Remove(from); DeletedShapes.Add(from); }
-            var renamed = new ShapeLayer { Name = to, Deltas = layer.Deltas, IsNew = true, Edited = true };
-            ShapeEdits[to] = renamed;
+            if (InSource(from)) DeletedShapes.Add(from);
+            else ShapeOrder.Remove(from);
+            // The new name may be a deleted original's: it leaves its own place for the renamed shape's.
+            int existing = ShapeOrder.IndexOf(to);
+            if (existing >= 0) { ShapeOrder.RemoveAt(existing); if (existing < index) index--; }
+            bool backToSource = layer.Source != null && layer.Source == to;
+            ShapeEdits[to] = new ShapeLayer { Name = to, Deltas = layer.Deltas, IsNew = !backToSource, Edited = layer.Edited, Source = layer.Source };
             DeletedShapes.Remove(to);
             if (index >= 0 && index <= ShapeOrder.Count) ShapeOrder.Insert(index, to); else ShapeOrder.Add(to);
             if (Layer == from) Layer = to;
             Revision++;
         }
 
-        /// <summary>A new shape with a copy of another's deltas.</summary>
+        /// <summary>A new shape with a copy of another's deltas (and its frames), added at the end.</summary>
         public ShapeLayer DuplicateShape(string from, string to)
         {
             if (!HasShape(from) || string.IsNullOrEmpty(to) || HasShape(to)) return null;
             var source = Shape(from);
-            var copy = new ShapeLayer { Name = to, Deltas = (Vector3[])source.Deltas.Clone(), IsNew = true, Edited = true };
+            var copy = new ShapeLayer { Name = to, Deltas = (Vector3[])source.Deltas.Clone(), IsNew = true, Edited = source.Edited, Source = source.Source };
             ShapeEdits[to] = copy;
             DeletedShapes.Remove(to);
+            ShapeOrder.Remove(to);
             ShapeOrder.Add(to);
             Revision++;
             return copy;
         }
+
+        // ---- Positions ---------------------------------------------------------------------------------------------
 
         /// <summary>The position shown for a vertex on the active layer.</summary>
         public Vector3 LayerPosition(int v)
@@ -421,29 +601,51 @@ namespace Orbiters.Mixer.Editor
             BoundsDirty = true;
         }
 
-        /// <summary>Recomputes the normals of the dirty vertices and the ring around them from the active layer's positions.</summary>
+        /// <summary>Every vertex goes to the working mesh at the next flush.</summary>
+        public void MarkAllDirty()
+        {
+            for (int v = 0; v < VertexCount; v++) Dirty.Add(v);
+            Revision++;
+            BoundsDirty = true;
+        }
+
+        /// <summary>
+        /// Recomputes the normals of the given vertices and the ring around them from the active layer's positions,
+        /// welded as <see cref="NormalWeld"/> says (each side of a hard edge or of a double-sided sheet from its own faces).
+        /// </summary>
         public void RefreshNormals(IEnumerable<int> vertices, Vector3[] display)
         {
+            var weld = NormalWeld;
             var welded = new HashSet<int>();
             foreach (int v in vertices)
             {
-                int w = Neighbors.Weld[v];
+                int w = weld.Weld[v];
                 welded.Add(w);
-                foreach (int a in Neighbors.Adjacent[w]) welded.Add(a);
+                foreach (int a in weld.Adjacent[w]) welded.Add(a);
             }
             foreach (int w in welded)
             {
                 var n = Vector3.zero;
-                foreach (int t in Neighbors.TrianglesOf[w])
+                foreach (int t in weld.TrianglesOf[w])
                 {
                     int i = t * 3;
                     Vector3 a = display[Triangles[i]], b = display[Triangles[i + 1]], c = display[Triangles[i + 2]];
                     n += Vector3.Cross(b - a, c - a);
                 }
-                if (n.sqrMagnitude < 1e-20f) continue;
-                n.Normalize();
-                foreach (int m in Neighbors.Members[w]) { Normals[m] = n; Dirty.Add(m); }
+                float length = Mathf.Sqrt(n.sqrMagnitude);
+                if (length <= 0f) continue;
+                n /= length;
+                foreach (int m in weld.Members[w]) { Normals[m] = n; Dirty.Add(m); }
             }
+        }
+
+        /// <summary>The mesh vertices whose normals <see cref="RefreshNormals"/> recomputes for a move of <paramref name="v"/>.</summary>
+        public void NormalRing(int v, ICollection<int> into)
+        {
+            var weld = NormalWeld;
+            int w = weld.Weld[v];
+            foreach (int m in weld.Members[w]) into.Add(m);
+            foreach (int a in weld.Adjacent[w]) foreach (int m in weld.Members[a]) into.Add(m);
         }
     }
 }
