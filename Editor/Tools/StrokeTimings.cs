@@ -3,14 +3,17 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using UnityEditor;
+using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace Orbiters.Mixer.Editor
 {
     /// <summary>
     /// Opt-in timings of real strokes (EditorPrefs <c>Orbiters.Mixer.Diagnostics.StrokeTimings</c>), one line each in
-    /// <c>Library/Orbiters/Mixer/stroke-timings.log</c>: from the press to the first move and to the first upload, the
-    /// frames of the stroke (average and longest) and the garbage collections during it and since the last stroke. What a
-    /// stroke feels like depends on the whole editor, which a benchmark of the brush alone does not see.
+    /// <c>Library/Orbiters/Mixer/stroke-timings.log</c>: from the press to the first move, to the first upload and to the
+    /// first frame the skinned renderer really shows it (its skinned vertices read back from the GPU), the frames of the
+    /// stroke and the garbage collections during it and since the last stroke. What a stroke feels like depends on the
+    /// whole editor, which a benchmark of the brush alone does not see.
     /// </summary>
     internal static class StrokeTimings
     {
@@ -18,8 +21,13 @@ namespace Orbiters.Mixer.Editor
         private static readonly Stopwatch Clock = Stopwatch.StartNew();
         private static bool? enabled;
         private static bool active;
-        private static double down, firstMove, firstShown, lastFrame, longest, total;
+        private static double down, firstMove, firstShown, firstVisible, lastFrame, longest, total;
         private static int frames, collectionsAtDown, collectionsAtLastEnd = -1;
+        // The skinned vertex watched on the GPU: its value before the stroke moved it, and what read-backs found since.
+        private static SkinnedMeshRenderer watched;
+        private static int watchedVertex = -1, readbacks, readbacksBack;
+        private static Vector3 skinnedBefore;
+        private static bool haveBefore;
 
         public static bool Enabled
         {
@@ -35,16 +43,27 @@ namespace Orbiters.Mixer.Editor
             if (!Enabled) return;
             active = true;
             down = lastFrame = Now;
-            firstMove = firstShown = -1;
+            firstMove = firstShown = firstVisible = -1;
             longest = total = 0;
-            frames = 0;
+            frames = readbacks = readbacksBack = 0;
+            watched = null;
+            watchedVertex = -1;
+            haveBefore = false;
             collectionsAtDown = GC.CollectionCount(0);
         }
 
-        /// <summary>A step moved vertices.</summary>
-        public static void Moved()
+        /// <summary>A step moved vertices; <paramref name="vertex"/> is one of them (watched on the GPU from the first step).</summary>
+        public static void Moved(EditTarget target, int vertex)
         {
-            if (active && firstMove < 0) firstMove = Now;
+            if (!active || firstMove >= 0) return;
+            firstMove = Now;
+            var skinned = target != null ? target.Skinned : null;
+            if (skinned == null) return;
+            watched = skinned;
+            watchedVertex = vertex;
+            if ((skinned.vertexBufferTarget & GraphicsBuffer.Target.Raw) == 0) skinned.vertexBufferTarget |= GraphicsBuffer.Target.Raw;
+            // Before this step's upload: what the renderer shows now.
+            Read(true);
         }
 
         /// <summary>The moves went to the renderer.</summary>
@@ -61,6 +80,34 @@ namespace Orbiters.Mixer.Editor
             double frame = now - lastFrame;
             lastFrame = now;
             if (frames > 0 || frame < 1000) { longest = Math.Max(longest, frame); total += frame; frames++; }
+            if (firstShown >= 0 && firstVisible < 0 && haveBefore) Read(false);
+        }
+
+        // Reads the watched skinned vertex back from the GPU without waiting; the first value that differs from the one
+        // before the stroke is when the stroke showed.
+        private static void Read(bool before)
+        {
+            if (watched == null || watchedVertex < 0 || !SystemInfo.supportsAsyncGPUReadback) return;
+            GraphicsBuffer buffer = null;
+            try
+            {
+                buffer = watched.GetVertexBuffer();
+                if (buffer == null || watchedVertex >= buffer.count) { buffer?.Dispose(); return; }
+                double asked = Now;
+                readbacks++;
+                var held = buffer;
+                AsyncGPUReadback.Request(buffer, 12, watchedVertex * buffer.stride, request =>
+                {
+                    held.Dispose();
+                    if (request.hasError) return;
+                    readbacksBack++;
+                    var data = request.GetData<float>();
+                    var p = new Vector3(data[0], data[1], data[2]);
+                    if (before) { skinnedBefore = p; haveBefore = true; return; }
+                    if (active && firstVisible < 0 && (p - skinnedBefore).sqrMagnitude > 1e-12f) firstVisible = asked;
+                });
+            }
+            catch (Exception) { buffer?.Dispose(); }
         }
 
         /// <summary>The stroke ended: one line in the log.</summary>
@@ -73,6 +120,7 @@ namespace Orbiters.Mixer.Editor
             string line = DateTime.Now.ToString("HH:mm:ss", c) + "  " + brush + " on " + target
                           + "  press→move " + (firstMove >= 0 ? (firstMove - down).ToString("0", c) + " ms" : "-")
                           + "  press→upload " + (firstShown >= 0 ? (firstShown - down).ToString("0", c) + " ms" : "-")
+                          + "  press→shown " + (firstVisible >= 0 ? (firstVisible - down).ToString("0", c) + " ms" : watched != null ? "never (" + readbacksBack + "/" + readbacks + " read-backs)" : "-")
                           + "  frames " + frames + " avg " + (frames > 0 ? (total / frames).ToString("0.0", c) : "-") + " ms max " + longest.ToString("0", c) + " ms"
                           + "  GC during " + (collections - collectionsAtDown)
                           + (collectionsAtLastEnd >= 0 ? " between " + (collectionsAtDown - collectionsAtLastEnd) : "")

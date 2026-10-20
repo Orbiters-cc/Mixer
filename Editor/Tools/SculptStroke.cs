@@ -215,7 +215,7 @@ namespace Orbiters.Mixer.Editor
                 foreach (int w in mirrored) Add(local, moveStamp, moveOf, mark, w, mirrorOf[w]);
             }
             target.MoveWelded(local, moveOf, recorder, moved);
-            if (moved.Count > 0) StrokeTimings.Moved();
+            if (moved.Count > 0) StrokeTimings.Moved(target, moved[0]);
         }
 
         private static void Add(List<int> list, int[] stamps, Vector3[] values, int mark, int w, Vector3 d)

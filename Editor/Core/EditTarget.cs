@@ -463,8 +463,10 @@ namespace Orbiters.Mixer.Editor
                 // Dirty vertices changed the document only; a stroke's moves are in the shown positions already.
                 if (doc.Dirty.Count > 0) doc.DisplayPositions(display);
                 SettleNormals();
-                Working.SetVertices(display, 0, display.Length, UnityEngine.Rendering.MeshUpdateFlags.DontRecalculateBounds | UnityEngine.Rendering.MeshUpdateFlags.DontValidateIndices | UnityEngine.Rendering.MeshUpdateFlags.DontNotifyMeshUsers);
+                // Normals first, then the positions with the renderers told: a skinned renderer keeps showing what it
+                // skinned last until its mesh says it changed (without it, a stroke only showed when the bounds grew).
                 Working.SetNormals(doc.Normals, 0, doc.Normals.Length, UnityEngine.Rendering.MeshUpdateFlags.DontRecalculateBounds | UnityEngine.Rendering.MeshUpdateFlags.DontValidateIndices | UnityEngine.Rendering.MeshUpdateFlags.DontNotifyMeshUsers);
+                Working.SetVertices(display, 0, display.Length, UnityEngine.Rendering.MeshUpdateFlags.DontRecalculateBounds | UnityEngine.Rendering.MeshUpdateFlags.DontValidateIndices);
                 doc.Dirty.Clear();
                 doc.Unflushed = false;
                 flushes++;

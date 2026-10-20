@@ -143,8 +143,12 @@ saved as a native mesh asset when you commit.
   second on a large project) lands on the press. While the pointer only moves, one edited mesh's pose is checked per
   refresh, in turn, without reading its bones and bind poses again; the autosave snapshots every 8 s at most; the Skinned
   Mesh Renderer inspector's shape list reads its names once per mesh and touches only rows whose weight changed.
+- Strokes show as they are made: the working mesh's positions are uploaded with its renderers told, so a skinned
+  renderer skins them again at once (it kept showing what it skinned last and only caught up when the mesh's bounds
+  grew, so a stroke inside the body showed late and in jumps).
 - Opt-in stroke timings (EditorPrefs `Orbiters.Mixer.Diagnostics.StrokeTimings`): one line per stroke in
-  `Library/Orbiters/Mixer/stroke-timings.log` (press to first move and to first upload, frames, garbage collections).
+  `Library/Orbiters/Mixer/stroke-timings.log` (press to first move, to first upload and to the first frame the skinned
+  renderer shows it, read back from the GPU; frames; garbage collections).
 - Requires Orbiters Toolkit 0.4.1, which holds the avatar gizmos (bones, weight paint, mesh edges, avatar budget) and
   lets Mixer take the armature overlay's bone clicks.
 
