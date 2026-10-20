@@ -20,10 +20,16 @@ namespace Orbiters.Mixer.Editor
         private readonly StrokeRecorder recorder;
         private readonly Dictionary<int, float> maskBefore = new Dictionary<int, float>();
         private readonly BrushContext ctx = new BrushContext();
-        private readonly List<int> scratch = new List<int>();
+        private readonly List<int> triangles = new List<int>();
         private readonly List<int> moved = new List<int>();
-        private readonly HashSet<int> movedAll = new HashSet<int>();
         private Vector3[] moves = new Vector3[256];
+        // Per welded vertex, marked with a stamp instead of filling sets: what Gather saw, the mesh-space move a step
+        // gives (and its mirror), each listed once.
+        private int[] gatherStamp, moveStamp, mirrorStamp;
+        private int stamp;
+        private Vector3[] moveOf, mirrorOf;
+        private readonly List<int> local = new List<int>();
+        private readonly List<int> mirrored = new List<int>();
         private Vector3 planePoint;
         private Vector3 lastSample;
         private bool begun;
@@ -60,6 +66,7 @@ namespace Orbiters.Mixer.Editor
             planePoint = point;
             lastSample = point;
             begun = true;
+            target.BeginStroke();
             Gather(point);
             if (brush.Grabs) return; // grabs move nothing until the cursor moves
             Apply();
@@ -113,6 +120,8 @@ namespace Orbiters.Mixer.Editor
                 MixerSession.NoteEdited(target);
                 return null;
             }
+            // The normals of the last moves first: a cancel then puts the recorded ones back over them.
+            target.SettleNormals();
             var edit = recorder.Finish();
             if (edit == null) return null;
             if (cancel)
@@ -120,33 +129,56 @@ namespace Orbiters.Mixer.Editor
                 edit.Undo();
                 return null;
             }
-            target.FinishStroke(movedAll);
+            target.EndStroke();
             MixerHistory.Push(edit);
             MixerSession.NoteEdited(target);
             return edit;
         }
 
+        private int NextStamp()
+        {
+            int count = target.Document.Neighbors.WeldedCount;
+            if (gatherStamp == null || gatherStamp.Length != count)
+            {
+                gatherStamp = new int[count]; moveStamp = new int[count]; mirrorStamp = new int[count];
+                moveOf = new Vector3[count]; mirrorOf = new Vector3[count];
+                stamp = 0;
+            }
+            return ++stamp;
+        }
+
+        // The welded vertices within the radius (each once, by its representative), with their falloff and mask weight.
         private void Gather(Vector3 center)
         {
             var doc = target.Document;
             var n = doc.Neighbors;
-            target.Bvh.VerticesInSphere(center, Radius, scratch);
+            int mark = NextStamp();
+            target.Bvh.TrianglesNear(center, Radius, triangles);
             ctx.Welded.Clear();
             ctx.Weight.Clear();
-            var seen = new HashSet<int>();
             var world = target.World;
+            var tris = doc.Triangles;
+            float r2 = Radius * Radius;
+            float inverse = 1f / Radius;
             bool painting = brush.PaintsMask;
-            foreach (int v in scratch)
+            foreach (int t in triangles)
             {
-                int w = n.Weld[v];
-                if (!seen.Add(w)) continue;
-                int rep = n.Representative[w];
-                float d = (world[rep] - center).magnitude / Radius;
-                float weight = Brush.Curve(falloff, d);
-                if (!painting) weight *= doc.Free(rep);
-                if (weight <= 0f) continue;
-                ctx.Welded.Add(w);
-                ctx.Weight.Add(weight);
+                for (int k = t * 3, end = k + 3; k < end; k++)
+                {
+                    int w = n.Weld[tris[k]];
+                    if (gatherStamp[w] == mark) continue;
+                    gatherStamp[w] = mark;
+                    int rep = n.Representative[w];
+                    var p = world[rep];
+                    float dx = p.x - center.x, dy = p.y - center.y, dz = p.z - center.z;
+                    float d2 = dx * dx + dy * dy + dz * dz;
+                    if (d2 > r2) continue;
+                    float weight = Brush.Curve(falloff, (float)Math.Sqrt(d2) * inverse);
+                    if (!painting) weight *= doc.Free(rep);
+                    if (weight <= 0f) continue;
+                    ctx.Welded.Add(w);
+                    ctx.Weight.Add(weight);
+                }
             }
             if (moves.Length < ctx.Welded.Count) moves = new Vector3[Mathf.NextPowerOfTwo(ctx.Welded.Count)];
         }
@@ -157,48 +189,40 @@ namespace Orbiters.Mixer.Editor
             Steps++;
             if (brush.PaintsMask) { PaintMask(); return; }
             brush.Step(ctx, moves);
-            var doc = target.Document;
-            var n = doc.Neighbors;
-            var toMesh = target.Skin.ToMesh;
-            moved.Clear();
+            var n = target.Document.Neighbors;
+            var skin = target.Skin;
+            int mark = NextStamp();
             // Mesh-space move per welded vertex; mirrored onto the other side when symmetry is on.
-            var local = new Dictionary<int, Vector3>(ctx.Welded.Count * 2);
+            local.Clear();
             for (int i = 0; i < ctx.Welded.Count; i++)
             {
                 var m = moves[i];
                 if (m.sqrMagnitude < 1e-16f) continue;
                 int w = ctx.Welded[i];
-                var d = toMesh[n.Representative[w]].MultiplyVector(m);
-                local[w] = local.TryGetValue(w, out var existing) ? existing + d : d;
+                Add(local, moveStamp, moveOf, mark, w, skin.ToMeshVector(n.Representative[w], m));
             }
             if (symmetry)
             {
                 var mirror = target.Mirror;
-                var mirrored = new Dictionary<int, Vector3>(local.Count);
-                foreach (var pair in local)
+                mirrored.Clear();
+                foreach (int w in local)
                 {
-                    int other = mirror.Of[pair.Key];
+                    int other = mirror.Of[w];
                     if (other < 0) continue;
-                    var d = new Vector3(-pair.Value.x, pair.Value.y, pair.Value.z);
-                    if (other == pair.Key) { mirrored[other] = new Vector3(0f, pair.Value.y, pair.Value.z) - pair.Value; continue; }
-                    mirrored[other] = mirrored.TryGetValue(other, out var e) ? e + d : d;
+                    var d = moveOf[w];
+                    // A vertex on the mirror plane keeps its own move without the part across the plane.
+                    if (other == w) { if (mirrorStamp[w] != mark) { mirrorStamp[w] = mark; mirrored.Add(w); } mirrorOf[w] = new Vector3(0f, d.y, d.z) - d; continue; }
+                    Add(mirrored, mirrorStamp, mirrorOf, mark, other, new Vector3(-d.x, d.y, d.z));
                 }
-                foreach (var pair in mirrored) local[pair.Key] = local.TryGetValue(pair.Key, out var e) ? e + pair.Value : pair.Value;
+                foreach (int w in mirrored) Add(local, moveStamp, moveOf, mark, w, mirrorOf[w]);
             }
-            foreach (var pair in local)
-            {
-                foreach (int v in n.Members[pair.Key])
-                {
-                    recorder.Touch(v);
-                    doc.Move(v, pair.Value);
-                    moved.Add(v);
-                    movedAll.Add(v);
-                }
-            }
-            if (moved.Count == 0) return;
-            doc.MarkEdited(moved);
-            target.AfterEdit(moved);
-            doc.RefreshNormals(moved, target.Display);
+            target.MoveWelded(local, moveOf, recorder, moved);
+        }
+
+        private static void Add(List<int> list, int[] stamps, Vector3[] values, int mark, int w, Vector3 d)
+        {
+            if (stamps[w] != mark) { stamps[w] = mark; values[w] = d; list.Add(w); }
+            else values[w] += d;
         }
 
         // The mask brush: adds to the mask under it (Ctrl takes away), on every member of each welded vertex and, with

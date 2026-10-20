@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using Orbiters.Toolkit.Meshes;
 using UnityEditor;
 using UnityEngine;
@@ -42,7 +43,18 @@ namespace Orbiters.Mixer.Editor
         public string Name => Renderer != null ? Renderer.name : "(gone)";
         public bool Alive => Renderer != null && Working != null;
         public SkinnedMeshRenderer Skinned => Renderer as SkinnedMeshRenderer;
-        public MirrorMap Mirror => mirror ?? (mirror = MirrorMap.Build(Document.OriginalPositions, Document.Neighbors, Document.Original.bounds.size.magnitude * 1e-4f));
+        public MirrorMap Mirror
+        {
+            get
+            {
+                if (mirror != null) return mirror;
+                var started = mirrorTask;
+                mirrorTask = null;
+                if (started != null) { try { mirror = started.Result; } catch (Exception) { /* built again below */ } }
+                return mirror ?? (mirror = MirrorMap.Build(Document.OriginalPositions, Document.Neighbors, MirrorTolerance));
+            }
+        }
+        private float MirrorTolerance => Document.Original.bounds.size.magnitude * 1e-4f;
 
         /// <summary>
         /// The triangles of the world picture, for brushes and picking (built on first use). After a weight upload during a
@@ -52,9 +64,36 @@ namespace Orbiters.Mixer.Editor
         {
             get
             {
-                if (bvh == null) { bvh = MeshBvh.Build(World, Document.Triangles); bvh.Mirrored = Mirrored(); }
+                if (bvh != null) return bvh;
+                var started = bvhTask;
+                bvhTask = null;
+                if (started != null)
+                {
+                    // Built while the world picture may have changed under it: its bounds follow the picture as it is now.
+                    try { bvh = started.Result; bvh.Refit(); } catch (Exception) { bvh = null; }
+                }
+                if (bvh == null) bvh = MeshBvh.Build(World, Document.Triangles);
+                bvh.Mirrored = Mirrored();
                 return bvh;
             }
+        }
+
+        private Task<MirrorMap> mirrorTask;
+        private Task<MeshBvh> bvhTask;
+
+        // What the first stroke needs and takes about a second to build on a body (welds, mirror, BVH) starts on worker
+        // threads as the session opens: they read the original's arrays and the world picture only.
+        private void Prewarm()
+        {
+            var doc = Document;
+            doc.Prewarm();
+            var neighbors = doc.NeighborsTask;
+            var positions = doc.OriginalPositions;
+            float tolerance = MirrorTolerance;
+            if (neighbors != null) mirrorTask = neighbors.ContinueWith(t => MirrorMap.Build(positions, t.Result, tolerance), TaskContinuationOptions.OnlyOnRanToCompletion);
+            var world = World;
+            var triangles = doc.Triangles;
+            bvhTask = Task.Run(() => MeshBvh.Build(world, triangles));
         }
 
         // A negative scale turns the front faces round in the world picture: raycasts and face normals follow.
@@ -80,6 +119,7 @@ namespace Orbiters.Mixer.Editor
             World = new Vector3[Document.VertexCount];
             Skin = SkinningMap.For(renderer, working);
             RebuildWorld();
+            Prewarm();
         }
 
         /// <summary>The mesh the renderer shows now.</summary>
@@ -186,6 +226,89 @@ namespace Orbiters.Mixer.Editor
                 World[v] = toWorld[v].MultiplyPoint3x4(p);
             }
             bvh?.RefitVertices(moved, Document.Neighbors);
+        }
+
+        // ---- Strokes: moves go straight into the shown arrays, normals and the upload follow once a frame ----------
+
+        private readonly List<int> pendingNormals = new List<int>();
+        private int[] pendingStamp;
+        private int pendingStampValue = 1;
+
+        /// <summary>A stroke starts: the shown positions and the world picture are brought up to date, as its moves go straight into them.</summary>
+        public void BeginStroke()
+        {
+            if (worldStale)
+            {
+                Skin.Refresh(Renderer, Working);
+                worldStale = false;
+                RefreshShapeOffset();
+                RebuildWorld();
+            }
+            else Document.DisplayPositions(display);
+        }
+
+        /// <summary>
+        /// One step of a stroke: moves each welded vertex of <paramref name="welded"/> by its mesh-space move in
+        /// <paramref name="moveOf"/> (indexed by welded vertex) on every member, on the active layer, the shown positions
+        /// and the world picture. The recorder sees every vertex before it moves; <paramref name="moved"/> gets the mesh
+        /// vertices. Normals catch up at the next flush (<see cref="SettleNormals"/>), the BVH at once.
+        /// </summary>
+        public void MoveWelded(List<int> welded, Vector3[] moveOf, StrokeRecorder recorder, List<int> moved)
+        {
+            moved.Clear();
+            if (welded.Count == 0) return;
+            var doc = Document;
+            var n = doc.Neighbors;
+            Vector3[] deltas = null;
+            if (doc.Layer != null)
+            {
+                var layer = doc.Shape(doc.Layer, create: true);
+                layer.Edited = true;
+                deltas = layer.Deltas;
+            }
+            var positions = doc.Positions;
+            var toWorld = Skin.ToWorld;
+            var offset = shapeOffset;
+            var normalWeld = doc.NormalWeld.Weld;
+            if (pendingStamp == null || pendingStamp.Length != doc.NormalWeld.WeldedCount) { pendingStamp = new int[doc.NormalWeld.WeldedCount]; pendingStampValue = 1; }
+            foreach (int w in welded)
+            {
+                var d = moveOf[w];
+                foreach (int v in n.Members[w])
+                {
+                    if (recorder.Touch(v) && deltas == null) doc.MovedBase.Add(v);
+                    if (deltas != null) deltas[v] += d; else positions[v] += d;
+                    var p = display[v] + d;
+                    display[v] = p;
+                    if (offset != null) p += offset[v];
+                    World[v] = toWorld[v].MultiplyPoint3x4(p);
+                    moved.Add(v);
+                    int nw = normalWeld[v];
+                    if (pendingStamp[nw] != pendingStampValue) { pendingStamp[nw] = pendingStampValue; pendingNormals.Add(nw); }
+                }
+            }
+            doc.Revision++;
+            doc.BoundsDirty = true;
+            doc.Unflushed = true;
+            bvh?.RefitVertices(moved, n);
+        }
+
+        /// <summary>The normals around what strokes moved since the last call, from the shown positions.</summary>
+        public void SettleNormals()
+        {
+            if (pendingNormals.Count == 0) return;
+            Document.RefreshNormalsWelded(pendingNormals, display);
+            pendingNormals.Clear();
+            if (++pendingStampValue == int.MaxValue) { Array.Clear(pendingStamp, 0, pendingStamp.Length); pendingStampValue = 1; }
+        }
+
+        /// <summary>A stroke ends: its last normals, the bounds and the upload.</summary>
+        public void EndStroke()
+        {
+            SettleNormals();
+            Working.RecalculateBounds();
+            Document.BoundsDirty = false;
+            Flush();
         }
 
         /// <summary>The active layer changed: the shown positions, normals and the other shapes' weights are different now.</summary>
@@ -307,21 +430,24 @@ namespace Orbiters.Mixer.Editor
                     }
                 }
             }
-            for (int v = 0; v < normals.Length; v++) doc.Dirty.Add(v);
+            doc.Unflushed = true;
         }
 
         /// <summary>Uploads the dirty vertices to the working mesh (once a frame); true when something was sent.</summary>
         public bool Flush()
         {
             var doc = Document;
-            if (doc.Dirty.Count == 0 && flushedRevision == doc.Revision) return false;
+            if (doc.Dirty.Count == 0 && !doc.Unflushed && pendingNormals.Count == 0 && flushedRevision == doc.Revision) return false;
             if (Working == null) return false;
-            if (doc.Dirty.Count > 0)
+            if (doc.Dirty.Count > 0 || doc.Unflushed || pendingNormals.Count > 0)
             {
-                doc.DisplayPositions(display);
+                // Dirty vertices changed the document only; a stroke's moves are in the shown positions already.
+                if (doc.Dirty.Count > 0) doc.DisplayPositions(display);
+                SettleNormals();
                 Working.SetVertices(display, 0, display.Length, UnityEngine.Rendering.MeshUpdateFlags.DontRecalculateBounds | UnityEngine.Rendering.MeshUpdateFlags.DontValidateIndices | UnityEngine.Rendering.MeshUpdateFlags.DontNotifyMeshUsers);
                 Working.SetNormals(doc.Normals, 0, doc.Normals.Length, UnityEngine.Rendering.MeshUpdateFlags.DontRecalculateBounds | UnityEngine.Rendering.MeshUpdateFlags.DontValidateIndices | UnityEngine.Rendering.MeshUpdateFlags.DontNotifyMeshUsers);
                 doc.Dirty.Clear();
+                doc.Unflushed = false;
                 flushes++;
                 if (doc.BoundsDirty && flushes % 10 == 0) { Working.RecalculateBounds(); doc.BoundsDirty = false; }
             }

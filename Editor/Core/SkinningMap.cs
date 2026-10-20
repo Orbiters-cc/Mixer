@@ -12,22 +12,34 @@ namespace Orbiters.Mixer.Editor
     internal sealed class SkinningMap
     {
         public Matrix4x4[] ToWorld;
-        /// <summary>The inverse of <see cref="ToWorld"/> per vertex, computed when first read after a change (only sculpting needs it).</summary>
-        public Matrix4x4[] ToMesh
+        /// <summary>
+        /// A world-space move of vertex <paramref name="v"/> in mesh space: through the inverse of its <see cref="ToWorld"/>,
+        /// worked out the first time a vertex needs it after a change (a stroke needs the vertices under the brush only,
+        /// not the whole mesh's inverses at its first step after a pose change).
+        /// </summary>
+        public Vector3 ToMeshVector(int v, Vector3 world)
         {
-            get
+            if (toMeshStamp == null || toMeshStamp.Length != ToWorld.Length)
             {
-                if (toMeshStale && ToWorld != null)
-                {
-                    if (toMesh == null || toMesh.Length != ToWorld.Length) toMesh = new Matrix4x4[ToWorld.Length];
-                    for (int v = 0; v < ToWorld.Length; v++) toMesh[v] = Inverse(ToWorld[v]);
-                    toMeshStale = false;
-                }
-                return toMesh;
+                toMesh = new Matrix4x4[ToWorld.Length];
+                toMeshStamp = new int[ToWorld.Length];
+                toMeshGeneration = 1;
             }
+            if (toMeshStamp[v] != toMeshGeneration)
+            {
+                toMesh[v] = Inverse(ToWorld[v]);
+                toMeshStamp[v] = toMeshGeneration;
+            }
+            return toMesh[v].MultiplyVector(world);
         }
         private Matrix4x4[] toMesh;
-        private bool toMeshStale = true;
+        private int[] toMeshStamp;
+        private int toMeshGeneration = 1;
+
+        private void ToMeshChanged()
+        {
+            if (++toMeshGeneration == int.MaxValue) { if (toMeshStamp != null) Array.Clear(toMeshStamp, 0, toMeshStamp.Length); toMeshGeneration = 1; }
+        }
         /// <summary>Per bone, the matrix that takes mesh space to the world (bone to world times bind pose), as of the last refresh.</summary>
         public Matrix4x4[] Combined => boneMatrices;
         /// <summary>The bone matrices the map was built from, to tell when the pose changed.</summary>
@@ -79,7 +91,7 @@ namespace Orbiters.Mixer.Editor
                 transformMatrix = world;
                 if (ToWorld == null || ToWorld.Length != count) ToWorld = new Matrix4x4[count];
                 for (int v = 0; v < count; v++) ToWorld[v] = world;
-                toMeshStale = true;
+                ToMeshChanged();
                 return true;
             }
 
@@ -119,7 +131,7 @@ namespace Orbiters.Mixer.Editor
                 if (total <= 1e-6f) m = world; else if (Math.Abs(total - 1f) > 1e-4f) Scale(ref m, 1f / total);
                 ToWorld[v] = m;
             }
-            toMeshStale = true;
+            ToMeshChanged();
             return true;
         }
 

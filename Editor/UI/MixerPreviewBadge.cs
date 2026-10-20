@@ -67,7 +67,9 @@ namespace Orbiters.Mixer.Editor
             if (resolvedStyle.display == DisplayStyle.None || image.resolvedStyle.display == DisplayStyle.None) return;
             int revision = target.Document.Revision;
             if (revision == seenRevision) return;
-            double wait = MixerSceneTool.Stroking && !dragging ? 0.25 : 0.08;
+            // Baking a skinned body costs more than a frame: during a stroke the badge waits for its end.
+            if (MixerSceneTool.Stroking && !dragging) return;
+            const double wait = 0.08;
             if (EditorApplication.timeSinceStartup - lastRender < wait) return;
             seenRevision = revision;
             lastRender = EditorApplication.timeSinceStartup;

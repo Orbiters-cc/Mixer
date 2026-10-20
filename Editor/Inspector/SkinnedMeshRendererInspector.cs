@@ -419,6 +419,8 @@ namespace Orbiters.Mixer.Editor
         private void Refresh()
         {
             if (root == null || Renderer == null || root.panel == null) return;
+            // A stroke changes no shape or bone list: the panels catch up when it ends (MixerSceneTool.Changed).
+            if (MixerSceneTool.Stroking) return;
             RefreshShapes();
             RefreshGroups();
         }

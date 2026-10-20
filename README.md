@@ -120,6 +120,13 @@ saved as a native mesh asset when you commit.
   meanwhile. Nodes whose target FBX, materials, bones, light or camera changed are resent; renderers kept out of
   Blender are listed as missing by Export for MCB (MCB refuses such an import instead of losing them). A `.blend` never
   opened from Mixer links only when you press Connect. `MixerLink.Commit` returns null when nothing changed.
+- Sculpting stays smooth on a whole avatar body (90k vertices, 500 shapes) with a large brush: a step writes its moves
+  straight into the shown positions and the world picture through flat per-vertex arrays (no sets or dictionaries per
+  vertex), normals and the upload follow once a frame (the normals of a large stroke over several cores), inverse
+  skinning is worked out only for the vertices under the brush, the undo record keeps each welded ring once, and the
+  welds, mirror map and BVH a first stroke needs are built on worker threads as the session opens. The Mixer window,
+  the preview badge and the Skinned Mesh Renderer inspector's panels wait for the stroke's end instead of rebuilding
+  during it.
 - Requires Orbiters Toolkit 0.4.1, which holds the avatar gizmos (bones, weight paint, mesh edges, avatar budget) and
   lets Mixer take the armature overlay's bone clicks.
 

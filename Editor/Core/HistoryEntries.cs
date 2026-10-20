@@ -138,9 +138,13 @@ namespace Orbiters.Mixer.Editor
     /// <summary>Records the positions a stroke touches: the first touch of a vertex keeps its position before.</summary>
     internal sealed class StrokeRecorder
     {
-        private readonly Dictionary<int, Vector3> before = new Dictionary<int, Vector3>();
-        private readonly Dictionary<int, Vector3> normalsBefore = new Dictionary<int, Vector3>();
-        private readonly List<int> ring = new List<int>();
+        // Flags per mesh vertex (and per normal-welded vertex) instead of dictionaries: a large brush touches tens of
+        // thousands of vertices in a step.
+        private readonly bool[] kept, normalKept, ringKept;
+        private readonly List<int> indices = new List<int>();
+        private readonly List<Vector3> before = new List<Vector3>();
+        private readonly List<int> normalIndices = new List<int>();
+        private readonly List<Vector3> normalsBefore = new List<Vector3>();
         private readonly EditTarget target;
         private readonly string layer;
         public readonly string Label;
@@ -150,43 +154,53 @@ namespace Orbiters.Mixer.Editor
             this.target = target;
             layer = target.Document.Layer;
             Label = label;
+            int count = target.Document.VertexCount;
+            kept = new bool[count];
+            normalKept = new bool[count];
+            ringKept = new bool[target.Document.NormalWeld.WeldedCount];
         }
 
-        public bool Empty => before.Count == 0;
-        public int Count => before.Count;
+        public bool Empty => indices.Count == 0;
+        public int Count => indices.Count;
 
-        /// <summary>Call before moving <paramref name="v"/>: its position and the normals its move will change are kept.</summary>
-        public void Touch(int v)
+        /// <summary>
+        /// Call before moving <paramref name="v"/>: its position and the normals its move will change are kept. True the
+        /// first time <paramref name="v"/> is touched.
+        /// </summary>
+        public bool Touch(int v)
         {
-            if (before.ContainsKey(v)) return;
+            if (kept[v]) return false;
+            kept[v] = true;
             var doc = target.Document;
-            before[v] = doc.GetLayerPosition(layer, v);
-            // RefreshNormals recomputes the normal-welded vertex and its neighbours: those normals are the ones an undo puts back.
-            ring.Clear();
-            doc.NormalRing(v, ring);
+            indices.Add(v);
+            before.Add(doc.GetLayerPosition(layer, v));
+            // RefreshNormals recomputes the normal-welded vertex and its neighbours: those normals are the ones an undo
+            // puts back. The members of one welded vertex share that ring: it is kept once for all of them.
+            var weld = doc.NormalWeld;
+            int w = weld.Weld[v];
+            if (ringKept[w]) return true;
+            ringKept[w] = true;
             var normals = doc.Normals;
-            foreach (int m in ring) if (!normalsBefore.ContainsKey(m)) normalsBefore[m] = normals[m];
+            foreach (int m in weld.Members[w]) KeepNormal(m, normals);
+            foreach (int a in weld.Adjacent[w]) foreach (int m in weld.Members[a]) KeepNormal(m, normals);
+            return true;
+        }
+
+        private void KeepNormal(int m, Vector3[] normals)
+        {
+            if (normalKept[m]) return;
+            normalKept[m] = true;
+            normalIndices.Add(m);
+            normalsBefore.Add(normals[m]);
         }
 
         public PositionEdit Finish()
         {
-            if (before.Count == 0) return null;
-            var indices = new int[before.Count];
-            var was = new Vector3[before.Count];
-            var now = new Vector3[before.Count];
-            int i = 0;
-            foreach (var pair in before)
-            {
-                indices[i] = pair.Key;
-                was[i] = pair.Value;
-                now[i] = target.Document.GetLayerPosition(layer, pair.Key);
-                i++;
-            }
-            var normalIndices = new int[normalsBefore.Count];
-            var normals = new Vector3[normalsBefore.Count];
-            int n = 0;
-            foreach (var pair in normalsBefore) { normalIndices[n] = pair.Key; normals[n] = pair.Value; n++; }
-            return new PositionEdit { Target = target, Label = Label, Layer = layer, Indices = indices, Before = was, After = now, NormalIndices = normalIndices, NormalsBefore = normals };
+            if (indices.Count == 0) return null;
+            var doc = target.Document;
+            var now = new Vector3[indices.Count];
+            for (int i = 0; i < now.Length; i++) now[i] = doc.GetLayerPosition(layer, indices[i]);
+            return new PositionEdit { Target = target, Label = Label, Layer = layer, Indices = indices.ToArray(), Before = before.ToArray(), After = now, NormalIndices = normalIndices.ToArray(), NormalsBefore = normalsBefore.ToArray() };
         }
     }
 }

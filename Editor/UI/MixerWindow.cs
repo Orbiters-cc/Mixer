@@ -205,6 +205,8 @@ namespace Orbiters.Mixer.Editor
         private void Tick()
         {
             if (!built || !visible) return;
+            // Nothing the window shows changes during a stroke but the counts: they catch up when it ends.
+            if (MixerSceneTool.Stroking) return;
             int revision = 0;
             foreach (var t in MixerSession.Targets) revision = unchecked(revision * 31 + t.Document.Revision);
             if (revision != seenRevision) { seenRevision = revision; chromeDirty = true; }

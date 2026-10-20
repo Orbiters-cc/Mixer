@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using Orbiters.Toolkit.Meshes;
 using Unity.Collections;
 using UnityEngine;
@@ -81,6 +83,11 @@ namespace Orbiters.Mixer.Editor
         public int Revision;
         /// <summary>Mesh vertices changed since the last flush to the working mesh.</summary>
         public readonly HashSet<int> Dirty = new HashSet<int>();
+        /// <summary>
+        /// Edits written straight into the shown arrays (a stroke's moves, recomputed normals): the next flush uploads
+        /// them as they are, where <see cref="Dirty"/> vertices make it work the shown positions out again first.
+        /// </summary>
+        public bool Unflushed;
         /// <summary>Base vertices moved since the session started (what the commit recomputes normals for).</summary>
         public readonly HashSet<int> MovedBase = new HashSet<int>();
         public bool BoundsDirty;
@@ -381,16 +388,46 @@ namespace Orbiters.Mixer.Editor
         private readonly float weldTolerance;
 
         /// <summary>The vertices welded by position, with their neighbours: what brushes move together (built on first use).</summary>
-        public MeshNeighbors Neighbors => neighbors ?? (neighbors = MeshNeighbors.Build(OriginalPositions, Triangles, weldTolerance));
+        public MeshNeighbors Neighbors => neighbors ?? (neighbors = Built(ref neighborsTask, BuildNeighbors));
         private MeshNeighbors neighbors;
+        private Task<MeshNeighbors> neighborsTask;
 
         /// <summary>
         /// The vertices welded for normals: at one place and with original normals less than 60 degrees apart, so UV seams
         /// share a normal while hard edges stay hard and sheets that only touch (double-sided cloth, closed lips) keep
         /// their own sides. Built on first use.
         /// </summary>
-        public MeshNeighbors NormalWeld => normalWeld ?? (normalWeld = MeshNeighbors.Build(OriginalPositions, Triangles, weldTolerance, HasNormals ? OriginalNormals : null, HasNormals ? 0.5f : -1f));
+        public MeshNeighbors NormalWeld => normalWeld ?? (normalWeld = Built(ref normalWeldTask, BuildNormalWeld));
         private MeshNeighbors normalWeld;
+        private Task<MeshNeighbors> normalWeldTask;
+
+        private MeshNeighbors BuildNeighbors() => MeshNeighbors.Build(OriginalPositions, Triangles, weldTolerance);
+        private MeshNeighbors BuildNormalWeld() => MeshNeighbors.Build(OriginalPositions, Triangles, weldTolerance, HasNormals ? OriginalNormals : null, HasNormals ? 0.5f : -1f);
+
+        /// <summary>
+        /// Starts building <see cref="Neighbors"/> and <see cref="NormalWeld"/> on worker threads (they read only the
+        /// original's arrays), so the first stroke does not wait half a second for each on a body.
+        /// </summary>
+        public void Prewarm()
+        {
+            if (neighbors == null && neighborsTask == null) neighborsTask = Task.Run(BuildNeighbors);
+            if (normalWeld == null && normalWeldTask == null) normalWeldTask = Task.Run(BuildNormalWeld);
+        }
+
+        /// <summary>Neighbours started in the background prewarm when they ran (waited for), else built here.</summary>
+        internal Task<MeshNeighbors> NeighborsTask => neighbors != null ? Task.FromResult(neighbors) : neighborsTask;
+
+        private static MeshNeighbors Built(ref Task<MeshNeighbors> task, Func<MeshNeighbors> build)
+        {
+            var started = task;
+            task = null;
+            if (started != null)
+            {
+                try { return started.Result; }
+                catch (Exception) { /* built again below, where its exception shows */ }
+            }
+            return build();
+        }
 
         /// <summary>
         /// The vertices as the Blender link welds them: by place, normal, skin and shape motion
@@ -616,27 +653,75 @@ namespace Orbiters.Mixer.Editor
         public void RefreshNormals(IEnumerable<int> vertices, Vector3[] display)
         {
             var weld = NormalWeld;
-            var welded = new HashSet<int>();
+            int stamp = NextNormalStamp(weld);
+            var welded = new List<int>();
             foreach (int v in vertices)
             {
                 int w = weld.Weld[v];
+                if (normalStamp[w] == stamp) continue;
+                normalStamp[w] = stamp;
                 welded.Add(w);
-                foreach (int a in weld.Adjacent[w]) welded.Add(a);
             }
+            RefreshNormalsWelded(welded, display);
+        }
+
+        /// <summary>
+        /// <see cref="RefreshNormals"/> for vertices given by their <see cref="NormalWeld"/> index (each once): those and
+        /// their neighbours get normals from <paramref name="display"/>, uploaded at the next flush.
+        /// </summary>
+        public void RefreshNormalsWelded(List<int> welded, Vector3[] display)
+        {
+            if (welded.Count == 0) return;
+            var weld = NormalWeld;
+            int stamp = NextNormalStamp(weld);
+            var ring = normalRing;
+            ring.Clear();
             foreach (int w in welded)
             {
-                var n = Vector3.zero;
+                if (normalStamp[w] != stamp) { normalStamp[w] = stamp; ring.Add(w); }
+                foreach (int a in weld.Adjacent[w])
+                    if (normalStamp[a] != stamp) { normalStamp[a] = stamp; ring.Add(a); }
+            }
+            // Each welded vertex writes only its own members: a large stroke splits the ring over the cores.
+            if (ring.Count < 4096) RecomputeNormals(ring, 0, ring.Count, weld, display);
+            else Parallel.ForEach(Partitioner.Create(0, ring.Count, 2048), range => RecomputeNormals(ring, range.Item1, range.Item2, weld, display));
+            Unflushed = true;
+        }
+
+        private void RecomputeNormals(List<int> ring, int from, int to, MeshNeighbors weld, Vector3[] display)
+        {
+            var triangles = Triangles;
+            for (int k = from; k < to; k++)
+            {
+                int w = ring[k];
+                float x = 0f, y = 0f, z = 0f;
                 foreach (int t in weld.TrianglesOf[w])
                 {
                     int i = t * 3;
-                    Vector3 a = display[Triangles[i]], b = display[Triangles[i + 1]], c = display[Triangles[i + 2]];
-                    n += Vector3.Cross(b - a, c - a);
+                    Vector3 a = display[triangles[i]], b = display[triangles[i + 1]], c = display[triangles[i + 2]];
+                    float ux = b.x - a.x, uy = b.y - a.y, uz = b.z - a.z;
+                    float vx = c.x - a.x, vy = c.y - a.y, vz = c.z - a.z;
+                    x += uy * vz - uz * vy;
+                    y += uz * vx - ux * vz;
+                    z += ux * vy - uy * vx;
                 }
-                float length = Mathf.Sqrt(n.sqrMagnitude);
+                float length = (float)Math.Sqrt(x * x + y * y + z * z);
                 if (length <= 0f) continue;
-                n /= length;
-                foreach (int m in weld.Members[w]) { Normals[m] = n; Dirty.Add(m); }
+                var n = new Vector3(x / length, y / length, z / length);
+                foreach (int m in weld.Members[w]) Normals[m] = n;
             }
+        }
+
+        // Normal refreshes mark the welded vertices they visit with a stamp instead of filling sets (a stroke step visits thousands).
+        private int[] normalStamp;
+        private int normalStampValue;
+        private readonly List<int> normalRing = new List<int>();
+
+        private int NextNormalStamp(MeshNeighbors weld)
+        {
+            if (normalStamp == null || normalStamp.Length != weld.WeldedCount) { normalStamp = new int[weld.WeldedCount]; normalStampValue = 0; }
+            if (++normalStampValue == int.MaxValue) { Array.Clear(normalStamp, 0, normalStamp.Length); normalStampValue = 1; }
+            return normalStampValue;
         }
 
         /// <summary>The mesh vertices whose normals <see cref="RefreshNormals"/> recomputes for a move of <paramref name="v"/>.</summary>
