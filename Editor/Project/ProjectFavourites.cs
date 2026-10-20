@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using Orbiters.Toolkit.Storage;
 using UnityEditor;
 using UnityEngine;
 
@@ -50,11 +51,19 @@ namespace Orbiters.Mixer.Editor
         private static List<Entry> Load()
         {
             if (entries != null) return entries;
+            bool unreadable = false;
             try
             {
-                if (File.Exists(FilePath)) entries = JsonUtility.FromJson<Store>(File.ReadAllText(FilePath))?.entries;
+                if (File.Exists(FilePath)) { entries = JsonUtility.FromJson<Store>(File.ReadAllText(FilePath))?.entries; unreadable = entries == null; }
             }
-            catch (Exception) { entries = null; }
+            catch (Exception) { entries = null; unreadable = true; }
+            // A file that could not be read (a hand edit, a merge) is kept beside before the next save replaces it.
+            if (unreadable)
+            {
+                try { File.Copy(FilePath, FilePath + ".unreadable", true); }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
             if (entries == null)
             {
                 // A project's first favourites: Unity's own.
@@ -128,12 +137,9 @@ namespace Orbiters.Mixer.Editor
 
         private static void Save()
         {
-            try
-            {
-                Directory.CreateDirectory(Path.GetDirectoryName(FilePath));
-                File.WriteAllText(FilePath, JsonUtility.ToJson(new Store { entries = Load() }, true));
-            }
+            try { SafePaths.ReplaceFile(FilePath, JsonUtility.ToJson(new Store { entries = Load() }, true)); }
             catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
             Changed?.Invoke();
         }
     }

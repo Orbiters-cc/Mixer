@@ -97,6 +97,8 @@ namespace Orbiters.Mixer.Editor
             }
             grid.SetItemCount(gridLines.Count, keepAtEnd: false);
             grid.RefreshRows();
+            // Unity keeps 50 pictures by default: more tiles on screen would push each other out and be made again forever.
+            AssetPreview.SetPreviewTextureCacheSize(Mathf.Clamp((Mathf.CeilToInt((float)grid.VisibleRows) + 2) * gridColumns * 2, 50, 1024));
         }
 
         private VisualElement MakeGridLine()

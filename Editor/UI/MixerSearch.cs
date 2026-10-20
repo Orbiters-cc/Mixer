@@ -69,13 +69,17 @@ namespace Orbiters.Mixer.Editor
             field.tooltip = pattern.Error != null ? "Invalid regular expression: " + pattern.Error : pattern.TooSlow ? SearchPattern.TooSlowMessage : baseTooltip;
         }
 
-        /// <summary>Sets the switches (a saved search, a label added from a menu), without calling back.</summary>
-        public void Set(bool regex, bool matchCase)
+        /// <summary>Sets the switches without calling back. <paramref name="remember"/> false (a saved search, a label added
+        /// from a menu) sets them for this field only: the ones kept for later searches stay.</summary>
+        public void Set(bool regex, bool matchCase, bool remember = true)
         {
             regexToggle.EnableInClassList("mx-search__toggle--on", regex);
             caseToggle.EnableInClassList("mx-search__toggle--on", matchCase);
-            EditorPrefs.SetBool(prefKey + ".Regex", regex);
-            EditorPrefs.SetBool(prefKey + ".MatchCase", matchCase);
+            if (remember)
+            {
+                EditorPrefs.SetBool(prefKey + ".Regex", regex);
+                EditorPrefs.SetBool(prefKey + ".MatchCase", matchCase);
+            }
             For(field.value);
         }
 

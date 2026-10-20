@@ -20,6 +20,8 @@ namespace Orbiters.Mixer.Editor
 
         private readonly List<ProjectItem> treeRows = new List<ProjectItem>();
         private readonly List<ProjectItem> rows = new List<ProjectItem>();
+        // Where each path is in the rows (found once per rebuild: a selection of thousands looks each one up).
+        private readonly Dictionary<string, int> rowIndex = new Dictionary<string, int>(StringComparer.Ordinal);
         private readonly Dictionary<string, string> packageNames = new Dictionary<string, string>(StringComparer.Ordinal);
         private readonly Dictionary<string, Texture> previewCache = new Dictionary<string, Texture>(StringComparer.Ordinal);
         private VisualElement crumbs;
@@ -37,8 +39,7 @@ namespace Orbiters.Mixer.Editor
         internal int IndexOf(string path)
         {
             if (string.IsNullOrEmpty(path)) return -1;
-            for (int i = 0; i < rows.Count; i++) if (!rows[i].IsHeading && rows[i].Path == path) return i;
-            return -1;
+            return rowIndex.TryGetValue(path, out int index) ? index : -1;
         }
 
         private static ProjectItem Heading(string text) => new ProjectItem { IsHeading = true, Name = text, Path = string.Empty };
@@ -162,13 +163,19 @@ namespace Orbiters.Mixer.Editor
             else if (showRecent) BuildRecentRows();
             else if (folder == PackagesPath) AddItems(PackageItems(), 0);
             else AddItems(ProjectFiles.Children(folder, sort, kinds), 0);
+            rowIndex.Clear();
+            for (int i = 0; i < rows.Count; i++) if (!rows[i].IsHeading) rowIndex[rows[i].Path] = i;
+            // What lit up and is no longer shown (another folder, another search) is not what Delete or Copy act on.
+            picked.RemoveWhere(p => !rowIndex.ContainsKey(p));
             content.SetItemCount(rows.Count, keepAtEnd: false);
             content.RefreshRows();
             if (GridMode) LayOutGrid();
+            searchOptions?.ShowState();
             bool empty = rows.Count == 0;
             MixerUi.Show(emptyLabel, empty);
             if (empty)
                 emptyLabel.text = Searching ? (searchOptions?.For(search).Error is string error ? "Invalid regular expression: " + error
+                        : searchOptions != null && searchOptions.For(search).TooSlow ? SearchPattern.TooSlowMessage
                         : AssetContentIndex.Building ? "Nothing yet: the assets' contents are still being read." : "Nothing matches “" + search.Trim() + "”.")
                     : showRecent ? "The assets you select or open show here."
                     : kinds != ProjectKinds.None ? "Nothing of the kinds the filter keeps." : "This folder is empty.";

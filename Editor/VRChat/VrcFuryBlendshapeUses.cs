@@ -81,7 +81,8 @@ namespace Orbiters.Mixer.Editor.VRChat
                     .Where(t => t.name == baseName)
                     .Select(t => t.GetComponent<SkinnedMeshRenderer>())
                     .Where(r => r != null)
-                    .OrderBy(r => Depth(r.transform, avatar.transform))
+                    // As VRCFury picks among same-named skins: the shortest path from the avatar (in characters).
+                    .OrderBy(r => UnityEditor.AnimationUtility.CalculateTransformPath(r.transform, avatar.transform).Length)
                     .FirstOrDefault(),
                 Skins = Items(feature, "linkSkins").Select(i => VrcFury.Field(i, "renderer") as SkinnedMeshRenderer).Where(r => r != null).ToList(),
                 IncludeAll = VrcFury.Field(feature, "includeAll") is bool all && all,
@@ -98,12 +99,14 @@ namespace Orbiters.Mixer.Editor.VRChat
             var skinNames = Names(skin.sharedMesh);
             var pairs = new List<(string, string)>();
             var linked = new HashSet<string>(StringComparer.Ordinal);
+            // VRCFury keeps its links as a set: an include given twice links once.
+            var made = new HashSet<(string, string)>();
             void Add(string from, string to, bool again)
             {
                 from = Find(baseNames, from, link.Exact);
                 if (from == null || (!again && linked.Contains(from))) return;
                 to = Find(skinNames, to, link.Exact);
-                if (to == null) return;
+                if (to == null || !made.Add((from, to))) return;
                 pairs.Add((from, to));
                 linked.Add(from);
             }
@@ -145,13 +148,6 @@ namespace Orbiters.Mixer.Editor.VRChat
             var names = new List<string>(mesh != null ? mesh.blendShapeCount : 0);
             if (mesh != null) for (int i = 0; i < mesh.blendShapeCount; i++) names.Add(mesh.GetBlendShapeName(i));
             return names;
-        }
-
-        private static int Depth(Transform t, Transform root)
-        {
-            int depth = 0;
-            for (; t != null && t != root; t = t.parent) depth++;
-            return depth;
         }
     }
 }

@@ -15,8 +15,11 @@ namespace Orbiters.Mixer.Editor
     /// states, parameters, blend trees, state behaviours such as VRChat's parameter drivers), animation clips (animated
     /// paths, properties such as <c>blendShape.Smile</c>, events), override controllers, avatar masks, ScriptableObjects
     /// (VRChat's expression parameters and menus), prefabs and scenes (object names and the fields of their components:
-    /// VRChat's, VRCFury's, any tool's). Names say what they name (a parameter, a layer, a state, an object). Built on a worker thread from the YAML Unity writes (binary assets are skipped), kept in
-    /// <c>Library/Orbiters/Mixer/content-index.bin</c> by file date and size, and brought up to date after imports.
+    /// VRChat's, VRCFury's, any tool's). Names say what they name (a parameter, a layer, a state, an object). Built on a
+    /// worker thread from the YAML Unity writes (binary assets are remembered as holding nothing), in Assets and every
+    /// package where it really is (embedded, cached or local), kept in <c>Library/Orbiters/Mixer/content-index.bin</c> by
+    /// file date and size, and brought up to date after imports. Values are kept as Unity means them: its YAML escapes
+    /// (<c>\u307E</c> for a Japanese letter, <c>''</c> in single quotes) are read back.
     /// </summary>
     [InitializeOnLoad]
     internal static class AssetContentIndex
@@ -35,7 +38,10 @@ namespace Orbiters.Mixer.Editor
             public string[] Keys, Values;
         }
 
-        private const int Version = 3;
+        private const int Version = 4;
+        // A line longer than this is read no further (a mesh's vertex data on one line): values past 200 characters are
+        // never kept anyway.
+        private const int LineLimit = 1024;
         private static readonly string[] Extensions = { ".anim", ".controller", ".overrideController", ".asset", ".prefab", ".unity", ".mask", ".playable" };
         // Unity's own fields worth a search; any other "m_" field is Unity's machinery (ids, flags, numbers).
         private static readonly HashSet<string> UnityKeys = new HashSet<string>(StringComparer.Ordinal)
@@ -53,7 +59,7 @@ namespace Orbiters.Mixer.Editor
         private static Task running;
         private static volatile bool dirty = true, stopping;
         private static volatile int done, total;
-        private static bool loaded;
+        private static volatile bool loaded;
         private static string projectRoot;
 
         /// <summary>Raised on the main thread when a build finished (what searches see changed).</summary>
@@ -66,7 +72,11 @@ namespace Orbiters.Mixer.Editor
             AssemblyReloadEvents.beforeAssemblyReload += () =>
             {
                 stopping = true;
-                try { running?.Wait(3000); } catch (Exception) { }
+                try
+                {
+                    if (running != null && !running.Wait(3000)) UnityEngine.Debug.LogWarning("[Mixer] The project's content index was still reading a file when the scripts reloaded.");
+                }
+                catch (Exception) { }
             };
         }
 
@@ -75,6 +85,8 @@ namespace Orbiters.Mixer.Editor
         /// <summary>"1,234 / 5,000 files" while building.</summary>
         public static string Progress => Building ? done.ToString("N0") + " / " + total.ToString("N0") + " files" : string.Empty;
         public static int FileCount { get { lock (Gate) return files.Count; } }
+        /// <summary>True once the index was read and nothing changed since: an answer that finds nothing is final.</summary>
+        public static bool UpToDate => loaded && !dirty && !Building;
 
         /// <summary>Starts building or updating the index when it is not up to date; never waits.</summary>
         public static void Refresh()
@@ -83,19 +95,37 @@ namespace Orbiters.Mixer.Editor
             dirty = false;
             stopping = false;
             string root = projectRoot;
-            running = Task.Run(() => Build(root));
+            var tops = Tops(root);
+            running = Task.Run(() => Build(root, tops));
             EditorApplication.update -= WatchBuild;
             EditorApplication.update += WatchBuild;
         }
 
-        /// <summary>Reads what changed and waits for it, after any reading under way (tests).</summary>
-        internal static void RefreshNow()
+        // Assets, and each package where its files are (Packages/<name> for an embedded one, Library/PackageCache or a
+        // local folder elsewhere), read on the main thread.
+        private static List<(string asset, string full)> Tops(string root)
         {
-            running?.Wait();
+            var tops = new List<(string, string)> { ("Assets", Path.Combine(root, "Assets")) };
+            try
+            {
+                foreach (var package in UnityEditor.PackageManager.PackageInfo.GetAllRegisteredPackages())
+                    if (!string.IsNullOrEmpty(package.assetPath) && !string.IsNullOrEmpty(package.resolvedPath)) tops.Add((package.assetPath, package.resolvedPath));
+            }
+            catch (Exception) { tops.Add(("Packages", Path.Combine(root, "Packages"))); }
+            return tops;
+        }
+
+        /// <summary>Reads what changed and waits for it, after any reading under way (tests). Gives up after
+        /// <paramref name="seconds"/> (false) rather than holding the editor.</summary>
+        internal static bool RefreshNow(double seconds = 120)
+        {
+            var limit = TimeSpan.FromSeconds(seconds);
+            if (running != null && !running.Wait(limit)) return false;
             dirty = true;
             Refresh();
-            running?.Wait();
+            if (running != null && !running.Wait(limit)) return false;
             WatchBuild();
+            return true;
         }
 
         private static void WatchBuild()
@@ -130,6 +160,8 @@ namespace Orbiters.Mixer.Editor
             {
                 foreach (var pair in files)
                 {
+                    // An expression found too slow matches nothing more: the rest is not walked.
+                    if (pattern.TooSlow) break;
                     if (inScope != null && !inScope(pair.Key)) continue;
                     var entry = pair.Value;
                     for (int i = 0; i < entry.Values.Length; i++)
@@ -186,13 +218,13 @@ namespace Orbiters.Mixer.Editor
 
         private static string CachePath(string root) => Path.Combine(root, "Library", "Orbiters", "Mixer", "content-index.bin");
 
-        private static void Build(string root)
+        private static void Build(string root, List<(string asset, string full)> tops)
         {
             if (!loaded) { Load(root); loaded = true; }
             var found = new List<(string asset, string full)>();
-            foreach (string top in new[] { "Assets", "Packages" })
+            foreach (var (top, full) in tops)
             {
-                string full = Path.Combine(root, top);
+                if (stopping) { dirty = true; return; }
                 if (!Directory.Exists(full)) continue;
                 Walk(full, top, found);
             }
@@ -209,11 +241,13 @@ namespace Orbiters.Mixer.Editor
                 // A first reading of a large project takes minutes: what was read so far is kept now and then.
                 if (changed && (DateTime.UtcNow - lastSave).TotalSeconds > 20) { Save(root); lastSave = DateTime.UtcNow; }
                 done++;
-                FileInfo info;
-                try { info = new FileInfo(full); } catch (Exception) { continue; }
-                if (known.TryGetValue(asset, out var entry) && entry.Ticks == info.LastWriteTimeUtc.Ticks && entry.Size == info.Length) { next[asset] = entry; continue; }
-                entry = Parse(full, info);
+                long ticks, size;
+                // Gone since the walk (a tool's temporary asset): left out.
+                try { var info = new FileInfo(full); ticks = info.LastWriteTimeUtc.Ticks; size = info.Length; } catch (Exception) { continue; }
+                if (known.TryGetValue(asset, out var entry) && entry.Ticks == ticks && entry.Size == size) { next[asset] = entry; continue; }
+                entry = Parse(full, ticks, size);
                 changed = true;
+                if (stopping) { if (changed) Save(root); dirty = true; return; }
                 if (entry == null) continue;
                 next[asset] = entry;
                 // Searches see each file as soon as it is read.
@@ -224,9 +258,11 @@ namespace Orbiters.Mixer.Editor
             if (changed) Save(root);
         }
 
-        // Unity's way: names starting with "." or ending in "~" are hidden from the project.
+        // Unity's way: names starting with "." or ending in "~" are hidden from the project. Links (junctions) are not
+        // followed: one pointing above itself would never end.
         private static void Walk(string full, string asset, List<(string, string)> found)
         {
+            if (stopping) return;
             IEnumerable<string> entries;
             try { entries = Directory.EnumerateFileSystemEntries(full); } catch (Exception) { return; }
             foreach (string path in entries)
@@ -234,27 +270,38 @@ namespace Orbiters.Mixer.Editor
                 string name = Path.GetFileName(path);
                 if (name.StartsWith(".", StringComparison.Ordinal) || name.EndsWith("~", StringComparison.Ordinal)) continue;
                 string child = asset + "/" + name;
-                if (Directory.Exists(path)) { Walk(path, child, found); continue; }
+                FileAttributes attributes;
+                try { attributes = File.GetAttributes(path); } catch (Exception) { continue; }
+                if ((attributes & FileAttributes.Directory) != 0)
+                {
+                    if ((attributes & FileAttributes.ReparsePoint) == 0) Walk(path, child, found);
+                    continue;
+                }
                 string ext = Path.GetExtension(name);
                 if (Extensions.Any(e => string.Equals(e, ext, StringComparison.OrdinalIgnoreCase))) found.Add((child, path));
             }
         }
 
-        private static FileEntry Parse(string full, FileInfo info)
+        // Null when the file could not be read now (it is read again next time); a binary asset holds nothing.
+        private static FileEntry Parse(string full, long ticks, long size)
         {
             try
             {
-                using (var reader = new StreamReader(full, Encoding.UTF8))
+                using (var reader = new LineReader(full))
                 {
                     string first = reader.ReadLine();
-                    if (first == null || !first.StartsWith("%YAML", StringComparison.Ordinal)) return null;
+                    if (first == null || !first.StartsWith("%YAML", StringComparison.Ordinal))
+                        return new FileEntry { Ticks = ticks, Size = size, Keys = Array.Empty<string>(), Values = Array.Empty<string>() };
                     var seen = new HashSet<string>(StringComparer.Ordinal);
                     var keys = new List<string>();
                     var values = new List<string>();
                     string lastKey = null, document = null, section = null;
                     string line;
+                    int lines = 0;
                     while ((line = reader.ReadLine()) != null)
                     {
+                        // A large scene takes a while: a script reload does not wait for it.
+                        if (++lines % 4096 == 0 && stopping) return null;
                         int start = 0;
                         while (start < line.Length && line[start] == ' ') start++;
                         if (start >= line.Length) continue;
@@ -289,10 +336,43 @@ namespace Orbiters.Mixer.Editor
                         keys.Add(key);
                         values.Add(value);
                     }
-                    return new FileEntry { Ticks = info.LastWriteTimeUtc.Ticks, Size = info.Length, Keys = keys.ToArray(), Values = values.ToArray() };
+                    return new FileEntry { Ticks = ticks, Size = size, Keys = keys.ToArray(), Values = values.ToArray() };
                 }
             }
             catch (Exception) { return null; }
+        }
+
+        // Lines of a text file, each cut at LineLimit characters (the rest of a long line is skipped, never held).
+        private sealed class LineReader : IDisposable
+        {
+            private readonly StreamReader reader;
+            private readonly char[] buffer = new char[65536];
+            private readonly StringBuilder line = new StringBuilder(256);
+            private int length, at;
+
+            public LineReader(string path) { reader = new StreamReader(path, Encoding.UTF8); }
+
+            public string ReadLine()
+            {
+                line.Clear();
+                bool any = false;
+                while (true)
+                {
+                    if (at >= length)
+                    {
+                        length = reader.Read(buffer, 0, buffer.Length);
+                        at = 0;
+                        if (length <= 0) return any ? line.ToString() : null;
+                    }
+                    any = true;
+                    char c = buffer[at++];
+                    if (c == '\n') return line.ToString();
+                    if (c == '\r') continue;
+                    if (line.Length < LineLimit) line.Append(c);
+                }
+            }
+
+            public void Dispose() => reader.Dispose();
         }
 
         // What a name names, from where it is: a controller's parameter or layer, a state, an object, a menu's control.
@@ -325,11 +405,12 @@ namespace Orbiters.Mixer.Editor
             return true;
         }
 
-        // A value worth searching: words, not numbers, references, ids or empty containers.
+        // A value worth searching: words, not numbers, references, ids or empty containers. Quoted, as Unity writes it.
         private static string Clean(string value)
         {
             value = value.Trim();
-            if (value.Length >= 2 && (value[0] == '\'' || value[0] == '"') && value[value.Length - 1] == value[0]) value = value.Substring(1, value.Length - 2);
+            if (value.Length >= 2 && value[0] == '"' && value[value.Length - 1] == '"') value = Unescape(value.Substring(1, value.Length - 2));
+            else if (value.Length >= 2 && value[0] == '\'' && value[value.Length - 1] == '\'') value = value.Substring(1, value.Length - 2).Replace("''", "'");
             if (value.Length == 0 || value.Length > 200) return null;
             char c = value[0];
             if (c == '{' || c == '[' || c == '&' || c == '*' || c == '!') return null;
@@ -342,6 +423,53 @@ namespace Orbiters.Mixer.Editor
             if (!letter) return null;
             if (hex && value.Length >= 16) return null;
             return value;
+        }
+
+        // YAML's double-quoted escapes, as Unity writes non-ASCII text ("\u307E\u3070\u305F\u304D") and quotes.
+        internal static string Unescape(string text)
+        {
+            if (text.IndexOf('\\') < 0) return text;
+            var result = new StringBuilder(text.Length);
+            for (int i = 0; i < text.Length; i++)
+            {
+                char c = text[i];
+                if (c != '\\' || i + 1 >= text.Length) { result.Append(c); continue; }
+                char e = text[++i];
+                int digits = e == 'x' ? 2 : e == 'u' ? 4 : e == 'U' ? 8 : 0;
+                if (digits > 0)
+                {
+                    if (TryHex(text, i + 1, digits, out int code))
+                    {
+                        if (code > 0xFFFF) result.Append(char.ConvertFromUtf32(code)); else result.Append((char)code);
+                        i += digits;
+                    }
+                    else result.Append('\\').Append(e);
+                    continue;
+                }
+                switch (e)
+                {
+                    case 'n': result.Append('\n'); break;
+                    case 't': result.Append('\t'); break;
+                    case 'r': result.Append('\r'); break;
+                    case '0': result.Append('\0'); break;
+                    case '"': case '\\': case '/': case ' ': result.Append(e); break;
+                    default: result.Append('\\').Append(e); break;
+                }
+            }
+            return result.ToString();
+        }
+
+        private static bool TryHex(string text, int start, int count, out int value)
+        {
+            value = 0;
+            if (start + count > text.Length) return false;
+            for (int k = 0; k < count; k++)
+            {
+                int d = Uri.IsHexDigit(text[start + k]) ? Uri.FromHex(text[start + k]) : -1;
+                if (d < 0) return false;
+                value = value * 16 + d;
+            }
+            return value <= 0x10FFFF;
         }
 
         // ---- The cache file ---------------------------------------------------------------------------------------------

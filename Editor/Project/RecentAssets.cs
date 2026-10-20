@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using Orbiters.Toolkit.Storage;
 using UnityEditor;
 using UnityEditor.Callbacks;
 using UnityEngine;
@@ -109,12 +110,9 @@ namespace Orbiters.Mixer.Editor
         {
             EditorApplication.update -= Save;
             saveQueued = false;
-            try
-            {
-                Directory.CreateDirectory(Path.GetDirectoryName(FilePath));
-                File.WriteAllText(FilePath, JsonUtility.ToJson(new Store { entries = Entries }));
-            }
+            try { SafePaths.ReplaceFile(FilePath, JsonUtility.ToJson(new Store { entries = Entries })); }
             catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
         }
     }
 }

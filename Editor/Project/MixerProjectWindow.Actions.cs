@@ -2,7 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
+using Orbiters.Toolkit.Storage;
 using UnityEditor;
+using UnityEditor.SceneManagement;
 using UnityEditor.Animations;
 using UnityEngine;
 using UnityEngine.UIElements;
@@ -22,10 +25,14 @@ namespace Orbiters.Mixer.Editor
         private string cursor, anchor;
         // The objects this window gave Unity's selection: its change notice is ours, not something to follow.
         private HashSet<int> pushed;
-        private string renamingPath;
-        private bool creating;
-        private string dragFrom, dropFolder, pingPath;
+        // Not kept across a script reload: what they wait for (a rename's field, a create's poll, a drag) is gone then.
+        [NonSerialized] private string renamingPath;
+        [NonSerialized] private bool creating;
+        [NonSerialized] private string dragFrom, dropFolder, pingPath;
         private double pingUntil;
+        // Scripts and assembly definitions Unity's create items just made, with the name written in them: renamed in
+        // place, their class (or assembly) takes the new name, as Unity's own naming gives it.
+        private readonly Dictionary<string, string> freshScripts = new Dictionary<string, string>(StringComparer.Ordinal);
         private Vector2 dragStart;
 
         /// <summary>The paths lit up (tests).</summary>
@@ -74,20 +81,21 @@ namespace Orbiters.Mixer.Editor
             UpdateFooter();
         }
 
+        // By instance id, as Unity's window selects: nothing is loaded for it (Ctrl+A over thousands of models).
         private void PushSelection()
         {
-            var objects = new List<Object>();
+            var ids = new List<int>();
             foreach (string path in picked)
             {
                 int index = IndexOf(path);
                 bool isFolder = index >= 0 ? rows[index].IsFolder : AssetDatabase.IsValidFolder(path);
                 if (isFolder) continue;
-                var asset = ObjectOf(path);
-                if (asset != null) objects.Add(asset);
+                int id = InstanceIdOf(path);
+                if (id != 0) ids.Add(id);
             }
-            if (objects.Count == 0) return;
-            pushed = new HashSet<int>(objects.Select(o => o.GetInstanceID()));
-            Selection.objects = objects.ToArray();
+            if (ids.Count == 0) return;
+            pushed = new HashSet<int>(ids);
+            Selection.instanceIDs = ids.ToArray();
         }
 
         private void OnRowPointerDown(VisualElement element, PointerDownEvent evt) => OnItemPointerDown(content.ItemOf(element), evt);
@@ -139,7 +147,8 @@ namespace Orbiters.Mixer.Editor
         internal void Ping(string path)
         {
             if (string.IsNullOrEmpty(path) || !built) return;
-            if (IndexOf(path) < 0)
+            // A locked window, or one showing a search, stays where it is: only a line on screen flashes.
+            if (IndexOf(path) < 0 && !locked && !Searching)
             {
                 string parent = ParentOf(path);
                 if (parent != null && (Searching || showRecent || !path.StartsWith(folder + "/", StringComparison.Ordinal))) Navigate(parent);
@@ -261,7 +270,12 @@ namespace Orbiters.Mixer.Editor
                 {
                     string error = AssetDatabase.RenameAsset(path, name);
                     if (!string.IsNullOrEmpty(error)) toasts.Show(error, true);
-                    else Renamed(path, ParentOf(path) + "/" + name + (isFolder ? string.Empty : System.IO.Path.GetExtension(path)));
+                    else
+                    {
+                        string renamed = ParentOf(path) + "/" + name + (isFolder ? string.Empty : System.IO.Path.GetExtension(path));
+                        Renamed(path, renamed);
+                        if (freshScripts.TryGetValue(path, out string written)) { freshScripts.Remove(path); NameScript(renamed, written); }
+                    }
                 }
             }
             MarkAllDirty();
@@ -347,11 +361,13 @@ namespace Orbiters.Mixer.Editor
             return path;
         }
 
-        // Something new: on screen (its folder opened or unfolded), lit up (a file selected, as Unity does), being renamed.
-        private void Created(string path, bool selectInUnity)
+        // Something new: on screen (its folder opened or unfolded), lit up (a file selected, as Unity does), being renamed
+        // (not when the user already named it in a save dialog). The grid shows only the open folder: one made in a
+        // folder below it opens that folder.
+        private void Created(string path, bool selectInUnity, bool rename = true)
         {
             string parent = ParentOf(path);
-            if (Searching || showRecent || (parent != folder && !parent.StartsWith(folder + "/", StringComparison.Ordinal))) Navigate(parent);
+            if (Searching || showRecent || (parent != folder && (GridMode || !parent.StartsWith(folder + "/", StringComparison.Ordinal)))) Navigate(parent);
             for (string p = parent; p != null && p != folder; p = ParentOf(p)) contentOpenSet.Add(p);
             MarkAllDirty();
             RebuildNow();
@@ -360,7 +376,7 @@ namespace Orbiters.Mixer.Editor
             cursor = anchor = path;
             if (selectInUnity) PushSelection();
             Reveal(path);
-            BeginRename(path);
+            if (rename) BeginRename(path);
             UpdateFooter();
         }
 
@@ -377,24 +393,41 @@ namespace Orbiters.Mixer.Editor
             catch (Exception) { return new List<string>(); }
         }
 
+        // Unity's own folder for its create items: its Project window's, else Assets (internal; Assets without it).
+        private static readonly System.Reflection.MethodInfo ActiveFolderPath = typeof(ProjectWindowUtil).GetMethod("GetActiveFolderPath",
+            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public, null, Type.EmptyTypes, null);
+
         // Unity's create items make their asset in its Project window's folder, or in Assets without one: what they made
-        // (within a few seconds) moves to the folder asked for, then is renamed in place.
+        // there (within a few seconds) moves to the folder asked for, then is renamed in place. Only what appears in that
+        // folder counts (a tool, an import or an autosave elsewhere is left alone). An item that asked where to save (a
+        // dialog: it took the user a moment) made its asset where the user chose: it is shown there, not moved.
         private void RunUnityCreate(string menuPath, string target)
         {
             var before = new HashSet<string>(AssetDatabase.GetAllAssetPaths(), StringComparer.Ordinal);
+            string unityFolder = "Assets";
+            try { if (ActiveFolderPath?.Invoke(null, null) is string active && AssetDatabase.IsValidFolder(active)) unityFolder = active; }
+            catch (Exception) { }
             creating = true;
+            double started = EditorApplication.timeSinceStartup;
             if (!EditorApplication.ExecuteMenuItem(menuPath)) { creating = false; toasts.Show("Unity could not run " + menuPath.Substring("Assets/".Length) + ".", true); return; }
-            double until = EditorApplication.timeSinceStartup + 3.0;
+            bool asked = EditorApplication.timeSinceStartup - started > 1.0;
+            double until = EditorApplication.timeSinceStartup + 3.0, next = 0;
             EditorApplication.CallbackFunction poll = null;
             poll = () =>
             {
-                var made = AssetDatabase.GetAllAssetPaths().Where(p => !before.Contains(p) && (p.StartsWith("Assets/", StringComparison.Ordinal) || p.StartsWith("Packages/", StringComparison.Ordinal))).ToList();
-                if (made.Count == 0 && EditorApplication.timeSinceStartup < until) return;
+                double now = EditorApplication.timeSinceStartup;
+                if (now < next) return;
+                next = now + 0.2;
+                var made = AssetDatabase.GetAllAssetPaths().Where(p => !before.Contains(p) && (asked
+                    ? p.StartsWith("Assets/", StringComparison.Ordinal)
+                    : (ParentOf(p) == unityFolder || ParentOf(p) == "Assets"))).ToList();
+                if (made.Count == 0 && now < until) return;
                 EditorApplication.update -= poll;
                 creating = false;
                 // Only the topmost of what appeared (a folder's contents go with it).
                 made = made.Where(p => !made.Any(o => o != p && p.StartsWith(o + "/", StringComparison.Ordinal))).ToList();
                 if (made.Count == 0 || this == null) return;
+                if (asked) { Created(made[0], selectInUnity: !AssetDatabase.IsValidFolder(made[0]), rename: false); return; }
                 string first = null;
                 foreach (string path in made)
                 {
@@ -404,11 +437,50 @@ namespace Orbiters.Mixer.Editor
                         string moved = AssetDatabase.GenerateUniqueAssetPath(target + "/" + System.IO.Path.GetFileName(path));
                         if (string.IsNullOrEmpty(AssetDatabase.MoveAsset(path, moved))) place = moved;
                     }
+                    // What Unity wrote in a script: the file's first name, spaces left out ("NewBehaviourScript").
+                    if (IsNamedScript(place))
+                    {
+                        string written = ScriptName(System.IO.Path.GetFileNameWithoutExtension(path));
+                        freshScripts[place] = NameScript(place, written);
+                    }
                     first = first ?? place;
                 }
                 Created(first, selectInUnity: !AssetDatabase.IsValidFolder(first));
             };
             EditorApplication.update += poll;
+        }
+
+        private static bool IsNamedScript(string path) =>
+            path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) || path.EndsWith(".asmdef", StringComparison.OrdinalIgnoreCase) || path.EndsWith(".asmref", StringComparison.OrdinalIgnoreCase);
+
+        // A C# name from a file name, as Unity's script templates make it: no spaces, letters, digits and _.
+        private static string ScriptName(string fileName)
+        {
+            var name = new string(fileName.Where(c => char.IsLetterOrDigit(c) || c == '_').ToArray());
+            return name.Length == 0 ? "NewScript" : char.IsDigit(name[0]) ? "_" + name : name;
+        }
+
+        // Gives a script's class (or an assembly definition's name) the name of its file, where it still holds the name
+        // Unity wrote: a second "NewBehaviourScript" would no longer compile. Returns the name the file holds now.
+        private string NameScript(string path, string written)
+        {
+            string wanted = path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) ? ScriptName(System.IO.Path.GetFileNameWithoutExtension(path)) : System.IO.Path.GetFileNameWithoutExtension(path);
+            if (string.IsNullOrEmpty(written) || wanted == written) return written;
+            try
+            {
+                string full = FileUtil.GetPhysicalPath(path);
+                byte[] raw = File.ReadAllBytes(full);
+                bool bom = raw.Length >= 3 && raw[0] == 0xEF && raw[1] == 0xBB && raw[2] == 0xBF;
+                string text = new System.Text.UTF8Encoding(false).GetString(raw, bom ? 3 : 0, raw.Length - (bom ? 3 : 0));
+                string changed = path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase)
+                    ? Regex.Replace(text, @"\b" + Regex.Escape(written) + @"\b", wanted)
+                    : Regex.Replace(text, @"(""name""\s*:\s*"")" + Regex.Escape(written) + @"""", m => m.Groups[1].Value + wanted + "\"");
+                if (changed == text) return written;
+                File.WriteAllText(full, changed, new System.Text.UTF8Encoding(bom));
+                AssetDatabase.ImportAsset(path);
+                return wanted;
+            }
+            catch (Exception e) { toasts.Show("Could not name " + System.IO.Path.GetFileName(path) + "'s class: " + e.Message, true); return written; }
         }
 
         // ---- Delete, duplicate, copy ----------------------------------------------------------------------------------
@@ -491,7 +563,7 @@ namespace Orbiters.Mixer.Editor
                 evt.menu.AppendAction("Delete", _ => DeletePicked(), whenWritable);
                 evt.menu.AppendAction("Copy Path", _ => CopyPaths());
                 evt.menu.AppendAction("Copy", _ => CopyPicked());
-                evt.menu.AppendAction("Paste", _ => Paste(), clipboard.Count > 0 && ProjectFiles.IsWritable(target) ? DropdownMenuAction.Status.Normal : DropdownMenuAction.Status.Disabled);
+                evt.menu.AppendAction("Paste", _ => Paste(), ClipboardPaths().Count > 0 && ProjectFiles.IsWritable(target) ? DropdownMenuAction.Status.Normal : DropdownMenuAction.Status.Disabled);
                 evt.menu.AppendAction("Reimport", _ => { foreach (string path in PickedRoots()) AssetDatabase.ImportAsset(path, ImportAssetOptions.ImportRecursive); });
                 AppendFavouriteActions(evt.menu, item);
                 evt.menu.AppendSeparator();
@@ -499,7 +571,7 @@ namespace Orbiters.Mixer.Editor
                 AppendUnityAssetsMenu(evt.menu);
                 evt.menu.AppendSeparator();
             }
-            else if (clipboard.Count > 0) evt.menu.AppendAction("Paste", _ => Paste(), ProjectFiles.IsWritable(target) ? DropdownMenuAction.Status.Normal : DropdownMenuAction.Status.Disabled);
+            else if (ClipboardPaths().Count > 0) evt.menu.AppendAction("Paste", _ => Paste(), ProjectFiles.IsWritable(target) ? DropdownMenuAction.Status.Normal : DropdownMenuAction.Status.Disabled);
             AppendCreateMenu(evt.menu, target);
             if (!Searching && !showRecent)
             {
@@ -544,12 +616,12 @@ namespace Orbiters.Mixer.Editor
         }
 
         // Unity's own drag and drop: the assets land in Inspector fields, the Scene and Hierarchy, the Animator, and here
-        // on a folder (a move).
+        // on a folder (a move). What lies in a folder also dragged goes with it, not on its own.
         private void StartDrag()
         {
             string from = dragFrom;
             dragFrom = null;
-            var paths = picked.Contains(from) ? picked.Where(p => !packageNames.ContainsKey(p)).ToList() : new List<string> { from };
+            var paths = picked.Contains(from) ? Topmost(picked.Where(p => !packageNames.ContainsKey(p))) : new List<string> { from };
             var objects = paths.Select(ObjectOf).Where(o => o != null).ToArray();
             if (objects.Length == 0) return;
             DragAndDrop.PrepareStartDrag();
@@ -592,10 +664,33 @@ namespace Orbiters.Mixer.Editor
 
         private enum DropKind { None, Move, Import, Prefab, Favourite }
 
+        // The paths that are not inside another of them (a sub-asset's key stays with its file).
+        private static List<string> Topmost(IEnumerable<string> paths)
+        {
+            var list = paths.ToList();
+            return list.Where(p => !list.Any(o => o != p && p.StartsWith(o + "/", StringComparison.Ordinal))).ToList();
+        }
+
+        // An Explorer path inside this project: its asset path (Assets/..., Packages/...), else null.
+        private static string ProjectPathOf(string path)
+        {
+            if (string.IsNullOrEmpty(path) || !Path.IsPathRooted(path)) return null;
+            try
+            {
+                string root = Path.GetFullPath(Directory.GetCurrentDirectory()).TrimEnd('\\', '/');
+                string full = Path.GetFullPath(path).TrimEnd('\\', '/');
+                if (!SafePaths.IsSameOrChild(full, root) || full.Length <= root.Length) return null;
+                string relative = full.Substring(root.Length + 1).Replace('\\', '/');
+                return string.IsNullOrEmpty(AssetDatabase.AssetPathToGUID(relative)) ? null : relative;
+            }
+            catch (Exception) { return null; }
+        }
+
         private static DropKind KindOfDrop(string target, out List<string> sources)
         {
             sources = new List<string>();
-            var paths = DragAndDrop.paths ?? Array.Empty<string>();
+            // Files dragged from Explorer that are in this project already are its assets (a copy would duplicate their GUIDs).
+            var paths = (DragAndDrop.paths ?? Array.Empty<string>()).Select(p => ProjectPathOf(p) ?? p).Distinct().ToArray();
             // Onto the favourites: the project's folders and assets dragged there become favourites.
             if (target == FavouritesPath)
             {
@@ -603,13 +698,14 @@ namespace Orbiters.Mixer.Editor
                 return sources.Count > 0 ? DropKind.Favourite : DropKind.None;
             }
             if (target == null || !ProjectFiles.IsWritable(target)) return DropKind.None;
-            var assets = paths.Where(p => !string.IsNullOrEmpty(AssetDatabase.AssetPathToGUID(p))).ToList();
+            var assets = Topmost(paths.Where(p => !string.IsNullOrEmpty(AssetDatabase.AssetPathToGUID(p))));
             if (assets.Count > 0)
             {
                 sources = assets.Where(p => ProjectFiles.IsWritable(p) && p != target && ParentOf(p) != target && !target.StartsWith(p + "/", StringComparison.Ordinal)).ToList();
                 return sources.Count > 0 ? DropKind.Move : DropKind.None;
             }
-            var files = paths.Where(p => Path.IsPathRooted(p) && (File.Exists(p) || Directory.Exists(p))).ToList();
+            // Outside files and folders, never a drive's root (it has no name to copy under).
+            var files = paths.Where(p => Path.IsPathRooted(p) && (File.Exists(p) || Directory.Exists(p)) && System.IO.Path.GetFileName(p.TrimEnd('/', '\\')).Length > 0).ToList();
             if (files.Count > 0) { sources = files; return DropKind.Import; }
             if (DragAndDrop.objectReferences.OfType<GameObject>().Any(g => g != null && g.scene.IsValid())) return DropKind.Prefab;
             return DropKind.None;
@@ -656,26 +752,60 @@ namespace Orbiters.Mixer.Editor
             AfterDrop(target, moved);
         }
 
+        // Files from Explorer are copied in; a .unitypackage is imported, as Unity's window does (its own dialog, its own
+        // folders). A folder is never copied into itself.
         private void ImportInto(string target, List<string> files)
         {
             var made = new List<string>();
+            string into = Path.GetFullPath(FileUtil.GetPhysicalPath(target));
             foreach (string file in files)
             {
-                string destination = AssetDatabase.GenerateUniqueAssetPath(target + "/" + System.IO.Path.GetFileName(file.TrimEnd('/', '\\')));
+                string name = System.IO.Path.GetFileName(file.TrimEnd('/', '\\'));
+                if (File.Exists(file) && name.EndsWith(".unitypackage", StringComparison.OrdinalIgnoreCase))
+                {
+                    AssetDatabase.ImportPackage(file, true);
+                    continue;
+                }
+                if (Directory.Exists(file) && SafePaths.IsSameOrChild(into, Path.GetFullPath(file).TrimEnd('/', '\\')))
+                {
+                    toasts.Show(name + " cannot be copied into itself.", true);
+                    continue;
+                }
+                string destination = AssetDatabase.GenerateUniqueAssetPath(target + "/" + name);
                 try { FileUtil.CopyFileOrDirectory(file, FileUtil.GetPhysicalPath(destination)); made.Add(destination); }
-                catch (Exception e) { toasts.Show("Could not copy " + System.IO.Path.GetFileName(file) + ": " + e.Message, true); }
+                catch (Exception e) { toasts.Show("Could not copy " + name + ": " + e.Message, true); }
             }
+            if (made.Count == 0) return;
             AssetDatabase.Refresh();
             AfterDrop(target, made);
         }
 
+        // Scene objects dropped here become prefabs. As Unity asks: a prefab instance's root becomes a new original prefab
+        // or a variant of its prefab. A part inside a prefab instance, or an object of Prefab Mode, cannot be saved alone.
         private void SavePrefabsInto(string target, List<GameObject> objects)
         {
             var made = new List<string>();
             foreach (var go in objects.Where(g => !objects.Any(o => o != g && g.transform.IsChildOf(o.transform))))
             {
+                if (EditorSceneManager.IsPreviewScene(go.scene)) { toasts.Show(go.name + " is in Prefab Mode: save it from its prefab.", true); continue; }
+                bool instance = PrefabUtility.IsPartOfPrefabInstance(go);
+                if (instance && PrefabUtility.GetOutermostPrefabInstanceRoot(go) != go && !PrefabUtility.IsAddedGameObjectOverride(go))
+                {
+                    toasts.Show(go.name + " is part of a prefab instance: drop its root, or unpack it first.", true);
+                    continue;
+                }
                 string path = AssetDatabase.GenerateUniqueAssetPath(target + "/" + ProjectFiles.FileName(go.name) + ".prefab");
-                if (PrefabUtility.SaveAsPrefabAssetAndConnect(go, path, InteractionMode.UserAction) != null) made.Add(path);
+                try
+                {
+                    if (instance && PrefabUtility.IsOutermostPrefabInstanceRoot(go))
+                    {
+                        int choice = EditorUtility.DisplayDialogComplex("Create Prefab", "Would you like to create a new original Prefab or a variant of " + go.name + "'s Prefab?", "Original Prefab", "Cancel", "Prefab Variant");
+                        if (choice == 1) continue;
+                        if (choice == 0) PrefabUtility.UnpackPrefabInstance(go, PrefabUnpackMode.OutermostRoot, InteractionMode.UserAction);
+                    }
+                    if (PrefabUtility.SaveAsPrefabAssetAndConnect(go, path, InteractionMode.UserAction) != null) made.Add(path);
+                }
+                catch (Exception e) { toasts.Show("Could not save " + go.name + " as a prefab: " + e.Message, true); }
             }
             AfterDrop(target, made);
         }

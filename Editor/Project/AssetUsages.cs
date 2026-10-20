@@ -171,14 +171,17 @@ namespace Orbiters.Mixer.Editor
         public static List<Use> OfBlendshape(SkinnedMeshRenderer renderer, string shape, out bool complete)
         {
             var uses = new List<Use>();
-            complete = !AssetContentIndex.Building;
+            complete = AssetContentIndex.UpToDate;
             if (renderer == null || string.IsNullOrEmpty(shape)) return uses;
             string property = "blendShape." + shape;
             // Paths the renderer has from each object an animator could stand on (any ancestor: an Animator, the avatar root).
             var paths = new HashSet<string>(StringComparer.Ordinal);
             for (var t = renderer.transform; t != null; t = t.parent) paths.Add(AnimationUtility.CalculateTransformPath(renderer.transform, t));
             var clips = new List<string>();
-            foreach (string clipPath in AssetContentIndex.WithFact("attribute", property, ".anim"))
+            var animating = AssetContentIndex.WithFact("attribute", property, ".anim");
+            // Read after the lookup, which starts the reading when the index was out of date (after a reload, an import).
+            complete = AssetContentIndex.UpToDate;
+            foreach (string clipPath in animating)
             {
                 var clip = AssetDatabase.LoadAssetAtPath<AnimationClip>(clipPath);
                 if (clip == null) continue;

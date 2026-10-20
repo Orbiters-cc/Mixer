@@ -16,8 +16,9 @@ namespace Orbiters.Mixer.Editor
     {
         private const int UsageLimit = 300;
 
-        private string usagePath;
-        private bool usageBusy;
+        // Not kept across a script reload: the lookup they wait for is gone then.
+        [NonSerialized] private string usagePath;
+        [NonSerialized] private bool usageBusy;
         private Label usageTitle, usageSubtitle;
         private ScrollView usageList;
         private readonly List<(VisualElement row, Object target)> usageRows = new List<(VisualElement, Object)>();

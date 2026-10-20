@@ -17,14 +17,22 @@ namespace Orbiters.Mixer.Editor.Tests
     /// The Mixer Project window and what it stands on: the folders and dates read from the disk, the recent assets, the
     /// content index, where assets and blendshapes are used; the window driven without showing it (a popup far off
     /// screen): folder clicks leaving Unity's selection, folding in place, the create buttons, search, delete and
-    /// duplicate. The fixture is a folder of Assets and an untitled scene, both removed afterwards.
+    /// duplicate. The fixture is a folder of Assets and an untitled scene, both removed afterwards; the user's favourites,
+    /// recent assets, search switches and copied assets are put back as they were.
     /// </summary>
     public sealed class MixerProjectTests
     {
         private const string Root = "Assets/Orbiters/MixerProjectTests";
+        private static readonly string FavouritesFile = Path.Combine("UserSettings", "Orbiters", "Mixer", "favourites.json");
+        private static readonly string RecentFile = Path.Combine("Library", "Orbiters", "Mixer", "recent.json");
+        private static readonly string[] Prefs = { "Orbiters.Mixer.Search.Project.Regex", "Orbiters.Mixer.Search.Project.MatchCase" };
+        private const string ClipboardKey = "Orbiters.Mixer.Project.Clipboard";
         private Scene scene, activeBefore;
         private Object[] selectionBefore;
         private Func<string, string, bool> askBefore;
+        private byte[] favouritesBefore, recentBefore;
+        private readonly Dictionary<string, bool?> prefsBefore = new Dictionary<string, bool?>();
+        private string clipboardBefore;
 
         [SetUp]
         public void SetUp()
@@ -32,6 +40,10 @@ namespace Orbiters.Mixer.Editor.Tests
             selectionBefore = Selection.objects;
             askBefore = MixerProjectWindow.AskToDelete;
             activeBefore = SceneManager.GetActiveScene();
+            favouritesBefore = File.Exists(FavouritesFile) ? File.ReadAllBytes(FavouritesFile) : null;
+            recentBefore = File.Exists(RecentFile) ? File.ReadAllBytes(RecentFile) : null;
+            foreach (string key in Prefs) prefsBefore[key] = EditorPrefs.HasKey(key) ? EditorPrefs.GetBool(key) : (bool?)null;
+            clipboardBefore = SessionState.GetString(ClipboardKey, "");
             if (AssetDatabase.IsValidFolder(Root)) AssetDatabase.DeleteAsset(Root);
             Toolkit.Editor.Meshes.MeshAssets.EnsureFolder(Root + "/Sub/Deep");
             AssetDatabase.CreateAsset(new AnimationClip(), Root + "/Walk.anim");
@@ -47,6 +59,18 @@ namespace Orbiters.Mixer.Editor.Tests
             if (scene.IsValid()) EditorSceneManager.CloseScene(scene, true);
             if (activeBefore.IsValid() && activeBefore.isLoaded && SceneManager.GetActiveScene() != activeBefore) SceneManager.SetActiveScene(activeBefore);
             if (AssetDatabase.IsValidFolder(Root)) AssetDatabase.DeleteAsset(Root);
+            Restore(FavouritesFile, favouritesBefore, typeof(ProjectFavourites));
+            Restore(RecentFile, recentBefore, typeof(RecentAssets));
+            foreach (var pair in prefsBefore) { if (pair.Value.HasValue) EditorPrefs.SetBool(pair.Key, pair.Value.Value); else EditorPrefs.DeleteKey(pair.Key); }
+            SessionState.SetString(ClipboardKey, clipboardBefore);
+        }
+
+        // The file as it was, and its class reading it again (its list is kept in memory).
+        private static void Restore(string file, byte[] before, Type owner)
+        {
+            if (before != null) File.WriteAllBytes(file, before);
+            else if (File.Exists(file)) File.Delete(file);
+            owner.GetField("entries", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)?.SetValue(null, null);
         }
 
         // ---- Helpers ------------------------------------------------------------------------------------------------------
@@ -193,7 +217,7 @@ namespace Orbiters.Mixer.Editor.Tests
             var controller = ControllerPlaying(clip, "Smiling");
             avatar.AddComponent<Animator>().runtimeAnimatorController = controller;
             AssetDatabase.SaveAssets();
-            AssetContentIndex.RefreshNow();
+            Assert.That(AssetContentIndex.RefreshNow(), Is.True, "the content index was read in time");
 
             Func<SkinnedMeshRenderer, string, IEnumerable<MixerLink.BlendshapeUse>> source = (r, shape) =>
                 r == renderer && shape == "MixerProjectSmile" ? new[] { new MixerLink.BlendshapeUse { Group = "Test tool", Title = "Linked", Target = avatar } } : null;
@@ -216,7 +240,7 @@ namespace Orbiters.Mixer.Editor.Tests
         {
             var clip = AssetDatabase.LoadAssetAtPath<AnimationClip>(Root + "/Walk.anim");
             ControllerPlaying(clip, "MixerProjectWaving");
-            AssetContentIndex.RefreshNow();
+            Assert.That(AssetContentIndex.RefreshNow(), Is.True, "the content index was read in time");
             var hit = AssetContentIndex.Search(new Toolkit.Editor.SearchPattern("MixerProjectTestParam", false, false), p => p.StartsWith("Assets/", StringComparison.Ordinal)).FirstOrDefault(h => h.Path == Root + "/Fixture.controller");
             Assert.That(hit, Is.Not.Null, "a controller's parameter is found");
             Assert.That(hit.Label, Is.EqualTo("parameter"));
@@ -359,7 +383,7 @@ namespace Orbiters.Mixer.Editor.Tests
         {
             var clip = AssetDatabase.LoadAssetAtPath<AnimationClip>(Root + "/Walk.anim");
             ControllerPlaying(clip, "Idle");
-            AssetContentIndex.RefreshNow();
+            Assert.That(AssetContentIndex.RefreshNow(), Is.True, "the content index was read in time");
             var window = OpenHidden();
             try
             {
@@ -535,6 +559,54 @@ namespace Orbiters.Mixer.Editor.Tests
 
                 var labels = window.CreateEntries(Root).Where(e => e.label != null).Select(e => e.label).ToList();
                 Assert.That(labels, Does.Contain("Folder").And.Contain("Material").And.Contain("C# Script"), "the + menu holds Unity's create items too");
+            }
+            finally { window.Close(); }
+        }
+
+        [Test]
+        public void NonAsciiBlendshapesAreFoundAsUnityNamesThem()
+        {
+            Assert.That(AssetContentIndex.Unescape("blendShape.\\u307E\\u3070\\u305F\\u304D"), Is.EqualTo("blendShape.まばたき"), "Unity's YAML escapes are read back");
+            Assert.That(AssetContentIndex.Unescape("say \\\"hi\\\" \\\\ done"), Is.EqualTo("say \"hi\" \\ done"));
+            var clip = new AnimationClip();
+            AnimationUtility.SetEditorCurve(clip, EditorCurveBinding.FloatCurve("Body", typeof(SkinnedMeshRenderer), "blendShape.まばたき"), AnimationCurve.Constant(0f, 1f, 100f));
+            AssetDatabase.CreateAsset(clip, Root + "/Blink.anim");
+            AssetDatabase.SaveAssets();
+            Assert.That(File.ReadAllText(Root + "/Blink.anim"), Does.Contain("\\u"), "Unity writes the name escaped (else this test proves nothing)");
+            Assert.That(AssetContentIndex.RefreshNow(), Is.True, "the content index was read in time");
+            Assert.That(AssetContentIndex.WithFact("attribute", "blendShape.まばたき", ".anim"), Does.Contain(Root + "/Blink.anim"), "the animation of a Japanese blendshape is found");
+        }
+
+        [Test]
+        public void ARegularExpressionTooSlowForOneValueStopsAtOnce()
+        {
+            var pattern = new Toolkit.Editor.SearchPattern("(a+)+$", true, false);
+            string slow = new string('a', 28) + "!";
+            Assert.That(pattern.Matches(slow), Is.False);
+            Assert.That(pattern.TooSlow, Is.True, "a timeout marks the expression too slow");
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            for (int i = 0; i < 1000; i++) pattern.Matches(slow);
+            Assert.That(watch.ElapsedMilliseconds, Is.LessThan(50), "and nothing more is tried");
+        }
+
+        [Test]
+        public void PasteBesideAFolderCopiedIntoItselfAndTheLitLinesFollowTheFolder()
+        {
+            var window = OpenHidden();
+            try
+            {
+                window.Navigate(Root);
+                Repaint(window);
+                window.Pick(window.IndexOf(Root + "/Sub"), false, false);
+                window.CopyPicked();
+                window.Paste();
+                Assert.That(AssetDatabase.IsValidFolder(Root + "/Sub 1"), Is.True, "a folder pasted onto itself goes beside it");
+                Assert.That(AssetDatabase.IsValidFolder(Root + "/Sub/Sub"), Is.False, "never into itself");
+
+                window.Navigate(Root);
+                window.Pick(window.IndexOf(Root + "/Walk.anim"), false, false);
+                window.Navigate(Root + "/Sub");
+                Assert.That(window.Picked, Is.Empty, "a line of another folder is not what Delete acts on");
             }
             finally { window.Close(); }
         }

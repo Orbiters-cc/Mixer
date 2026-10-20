@@ -7,6 +7,18 @@ using UnityEngine;
 
 namespace Orbiters.Mixer.Editor
 {
+    /// <summary>Tells the Project windows which assets changed (imported, moved or deleted), so they make only those
+    /// pictures again.</summary>
+    internal sealed class ProjectPreviews : AssetPostprocessor
+    {
+        public static event Action<IEnumerable<string>> Changed;
+
+        private static void OnPostprocessAllAssets(string[] imported, string[] deleted, string[] moved, string[] movedFrom)
+        {
+            if (Changed != null) Changed(imported.Concat(deleted).Concat(moved).Concat(movedFrom));
+        }
+    }
+
     internal enum ProjectSort { Name, Added, Modified }
 
     /// <summary>Where the Project window's search looks.</summary>

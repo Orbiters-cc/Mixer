@@ -69,6 +69,7 @@ namespace Orbiters.Mixer.Editor
             RecentAssets.Changed += OnRecentChanged;
             AssetContentIndex.Updated += OnIndexUpdated;
             ProjectFavourites.Changed += OnFavouritesChanged;
+            ProjectPreviews.Changed += OnAssetsChanged;
         }
 
         private void OnDisable()
@@ -78,6 +79,9 @@ namespace Orbiters.Mixer.Editor
             RecentAssets.Changed -= OnRecentChanged;
             AssetContentIndex.Updated -= OnIndexUpdated;
             ProjectFavourites.Changed -= OnFavouritesChanged;
+            ProjectPreviews.Changed -= OnAssetsChanged;
+            // A background tab never built its rows: its folds are still the ones kept.
+            if (!built) return;
             treeOpen = treeOpenSet.ToList();
             contentOpen = contentOpenSet.ToList();
         }
@@ -85,10 +89,12 @@ namespace Orbiters.Mixer.Editor
         private void OnBecameVisible() { visible = true; MarkAllDirty(); }
         private void OnBecameInvisible() => visible = false;
         private void MarkDirty() => dirty = true;
-        private void MarkAllDirty()
+        private void MarkAllDirty() => dirty = treeDirty = true;
+
+        // Only the pictures of what changed are made again.
+        private void OnAssetsChanged(IEnumerable<string> paths)
         {
-            dirty = treeDirty = true;
-            previewCache.Clear();
+            foreach (string path in paths) previewCache.Remove(path);
         }
         private void OnRecentChanged() { if (showRecent) MarkDirty(); }
         private void OnIndexUpdated() { if (Searching) MarkDirty(); }
@@ -280,6 +286,8 @@ namespace Orbiters.Mixer.Editor
         private void Tick()
         {
             if (!built) return;
+            // The open folder was deleted or moved by another tool: back to Assets rather than creating into nothing.
+            if (!showRecent && folder != PackagesPath && !AssetDatabase.IsValidFolder(folder)) Navigate("Assets");
             PollPreviews();
             double now = EditorApplication.timeSinceStartup;
             if (pingPath != null && now > pingUntil) { pingPath = null; RefreshContent(); }
@@ -328,6 +336,7 @@ namespace Orbiters.Mixer.Editor
         internal void Navigate(string path)
         {
             if (string.IsNullOrEmpty(path) || (path != PackagesPath && !AssetDatabase.IsValidFolder(path))) return;
+            if (path != folder || showRecent) { picked.Clear(); cursor = anchor = null; }
             folder = path;
             showRecent = false;
             if (Searching && searchField != null) searchField.SetValueWithoutNotify(search = string.Empty);

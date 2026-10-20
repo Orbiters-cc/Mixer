@@ -19,9 +19,12 @@ namespace Orbiters.Mixer.Editor
         internal const string FavouritesPath = "\u0001favourites";
         private const string SavedSearchPrefix = "\u0001search\u0001";
 
+        // What Copy took, by GUID: shared by every Mixer Project window, kept across script reloads, and still found after
+        // a rename or a move.
+        private const string ClipboardKey = "Orbiters.Mixer.Project.Clipboard";
+
         private Button starButton, addButton;
         private GUIStyle lockStyle;
-        private readonly List<string> clipboard = new List<string>();
         private string typed = string.Empty;
         private double lastTyped;
 
@@ -67,7 +70,8 @@ namespace Orbiters.Mixer.Editor
             if (entry == null) return;
             if (entry.IsSearch)
             {
-                searchOptions.Set(entry.regex, entry.matchCase);
+                // This window's switches for this search, not the ones the field keeps for later searches.
+                searchOptions.Set(entry.regex, entry.matchCase, remember: false);
                 searchField.value = entry.query;
                 search = entry.query;
                 content.SetFirst(0);
@@ -261,7 +265,7 @@ namespace Orbiters.Mixer.Editor
             string token = "l:" + label;
             var words = (search ?? string.Empty).Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).ToList();
             if (words.RemoveAll(w => string.Equals(w, token, StringComparison.OrdinalIgnoreCase)) == 0) words.Add(token);
-            if (searchOptions.Regex) searchOptions.Set(false, searchOptions.MatchCase);
+            if (searchOptions.Regex) searchOptions.Set(false, searchOptions.MatchCase, remember: false);
             searchField.value = string.Join(" ", words);
         }
 
@@ -299,10 +303,19 @@ namespace Orbiters.Mixer.Editor
         }
 
         // Unity's commands read the selection: what lights up here becomes it first (folders included), as in its window.
+        // A folder only lit up for the command does not stay Unity's selection (folder clicks never select here).
         private void RunUnityAssetCommand(string menuPath)
         {
+            var before = Selection.objects;
+            bool folders = picked.Any(AssetDatabase.IsValidFolder);
             SelectPickedForCommand();
+            var set = Selection.instanceIDs;
             if (!EditorApplication.ExecuteMenuItem(menuPath)) toasts.Show("Unity cannot " + menuPath.Substring("Assets/".Length).Replace("/", " › ") + " here.", true);
+            if (folders && Selection.instanceIDs.SequenceEqual(set))
+            {
+                pushed = new HashSet<int>(before.Where(o => o != null).Select(o => o.GetInstanceID()));
+                Selection.objects = before;
+            }
         }
 
         private void SelectPickedForCommand()
@@ -311,6 +324,22 @@ namespace Orbiters.Mixer.Editor
             if (objects.Length == 0) return;
             pushed = new HashSet<int>(objects.Select(o => o.GetInstanceID()));
             Selection.objects = objects;
+        }
+
+        // A line's instance id without loading its asset, as Unity's window selects (internal; loaded without it). A
+        // sub-asset is already loaded.
+        private static readonly MethodInfo MainAssetInstanceId = typeof(AssetDatabase).GetMethod("GetMainAssetInstanceID", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public, null, new[] { typeof(string) }, null);
+
+        private int InstanceIdOf(string path)
+        {
+            if (path.IndexOf(ProjectFiles.SubAssetMark) >= 0) return ObjectOf(path) is Object sub && sub != null ? sub.GetInstanceID() : 0;
+            if (MainAssetInstanceId != null)
+            {
+                try { if (MainAssetInstanceId.Invoke(null, new object[] { path }) is int id) return id; }
+                catch (TargetInvocationException) { }
+            }
+            var asset = AssetDatabase.LoadMainAssetAtPath(path);
+            return asset != null ? asset.GetInstanceID() : 0;
         }
 
         /// <summary>The object a line stands for: a sub-asset, a file's main asset, a folder's asset.</summary>
@@ -328,41 +357,66 @@ namespace Orbiters.Mixer.Editor
         private bool InTextField(EventBase evt) =>
             renamingPath != null || (evt.target is VisualElement target && (target == searchField || searchField.Contains(target)));
 
+        // Edit menu commands (and their shortcuts) answered while the window has the focus, as by Unity's window.
+        private static readonly HashSet<string> Commands = new HashSet<string>(StringComparer.Ordinal) { "Copy", "Paste", "Delete", "SoftDelete", "Duplicate", "SelectAll", "Find" };
+
         private void OnValidateCommand(ValidateCommandEvent evt)
         {
-            if ((evt.commandName == "Copy" || evt.commandName == "Paste") && !InTextField(evt)) evt.StopPropagation();
+            if (Commands.Contains(evt.commandName) && !InTextField(evt)) evt.StopPropagation();
         }
 
         private void OnCommand(ExecuteCommandEvent evt)
         {
             if (InTextField(evt)) return;
-            if (evt.commandName == "Copy") CopyPicked();
-            else if (evt.commandName == "Paste") Paste();
-            else return;
+            switch (evt.commandName)
+            {
+                case "Copy": CopyPicked(); break;
+                case "Paste": Paste(); break;
+                case "Delete": case "SoftDelete": DeletePicked(); break;
+                case "Duplicate": DuplicatePicked(); break;
+                case "SelectAll":
+                    picked.Clear();
+                    foreach (var row in rows) if (!row.IsHeading) picked.Add(row.Path);
+                    PushSelection();
+                    RefreshContent();
+                    UpdateFooter();
+                    break;
+                case "Find": searchField.Q(TextField.textInputUssName)?.Focus(); break;
+                default: return;
+            }
             evt.StopPropagation();
         }
 
         internal void CopyPicked()
         {
-            clipboard.Clear();
-            clipboard.AddRange(PickedRoots());
-            if (clipboard.Count > 0) toasts.Show(clipboard.Count == 1 ? "Copied " + System.IO.Path.GetFileName(clipboard[0]) : "Copied " + clipboard.Count + " assets");
+            var copied = PickedRoots();
+            var guids = copied.Select(AssetDatabase.AssetPathToGUID).Where(g => !string.IsNullOrEmpty(g)).ToList();
+            SessionState.SetString(ClipboardKey, string.Join(",", guids));
+            if (guids.Count > 0) toasts.Show(guids.Count == 1 ? "Copied " + System.IO.Path.GetFileName(copied[0]) : "Copied " + guids.Count + " assets");
         }
 
-        /// <summary>Copies what Copy took into the folder under the keyboard (else the open one), as Unity's Paste does.</summary>
+        // What Copy took, where it is now.
+        private static List<string> ClipboardPaths() =>
+            SessionState.GetString(ClipboardKey, "").Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(AssetDatabase.GUIDToAssetPath).Where(p => !string.IsNullOrEmpty(p)).ToList();
+
+        /// <summary>Copies what Copy took into the folder under the keyboard (else the open one), as Unity's Paste does; a
+        /// folder pasted while it is the one highlighted goes beside itself.</summary>
         internal void Paste()
         {
             string target = CreateTarget();
-            if (clipboard.Count == 0 || !CanCreateIn(target)) return;
+            var sources = ClipboardPaths();
+            if (sources.Count == 0 || !CanCreateIn(target)) return;
             var copies = new List<string>();
-            foreach (string source in clipboard)
+            foreach (string source in sources)
             {
-                if (string.IsNullOrEmpty(AssetDatabase.AssetPathToGUID(source)) || target.StartsWith(source + "/", StringComparison.Ordinal)) continue;
-                string copy = AssetDatabase.GenerateUniqueAssetPath(target + "/" + System.IO.Path.GetFileName(source));
+                string into = target == source || target.StartsWith(source + "/", StringComparison.Ordinal) ? ParentOf(source) : target;
+                if (into == null || !ProjectFiles.IsWritable(into)) continue;
+                string copy = AssetDatabase.GenerateUniqueAssetPath(into + "/" + System.IO.Path.GetFileName(source));
                 if (AssetDatabase.CopyAsset(source, copy)) copies.Add(copy);
             }
             if (copies.Count == 0) return;
-            AfterDrop(target, copies);
+            AfterDrop(ParentOf(copies[0]) ?? target, copies);
         }
 
         // ---- Typing a name -------------------------------------------------------------------------------------------------
