@@ -475,6 +475,50 @@ namespace Orbiters.Mixer.Editor.Tests
         }
 
         [Test]
+        public void UndoingACommitOfRestPoseEditsShowsTheOriginalOnItsOwnRestPose()
+        {
+            var original = Baked(renderer);
+            var target = MoveUpperBoneInRestPose();
+            ArmatureEdit.AddLeafBone(target, upper, "Tip");
+            var asset = MixerSession.Commit(target);
+            Assert.That(renderer.sharedMesh, Is.SameAs(asset));
+            Assert.That(renderer.bones.Length, Is.EqualTo(3));
+
+            Undo.PerformUndo();
+            Assert.That(renderer.sharedMesh, Is.SameAs(mesh), "undoing the commit shows the mesh from before the session");
+            Assert.That(renderer.bones.Length, Is.EqualTo(2), "with its own bone list (as many bones as bind poses)");
+            Assert.That(Vector3.Distance(upper.localPosition, new Vector3(0, 1f, 0)), Is.LessThan(1e-4f), "and the bone where its bind poses want it");
+            Assert.That(MaxDistance(Baked(renderer), original), Is.LessThan(1e-4f), "so it shows as it was, not skinned by the moved bone");
+
+            Undo.PerformRedo();
+            Assert.That(renderer.sharedMesh, Is.SameAs(asset), "redo shows the commit again");
+            Assert.That(renderer.bones.Length, Is.EqualTo(3));
+        }
+
+        [Test]
+        public void UndoAfterARevertedRestPoseEditLeavesTheBonesWhereTheOriginalWantsThem()
+        {
+            var original = Baked(renderer);
+            var target = MoveUpperBoneInRestPose();
+            MixerSession.Revert(target);
+            Undo.PerformUndo();
+            Assert.That(Vector3.Distance(upper.localPosition, new Vector3(0, 1f, 0)), Is.LessThan(1e-4f), "the reverted move does not come back under the original");
+            Assert.That(MaxDistance(Baked(renderer), original), Is.LessThan(1e-4f));
+        }
+
+        [Test]
+        public void ADuplicatedShapeStartsAtZeroOnTheRenderer()
+        {
+            string name = mesh.GetBlendShapeName(0);
+            renderer.SetBlendShapeWeight(0, 60f);
+            var target = MixerSession.Edit(renderer);
+            Assert.That(target.Document.DuplicateShape(name, name + " copy"), Is.Not.Null);
+            var asset = MixerSession.Commit(target);
+            Assert.That(renderer.GetBlendShapeWeight(asset.GetBlendShapeIndex(name)), Is.EqualTo(60f).Within(1e-4f), "the shape keeps its weight");
+            Assert.That(renderer.GetBlendShapeWeight(asset.GetBlendShapeIndex(name + " copy")), Is.EqualTo(0f), "its copy is new: 0, not shown twice");
+        }
+
+        [Test]
         public void UndoingABoneMoveOrAnAddedBoneAfterAReloadKeepsTheSkin()
         {
             var target = MixerSession.Edit(renderer);

@@ -177,12 +177,17 @@ namespace Orbiters.Mixer.Editor
             if (target == null || !targets.Contains(target)) return;
             if (target.Renderer != null)
             {
-                RevertRestPose(target);
+                var moved = RevertRestPose(target);
                 RemoveAddedBones(target);
                 target.ShowChannel(WeightChannel.None);
                 target.RestoreWeights();
                 target.Show(target.Original);
                 NotePreviewed(target.Renderer);
+                // Revert cannot be undone: Unity's steps of the moves it took back (bone drags, their bind poses) go
+                // too, else a Ctrl+Z would move those bones again under the original mesh.
+                foreach (var bone in moved.bones) if (bone != null) Undo.ClearUndo(bone);
+                foreach (var mate in moved.mates) ArmatureEdit.ClearUndoOf(mate);
+                ArmatureEdit.ClearUndoOf(target);
             }
             EndSession(target, target.Original, deleteAutosave: true);
         }
@@ -190,16 +195,17 @@ namespace Orbiters.Mixer.Editor
         // The bones this target's rest-pose edits moved go back where the original bind poses want them; the rig mates
         // still being edited keep their skin where it is through the move (their bind poses follow, as in rest-pose
         // editing), which gives them their original rest pose back as well.
-        private static void RevertRestPose(EditTarget target)
+        private static (List<Transform> bones, List<EditTarget> mates) RevertRestPose(EditTarget target)
         {
-            if (!RestPosePlacement.TryRigOf(target, out var rig)) return;
+            var none = (new List<Transform>(), new List<EditTarget>());
+            if (!RestPosePlacement.TryRigOf(target, out var rig)) return none;
             // Mates whose bind poses the same rest-pose edits changed follow; a mesh posed by the move (opened without
             // rest-pose editing) simply goes back with the bones.
             var mates = targets.Where(t => t != target && t.Alive && t.Skinned != null && t.Document.HasSkin && t.Document.BindPosesEdited).ToList();
             var rigs = new List<RestPosePlacement.Rig> { rig };
             rigs.AddRange(RestPosePlacement.RigsOf(mates.Where(m => m.Skinned.bones.Any(b => b != null && rig.Bones.Contains(b)))));
             var place = RestPosePlacement.AsOriginal(rigs);
-            if (place.Count == 0) return;
+            if (place.Count == 0) return none;
             var worldsBefore = mates.ToDictionary(m => m, m => m.Skinned.bones.Select(b => b != null ? b.localToWorldMatrix : Matrix4x4.identity).ToArray());
             RestPosePlacement.Apply(place);
             foreach (var mate in mates)
@@ -225,6 +231,7 @@ namespace Orbiters.Mixer.Editor
             }
             foreach (var t in targets) if (t != target) ArmatureEdit.Snapshot(t);
             NoteArmatureEdited();
+            return (place.Keys.ToList(), mates);
         }
 
         // Leaf bones the session added leave the renderer, and the scene when nothing else uses them.
@@ -318,10 +325,31 @@ namespace Orbiters.Mixer.Editor
             target.RestoreWeights();
             var weights = target.WeightsByName();
             // The step remembers the renderer as it was before the session (the original, its weights): the working mesh
-            // is destroyed below, and an undo must never put a renderer on it.
+            // is destroyed below, and an undo must never put a renderer on it. Rest-pose edits moved bones and may have
+            // added leaf bones: the step remembers the bones where the original's bind poses want them and the original's
+            // bone list, so Ctrl+Z shows the original as it was, not skinned by moved bones (Ctrl+Y the commit).
+            List<RestPosePlacement.Pose> edited = null;
+            if (RestPosePlacement.TryRigOf(target, out var rig))
+            {
+                var place = RestPosePlacement.AsOriginal(new[] { rig });
+                if (place.Count > 0)
+                {
+                    edited = RestPosePlacement.Apply(place);
+                    Undo.RecordObjects(place.Keys.Where(b => b != null).ToArray(), "Mixer: Commit " + name);
+                }
+            }
+            var skinnedNow = target.Skinned;
+            Transform[] allBones = null;
+            if (skinnedNow != null && skinnedNow.bones.Length > doc.OriginalBoneCount)
+            {
+                allBones = skinnedNow.bones;
+                skinnedNow.bones = allBones.Take(doc.OriginalBoneCount).ToArray();
+            }
             target.Show(target.Original);
             Object holder = target.Filter != null ? (Object)target.Filter : target.Renderer;
             Undo.RecordObject(holder, "Mixer: Commit " + name);
+            if (allBones != null) skinnedNow.bones = allBones;
+            RestPosePlacement.Restore(edited);
             target.Show(asset);
             // The renderer's weights go with the shapes by name (a deleted or renamed shape moves the others' indices).
             var skinned = target.Skinned;
@@ -399,6 +427,10 @@ namespace Orbiters.Mixer.Editor
             if (target != null) NotePreviewed(target.Renderer);
             Changed?.Invoke();
         }
+
+        /// <summary>Mixer's history undid or redid steps: the next autosave writes what the documents hold now (a crash
+        /// must not bring back edits that were undone).</summary>
+        internal static void NoteHistoryApplied() => dirtySinceAutosave = true;
 
         /// <summary>Bind poses changed (a rest-pose edit, its undo): once per change however many rig mates it touched.</summary>
         public static void NoteArmatureEdited()

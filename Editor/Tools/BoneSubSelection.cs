@@ -40,6 +40,16 @@ namespace Orbiters.Mixer.Editor
 
         private static EditTarget Target => MixerSceneTool.FocusTarget ?? MixerSession.First;
 
+        // The mesh a click on a bone paints: the focus, else the session skinned to that bone, else the first.
+        private static EditTarget TargetFor(Transform t)
+        {
+            var focus = MixerSceneTool.FocusTarget;
+            if (focus != null || t == null) return focus ?? MixerSession.First;
+            foreach (var target in MixerSession.Targets)
+                if (target.Alive && target.Skinned != null && Array.IndexOf(target.Skinned.bones, t) >= 0) return target;
+            return MixerSession.First;
+        }
+
         /// <summary>
         /// Whether a click on <paramref name="t"/> sub-selects it: Weight Paint is on and <paramref name="t"/> is one of
         /// the painted mesh's bones, or a bone under its root bone (not an object with a renderer of its own).
@@ -47,7 +57,7 @@ namespace Orbiters.Mixer.Editor
         public static bool Accepts(Transform t)
         {
             if (t == null || MixerSceneTool.Mode != MixerMode.Weights) return false;
-            var target = Target;
+            var target = TargetFor(t);
             var skinned = target != null && target.Alive ? target.Skinned : null;
             if (skinned == null || t == skinned.transform) return false;
             if (Array.IndexOf(skinned.bones, t) >= 0) return true;
@@ -62,7 +72,7 @@ namespace Orbiters.Mixer.Editor
         public static bool Pick(Transform t)
         {
             if (!Accepts(t)) return false;
-            var target = Target;
+            var target = TargetFor(t);
             if (MixerSceneTool.FocusTarget == null) MixerSceneTool.FocusTarget = target;
             Set(t);
             int index = Array.IndexOf(target.Skinned.bones, t);

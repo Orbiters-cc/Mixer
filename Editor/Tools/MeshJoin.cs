@@ -301,13 +301,23 @@ namespace Orbiters.Mixer.Editor
             result.sharedMaterials = slots.Select(s => s.material).ToArray();
             // A skinned renderer's bounds are in its root bone's space, from the posed mesh.
             SkinnedMeshBounds.Refresh(result);
-            // Each shape's weight as the first part that has it shows it.
+            // Each shape's weight as the first part that has it shows it; a part in a session by its document's names (a
+            // shape renamed there is not yet on its working mesh).
+            var sessionWeights = new Dictionary<Renderer, Dictionary<string, float>>();
+            foreach (var part in parts)
+                if (MixerSession.TargetOf(part.Renderer) is EditTarget edited && edited.Alive) sessionWeights[part.Renderer] = edited.WeightsByName();
             for (int s = 0; s < asset.blendShapeCount; s++)
             {
                 string name = asset.GetBlendShapeName(s);
                 foreach (var part in parts)
                 {
                     if (!(part.Renderer is SkinnedMeshRenderer source) || source.sharedMesh == null) continue;
+                    if (sessionWeights.TryGetValue(source, out var byName))
+                    {
+                        if (!byName.TryGetValue(name, out float held)) continue;
+                        result.SetBlendShapeWeight(s, held);
+                        break;
+                    }
                     int i = source.sharedMesh.GetBlendShapeIndex(name);
                     if (i < 0) continue;
                     var sessionOf = MixerSession.TargetOf(source);

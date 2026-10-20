@@ -112,6 +112,13 @@ namespace Orbiters.Mixer.Editor
         /// <summary>The newest entry, when it is the one being extended by a gesture still going on.</summary>
         public static HistoryEntry Last => cursor > 0 && cursor == entries.Count ? entries[cursor - 1] : null;
 
+        /// <summary>The entries in effect, newest first (none while steps wait to be redone).</summary>
+        public static IEnumerable<HistoryEntry> Newest()
+        {
+            if (cursor != entries.Count) yield break;
+            for (int i = cursor - 1; i >= 0; i--) yield return entries[i];
+        }
+
         /// <summary>Forgets every entry of a target (it was committed or reverted); Unity's steps stay, as no-ops.</summary>
         /// <summary>Whether a step of <paramref name="target"/>'s can still be redone.</summary>
         internal static bool HasRedo(EditTarget target)
@@ -229,6 +236,7 @@ namespace Orbiters.Mixer.Editor
                 catch (Exception e) { Debug.LogException(e); }
             }
             touched.Clear();
+            MixerSession.NoteHistoryApplied();
             if (serial < floor && serial < nextSerial) Notice?.Invoke("Older Mixer edits are no longer in memory, so this undo step changed nothing in Mixer.");
             Changed?.Invoke();
             SceneView.RepaintAll();

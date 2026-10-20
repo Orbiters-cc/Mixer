@@ -439,9 +439,13 @@ namespace Orbiters.Mixer.Editor
             var skinned = Skinned;
             if (skinned == null || Working == null) return result;
             var doc = Document;
-            foreach (string name in doc.LiveShapes())
+            var live = doc.LiveShapes();
+            var shown = new HashSet<string>(live, StringComparer.Ordinal);
+            foreach (string name in live)
             {
                 string source = doc.ShapeEdits.TryGetValue(name, out var layer) ? layer.Source : name;
+                // A copy of a shape still there (a duplicate) is new: 0, as a new shape. A renamed one keeps its weight.
+                if (source != null && source != name && shown.Contains(source)) { result[name] = 0f; continue; }
                 int index = source != null ? Working.GetBlendShapeIndex(source) : -1;
                 float weight = index >= 0 ? skinned.GetBlendShapeWeight(index) : 0f;
                 if (index >= 0 && savedWeight != null && index < savedWeight.Length && !float.IsNaN(savedWeight[index])) weight = savedWeight[index];

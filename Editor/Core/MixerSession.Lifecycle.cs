@@ -144,7 +144,14 @@ namespace Orbiters.Mixer.Editor
             {
                 lastAutosave = now;
                 dirtySinceAutosave = false;
-                foreach (var t in targets) if (t.Alive && NeedsAutosave(t)) MixerAutosave.Write(t);
+                // One with nothing left to keep (a mask cleared, every edit undone) is deleted: a reload must not bring
+                // the old one back.
+                foreach (var t in targets)
+                {
+                    if (!t.Alive) continue;
+                    if (NeedsAutosave(t)) MixerAutosave.Write(t);
+                    else MixerAutosave.Delete(t.Id);
+                }
             }
         }
 
@@ -155,8 +162,12 @@ namespace Orbiters.Mixer.Editor
         {
             foreach (var t in targets)
             {
-                if (!t.Alive || !NeedsAutosave(t)) continue;
-                try { MixerAutosave.WriteNow(t); }
+                if (!t.Alive) continue;
+                try
+                {
+                    if (NeedsAutosave(t)) MixerAutosave.WriteNow(t);
+                    else MixerAutosave.Delete(t.Id);
+                }
                 catch (Exception e) { Debug.LogException(e); }
             }
             dirtySinceAutosave = false;
@@ -691,8 +702,15 @@ namespace Orbiters.Mixer.Editor
             if (renderer == null || working == null) return false;
             if (TargetOf(renderer) != null) return true;
             var source = targets.FirstOrDefault(t => t.Working == working);
-            // A waiting session's working mesh: the renderer showing it brings that session back (Recover), as it is.
-            if (source == null) return waiting.Any(r => r.Working == working.GetInstanceID());
+            // A waiting session's working mesh: its own renderer showing it (Undo of the delete, a redo) brings that session
+            // back (Recover), as it is. Another object showing it (pasted after a Cut) is not the session's: the guard
+            // gives it the original rather than a mesh no scene can save.
+            if (source == null)
+            {
+                int id = working.GetInstanceID(), rendererId = renderer.GetInstanceID();
+                string path = PathOf(renderer);
+                return waiting.Any(r => r.Working == id && (r.Renderer == rendererId || (!string.IsNullOrEmpty(r.Path) && r.Path == path)));
+            }
             if (!source.Alive || source.Renderer == renderer) return false;
             if (EditorApplication.isPlayingOrWillChangePlaymode || PrefabStageUtility.GetPrefabStage(renderer.gameObject) != null) return false;
             var copy = NewWorking(source.Working);

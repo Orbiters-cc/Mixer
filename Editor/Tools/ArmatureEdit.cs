@@ -265,6 +265,24 @@ namespace Orbiters.Mixer.Editor
 
         private static bool batching;
 
+        // This gesture's entries (Unity's undo group) are the newest ones, one per rig mate: this mesh has one already.
+        private static bool PushedInGroup(EditTarget target, int group)
+        {
+            foreach (var entry in MixerHistory.Newest())
+            {
+                if (!(entry is BindposeEdit edit) || edit.UndoGroup != group) return false;
+                if (edit.Target == target) return true;
+            }
+            return false;
+        }
+
+        /// <summary>Unity's undo steps of this target's bind-pose holder go (Revert took the moves back for good).</summary>
+        internal static void ClearUndoOf(EditTarget target)
+        {
+            var holder = HolderOf(target, create: false);
+            if (holder != null) UnityEditor.Undo.ClearUndo(holder);
+        }
+
         private static void Tick()
         {
             if (dirty.Count == 0) return;
@@ -320,7 +338,7 @@ namespace Orbiters.Mixer.Editor
                 int group = Undo.GetCurrentGroup();
                 // In the bone move's own undo step, so one Ctrl+Z gives the bone and the bind poses back. A drag records
                 // many modifications: the entry of this gesture stays one.
-                if (!(joinCurrentGroup && MixerHistory.Last is BindposeEdit last && last.Target == target && last.UndoGroup == group))
+                if (!(joinCurrentGroup && PushedInGroup(target, group)))
                     MixerHistory.Push(new BindposeEdit { Target = target, Label = label, Bones = bones.Length, UndoGroup = group }, joinCurrentGroup: true);
             }
             finally { applying = false; }
