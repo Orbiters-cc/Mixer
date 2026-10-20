@@ -138,13 +138,14 @@ namespace Orbiters.Mixer.Editor
     /// <summary>Records the positions a stroke touches: the first touch of a vertex keeps its position before.</summary>
     internal sealed class StrokeRecorder
     {
-        // Flags per mesh vertex (and per normal-welded vertex) instead of dictionaries: a large brush touches tens of
-        // thousands of vertices in a step.
-        private readonly bool[] kept, normalKept, ringKept;
-        private readonly List<int> indices = new List<int>();
-        private readonly List<Vector3> before = new List<Vector3>();
-        private readonly List<int> normalIndices = new List<int>();
-        private readonly List<Vector3> normalsBefore = new List<Vector3>();
+        // Marks per mesh vertex (and per normal-welded vertex) instead of dictionaries: a large brush touches tens of
+        // thousands of vertices in a step. A mark equal to the serial means kept: a sculpt stroke uses its target's
+        // stroke scratch (a new serial each stroke, nothing allocated), a recorder that lives longer (the Blender link's)
+        // arrays of its own.
+        private readonly int[] kept, normalKept, ringKept;
+        private readonly int serial;
+        private readonly List<int> indices, normalIndices;
+        private readonly List<Vector3> before, normalsBefore;
         private readonly EditTarget target;
         private readonly string layer;
         public readonly string Label;
@@ -155,9 +156,24 @@ namespace Orbiters.Mixer.Editor
             layer = target.Document.Layer;
             Label = label;
             int count = target.Document.VertexCount;
-            kept = new bool[count];
-            normalKept = new bool[count];
-            ringKept = new bool[target.Document.NormalWeld.WeldedCount];
+            kept = new int[count];
+            normalKept = new int[count];
+            ringKept = new int[target.Document.NormalWeld.WeldedCount];
+            serial = 1;
+            indices = new List<int>(); normalIndices = new List<int>();
+            before = new List<Vector3>(); normalsBefore = new List<Vector3>();
+        }
+
+        /// <summary>A recorder for one sculpt stroke, in the target's stroke scratch (only one stroke records at a time).</summary>
+        public StrokeRecorder(EditTarget target, string label, StrokeScratch scratch)
+        {
+            this.target = target;
+            layer = target.Document.Layer;
+            Label = label;
+            serial = scratch.NextRecord();
+            kept = scratch.Kept; normalKept = scratch.NormalKept; ringKept = scratch.RingKept;
+            indices = scratch.KeptIndices; normalIndices = scratch.KeptNormalIndices;
+            before = scratch.KeptPositions; normalsBefore = scratch.KeptNormals;
         }
 
         public bool Empty => indices.Count == 0;
@@ -169,8 +185,8 @@ namespace Orbiters.Mixer.Editor
         /// </summary>
         public bool Touch(int v)
         {
-            if (kept[v]) return false;
-            kept[v] = true;
+            if (kept[v] == serial) return false;
+            kept[v] = serial;
             var doc = target.Document;
             indices.Add(v);
             before.Add(doc.GetLayerPosition(layer, v));
@@ -178,8 +194,8 @@ namespace Orbiters.Mixer.Editor
             // puts back. The members of one welded vertex share that ring: it is kept once for all of them.
             var weld = doc.NormalWeld;
             int w = weld.Weld[v];
-            if (ringKept[w]) return true;
-            ringKept[w] = true;
+            if (ringKept[w] == serial) return true;
+            ringKept[w] = serial;
             var normals = doc.Normals;
             foreach (int m in weld.Members[w]) KeepNormal(m, normals);
             foreach (int a in weld.Adjacent[w]) foreach (int m in weld.Members[a]) KeepNormal(m, normals);
@@ -188,8 +204,8 @@ namespace Orbiters.Mixer.Editor
 
         private void KeepNormal(int m, Vector3[] normals)
         {
-            if (normalKept[m]) return;
-            normalKept[m] = true;
+            if (normalKept[m] == serial) return;
+            normalKept[m] = serial;
             normalIndices.Add(m);
             normalsBefore.Add(normals[m]);
         }

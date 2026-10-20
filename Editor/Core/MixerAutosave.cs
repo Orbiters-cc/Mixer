@@ -183,11 +183,15 @@ namespace Orbiters.Mixer.Editor
                     // Only where the deltas differ from what loading the shape gives (zeros for a new one): an edit back to
                     // zero on an original shape is kept too.
                     var baseline = layer.Edited ? doc.BaselineDeltas(layer) : null;
-                    var idx = new List<int>();
-                    if (baseline != null) for (int v = 0; v < layer.Deltas.Length; v++) if (MeshDocument.Differs(layer.Deltas[v], baseline[v])) idx.Add(v);
-                    var d = new Vector3[idx.Count];
-                    for (int i = 0; i < idx.Count; i++) d[i] = layer.Deltas[idx[i]];
-                    s.Shapes.Add((layer.Name, layer.IsNew, layer.Edited, layer.Source ?? "", idx.ToArray(), d));
+                    // Counted first, so the arrays are made once at their size (no list growing through copies).
+                    int differing = 0;
+                    if (baseline != null) for (int v = 0; v < layer.Deltas.Length; v++) if (MeshDocument.Differs(layer.Deltas[v], baseline[v])) differing++;
+                    var idx = new int[differing];
+                    var d = new Vector3[differing];
+                    if (baseline != null)
+                        for (int v = 0, i = 0; v < layer.Deltas.Length; v++)
+                            if (MeshDocument.Differs(layer.Deltas[v], baseline[v])) { idx[i] = v; d[i] = layer.Deltas[v]; i++; }
+                    s.Shapes.Add((layer.Name, layer.IsNew, layer.Edited, layer.Source ?? "", idx, d));
                 }
                 s.Deleted = new List<string>(doc.DeletedShapes);
                 foreach (var g in doc.Groups)

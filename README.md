@@ -138,6 +138,13 @@ saved as a native mesh asset when you commit.
   not fit offers "ReFit ?". The kind filters moved into a Filter menu in the search field; the Blender dots are off by
   default (window menu). Compact rows keep one line. The window no longer throws after a script reload when the
   selection changes before it rebuilt its rows.
+- A stroke starts at once: pressing allocates nothing (each target keeps a stroke scratch of marks, moves and lists
+  between strokes, and the undo record marks vertices with the stroke's serial), so no garbage collection (about half a
+  second on a large project) lands on the press. While the pointer only moves, one edited mesh's pose is checked per
+  refresh, in turn, without reading its bones and bind poses again; the autosave snapshots every 8 s at most; the Skinned
+  Mesh Renderer inspector's shape list reads its names once per mesh and touches only rows whose weight changed.
+- Opt-in stroke timings (EditorPrefs `Orbiters.Mixer.Diagnostics.StrokeTimings`): one line per stroke in
+  `Library/Orbiters/Mixer/stroke-timings.log` (press to first move and to first upload, frames, garbage collections).
 - Requires Orbiters Toolkit 0.4.1, which holds the avatar gizmos (bones, weight paint, mesh edges, avatar budget) and
   lets Mixer take the armature overlay's bone clicks.
 

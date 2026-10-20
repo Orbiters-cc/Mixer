@@ -19,21 +19,20 @@ namespace Orbiters.Mixer.Editor
         private readonly Vector3 viewDirection;
         private readonly StrokeRecorder recorder;
         private readonly Dictionary<int, float> maskBefore = new Dictionary<int, float>();
-        private readonly BrushContext ctx = new BrushContext();
-        private readonly List<int> triangles = new List<int>();
-        private readonly List<int> moved = new List<int>();
-        private Vector3[] moves = new Vector3[256];
-        // Per welded vertex, marked with a stamp instead of filling sets: what Gather saw, the mesh-space move a step
-        // gives (and its mirror), each listed once.
-        private int[] gatherStamp, moveStamp, mirrorStamp;
-        private int stamp;
-        private Vector3[] moveOf, mirrorOf;
-        private readonly List<int> local = new List<int>();
-        private readonly List<int> mirrored = new List<int>();
+        // Everything a step works in comes from the target's stroke scratch, kept between strokes: a stroke allocates
+        // nothing (a garbage collection would stall the editor as the brush starts). Per welded vertex, marked with a
+        // stamp instead of filling sets: what Gather saw, the mesh-space move a step gives (and its mirror).
+        private readonly StrokeScratch scratch;
+        private readonly BrushContext ctx;
+        private readonly List<int> triangles, moved, local, mirrored;
+        private readonly int[] gatherStamp, moveStamp, mirrorStamp;
+        private readonly Vector3[] moveOf, mirrorOf;
         private Vector3 planePoint;
         private Vector3 lastSample;
         private bool begun;
 
+        public string BrushName => brush.Name;
+        public string TargetName => target.Name;
         public float Radius { get; }
         public float Strength { get; }
         public Vector3 Center => ctx.Center;
@@ -49,7 +48,15 @@ namespace Orbiters.Mixer.Editor
             this.viewDirection = viewDirection.sqrMagnitude > 0f ? viewDirection.normalized : Vector3.forward;
             Radius = radius;
             Strength = strength;
-            recorder = new StrokeRecorder(target, brush.Name + (target.Document.Layer != null ? " on " + target.Document.Layer : ""));
+            scratch = target.Scratch;
+            ctx = scratch.Context;
+            triangles = scratch.Triangles; moved = scratch.Moved; local = scratch.Local; mirrored = scratch.Mirrored;
+            gatherStamp = scratch.GatherMark; moveStamp = scratch.MoveMark; mirrorStamp = scratch.MirrorMark;
+            moveOf = scratch.MoveOf; mirrorOf = scratch.MirrorOf;
+            recorder = new StrokeRecorder(target, brush.Name + (target.Document.Layer != null ? " on " + target.Document.Layer : ""), scratch);
+            ctx.Welded.Clear();
+            ctx.Weight.Clear();
+            ctx.Delta = 0f;
             ctx.Target = target;
             ctx.Radius = radius;
             ctx.Strength = strength;
@@ -135,17 +142,7 @@ namespace Orbiters.Mixer.Editor
             return edit;
         }
 
-        private int NextStamp()
-        {
-            int count = target.Document.Neighbors.WeldedCount;
-            if (gatherStamp == null || gatherStamp.Length != count)
-            {
-                gatherStamp = new int[count]; moveStamp = new int[count]; mirrorStamp = new int[count];
-                moveOf = new Vector3[count]; mirrorOf = new Vector3[count];
-                stamp = 0;
-            }
-            return ++stamp;
-        }
+        private int NextStamp() => scratch.NextMark();
 
         // The welded vertices within the radius (each once, by its representative), with their falloff and mask weight.
         private void Gather(Vector3 center)
@@ -180,7 +177,7 @@ namespace Orbiters.Mixer.Editor
                     ctx.Weight.Add(weight);
                 }
             }
-            if (moves.Length < ctx.Welded.Count) moves = new Vector3[Mathf.NextPowerOfTwo(ctx.Welded.Count)];
+            if (scratch.Moves.Length < ctx.Welded.Count) scratch.Moves = new Vector3[Mathf.NextPowerOfTwo(ctx.Welded.Count)];
         }
 
         private void Apply()
@@ -188,6 +185,7 @@ namespace Orbiters.Mixer.Editor
             if (ctx.Welded.Count == 0) return;
             Steps++;
             if (brush.PaintsMask) { PaintMask(); return; }
+            var moves = scratch.Moves;
             brush.Step(ctx, moves);
             var n = target.Document.Neighbors;
             var skin = target.Skin;
@@ -217,6 +215,7 @@ namespace Orbiters.Mixer.Editor
                 foreach (int w in mirrored) Add(local, moveStamp, moveOf, mark, w, mirrorOf[w]);
             }
             target.MoveWelded(local, moveOf, recorder, moved);
+            if (moved.Count > 0) StrokeTimings.Moved();
         }
 
         private static void Add(List<int> list, int[] stamps, Vector3[] values, int mark, int w, Vector3 d)

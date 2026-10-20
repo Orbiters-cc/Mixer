@@ -74,12 +74,25 @@ namespace Orbiters.Mixer.Editor
         /// <summary>The bind poses changed: the next refresh recomputes the matrices (the weights stay).</summary>
         public void MarkStale() => stale = true;
 
+        // The renderer's bones and the mesh's bind poses, as last read: both properties allocate a new array on every read,
+        // and the pose is checked several times a second while the pointer is over an edited mesh. Read again when the
+        // map is forced (a weight upload, new bind poses: MarkStale).
+        private Transform[] cachedBones;
+        private Matrix4x4[] cachedBindposes;
+        // The bone matrices of a check, swapped with boneMatrices when the pose changed.
+        private Matrix4x4[] spare;
+
         private bool Rebuild(Renderer renderer, Mesh mesh, bool force)
         {
             int count = mesh.vertexCount;
             var skinnedRenderer = renderer as SkinnedMeshRenderer;
-            var bones = skinnedRenderer != null ? skinnedRenderer.bones : null;
-            var bindposes = skinnedRenderer != null ? mesh.bindposes : null;
+            if (force || cachedBones == null || skinnedRenderer == null)
+            {
+                cachedBones = skinnedRenderer != null ? skinnedRenderer.bones : null;
+                cachedBindposes = skinnedRenderer != null ? mesh.bindposes : null;
+            }
+            var bones = cachedBones;
+            var bindposes = cachedBindposes;
             bool useSkin = bones != null && bindposes != null && bones.Length > 0 && bindposes.Length == bones.Length && mesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.BlendWeight);
             var world = renderer.transform.localToWorldMatrix;
             if (!useSkin)
@@ -95,7 +108,8 @@ namespace Orbiters.Mixer.Editor
                 return true;
             }
 
-            var current = new Matrix4x4[bones.Length];
+            if (spare == null || spare.Length != bones.Length) spare = new Matrix4x4[bones.Length];
+            var current = spare;
             for (int i = 0; i < bones.Length; i++)
                 current[i] = bones[i] != null ? bones[i].localToWorldMatrix * bindposes[i] : world;
             if (!force && skinned && boneMatrices != null && boneMatrices.Length == current.Length)
@@ -105,6 +119,7 @@ namespace Orbiters.Mixer.Editor
                 if (same) return false;
             }
             skinned = true;
+            spare = boneMatrices;
             boneMatrices = current;
             weightsStale = false;
             stale = false;

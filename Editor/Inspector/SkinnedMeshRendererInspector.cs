@@ -113,16 +113,41 @@ namespace Orbiters.Mixer.Editor
             return card;
         }
 
+        // The mesh's shape names, read once per mesh (each read makes new strings, and the panel looks twice a second).
+        private string[] meshNames;
+        private int meshNamesOf, meshNamesCount = -1;
+
         private IReadOnlyList<string> ShapeNames()
         {
             var session = MixerSession.TargetOf(Renderer);
             if (session != null && session.Alive) return session.Document.ShapeOrder;
             var mesh = Renderer.sharedMesh;
             if (mesh == null) return Array.Empty<string>();
-            var names = new string[mesh.blendShapeCount];
-            for (int i = 0; i < names.Length; i++) names[i] = mesh.GetBlendShapeName(i);
-            return names;
+            if (meshNames == null || meshNamesOf != mesh.GetInstanceID() || meshNamesCount != mesh.blendShapeCount)
+            {
+                meshNames = new string[mesh.blendShapeCount];
+                for (int i = 0; i < meshNames.Length; i++) meshNames[i] = mesh.GetBlendShapeName(i);
+                meshNamesOf = mesh.GetInstanceID();
+                meshNamesCount = meshNames.Length;
+            }
+            return meshNames;
         }
+
+        // A row's parts and the weight it shows, so a refresh touches only rows whose weight changed.
+        private sealed class ShapeRowParts
+        {
+            public VisualElement Row;
+            public Slider Slider;
+            public Label Value;
+            public int Index;
+            public float Shown = float.NaN;
+            public bool Editing;
+        }
+
+        private readonly List<ShapeRowParts> shapeRows = new List<ShapeRowParts>();
+        // What the list was built from, cheaply: the full key (every name) is only made when this changes.
+        private long shapesState = long.MinValue;
+        private string shownHint;
 
         private void RefreshShapes()
         {
@@ -132,51 +157,65 @@ namespace Orbiters.Mixer.Editor
             var mesh = renderer.sharedMesh;
             string layer = session != null && session.Alive ? session.Document.Layer : null;
             string filter = (shapeSearch.value ?? string.Empty).Trim();
-            var key = new System.Text.StringBuilder();
-            // The picked shape is not part of the key: a click only moves the highlight, the list stays.
-            key.Append(mesh != null ? mesh.GetInstanceID() : 0).Append('|').Append(layer).Append('|').Append(filter).Append('|');
-            foreach (string name in names) key.Append(name).Append(';');
-            if (key.ToString() != shownShapes)
+            long state = unchecked((mesh != null ? mesh.GetInstanceID() : 0) * 7919L + (session != null && session.Alive ? session.Document.Revision : -1) * 104729L
+                                   + names.Count * 31L + (layer != null ? layer.GetHashCode() : 0) + ((long)filter.GetHashCode() << 32));
+            if (state != shapesState)
             {
-                shownShapes = key.ToString();
-                shapesList.Clear();
-                if (names.Count == 0) shapesList.Add(MixerUi.Text(mesh == null ? "No mesh." : "No blendshapes yet: New makes one.", "mx-caption"));
-                int listed = 0;
-                foreach (string name in names)
+                shapesState = state;
+                var key = new System.Text.StringBuilder();
+                // The picked shape is not part of the key: a click only moves the highlight, the list stays.
+                key.Append(mesh != null ? mesh.GetInstanceID() : 0).Append('|').Append(layer).Append('|').Append(filter).Append('|');
+                foreach (string name in names) key.Append(name).Append(';');
+                if (key.ToString() != shownShapes)
                 {
-                    if (filter.Length > 0 && name.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0) continue;
-                    shapesList.Add(ShapeRow(name, mesh != null ? mesh.GetBlendShapeIndex(name) : -1, name == layer));
-                    listed++;
+                    shownShapes = key.ToString();
+                    shapesList.Clear();
+                    shapeRows.Clear();
+                    if (names.Count == 0) shapesList.Add(MixerUi.Text(mesh == null ? "No mesh." : "No blendshapes yet: New makes one.", "mx-caption"));
+                    int listed = 0;
+                    foreach (string name in names)
+                    {
+                        if (filter.Length > 0 && name.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                        int index = mesh != null ? mesh.GetBlendShapeIndex(name) : -1;
+                        var row = ShapeRow(name, index, name == layer);
+                        shapesList.Add(row);
+                        shapeRows.Add(new ShapeRowParts { Row = row, Index = index, Slider = row.Q<Slider>(className: "mx-shape__slider"), Value = row.Q<Label>(className: "mx-shape__value") });
+                        listed++;
+                    }
+                    if (names.Count > 0 && listed == 0) shapesList.Add(MixerUi.Text("Nothing matches.", "mx-caption"));
                 }
-                if (names.Count > 0 && listed == 0) shapesList.Add(MixerUi.Text("Nothing matches.", "mx-caption"));
+                shapesCount.text = names.Count == 0 ? string.Empty : names.Count + (names.Count == 1 ? " shape" : " shapes");
             }
             // Values follow the renderer (an animation, another inspector); the shape Mixer edits shows its own weight,
-            // held while it is shown at 100 %.
+            // held while it is shown at 100 %. Only rows whose weight changed are touched.
             var held = session != null && session.Alive ? session.HeldWeights : null;
-            foreach (var row in shapesList.Children())
+            foreach (var parts in shapeRows)
             {
-                row.EnableInClassList("mx-shape--on", (string)row.name == activeShape);
-                if (!(row.userData is int index) || index < 0 || mesh == null || index >= mesh.blendShapeCount) continue;
-                var slider = row.Q<Slider>(className: "mx-shape__slider");
-                var value = row.Q<Label>(className: "mx-shape__value");
-                bool editing = (string)row.name == layer;
+                parts.Row.EnableInClassList("mx-shape--on", (string)parts.Row.name == activeShape);
+                int index = parts.Index;
+                if (index < 0 || mesh == null || index >= mesh.blendShapeCount) continue;
+                bool editing = (string)parts.Row.name == layer;
                 float weight = editing && held != null && index < held.Length && !float.IsNaN(held[index]) ? held[index] : renderer.GetBlendShapeWeight(index);
-                if (slider != null)
+                if (weight == parts.Shown && editing == parts.Editing) continue;
+                parts.Shown = weight;
+                parts.Editing = editing;
+                if (parts.Slider != null)
                 {
-                    FitRange(slider, weight);
-                    if (Math.Abs(slider.value - weight) > 0.001f) slider.SetValueWithoutNotify(weight);
-                    slider.SetEnabled(!editing);
+                    FitRange(parts.Slider, weight);
+                    if (Math.Abs(parts.Slider.value - weight) > 0.001f) parts.Slider.SetValueWithoutNotify(weight);
+                    parts.Slider.SetEnabled(!editing);
                 }
-                if (value != null) value.text = weight.ToString("0");
+                if (parts.Value != null) parts.Value.text = weight.ToString("0");
             }
-            shapesCount.text = names.Count == 0 ? string.Empty : names.Count + (names.Count == 1 ? " shape" : " shapes");
             bool edits = session != null && session.Alive && session.Document.Changed;
-            commitPill.style.display = session != null ? DisplayStyle.Flex : DisplayStyle.None;
-            revertPill.style.display = session != null ? DisplayStyle.Flex : DisplayStyle.None;
+            var shown = session != null ? DisplayStyle.Flex : DisplayStyle.None;
+            if (commitPill.style.display != shown) { commitPill.style.display = shown; revertPill.style.display = shown; }
             commitPill.SetEnabled(edits);
-            shapesHint.text = session == null ? "Mixer opens this mesh when you add or sculpt a shape; nothing changes the mesh asset until Commit."
-                : layer != null ? "Sculpt mode shapes '" + layer + "' (shown at 100 % while it is edited)." + (edits ? " Commit writes the edits to the mesh asset." : string.Empty)
+            string hint = session == null ? "Mixer opens this mesh when you add or sculpt a shape; nothing changes the mesh asset until Commit."
+                : layer != null ? (edits ? "Sculpt mode shapes '" + layer + "' (shown at 100 % while it is edited). Commit writes the edits to the mesh asset." : null)
                 : edits ? "Edits of the base mesh wait for Commit." : "Open in Mixer: pick a shape and Sculpt, or sculpt the base mesh.";
+            if (hint == null) hint = "Sculpt mode shapes '" + layer + "' (shown at 100 % while it is edited).";
+            if (hint != shownHint) { shownHint = hint; shapesHint.text = hint; }
         }
 
         private VisualElement ShapeRow(string name, int index, bool editing)

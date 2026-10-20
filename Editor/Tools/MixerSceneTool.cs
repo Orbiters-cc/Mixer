@@ -41,6 +41,7 @@ namespace Orbiters.Mixer.Editor
         private static EditTarget hoverTarget;
         private static EditTarget focusTarget;
         private static double lastWorldRefresh;
+        private static int refreshCursor;
         // The painted bone or vertex group, and the mesh whose bone indices it uses: bone indices differ from one mesh to
         // another, so the channel is carried to another mesh by the bone itself (its Transform), never by its index.
         private static WeightChannel channel = WeightChannel.None;
@@ -326,6 +327,7 @@ namespace Orbiters.Mixer.Editor
                     break;
                 case EventType.MouseDown:
                     if (e.button != 0 || e.alt) break;
+                    StrokeTimings.Press();
                     Hover(e.mousePosition, true);
                     if (!hovering)
                     {
@@ -361,6 +363,7 @@ namespace Orbiters.Mixer.Editor
                     if (e.shift) { Strength = Strength - Mathf.Sign(e.delta.y) * 0.05f; e.Use(); }
                     break;
                 case EventType.Repaint:
+                    if (Stroking) StrokeTimings.Frame();
                     Draw(view);
                     break;
             }
@@ -374,10 +377,15 @@ namespace Orbiters.Mixer.Editor
             float best = float.MaxValue;
             double now = EditorApplication.timeSinceStartup;
             bool refresh = refreshWorld && !Stroking && now - lastWorldRefresh > 0.25;
-            foreach (var target in MixerSession.Targets)
+            // One edited mesh's pose is checked per refresh, in turn (a stroke checks its own at the press): checking every
+            // mesh of an avatar four times a second while the pointer only moves added up.
+            var targets = MixerSession.Targets;
+            if (refresh && targets.Count > 0) refreshCursor = (refreshCursor + 1) % targets.Count;
+            for (int i = 0; i < targets.Count; i++)
             {
+                var target = targets[i];
                 if (!target.Alive) continue;
-                if (refresh) target.RefreshWorld();
+                if (refresh && i == refreshCursor) target.RefreshWorld();
                 var hit = target.Bvh.Raycast(ray.origin, ray.direction, 1000f, backfaces: false);
                 if (!hit.Found || hit.Distance >= best) continue;
                 best = hit.Distance;
@@ -437,6 +445,7 @@ namespace Orbiters.Mixer.Editor
                 var s = stroke;
                 stroke = null;
                 s.End(cancel);
+                StrokeTimings.End(s.BrushName, s.TargetName);
             }
             if (weightStroke != null)
             {

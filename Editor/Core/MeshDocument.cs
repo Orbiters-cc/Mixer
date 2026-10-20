@@ -416,6 +416,7 @@ namespace Orbiters.Mixer.Editor
 
         /// <summary>Neighbours started in the background prewarm when they ran (waited for), else built here.</summary>
         internal Task<MeshNeighbors> NeighborsTask => neighbors != null ? Task.FromResult(neighbors) : neighborsTask;
+        internal Task<MeshNeighbors> NormalWeldTask => normalWeld != null ? Task.FromResult(normalWeld) : normalWeldTask;
 
         private static MeshNeighbors Built(ref Task<MeshNeighbors> task, Func<MeshNeighbors> build)
         {

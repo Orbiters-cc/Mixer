@@ -80,6 +80,21 @@ namespace Orbiters.Mixer.Editor
 
         private Task<MirrorMap> mirrorTask;
         private Task<MeshBvh> bvhTask;
+        private Task<StrokeScratch> scratchTask;
+        private StrokeScratch scratch;
+
+        /// <summary>What sculpt strokes on this target work in (made beside the welds as the session opens).</summary>
+        public StrokeScratch Scratch
+        {
+            get
+            {
+                if (scratch != null) return scratch;
+                var started = scratchTask;
+                scratchTask = null;
+                if (started != null) { try { scratch = started.Result; } catch (Exception) { /* made below */ } }
+                return scratch ?? (scratch = new StrokeScratch(Document.VertexCount, Document.Neighbors.WeldedCount, Document.NormalWeld.WeldedCount));
+            }
+        }
 
         // What the first stroke needs and takes about a second to build on a body (welds, mirror, BVH) starts on worker
         // threads as the session opens: they read the original's arrays and the world picture only.
@@ -94,6 +109,10 @@ namespace Orbiters.Mixer.Editor
             var world = World;
             var triangles = doc.Triangles;
             bvhTask = Task.Run(() => MeshBvh.Build(world, triangles));
+            var normalWeld = doc.NormalWeldTask;
+            int count = doc.VertexCount;
+            if (neighbors != null && normalWeld != null)
+                scratchTask = Task.WhenAll(neighbors, normalWeld).ContinueWith(_ => new StrokeScratch(count, neighbors.Result.WeldedCount, normalWeld.Result.WeldedCount), TaskContinuationOptions.OnlyOnRanToCompletion);
         }
 
         // A negative scale turns the front faces round in the world picture: raycasts and face normals follow.

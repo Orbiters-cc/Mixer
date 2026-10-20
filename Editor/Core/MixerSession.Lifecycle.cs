@@ -136,9 +136,11 @@ namespace Orbiters.Mixer.Editor
                 }
                 any |= t.Flush();
             }
-            if (any) SceneView.RepaintAll();
+            if (any) { StrokeTimings.Uploaded(); SceneView.RepaintAll(); }
             double now = EditorApplication.timeSinceStartup;
-            if (dirtySinceAutosave && now - lastAutosave > 3.0 && !MixerSceneTool.Stroking)
+            // Every 8 s at most: a snapshot copies megabytes on the main thread, garbage that brings the next collection
+            // (half a second on a large project) nearer, often to the press of the next stroke.
+            if (dirtySinceAutosave && now - lastAutosave > 8.0 && !MixerSceneTool.Stroking)
             {
                 lastAutosave = now;
                 dirtySinceAutosave = false;
