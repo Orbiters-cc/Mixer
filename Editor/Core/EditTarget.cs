@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 using Orbiters.Toolkit.Meshes;
 using Unity.Profiling;
@@ -106,14 +107,15 @@ namespace Orbiters.Mixer.Editor
             var neighbors = doc.NeighborsTask;
             var positions = doc.OriginalPositions;
             float tolerance = MirrorTolerance;
-            if (neighbors != null) mirrorTask = neighbors.ContinueWith(t => MirrorMap.Build(positions, t.Result, tolerance), TaskContinuationOptions.OnlyOnRanToCompletion);
+            // On the thread pool whatever scheduler opened the session: the main thread waits on these results.
+            if (neighbors != null) mirrorTask = neighbors.ContinueWith(t => MirrorMap.Build(positions, t.Result, tolerance), CancellationToken.None, TaskContinuationOptions.OnlyOnRanToCompletion, TaskScheduler.Default);
             var world = World;
             var triangles = doc.Triangles;
             bvhTask = Task.Run(() => MeshBvh.Build(world, triangles));
             var normalWeld = doc.NormalWeldTask;
             int count = doc.VertexCount;
             if (neighbors != null && normalWeld != null)
-                scratchTask = Task.WhenAll(neighbors, normalWeld).ContinueWith(_ => new StrokeScratch(count, neighbors.Result.WeldedCount, normalWeld.Result.WeldedCount), TaskContinuationOptions.OnlyOnRanToCompletion);
+                scratchTask = Task.WhenAll(neighbors, normalWeld).ContinueWith(_ => new StrokeScratch(count, neighbors.Result.WeldedCount, normalWeld.Result.WeldedCount), CancellationToken.None, TaskContinuationOptions.OnlyOnRanToCompletion, TaskScheduler.Default);
         }
 
         // A negative scale turns the front faces round in the world picture: raycasts and face normals follow.

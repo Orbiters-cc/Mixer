@@ -79,6 +79,8 @@ namespace Orbiters.Mixer.Editor
         // map is forced (a weight upload, new bind poses: MarkStale).
         private Transform[] cachedBones;
         private Matrix4x4[] cachedBindposes;
+        // The renderer's bone list read with a bone missing: read again only when forced (a missing bone stays missing).
+        private bool readWithMissing;
         // The bone matrices of a check, swapped with boneMatrices when the pose changed.
         private Matrix4x4[] spare;
 
@@ -86,10 +88,15 @@ namespace Orbiters.Mixer.Editor
         {
             int count = mesh.vertexCount;
             var skinnedRenderer = renderer as SkinnedMeshRenderer;
+            // A bone destroyed since the list was read (an undone deletion, a reverted armature): the renderer's list now
+            // holds the objects that replaced it.
+            if (!force && !readWithMissing && cachedBones != null)
+                foreach (var bone in cachedBones) if (bone == null) { force = true; break; }
             if (force || cachedBones == null || skinnedRenderer == null)
             {
                 cachedBones = skinnedRenderer != null ? skinnedRenderer.bones : null;
                 cachedBindposes = skinnedRenderer != null ? mesh.bindposes : null;
+                readWithMissing = cachedBones != null && Array.Exists(cachedBones, b => b == null);
             }
             var bones = cachedBones;
             var bindposes = cachedBindposes;

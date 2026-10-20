@@ -45,9 +45,15 @@ namespace Orbiters.Mixer.Editor
         // A held stroke: the pointer's last ray and Ctrl, and when the brush last applied (a drag step or a dab).
         private static Ray heldRay;
         private static bool heldInvert;
-        private static double lastApplied;
-        private static int stepsSeen;
+        private static double lastApplied, lastDrag, lastStrokeEnd;
+        // The control that holds the pointer for the stroke, and where the pointer is in the stroke's view (its ray is
+        // made again from the camera as it is now: a zoom or a frame while held).
+        private static int strokeControl;
+        private static SceneView heldView;
+        private static Vector3 heldViewport;
         private const double DabInterval = 0.05;
+        // After a stroke, work that can wait on the avatar's meshes waits this long more (the next stroke usually follows).
+        private const double LiveAfterStroke = 5.0;
         private static int refreshCursor;
         // The painted bone or vertex group, and the mesh whose bone indices it uses: bone indices differ from one mesh to
         // another, so the channel is carried to another mesh by the bone itself (its Transform), never by its index.
@@ -86,10 +92,12 @@ namespace Orbiters.Mixer.Editor
             Orbiters.Toolkit.Editor.Meshes.AvatarMeshEdits.LiveEditing += EditsLive;
         }
 
-        // A mode that edits meshes is on, on a mesh of that avatar.
+        // A mode that edits meshes is on, on a mesh of that avatar, and it is being used: a stroke or a drag under way, or
+        // one a few seconds ago. A mode left on while working elsewhere lets the waiting work run.
         private static bool EditsLive(Transform avatarRoot)
         {
             if (mode == MixerMode.None || avatarRoot == null) return false;
+            if (!Stroking && GUIUtility.hotControl == 0 && EditorApplication.timeSinceStartup - lastStrokeEnd > LiveAfterStroke) return false;
             foreach (var target in MixerSession.Targets)
                 if (target.Alive && target.Renderer.transform.IsChildOf(avatarRoot)) return true;
             return false;
@@ -325,9 +333,10 @@ namespace Orbiters.Mixer.Editor
 
         private static void OnSceneGui(SceneView view)
         {
-            if ((mode != MixerMode.Sculpt && mode != MixerMode.Weights) || !MixerSession.Active) { if (hovering) ClearHover(); return; }
+            // A stroke under way ends with its session or mode (its release would never come here).
+            if ((mode != MixerMode.Sculpt && mode != MixerMode.Weights) || !MixerSession.Active) { if (Stroking) EndStroke(cancel: false); if (hovering) ClearHover(); return; }
             // Prefab Mode shows another stage: the edited meshes of the scene are hidden, so nothing may be stroked.
-            if (PrefabStageUtility.GetCurrentPrefabStage() != null) { if (hovering) ClearHover(); return; }
+            if (PrefabStageUtility.GetCurrentPrefabStage() != null) { if (Stroking) EndStroke(cancel: false); if (hovering) ClearHover(); return; }
             var e = Event.current;
             if (mode == MixerMode.Weights) BoneSubSelection.OnSceneGui(view);
             // Ctrl pressed or let go while the pointer stays still turns a held brush round too.
@@ -347,6 +356,8 @@ namespace Orbiters.Mixer.Editor
                     break;
                 case EventType.MouseDown:
                     if (e.button != 0 || e.alt) break;
+                    // A stroke whose release was lost ends before the next begins (its edits get their undo step).
+                    if (Stroking) EndStroke(cancel: false);
                     StrokeTimings.Press();
                     Hover(e.mousePosition, true);
                     if (!hovering)
@@ -356,12 +367,14 @@ namespace Orbiters.Mixer.Editor
                         break;
                     }
                     GUIUtility.hotControl = control;
+                    strokeControl = control;
                     if (!BeginStroke(e, view)) GUIUtility.hotControl = 0;
                     e.Use();
                     break;
                 case EventType.MouseDrag:
                     if (GUIUtility.hotControl != control || !Stroking) break;
-                    heldRay = HandleUtility.GUIPointToWorldRay(e.mousePosition);
+                    HoldAt(view, e.mousePosition);
+                    lastDrag = EditorApplication.timeSinceStartup;
                     Hover(e.mousePosition, false);
                     if (stroke != null) stroke.Step(HandleUtility.GUIPointToWorldRay(e.mousePosition), hovering ? hoverPoint : (Vector3?)null, hovering ? hoverNormal : (Vector3?)null, e.control, e.shift);
                     else weightStroke.Step(hovering ? hoverPoint : (Vector3?)null, hovering ? hoverNormal : (Vector3?)null, e.control);
@@ -448,8 +461,11 @@ namespace Orbiters.Mixer.Editor
         private static bool BeginStroke(Event e, SceneView view)
         {
             if (hoverTarget == null) return false;
-            hoverTarget.RefreshWorld();
+            var first = hoverTarget;
+            first.RefreshWorld();
             Hover(e.mousePosition, false);
+            // The press is on another mesh once the first one's pose is current: that one's pose is checked too.
+            if (hovering && hoverTarget != first) { hoverTarget.RefreshWorld(); Hover(e.mousePosition, false); }
             if (!hovering) return false;
             if (MixerLinkService.IsBlenderOwned(hoverTarget)) { MixerSession.Say(hoverTarget.Name + " is being edited in Blender: leave its edit mode there first.", true); return false; }
             if (mode == MixerMode.Weights)
@@ -458,27 +474,36 @@ namespace Orbiters.Mixer.Editor
                 if (refusal != null) { MixerModes.Notify(refusal); return false; }
                 weightStroke = new WeightStroke(hoverTarget, WeightKind, on, Radius, Strength, WeightValue, Falloff, Symmetry, AutoNormalize);
                 weightStroke.Begin(hoverPoint, hoverNormal, e.control);
-                StartHolding(e);
+                StartHolding(e, view);
                 return true;
             }
-            FocusTarget = hoverTarget;
+            var pressed = hoverTarget;
             var effective = e.shift && !(brush is SmoothBrush) ? Brushes.Named("Smooth") : brush;
-            stroke = new SculptStroke(hoverTarget, effective, Radius, Strength, Falloff, Symmetry, view.camera != null ? view.camera.transform.forward : Vector3.forward);
+            stroke = new SculptStroke(pressed, effective, Radius, Strength, Falloff, Symmetry, view.camera != null ? view.camera.transform.forward : Vector3.forward);
             stroke.Begin(hoverPoint, hoverNormal, HandleUtility.GUIPointToWorldRay(e.mousePosition), e.control);
-            if (stroke.WorksWhileHeld) StartHolding(e);
+            // Once the stroke is under way: the views that skip their refresh while stroking skip this one too.
+            FocusTarget = pressed;
+            if (stroke.WorksWhileHeld) StartHolding(e, view);
             return true;
         }
 
         // ---- Held brushes: pressing without moving keeps the brush working until the release --------------------------
 
-        private static void StartHolding(Event e)
+        private static void StartHolding(Event e, SceneView view)
         {
-            heldRay = HandleUtility.GUIPointToWorldRay(e.mousePosition);
+            HoldAt(view, e.mousePosition);
             heldInvert = e.control;
-            lastApplied = EditorApplication.timeSinceStartup;
-            stepsSeen = 0;
+            lastApplied = lastDrag = EditorApplication.timeSinceStartup;
             EditorApplication.update -= HoldTick;
             EditorApplication.update += HoldTick;
+        }
+
+        private static void HoldAt(SceneView view, Vector2 guiPoint)
+        {
+            heldRay = HandleUtility.GUIPointToWorldRay(guiPoint);
+            heldView = view;
+            var camera = view != null ? view.camera : null;
+            if (camera != null) heldViewport = camera.WorldToViewportPoint(heldRay.origin + heldRay.direction);
         }
 
         // While a stroke is held and no drag step applied for a moment, the brush applies again where the pointer's ray
@@ -486,26 +511,41 @@ namespace Orbiters.Mixer.Editor
         private static void HoldTick()
         {
             if (!Stroking) { EditorApplication.update -= HoldTick; return; }
-            double now = EditorApplication.timeSinceStartup;
-            int steps = stroke != null ? stroke.Steps : weightStroke.Steps;
-            if (steps != stepsSeen) { stepsSeen = steps; lastApplied = now; return; }
-            if (now - lastApplied < DabInterval) return;
             var target = stroke != null ? stroke.Target : weightStroke.Target;
-            if (target == null || !target.Alive) return;
+            // The pointer is no longer held for this stroke (its release went elsewhere, another control took it), or its
+            // mesh left the session or went to Blender: the stroke ends, with its undo step.
+            if (GUIUtility.hotControl != strokeControl || target == null || !target.Alive || !MixerSession.Targets.Contains(target) || MixerLinkService.IsBlenderOwned(target))
+            {
+                EndStroke(cancel: false);
+                SceneView.RepaintAll();
+                return;
+            }
+            double now = EditorApplication.timeSinceStartup;
+            // Only a still pointer applies by time: a drag, however slow, applies by distance (the brush's spacing).
+            if (now - lastDrag < DabInterval || now - lastApplied < DabInterval) return;
+            var camera = heldView != null ? heldView.camera : null;
+            if (camera != null) heldRay = camera.ViewportPointToRay(heldViewport);
             var hit = target.Bvh.Raycast(heldRay.origin, heldRay.direction, 1000f, backfaces: false);
             if (!hit.Found) return;
             var normal = target.Bvh.FaceNormal(hit.Triangle);
             if (stroke != null) stroke.Dab(hit.Position, normal, heldInvert);
             else weightStroke.Dab(hit.Position, normal, heldInvert);
-            stepsSeen = stroke != null ? stroke.Steps : weightStroke.Steps;
             lastApplied = now;
             hoverPoint = hit.Position;
             hoverNormal = normal;
             SceneView.RepaintAll();
         }
 
+        /// <summary>Puts back the stroke under way (Undo or Redo came while it was held: its records predate them).</summary>
+        internal static void CancelStroke()
+        {
+            if (Stroking) EndStroke(cancel: true);
+        }
+
         private static void EndStroke(bool cancel)
         {
+            if (Stroking) lastStrokeEnd = EditorApplication.timeSinceStartup;
+            heldView = null;
             if (stroke != null)
             {
                 var s = stroke;
@@ -525,6 +565,8 @@ namespace Orbiters.Mixer.Editor
         /// <summary>A stroke driven by code (tests, the MCP tool): from a world point along to another.</summary>
         internal static PositionEdit StrokeBetween(EditTarget target, Brush with, Vector3 from, Vector3 to, int steps, float radius, float strength, Vector3 viewDirection, bool invert = false)
         {
+            RefuseWhileStroked(target);
+            target.RefreshWorld();
             var s = new SculptStroke(target, with, radius, strength, Falloff, Symmetry, viewDirection);
             var hit = target.Bvh.ClosestPoint(from, radius * 4f);
             if (!hit.Found) return null;
@@ -541,6 +583,8 @@ namespace Orbiters.Mixer.Editor
         /// <summary>A weight stroke driven by code.</summary>
         internal static HistoryEntry WeightStrokeBetween(EditTarget target, WeightBrushKind kind, WeightChannel on, Vector3 from, Vector3 to, int steps, float radius, float strength, float value, bool normalize, bool invert = false)
         {
+            RefuseWhileStroked(target);
+            target.RefreshWorld();
             var s = new WeightStroke(target, kind, on, radius, strength, value, Falloff, Symmetry, normalize);
             var hit = target.Bvh.ClosestPoint(from, radius * 4f);
             if (!hit.Found) return null;
@@ -552,6 +596,14 @@ namespace Orbiters.Mixer.Editor
                 s.Step(h.Found ? h.Position : (Vector3?)null, h.Found ? target.Bvh.FaceNormal(h.Triangle) : (Vector3?)null, invert);
             }
             return s.End(false);
+        }
+
+        // A mesh records one stroke at a time (its scratch and brush context are shared): a stroke from code waits for the
+        // user's to end.
+        private static void RefuseWhileStroked(EditTarget target)
+        {
+            var held = stroke != null ? stroke.Target : weightStroke?.Target;
+            if (held == target) throw new InvalidOperationException("A stroke is being drawn on " + target.Name + " in the Scene view: try again once it ends.");
         }
 
         // ---- Weights mode and the avatar gizmos ----------------------------------------------------------------------

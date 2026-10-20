@@ -205,6 +205,8 @@ namespace Orbiters.Mixer.Editor
             int target = 0;
             while (target < entries.Count && entries[target].Serial <= serial) target++;
             if (target == cursor && serial >= floor) return;
+            // A stroke held while Undo or Redo came: its records were taken before them, so it is put back first.
+            MixerSceneTool.CancelStroke();
             applying = true;
             touched.Clear();
             try
