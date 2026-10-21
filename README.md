@@ -232,7 +232,10 @@ saved as a native mesh asset when you commit.
   - Splats: **Import Splats…** is now **Tools > Orbiters > Mixer Splats…**. Imports work in a new project; PLYs Mixer
     cannot read are refused before they are copied, broken splats are skipped, and clouds over 8,388,608 splats are
     refused. Splats no longer draw in Prefab Mode, inspector previews or other tools' renders. Send to Mixer only takes
-    sessions on this computer's own drives.
+    sessions on this computer's own drives. Splats blend as Orbiters desktop trained them, on their colours as captured
+    (encoded sRGB) and over the scene encoded the same way, so half-transparent ones are no longer brighter than in
+    Orbiters desktop and sparse far parts no longer look hazier: Mixer's render of a reconstruction now matches the
+    trainer's at about 40 dB, where it differed at 27.5 dB.
   - Performance bakes: the last pose holds through gaps instead of jumping to the origin, and without foot trackers the
     feet follow the body when you walk. An old T-pose calibration no longer overrides VRChat's own head and hand poses.
     Short button presses, Random parameter drivers and the sil viseme behave as in VRChat. Bakes of sessions still
@@ -395,7 +398,9 @@ selected and framed.
 
 The renderer sorts the splats back to front for each camera on the GPU (a bitonic sort in a compute shader) and draws
 them before the transparent pass, behind your scene's geometry where it is in front (built-in render pipeline, compute
-shaders). Move the object to offset them. Each editor keeps an inbox for Orbiters desktop under
+shaders). They blend as Orbiters desktop's trainer blended them while it fitted them, on encoded sRGB colours: the
+splats accumulate in a temporary target that shares the camera's depth buffer, then go over a copy of the camera's
+image in encoded sRGB and back in linear light, once per camera. Move the object to offset them. Each editor keeps an inbox for Orbiters desktop under
 `%LOCALAPPDATA%/Orbiters/Mixer/inbox/<process id>/` (an `endpoint.json` naming the project, and the requests).
 
 ## Agents

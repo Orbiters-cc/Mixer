@@ -6,8 +6,10 @@ namespace Orbiters.Mixer.Splats
 {
     /// <summary>
     /// Draws a <see cref="SplatCloud"/> in the Scene and Game views (built-in render pipeline, compute shaders):
-    /// before each camera's transparent pass, a command buffer sorts the splats back to front on the GPU and draws them
-    /// as camera-facing Gaussians. An editor tool: imported clouds live on EditorOnly objects, so builds leave them out.
+    /// before each camera's transparent pass, a command buffer sorts the splats back to front on the GPU, draws them as
+    /// camera-facing Gaussians into a temporary target that shares the camera's depth buffer, and lays that over the
+    /// camera's image. They blend as Orbiters desktop's trainer fitted them, on encoded sRGB colours (Splats.shader). An
+    /// editor tool: imported clouds live on EditorOnly objects, so builds leave them out.
     /// </summary>
     [ExecuteAlways]
     [AddComponentMenu("Orbiters/Mixer/Splat Renderer")]
@@ -48,6 +50,8 @@ namespace Orbiters.Mixer.Splats
         static readonly int JId = Shader.PropertyToID("_J");
         static readonly int ObjectToWorldId = Shader.PropertyToID("_ObjectToWorld");
         static readonly int ViewRow2Id = Shader.PropertyToID("_ViewRow2");
+        static readonly int AccumulationId = Shader.PropertyToID("_SplatAccumulation");
+        static readonly int SceneId = Shader.PropertyToID("_SplatScene");
 
         void OnEnable()
         {
@@ -151,6 +155,35 @@ namespace Orbiters.Mixer.Splats
             return !cam.scene.IsValid() || cam.scene == scene;
         }
 
+        /// <summary>
+        /// MSAA samples of what <paramref name="cam"/> draws into before its transparent pass, which the splats' target must
+        /// match to share its depth buffer (with another count nothing draws). Measured in Unity 2022.3's built-in
+        /// pipeline: with HDR an intermediate target, with the quality setting's MSAA when the camera allows it; without
+        /// HDR the camera's own target. The depth texture is no substitute: forward rendering fills it from shadow-caster
+        /// passes, which unlit shaders lack, so objects drawn with them would no longer hide the splats.
+        /// </summary>
+        internal static int Samples(Camera cam)
+        {
+            if (cam.actualRenderingPath != RenderingPath.Forward)
+                return 1;
+            int quality = Mathf.Max(1, QualitySettings.antiAliasing);
+            if (UsesHdr(cam))
+                return cam.allowMSAA ? quality : 1;
+            if (cam.targetTexture != null)
+                return Mathf.Max(1, cam.targetTexture.antiAliasing);
+            return cam.allowMSAA ? quality : 1;
+        }
+
+        static bool UsesHdr(Camera cam)
+        {
+#if UNITY_EDITOR
+            var tier = UnityEditor.Rendering.EditorGraphicsSettings.GetTierSettings(UnityEditor.EditorUserBuildSettings.selectedBuildTargetGroup, Graphics.activeTier);
+            return cam.allowHDR && tier.hdr;
+#else
+            return cam.allowHDR;
+#endif
+        }
+
         /// <summary>Records this camera's sort and draw (every frame it renders).</summary>
         void Record(Camera cam)
         {
@@ -215,7 +248,18 @@ namespace Orbiters.Mixer.Splats
             properties.SetBuffer(OrderId, values);
             properties.SetInt(CountId, count);
             properties.SetMatrix(ObjectToWorldId, objectToWorld);
+            // The splats on their own, depth-tested against the camera's depth buffer; then what the camera drew so far
+            // under them, both in encoded sRGB, written back.
+            cmd.GetTemporaryRT(AccumulationId, -1, -1, 0, FilterMode.Point, RenderTextureFormat.ARGBHalf, RenderTextureReadWrite.Linear, Samples(cam));
+            cmd.SetRenderTarget(AccumulationId, BuiltinRenderTextureType.CurrentActive);
+            cmd.ClearRenderTarget(false, true, Color.clear);
             cmd.DrawProcedural(Matrix4x4.identity, material, 0, MeshTopology.Triangles, 6, count, properties);
+            cmd.GetTemporaryRT(SceneId, -1, -1, 0, FilterMode.Point, RenderTextureFormat.ARGBHalf, RenderTextureReadWrite.Linear);
+            cmd.Blit(BuiltinRenderTextureType.CameraTarget, SceneId);
+            cmd.SetRenderTarget(BuiltinRenderTextureType.CameraTarget);
+            cmd.DrawProcedural(Matrix4x4.identity, material, 1, MeshTopology.Triangles, 3, 1, properties);
+            cmd.ReleaseTemporaryRT(AccumulationId);
+            cmd.ReleaseTemporaryRT(SceneId);
         }
 
         void ReleaseBuffers()

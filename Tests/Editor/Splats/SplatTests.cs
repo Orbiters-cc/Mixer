@@ -4,6 +4,7 @@ using System.IO;
 using System.Text;
 using NUnit.Framework;
 using Orbiters.Mixer.Splats;
+using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 
@@ -268,6 +269,120 @@ namespace Orbiters.Mixer.Editor.Splats.Tests
             Assert.That(core.center.y, Is.EqualTo(1f).Within(1e-3f));
             Assert.That(core.max.x, Is.LessThan(1.1f));
             Assert.That(PlyReader.Core(new[] { new Vector3(float.NaN, 0f, 0f) }).size, Is.EqualTo(Vector3.zero));
+        }
+
+        const int Size = 64;
+
+        /// <summary>One splat seen head-on 3 m away: white at the given opacity (0 to 255), round, 0.3 m wide.</summary>
+        static SplatCloud White(byte opacity, params float[] distances)
+        {
+            var cloud = ScriptableObject.CreateInstance<SplatCloud>();
+            cloud.hideFlags = HideFlags.HideAndDontSave;
+            cloud.positions = Array.ConvertAll(distances, z => new Vector3(0f, 0f, z));
+            cloud.rotations = Array.ConvertAll(distances, _ => Quaternion.identity);
+            cloud.scales = Array.ConvertAll(distances, _ => new Vector3(0.3f, 0.3f, 0.3f));
+            cloud.colors = Array.ConvertAll(distances, _ => new Color32(255, 255, 255, opacity));
+            cloud.contentHash = opacity + ":" + string.Join(",", distances);
+            return cloud;
+        }
+
+        static Color32[] Render(SplatCloud cloud, params GameObject[] scene) => Render(cloud, true, true, 1, scene);
+
+        /// <summary>
+        /// Renders <paramref name="cloud"/> and <paramref name="scene"/> with a hidden camera at the origin looking along +Z
+        /// over black, into an 8-bit sRGB target with <paramref name="targetSamples"/> MSAA samples: the pixels as stored
+        /// (bottom row first). Nothing touches the open scene.
+        /// </summary>
+        static Color32[] Render(SplatCloud cloud, bool hdr, bool msaa, int targetSamples, params GameObject[] scene)
+        {
+            var target = new RenderTexture(Size, Size, 24, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB) { antiAliasing = targetSamples, hideFlags = HideFlags.HideAndDontSave };
+            var read = new Texture2D(Size, Size, TextureFormat.RGBA32, false) { hideFlags = HideFlags.HideAndDontSave };
+            GameObject splats = EditorUtility.CreateGameObjectWithHideFlags("Mixer splat test", HideFlags.HideAndDontSave);
+            GameObject eye = EditorUtility.CreateGameObjectWithHideFlags("Mixer splat test camera", HideFlags.HideAndDontSave, typeof(Camera));
+            try
+            {
+                splats.layer = 31;
+                foreach (GameObject o in scene)
+                    o.layer = 31;
+                splats.AddComponent<SplatRenderer>().cloud = cloud;
+                var cam = eye.GetComponent<Camera>();
+                cam.enabled = false;
+                cam.cullingMask = 1 << 31;
+                cam.clearFlags = CameraClearFlags.SolidColor;
+                cam.backgroundColor = Color.black;
+                cam.fieldOfView = 30f;
+                cam.nearClipPlane = 0.1f;
+                cam.farClipPlane = 100f;
+                cam.targetTexture = target;
+                cam.allowHDR = hdr;
+                cam.allowMSAA = msaa;
+                cam.Render();
+                RenderTexture active = RenderTexture.active;
+                RenderTexture.active = target;
+                read.ReadPixels(new Rect(0, 0, Size, Size), 0, 0, false);
+                read.Apply();
+                RenderTexture.active = active;
+                cam.targetTexture = null;
+                return read.GetPixels32();
+            }
+            finally
+            {
+                if (splats != null)
+                    UnityEngine.Object.DestroyImmediate(splats);
+                UnityEngine.Object.DestroyImmediate(eye);
+                target.Release();
+                UnityEngine.Object.DestroyImmediate(target);
+                UnityEngine.Object.DestroyImmediate(read);
+                UnityEngine.Object.DestroyImmediate(cloud);
+            }
+        }
+
+        static Color32 At(Color32[] pixels, int x, int y) => pixels[y * Size + x];
+
+        [Test]
+        public void SplatsBlendOnTheirEncodedColoursAsTheyWereTrained()
+        {
+            // Orbiters desktop's trainer blends the encoded sRGB colours: white at half opacity over black stores 0.5
+            // (128); blending in linear light showed 0.735 (187). Two of them: 0.752 (192, not 226).
+            Assert.That(At(Render(White(128, 3f)), Size / 2, Size / 2).r, Is.InRange(126, 130));
+            Assert.That(At(Render(White(128, 3.1f, 3f)), Size / 2, Size / 2).r, Is.InRange(190, 194));
+            // Opaque colours come out as they went in.
+            Assert.That(At(Render(White(255, 3f)), Size / 2, Size / 2).r, Is.InRange(250, 255));
+        }
+
+        [Test]
+        public void SplatsDrawWhateverTheCameraRendersInto()
+        {
+            // The splats share the depth buffer of what the camera draws into, so their target must have its MSAA samples
+            // (SplatRenderer.Samples); with any other count nothing would draw.
+            foreach (bool hdr in new[] { false, true })
+            foreach (bool msaa in new[] { false, true })
+            foreach (int samples in new[] { 1, 4 })
+                Assert.That(At(Render(White(255, 3f), hdr, msaa, samples), Size / 2, Size / 2).r, Is.GreaterThan(240), "HDR " + hdr + ", MSAA " + msaa + ", " + samples + " samples");
+        }
+
+        [Test]
+        public void TheSceneInFrontHidesSplats()
+        {
+            var black = new Material(Shader.Find("Unlit/Color")) { color = Color.black, hideFlags = HideFlags.HideAndDontSave };
+            GameObject cube = EditorUtility.CreateGameObjectWithHideFlags("Mixer splat test cube", HideFlags.HideAndDontSave, typeof(MeshFilter), typeof(MeshRenderer));
+            try
+            {
+                cube.GetComponent<MeshFilter>().sharedMesh = Resources.GetBuiltinResource<Mesh>("Cube.fbx");
+                cube.GetComponent<MeshRenderer>().sharedMaterial = black;
+                // 8 px wide in front of the splat's centre (the splat is about 12 px to 1 σ), drawn by a shader without a
+                // shadow-caster pass, so it is missing from the camera's depth texture but not from its depth buffer.
+                cube.transform.position = new Vector3(0f, 0f, 1.5f);
+                cube.transform.localScale = new Vector3(0.1f, 0.1f, 0.1f);
+                Color32[] pixels = Render(White(255, 3f), cube);
+                Assert.That(At(pixels, Size / 2, Size / 2).r, Is.LessThan(8), "behind the cube");
+                Assert.That(At(pixels, Size / 2 + 7, Size / 2).r, Is.GreaterThan(150), "beside it");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(cube);
+                UnityEngine.Object.DestroyImmediate(black);
+            }
         }
 
         [Test]
