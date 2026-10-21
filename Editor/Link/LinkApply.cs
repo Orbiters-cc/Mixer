@@ -47,6 +47,7 @@ namespace Orbiters.Mixer.Editor
                 host.NoteUnclaimed(meshId);
                 return result;
             }
+            string mismatch = null;
             foreach (var target in MixerSession.Targets)
             {
                 if (!target.Alive || MixerLinkService.MeshIdOf(target) != meshId) continue;
@@ -54,16 +55,18 @@ namespace Orbiters.Mixer.Editor
                 int welded = doc.LinkWeld.WeldedCount;
                 if (count >= 0 && count != welded)
                 {
-                    host.StatusThrottled(target.Id, "Blender's " + target.Name + " has " + count + " vertices, Unity's " + welded + ": the topology changed, which the link does not apply. Undo the change in Blender, or export an FBX for it.", "error");
+                    mismatch = "Blender's " + target.Name + " has " + count + " vertices, Unity's " + welded + ": the topology changed, which the link does not apply. What you change in this mode stays in Blender: take Unity's mesh from the Mixer panel (yours is kept in a copy), or export an FBX for it.";
                     continue;
                 }
                 if (topology != MeshDataCodec.Topology(doc))
                 {
-                    host.StatusThrottled(target.Id, "Blender's copy of " + target.Name + " was made for another topology of the mesh (faces or vertex order differ): its edits are not applied. Reload it from Unity in the Mixer panel.", "error");
+                    mismatch = "Blender's copy of " + target.Name + " was made for another topology of the mesh (faces or vertex order differ): what you change in this mode stays in Blender. Take Unity's mesh from the Mixer panel (yours is kept in a copy).";
                     continue;
                 }
                 result.Add(target);
             }
+            // Nothing Blender sends under this claim can be applied: it ends, so Blender knows its edits stay there.
+            if (result.Count == 0 && mismatch != null) host.EndClaim(meshId, mismatch, takeBack: false);
             return result;
         }
 
@@ -404,23 +407,7 @@ namespace Orbiters.Mixer.Editor
                 if (edit.MeshId != meshId) continue;
                 edits.Remove(pair.Key);
                 if (!edit.Target.Alive || !MixerSession.Targets.Contains(edit.Target)) continue;
-                var entries = new List<HistoryEntry>(edit.Created);
-                var moved = new List<int>();
-                var positions = edit.Base?.Finish();
-                if (positions != null) { entries.Add(positions); moved.AddRange(positions.Indices); }
-                foreach (var recorder in edit.Shapes.Values)
-                {
-                    var deltas = recorder.Finish();
-                    if (deltas == null) continue;
-                    entries.Add(deltas);
-                    moved.AddRange(deltas.Indices);
-                }
-                foreach (var recorder in edit.Weights.Values)
-                {
-                    var weights = recorder.Finish();
-                    if (weights != null) entries.Add(weights);
-                }
-                entries.AddRange(edit.Removed);
+                var entries = EntriesOf(edit, out var moved);
                 if (moved.Count > 0) edit.Target.FinishStroke(moved);
                 if (entries.Count == 0) continue;
                 Undo.IncrementCurrentGroup();
@@ -431,11 +418,52 @@ namespace Orbiters.Mixer.Editor
             }
         }
 
+        // What a Blender edit changed, as history entries in the order they are pushed (new shapes and groups, positions,
+        // deltas, weights, then what it deleted), and the vertices it moved.
+        private static List<HistoryEntry> EntriesOf(BlenderEdit edit, out List<int> moved)
+        {
+            var entries = new List<HistoryEntry>(edit.Created);
+            moved = new List<int>();
+            var positions = edit.Base?.Finish();
+            if (positions != null) { entries.Add(positions); moved.AddRange(positions.Indices); }
+            foreach (var recorder in edit.Shapes.Values)
+            {
+                var deltas = recorder.Finish();
+                if (deltas == null) continue;
+                entries.Add(deltas);
+                moved.AddRange(deltas.Indices);
+            }
+            foreach (var recorder in edit.Weights.Values)
+            {
+                var weights = recorder.Finish();
+                if (weights != null) entries.Add(weights);
+            }
+            entries.AddRange(edit.Removed);
+            return entries;
+        }
+
         /// <summary>The mesh's edit ends without history (its session was committed or reverted in Unity meanwhile).</summary>
         public static void DropBlenderEdit(string meshId)
         {
             foreach (var pair in edits.ToList())
                 if (pair.Value.MeshId == meshId) edits.Remove(pair.Key);
+        }
+
+        /// <summary>
+        /// The mesh's edit ends without history, and what Blender changed in its documents so far is taken back (Mixer's
+        /// Undo or Redo is about to change them: they are then what their history says; Blender keeps its own copy).
+        /// </summary>
+        public static void RevertBlenderEdit(string meshId)
+        {
+            foreach (var pair in edits.ToList())
+            {
+                var edit = pair.Value;
+                if (edit.MeshId != meshId) continue;
+                edits.Remove(pair.Key);
+                if (!edit.Target.Alive || !MixerSession.Targets.Contains(edit.Target)) continue;
+                var entries = EntriesOf(edit, out _);
+                for (int i = entries.Count - 1; i >= 0; i--) entries[i].Undo();
+            }
         }
 
         /// <summary>Transforms, names and active flags Blender changed, with Undo.</summary>

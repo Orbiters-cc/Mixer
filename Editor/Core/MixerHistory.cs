@@ -216,10 +216,16 @@ namespace Orbiters.Mixer.Editor
             MixerSceneTool.CancelStroke();
             applying = true;
             touched.Clear();
+            var applied = new List<HistoryEntry>();
             try
             {
-                while (cursor > target) { var e = entries[--cursor]; touched.Add(e.Target); e.Undo(); }
-                while (cursor < target) { var e = entries[cursor++]; touched.Add(e.Target); e.Redo(); }
+                // Blender's claim on a mesh about to change ends first: its edit so far is taken back here (Blender keeps it).
+                var changing = new HashSet<EditTarget>();
+                for (int i = Math.Min(cursor, target); i < Math.Max(cursor, target); i++) changing.Add(entries[i].Target);
+                touched.UnionWith(changing);
+                MixerLinkService.BeforeHistoryApplied(changing);
+                while (cursor > target) { var e = entries[--cursor]; e.Undo(); applied.Add(e); }
+                while (cursor < target) { var e = entries[cursor++]; e.Redo(); applied.Add(e); }
             }
             catch (Exception e)
             {
@@ -237,6 +243,9 @@ namespace Orbiters.Mixer.Editor
             }
             touched.Clear();
             MixerSession.NoteHistoryApplied();
+            // Blender's copies follow (what an undo took back would come back with Blender's next edit otherwise).
+            try { MixerLinkService.HistoryApplied(applied); }
+            catch (Exception e) { Debug.LogException(e); }
             if (serial < floor && serial < nextSerial) Notice?.Invoke("Older Mixer edits are no longer in memory, so this undo step changed nothing in Mixer.");
             Changed?.Invoke();
             SceneView.RepaintAll();

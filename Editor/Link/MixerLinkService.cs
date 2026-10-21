@@ -237,6 +237,15 @@ namespace Orbiters.Mixer.Editor
         /// <summary>A Mixer session was committed or reverted: Blender gets the mesh Unity shows now, and lets go of its own edit of it.</summary>
         public static void ReleaseForUnity(EditTarget target) => ForEach(h => h.SessionClosed(target));
 
+        /// <summary>
+        /// Mixer's history is about to undo or redo edits of these targets: a claim Blender holds on one of their meshes
+        /// ends first (what Blender changed under it so far is taken back here; Blender keeps it and says so).
+        /// </summary>
+        internal static void BeforeHistoryApplied(ICollection<EditTarget> targets) => ForEach(h => h.BeforeHistoryApplied(targets));
+
+        /// <summary>Mixer's history undid or redid these entries: Blender gets the layers and weights they changed.</summary>
+        internal static void HistoryApplied(IReadOnlyList<HistoryEntry> entries) => ForEach(h => h.HistoryApplied(entries));
+
         /// <summary>Blender is editing this session's mesh (one of its objects is in an edit mode).</summary>
         public static bool IsBlenderOwned(EditTarget target)
         {
@@ -286,8 +295,9 @@ namespace Orbiters.Mixer.Editor
         public bool Connected => Server != null && connection >= 0 && handshaken;
         private double lastEndpointWrite;
 
-        // Ownership: mesh id -> the node Blender named in its claim; the mesh Unity strokes now.
+        // Ownership: mesh id -> the node Blender named in its claim, and Blender's number for that claim; the mesh Unity strokes now.
         private readonly Dictionary<string, string> blenderMeshes = new Dictionary<string, string>();
+        private readonly Dictionary<string, int> blenderClaims = new Dictionary<string, int>();
         private string unityEditing, unityEditingNode;
         private readonly Dictionary<string, (string message, double at)> throttled = new Dictionary<string, (string, double)>();
 
@@ -323,7 +333,8 @@ namespace Orbiters.Mixer.Editor
             writesEndpoint = writeEndpoint;
             this.log = log ?? new List<string>();
             Server = new LiveLinkServer(MixerLinkProtocol.Format, token, port, singleClient: true, accept: Accept, collapseKey: CollapseKey,
-                closingType: (byte)MixerLinkProtocol.FrameType.Bye, threadName: isLive ? "Mixer Blender link" : "Mixer Blender link (test)");
+                closingType: (byte)MixerLinkProtocol.FrameType.Bye, threadName: isLive ? "Mixer Blender link" : "Mixer Blender link (test)",
+                replacedGoodbye: MixerLinkProtocol.Json(new MixerLinkProtocol.Goodbye { replaced = true }));
             try
             {
                 Server.Received += OnReceived;
@@ -365,6 +376,7 @@ namespace Orbiters.Mixer.Editor
             // What Blender edited so far becomes history, as when it leaves.
             if (endEdits) foreach (string mesh in blenderMeshes.Keys.ToList()) ReleaseFromBlender(mesh);
             blenderMeshes.Clear();
+            blenderClaims.Clear();
             var server = Server;
             Server = null;
             connection = -1;
@@ -570,15 +582,17 @@ namespace Orbiters.Mixer.Editor
                 SendMesh(claim.id);
                 return;
             }
-            if (blenderMeshes.ContainsKey(meshId)) { blenderMeshes[meshId] = claim.id; RaiseChanged(); return; }
+            if (blenderMeshes.ContainsKey(meshId)) { blenderMeshes[meshId] = claim.id; blenderClaims[meshId] = claim.claim; RaiseChanged(); return; }
             if (meshId == unityEditing || UnityStrokes(meshId)) { Refuse(claim, "Unity is editing " + r.name + " right now: leave the mode in Blender and enter it again."); return; }
             if (!MixerSession.CanEdit(r, out string reason)) { Refuse(claim, reason); return; }
             // Held before the session opens: the session's own notices then know Blender edits it.
             blenderMeshes[meshId] = claim.id;
+            blenderClaims[meshId] = claim.claim;
             try { MixerSession.Edit(r); }
             catch (Exception e)
             {
                 blenderMeshes.Remove(meshId);
+                blenderClaims.Remove(meshId);
                 Refuse(claim, e.Message);
                 return;
             }
@@ -597,11 +611,29 @@ namespace Orbiters.Mixer.Editor
             inFlightBefore = null;
         }
 
-        // Blender's claim does not hold: Blender lets go of it (its edits in that mode are not sent) and says why.
+        // Blender's claim does not hold: Blender lets go of it (what it changes in that mode stays in Blender, which offers to
+        // send it or take Unity's) and says why.
         private void Refuse(MixerLinkProtocol.Ownership claim, string reason)
         {
-            Send(MixerLinkProtocol.FrameType.Release, MixerLinkProtocol.Json(new MixerLinkProtocol.Ownership { id = claim.id, meshId = claim.meshId, side = "blender", reason = reason }));
+            Send(MixerLinkProtocol.FrameType.Release, MixerLinkProtocol.Json(new MixerLinkProtocol.Ownership { id = claim.id, meshId = claim.meshId, side = "blender", claim = claim.claim, reason = reason }));
             Say("Blender's edit refused: " + reason);
+        }
+
+        /// <summary>
+        /// Ends a claim Blender holds, from Unity's side: what Blender changed under it so far becomes history (or, with
+        /// <paramref name="takeBack"/>, is taken back without history), and Blender is told why. Blender keeps its copy
+        /// as it is until the user sends it to Unity or takes Unity's.
+        /// </summary>
+        internal void EndClaim(string meshId, string reason, bool takeBack)
+        {
+            if (meshId == null || !blenderMeshes.TryGetValue(meshId, out string node)) return;
+            if (takeBack) LinkApply.RevertBlenderEdit(meshId); else LinkApply.EndBlenderEdit(meshId);
+            blenderMeshes.Remove(meshId);
+            blenderClaims.TryGetValue(meshId, out int number);
+            blenderClaims.Remove(meshId);
+            Send(MixerLinkProtocol.FrameType.Release, MixerLinkProtocol.Json(new MixerLinkProtocol.Ownership { id = node, meshId = meshId, side = "blender", claim = number, reason = reason }));
+            Say("Blender's edit ended: " + reason);
+            RaiseChanged();
         }
 
         private void OnRelease(MixerLinkProtocol.Ownership release)
@@ -622,6 +654,7 @@ namespace Orbiters.Mixer.Editor
             // Still held while the history is written, so nothing of it echoes back to Blender.
             LinkApply.EndBlenderEdit(meshId);
             blenderMeshes.Remove(meshId);
+            blenderClaims.Remove(meshId);
             RaiseChanged();
         }
 
@@ -649,13 +682,16 @@ namespace Orbiters.Mixer.Editor
             string meshId = MixerLinkService.MeshIdOf(target);
             if (meshId != null && blenderMeshes.TryGetValue(meshId, out string node))
             {
-                // Unity's commit or revert wins: Blender is told that what it edits in this mode is not taken any more.
+                // Unity's commit or revert wins: Blender is told that what it edits in this mode is not taken any more. It
+                // keeps its copy (Unity's mesh does not overwrite it) until the user sends it again or takes Unity's.
                 LinkApply.DropBlenderEdit(meshId);
                 blenderMeshes.Remove(meshId);
+                blenderClaims.TryGetValue(meshId, out int number);
+                blenderClaims.Remove(meshId);
                 Send(MixerLinkProtocol.FrameType.Release, MixerLinkProtocol.Json(new MixerLinkProtocol.Ownership
                 {
-                    id = node, meshId = meshId, side = "blender",
-                    reason = target.Name + " was committed or reverted in Unity: what you edit in this mode is not sent, and Blender gets Unity's mesh again.",
+                    id = node, meshId = meshId, side = "blender", claim = number,
+                    reason = target.Name + " was committed or reverted in Unity: what you change in this mode stays in Blender. Send it to Unity again, or take Unity's, from the Mixer panel.",
                 }));
                 RaiseChanged();
             }
@@ -678,6 +714,87 @@ namespace Orbiters.Mixer.Editor
             unityEditingNode = meshId != null ? focus.Id : null;
             if (meshId != null)
                 Send(MixerLinkProtocol.FrameType.Claim, MixerLinkProtocol.Json(new MixerLinkProtocol.Ownership { id = focus.Id, meshId = meshId, side = "unity" }));
+        }
+
+        // ---- History -----------------------------------------------------------------------------------------------------
+
+        public void BeforeHistoryApplied(ICollection<EditTarget> targets)
+        {
+            if (blenderMeshes.Count == 0) return;
+            foreach (var target in targets)
+            {
+                if (target == null || !target.Alive) continue;
+                string meshId = MixerLinkService.MeshIdOf(target);
+                // Blender's copy would bring the undone edits back with its next positions: the claim ends, and Unity's
+                // document is what its history says.
+                if (OwnsMesh(meshId))
+                    EndClaim(meshId, "Unity undid or redid an edit of " + target.Name + " while you edited it in Blender: what you change in this mode stays in Blender. Send it to Unity, or take Unity's, from the Mixer panel.", takeBack: true);
+            }
+        }
+
+        /// <summary>
+        /// Undo and Redo reach Blender as live frames: the positions of every layer the entries moved and the weights they
+        /// changed (a mesh waiting to go whole carries them anyway). Shape and group lists that changed go whole with the
+        /// next <see cref="CheckShapeLists"/>.
+        /// </summary>
+        public void HistoryApplied(IReadOnlyList<HistoryEntry> entries)
+        {
+            if (!Connected || entries == null || entries.Count == 0) return;
+            var layers = new Dictionary<EditTarget, HashSet<string>>();
+            foreach (var entry in entries)
+            {
+                var target = entry.Target;
+                if (target == null || !target.Alive || !graphNodes.Contains(target.Id) || IsBlenderOwned(target) || queuedMeshes.Contains(target.Id)) continue;
+                switch (entry)
+                {
+                    case PositionEdit moved:
+                        LayersOf(layers, target).Add(moved.Layer ?? "");
+                        break;
+                    case ShapeDeltaEdit deltas:
+                        LayersOf(layers, target).Add(deltas.Shape);
+                        break;
+                    case GroupWeightEdit group:
+                        if (target.Document.Group(group.Group) != null) SendWeights(target, WeightChannel.OfGroup(group.Group), group.Indices);
+                        break;
+                    case WeightEdit weights:
+                    {
+                        var byBone = new Dictionary<int, List<int>>();
+                        for (int i = 0; i < weights.Indices.Length; i++)
+                        {
+                            foreach (var influence in weights.Before[i]) VerticesOf(byBone, influence.Bone).Add(weights.Indices[i]);
+                            foreach (var influence in weights.After[i]) VerticesOf(byBone, influence.Bone).Add(weights.Indices[i]);
+                        }
+                        foreach (var pair in byBone) if (pair.Key >= 0) SendWeights(target, WeightChannel.OfBone(pair.Key), pair.Value);
+                        break;
+                    }
+                }
+            }
+            foreach (var pair in layers)
+                foreach (string layer in pair.Value)
+                    SendLayer(pair.Key, layer.Length == 0 ? null : layer);
+        }
+
+        private static HashSet<string> LayersOf(Dictionary<EditTarget, HashSet<string>> layers, EditTarget target)
+        {
+            if (!layers.TryGetValue(target, out var set)) layers[target] = set = new HashSet<string>();
+            return set;
+        }
+
+        private static List<int> VerticesOf(Dictionary<int, List<int>> byBone, int bone)
+        {
+            if (!byBone.TryGetValue(bone, out var list)) byBone[bone] = list = new List<int>();
+            return list;
+        }
+
+        // The welded positions of one layer of a session (null: the base), as live positions.
+        private void SendLayer(EditTarget target, string layer)
+        {
+            var doc = target.Document;
+            if (layer != null && !doc.HasShape(layer)) return;
+            var n = doc.LinkWeld;
+            var positions = new Vector3[n.WeldedCount];
+            for (int w = 0; w < positions.Length; w++) positions[w] = doc.GetLayerPosition(layer, n.Representative[w]);
+            Send(MixerLinkProtocol.FrameType.Positions, MeshDataCodec.EncodePositions(MixerLinkService.MeshIdOf(target), layer, MeshDataCodec.Topology(doc), positions));
         }
 
         // ---- What Blender was sent ---------------------------------------------------------------------------------------
@@ -990,11 +1107,7 @@ namespace Orbiters.Mixer.Editor
                 positionsDue.Remove(pair.Key);
                 var target = MixerSession.Targets.FirstOrDefault(t => t.Id == pair.Key);
                 if (target == null || !target.Alive || IsBlenderOwned(target) || queuedMeshes.Contains(target.Id)) continue;
-                var doc = target.Document;
-                var n = doc.LinkWeld;
-                var positions = new Vector3[n.WeldedCount];
-                for (int w = 0; w < positions.Length; w++) positions[w] = doc.LayerPosition(n.Representative[w]);
-                Send(MixerLinkProtocol.FrameType.Positions, MeshDataCodec.EncodePositions(MixerLinkService.MeshIdOf(target), doc.Layer, MeshDataCodec.Topology(doc), positions));
+                SendLayer(target, target.Document.Layer);
             }
         }
     }

@@ -571,6 +571,106 @@ namespace Orbiters.Mixer.Editor.Tests
             }
         }
 
+        private static MixerLinkProtocol.Ownership BlenderRelease(List<(MixerLinkProtocol.FrameType type, byte[] payload)> frames) =>
+            frames.Where(f => f.type == MixerLinkProtocol.FrameType.Release).Select(f => MixerLinkProtocol.Read<MixerLinkProtocol.Ownership>(f.payload)).LastOrDefault(o => o.side == "blender");
+
+        // Blender's edit of the body (welded vertices raised by lift), applied live under the claim of that number.
+        private static void Lift(FakeBlender blender, EditTarget target, string meshId, Vector3[] from, float lift)
+        {
+            var n = target.Document.LinkWeld;
+            var positions = new Vector3[n.WeldedCount];
+            for (int w = 0; w < positions.Length; w++) positions[w] = from[n.Representative[w]] + Vector3.up * lift;
+            blender.Send(MixerLinkProtocol.FrameType.Positions, MeshDataCodec.EncodePositions(meshId, null, MeshDataCodec.Topology(target.Document), positions));
+            blender.Pump(1.0);
+        }
+
+        // Claims carry Blender's number: Unity answers a refusal, and ends a claim it no longer takes, with that number, so
+        // Blender tells them from a late answer to an older claim of the mesh.
+        [Test]
+        public void RefusedAndEndedClaimsAreAnsweredWithTheirNumber()
+        {
+            using (var host = MixerLinkHost.OpenPrivate(scene))
+            using (var blender = new FakeBlender(host))
+            {
+                blender.Hello();
+                blender.Pump(5, MixerLinkProtocol.FrameType.MeshData);
+                var refused = BlenderRelease(blender.Claim(renderer, meshId: "not the body's mesh", number: 7));
+                Assert.That(refused, Is.Not.Null, "Unity refuses a claim of another mesh");
+                Assert.That(refused.claim, Is.EqualTo(7), "with the claim's number");
+                blender.Claim(renderer, number: 8);
+                var target = MixerSession.TargetOf(renderer);
+                Assert.That(target != null && MixerLinkService.IsBlenderOwned(target), Is.True);
+                MixerSession.Revert(target);
+                var ended = BlenderRelease(blender.Pump(1.0, MixerLinkProtocol.FrameType.Release));
+                Assert.That(ended, Is.Not.Null, "a revert ends Blender's claim");
+                Assert.That(ended.claim, Is.EqualTo(8), "the claim held, by its number");
+                Assert.That(ended.reason, Does.Contain("stays in Blender"), "and says Blender keeps its edits");
+            }
+        }
+
+        // Ctrl+Z and Ctrl+Y in Unity reach Blender: the layer an undone or redone step moved comes as live positions.
+        [Test]
+        public void UndoAndRedoReachBlenderAsPositions()
+        {
+            using (var host = MixerLinkHost.OpenPrivate(scene))
+            using (var blender = new FakeBlender(host))
+            {
+                blender.Hello();
+                blender.Pump(5, MixerLinkProtocol.FrameType.MeshData);
+                blender.Claim(renderer, number: 1);
+                var target = MixerSession.TargetOf(renderer);
+                string meshId = MixerLinkService.MeshIdOf(renderer);
+                var original = (Vector3[])target.Document.Positions.Clone();
+                Lift(blender, target, meshId, original, 0.1f);
+                blender.Release(renderer);
+                int rep = target.Document.LinkWeld.Representative[0];
+
+                Undo.PerformUndo();
+                var undone = blender.Pump(1.0, MixerLinkProtocol.FrameType.Positions).Where(f => f.type == MixerLinkProtocol.FrameType.Positions).Select(f => MeshDataCodec.DecodePositions(f.payload)).LastOrDefault();
+                Assert.That(undone, Is.Not.Null, "Blender hears of the undo");
+                Assert.That(undone.Id, Is.EqualTo(meshId));
+                Assert.That(undone.Shape, Is.Null, "the base layer");
+                Assert.That(undone.Positions[0].y, Is.EqualTo(original[rep].y).Within(1e-5f), "as Unity has it after the undo");
+
+                Undo.PerformRedo();
+                var redone = blender.Pump(1.0, MixerLinkProtocol.FrameType.Positions).Where(f => f.type == MixerLinkProtocol.FrameType.Positions).Select(f => MeshDataCodec.DecodePositions(f.payload)).LastOrDefault();
+                Assert.That(redone, Is.Not.Null, "Blender hears of the redo");
+                Assert.That(redone.Positions[0].y, Is.EqualTo(original[rep].y + 0.1f).Within(1e-5f));
+            }
+        }
+
+        // An undo of a mesh Blender holds ends Blender's claim: Unity's document is what its history says (Blender's edit so
+        // far is taken back, without a step of its own), and Blender is told it keeps its edits.
+        [Test]
+        public void AnUndoOfAMeshBlenderHoldsEndsTheClaimAndTakesItsEditBack()
+        {
+            using (var host = MixerLinkHost.OpenPrivate(scene))
+            using (var blender = new FakeBlender(host))
+            {
+                blender.Hello();
+                blender.Pump(5, MixerLinkProtocol.FrameType.MeshData);
+                blender.Claim(renderer, number: 1);
+                var target = MixerSession.TargetOf(renderer);
+                string meshId = MixerLinkService.MeshIdOf(renderer);
+                var original = (Vector3[])target.Document.Positions.Clone();
+                Lift(blender, target, meshId, original, 0.1f);
+                blender.Release(renderer);
+                blender.Claim(renderer, number: 2);
+                Lift(blender, target, meshId, original, 0.3f);
+                Assert.That(target.Document.Positions[0].y, Is.EqualTo(original[0].y + 0.3f).Within(1e-5f), "Blender's second edit shows");
+                int count = MixerHistory.Count;
+
+                Undo.PerformUndo();
+                var ended = BlenderRelease(blender.Pump(1.0, MixerLinkProtocol.FrameType.Release));
+                Assert.That(ended, Is.Not.Null, "the claim Blender holds ends");
+                Assert.That(ended.claim, Is.EqualTo(2));
+                Assert.That(MixerLinkService.IsBlenderOwned(target), Is.False);
+                Assert.That(target.Document.Positions[0].y, Is.EqualTo(original[0].y).Within(1e-5f), "Blender's edit in progress and the undone one are both gone");
+                Assert.That(MixerHistory.Count, Is.EqualTo(count), "taking Blender's edit back adds no step");
+                Assert.That(MixerHistory.CanRedo, Is.True, "and the redo stays");
+            }
+        }
+
         /// <summary>A Blender extension speaking the link over a real socket, pumping the host by hand (a test has no editor loop).</summary>
         private sealed class FakeBlender : IDisposable
         {
@@ -626,9 +726,9 @@ namespace Orbiters.Mixer.Editor.Tests
                 return Pump(5, MixerLinkProtocol.FrameType.Welcome, protocolVersion == MixerLinkProtocol.ProtocolVersion ? MixerLinkProtocol.FrameType.SceneGraph : MixerLinkProtocol.FrameType.Welcome);
             }
 
-            public List<(MixerLinkProtocol.FrameType type, byte[] payload)> Claim(Renderer target, string meshId = null)
+            public List<(MixerLinkProtocol.FrameType type, byte[] payload)> Claim(Renderer target, string meshId = null, int number = 0)
             {
-                Send(MixerLinkProtocol.FrameType.Claim, MixerLinkProtocol.Json(new MixerLinkProtocol.Ownership { id = SceneGraphExporter.IdOf(target.gameObject), meshId = meshId ?? MixerLinkService.MeshIdOf(target), side = "blender" }));
+                Send(MixerLinkProtocol.FrameType.Claim, MixerLinkProtocol.Json(new MixerLinkProtocol.Ownership { id = SceneGraphExporter.IdOf(target.gameObject), meshId = meshId ?? MixerLinkService.MeshIdOf(target), side = "blender", claim = number }));
                 return Pump(1.0);
             }
 

@@ -112,7 +112,8 @@ namespace Orbiters.Mixer.Editor
 
         /// <summary>
         /// Puts the renderer's original mesh back and closes its Mixer session. False when nothing was being edited. While
-        /// Blender edits the mesh, Blender is told: what it edits in that mode is not taken any more, and it gets the mesh again.
+        /// Blender edits the mesh, Blender is told: what it edits in that mode is not taken any more. Blender keeps its copy,
+        /// and its Mixer panel offers to send it to Unity again or to take Unity's mesh (its own then kept in a copy).
         /// </summary>
         public static bool Revert(Renderer renderer)
         {

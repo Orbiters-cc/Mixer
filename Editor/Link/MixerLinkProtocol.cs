@@ -51,11 +51,11 @@ namespace Orbiters.Mixer.Editor
             Positions = 6,      // either way: binary {id, shape, topology, count, positions} of the welded vertices
             Weights = 7,        // either way: binary {id, channel, isGroup, bone, topology, count, (index, weight)}
             Armature = 8,       // either way: {id, bones:[{id, name, parent, head, tail, matrix}]}
-            Claim = 9,          // either way: {id, meshId, side}: that side edits the mesh now
-            Release = 10,       // either way: {id, meshId, side, reason}: that side stopped (from Unity with side "blender": Blender's claim is refused or ended)
+            Claim = 9,          // either way: {id, meshId, side, claim}: that side edits the mesh now (Blender numbers its claims)
+            Release = 10,       // either way: {id, meshId, side, claim, reason}: that side stopped (from Unity with side "blender": Blender's claim of that number is refused or ended)
             Status = 11,        // either way: {id, message, level}
             RenderRequest = 12, // Unity to Blender: {jobId, output, width, height, samples, engine, camera:{p,r,fov}}
-            Bye = 13,
+            Bye = 13,           // either way: closes the link; from Unity {replaced: true} when another Blender took it (not linked again on its own)
             RenderResult = 14,  // Blender to Unity: {jobId, ok, path, error}
             RequestMesh = 15,   // Blender to Unity: {id}: send this node's mesh (again)
             MeshChunk = 16,     // either way: binary {u32 transfer, u32 index, u32 count, u32 total bytes, bytes} of one mesh payload
@@ -79,7 +79,13 @@ namespace Orbiters.Mixer.Editor
             public string error;
         }
 
-        public sealed class Ownership { public string id; public string meshId; public string side; public string reason; }
+        /// <summary>
+        /// A claim or release. <see cref="claim"/> is Blender's number for its claim (0 for Unity's own): Unity's answer
+        /// echoes it, so Blender tells a late answer to an older claim of the mesh from one to the claim it holds now.
+        /// </summary>
+        public sealed class Ownership { public string id; public string meshId; public string side; public int claim; public string reason; }
+        /// <summary>The goodbye's payload: <see cref="replaced"/> when another Blender's connection took this one's place.</summary>
+        public sealed class Goodbye { public bool replaced; }
         public sealed class StatusMessage { public string id; public string message; public string level = "info"; }
         public sealed class RequestMesh { public string id; }
         public sealed class MeshReceived { public string id; }
