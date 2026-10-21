@@ -45,6 +45,8 @@ namespace Orbiters.Mixer.Editor
         public IAvatarObjectTool DropTool;
         /// <summary>An avatar tool asks whether this item it added should be refitted.</summary>
         public IAvatarObjectTool RefitTool;
+        /// <summary>A newer version waits for this item or for this avatar's custom base (My Avatar, MCB).</summary>
+        public AvatarObjectUpdate Update;
 
         /// <summary>A bone of an avatar (a skinned mesh's or the humanoid's).</summary>
         public bool IsBone;
@@ -191,6 +193,7 @@ namespace Orbiters.Mixer.Editor
             row.IsBone = row.Bones == null && Avatars.IsBone(go);
             row.IsFolder = row.HasChildren && row.Bones == null && !row.IsBone && row.Components.Length == 1 && !row.PrefabRoot;
             if (row.HasMeshes) row.RefitTool = AvatarObjectTools.RefitQuestion(go);
+            if (row.VrchatAvatar || row.HasMeshes) row.Update = AvatarObjectTools.UpdateOf(go);
             Rows.Add(row);
             if (!row.Expanded || !row.HasChildren) return;
             for (int i = 0; i < t.childCount; i++) Walk(t.GetChild(i), depth + 1, filter, excluded);

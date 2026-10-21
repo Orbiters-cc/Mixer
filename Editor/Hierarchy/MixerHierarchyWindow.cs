@@ -76,6 +76,7 @@ namespace Orbiters.Mixer.Editor
             EditorApplication.playModeStateChanged += OnPlayModeChanged;
             Selection.selectionChanged += OnSelectionChanged;
             AvatarObjectTools.Changed += MarkDirty;
+            Orbiters.Toolkit.Editor.Refit.CustomBases.Changed += OnCustomBaseChanged;
             EditorSceneManager.sceneDirtied += OnSceneChanged;
             EditorSceneManager.sceneSaved += OnSceneChanged;
             EditorSceneManager.sceneOpened += OnSceneOpened;
@@ -96,6 +97,7 @@ namespace Orbiters.Mixer.Editor
             EditorApplication.playModeStateChanged -= OnPlayModeChanged;
             Selection.selectionChanged -= OnSelectionChanged;
             AvatarObjectTools.Changed -= MarkDirty;
+            Orbiters.Toolkit.Editor.Refit.CustomBases.Changed -= OnCustomBaseChanged;
             EditorSceneManager.sceneDirtied -= OnSceneChanged;
             EditorSceneManager.sceneSaved -= OnSceneChanged;
             EditorSceneManager.sceneOpened -= OnSceneOpened;
@@ -118,6 +120,8 @@ namespace Orbiters.Mixer.Editor
         private void OnSceneChanged(Scene _) => MarkDirty();
         private void OnSceneOpened(Scene _, OpenSceneMode __) => MarkDirty();
         private void OnPrefabStage(PrefabStage _) => MarkDirty();
+        // A custom base applied or reset: its name and update on the avatar's row.
+        private void OnCustomBaseChanged(Transform _) => MarkDirty();
         private void OnPlayModeChanged(PlayModeStateChange _) => MarkDirty();
 
         public void AddItemsToMenu(GenericMenu menu)

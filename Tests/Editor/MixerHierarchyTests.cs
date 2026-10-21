@@ -562,6 +562,53 @@ namespace Orbiters.Mixer.Editor.Tests
             }
         }
 
+        // A tool that has a newer version for one object (as My Avatar for a gallery item).
+        private sealed class UpdateFor : Orbiters.Toolkit.Editor.IAvatarObjectUpdates
+        {
+            public GameObject Item;
+            public int Started;
+            public bool Running;
+            public Orbiters.Toolkit.Editor.AvatarObjectUpdate UpdateOf(GameObject go) => go != Item ? null : new Orbiters.Toolkit.Editor.AvatarObjectUpdate
+            {
+                Name = go.name, From = "1.0.1", To = "1.0.2", Running = Running, Start = () => { Started++; Running = true; },
+            };
+        }
+
+        [Test]
+        public void AnItemWithANewerVersionShowsUpdateWhichStartsItAtThePress()
+        {
+            var item = root.transform.GetChild(0).gameObject;
+            var tool = new UpdateFor { Item = item };
+            Orbiters.Toolkit.Editor.AvatarObjectTools.RegisterUpdates(tool);
+            var window = OpenHidden();
+            try
+            {
+                window.RevealObject(item);
+                Repaint(window);
+                ScrollToTop(window, root);
+                Repaint(window);
+                var row = RowNamed(window, "Child 0");
+                Assert.That(row.ClassListContains("mxh-row--tall"), Is.True, "the update gives the row its second line");
+                var pill = row.Q<Button>(className: "mxh-row__update");
+                Assert.That(pill.resolvedStyle.display, Is.EqualTo(DisplayStyle.Flex), "Update shows on the item's line");
+                Assert.That(pill.Q<Label>().text, Is.EqualTo("Update"));
+                StringAssert.Contains("1.0.1", pill.tooltip);
+                StringAssert.Contains("1.0.2", pill.tooltip);
+                Assert.That(RowNamed(window, "Child 2").Q(className: "mxh-row__update").resolvedStyle.display, Is.EqualTo(DisplayStyle.None), "nothing newer: no pill");
+                Click(window, pill.worldBound.center);
+                Assert.That(tool.Started, Is.EqualTo(1), "the press starts the tool's update");
+                Assert.That(pill.Q<Label>().text, Is.EqualTo("Updating…"), "the pill says so at once");
+                Assert.That(pill.enabledSelf, Is.False, "and waits for the tool");
+                Click(window, pill.worldBound.center);
+                Assert.That(tool.Started, Is.EqualTo(1), "a second press while it runs starts nothing");
+            }
+            finally
+            {
+                Orbiters.Toolkit.Editor.AvatarObjectTools.UnregisterUpdates(tool);
+                window.Close();
+            }
+        }
+
         // A press and a release at a point, through the window's own event handling: IMGUI code (the decorations) reads
         // its mouse position only from events Unity hands the window itself.
         private static void Click(EditorWindow window, Vector2 point)

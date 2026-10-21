@@ -140,7 +140,10 @@ saved as a native mesh asset when you commit.
   too). Its armature's row has an armature icon and selects the chest, head,
   hands or feet in one click, beside its name when the window is wide enough, else on a second line; bones show a bone
   icon and empty objects that only group others a folder (open while unfolded); an accessory My Avatar added that may
-  not fit offers "ReFit ?". The kind filters moved into a Filter menu in the search field; the Blender dots are off by
+  not fit offers "ReFit ?". A newer version waiting shows an Update pill on its line: a gallery item My Avatar added
+  (updated in the background as from My Avatar's list, the pill saying "Updating…" meanwhile), and the avatar's custom
+  base beside its name (MCB's recommended version, applied by MCB's Inspector with its confirmation and progress); the
+  tools answer through the Toolkit's `AvatarObjectTools.UpdateOf`. The kind filters moved into a Filter menu in the search field; the Blender dots are off by
   default (window menu). Compact rows keep one line. The window no longer throws after a script reload when the
   selection changes before it rebuilt its rows.
 - A stroke starts at once: pressing allocates nothing (each target keeps a stroke scratch of marks, moves and lists

@@ -117,7 +117,11 @@
 .mxh-bone:hover { background-color: rgba(255, 255, 255, 0.12); color: #ffffff; }
 .mxh-bone.mx-pressed { scale: 0.92 0.92; background-color: rgba(0, 218, 109, 0.22); color: #3cf29a; }
 .mxh-bone:disabled { opacity: 0.35; }
-.mxh-refit { height: 18px; min-height: 18px; margin: 0; padding: 0 9px; font-size: 10px; }
+.mxh-refit { height: 18px; min-height: 18px; margin: 0 4px 0 0; padding: 0 9px; font-size: 10px; }
+/* Update: a newer version of an item (beside ReFit) or of the avatar's custom base (beside its name, as small). */
+.mxh-row__update { height: 18px; min-height: 18px; margin: 0; padding: 0 9px; font-size: 10px; }
+.mxh-avatar__update { height: 15px; min-height: 15px; margin: 0 0 0 4px; padding: 0 7px; border-radius: 7px; flex-shrink: 0; }
+.mxh-avatar__update .mx-button__label { font-size: 9px; }
 .mxh-root--compact .mxh-row__active { width: 11px; height: 11px; min-width: 11px; }
 
 /* A VRChat avatar's row: three lines, a larger picture with VRChat's logo on it, the drop field as tall. */
@@ -130,7 +134,7 @@
 .mxh-avatar__line { flex-direction: row; align-items: center; height: 18px; margin-top: 1px; padding-right: 4px; overflow: hidden; }
 .mxh-avatar__name { margin: 0; padding: 0; font-size: 11px; color: #c8c8c8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 1; }
 .mxh-avatar__name--note { font-size: 10px; color: #8c8c8c; }
-.mxh-avatar__base { margin: 0 0 0 6px; padding: 0 6px; height: 15px; border-radius: 7px; font-size: 9px; -unity-font-style: bold; -unity-text-align: middle-center; color: #b9b1ff; background-color: rgba(138, 125, 255, 0.16); flex-shrink: 0; }
+.mxh-avatar__base { margin: 0 0 0 6px; padding: 0 6px; height: 15px; border-radius: 7px; font-size: 9px; -unity-font-style: bold; -unity-text-align: middle-center; color: #b9b1ff; background-color: rgba(138, 125, 255, 0.16); flex-shrink: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mxh-avatar__fact { flex-direction: row; align-items: center; margin-right: 10px; flex-shrink: 0; }
 .mxh-avatar__rank-icon { width: 14px; height: 14px; margin-right: 4px; }
 .mxh-avatar__fact-icon { width: 11px; height: 11px; margin-right: 4px; --icon-color: #9a9a9a; }

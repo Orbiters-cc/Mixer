@@ -11,7 +11,7 @@ namespace Orbiters.Mixer.Editor
 {
     // The richer rows: a picture of the meshes an object holds, a switch for whether it is active, a ball that turns a
     // light, the main bones of an avatar's armature, My Avatar's drop field on the avatar root and its ReFit question on
-    // an item it added.
+    // an item it added, and Update where a newer version waits (a gallery item, the avatar's custom base).
     internal sealed partial class MixerHierarchyWindow
     {
         private bool thumbnailsPending;
@@ -109,7 +109,42 @@ namespace Orbiters.Mixer.Editor
             refit.AddToClassList("mxh-refit");
             refit.RegisterCallback<PointerDownEvent>(evt => evt.StopPropagation(), TrickleDown.TrickleDown);
             extras.Add(refit);
+
+            // A newer version of an item a tool added (a gallery asset): Update, as its line in My Avatar offers.
+            extras.Add(MakeUpdatePill(row, "mxh-row__update"));
             return line;
+        }
+
+        // Update: the tool's own update starts at the press (with its questions and progress), the pill saying so at once;
+        // then the row follows what the tool reports.
+        private Button MakeUpdatePill(VisualElement row, string className)
+        {
+            Button pill = null;
+            pill = MixerUi.Pill("Update", () =>
+            {
+                var update = RowOf(row)?.Update;
+                if (update?.Start == null || update.Running) return;
+                MixerUi.SetPillText(pill, "Updating…");
+                pill.SetEnabled(false);
+                update.Start();
+            }, "accent");
+            pill.AddToClassList("mxh-update");
+            pill.AddToClassList(className);
+            pill.RegisterCallback<PointerDownEvent>(evt => evt.StopPropagation(), TrickleDown.TrickleDown);
+            return pill;
+        }
+
+        private static void BindUpdate(Button pill, AvatarObjectUpdate update)
+        {
+            if (pill == null) return;
+            MixerUi.Show(pill, update != null);
+            if (update == null) return;
+            MixerUi.SetPillText(pill, update.Running ? "Updating…" : update.Failed ? "Retry update" : "Update");
+            pill.SetEnabled(!update.Running);
+            string what = string.IsNullOrEmpty(update.Name) ? "it" : update.Name;
+            pill.tooltip = update.Running ? (string.IsNullOrEmpty(update.Status) ? "Updating " + what + " to " + update.To : update.Status)
+                : update.Failed ? "The update of " + what + " to " + update.To + " failed" + (string.IsNullOrEmpty(update.Status) ? "" : ": " + update.Status) + ". Click to try again."
+                : "Update " + what + " from " + update.From + " to " + update.To;
         }
 
         // A VRChat avatar's second and third lines: its name on VRChat and its custom base; its performance rank, whether
@@ -124,6 +159,8 @@ namespace Orbiters.Mixer.Editor
             var customBase = MixerUi.Text("", "mxh-avatar__base");
             customBase.pickingMode = PickingMode.Position;
             names.Add(customBase);
+            // A newer version of the custom base (MCB): Update beside its name.
+            names.Add(MakeUpdatePill(row, "mxh-avatar__update"));
             lines.Add(names);
             var facts = MixerUi.Box("mxh-avatar__line", PickingMode.Ignore);
             var rank = MixerUi.Box("mxh-avatar__fact mxh-avatar__rank");
@@ -170,6 +207,7 @@ namespace Orbiters.Mixer.Editor
                 customBase.text = info.Name;
                 customBase.tooltip = "Custom base" + (string.IsNullOrEmpty(info.BaseName) ? "" : " of " + info.BaseName) + (info.Source == "MCB" ? " (My Custom Base)" : "");
             }
+            BindUpdate(lines.Q<Button>(className: "mxh-avatar__update"), row.Update);
             var rank = lines.Q(className: "mxh-avatar__rank");
             MixerUi.Show(rank, facts != null);
             if (facts != null)
@@ -303,6 +341,7 @@ namespace Orbiters.Mixer.Editor
                     if (button.userData is System.Func<QuickBones, Transform> bone) button.SetEnabled(bone(row.Bones) != null);
             }
             MixerUi.Show(refit, tall && row.RefitTool != null);
+            BindUpdate(element.Q<Button>(className: "mxh-row__update"), tall && !avatar ? row.Update : null);
             // The visibility and picking switches go to the row's right end beside a light's ball or a drop field.
             var switches = element.Q(className: "mxh-row__switches");
             var switchesInto = light || dropShown ? element : line;
@@ -332,19 +371,20 @@ namespace Orbiters.Mixer.Editor
                 if (texture == null) thumbnailsPending = true;
             }
             detail.text = row.Light != null ? LightDetail(row.Light) : Detail(row);
-            detail.EnableInClassList("mxh-row__detail--short", bonesShown || row.RefitTool != null);
+            detail.EnableInClassList("mxh-row__detail--short", bonesShown || row.RefitTool != null || row.Update != null);
         }
 
         /// <summary>The lines a row takes: three for a VRChat avatar, two for <see cref="Tall"/> rows, else one.</summary>
         private int Lines(HierarchyRow row) => !Tall(row) ? 1 : row.VrchatAvatar ? 3 : 2;
 
         /// <summary>Two lines for rows with more than a name: meshes (with their picture), a light, My Avatar's drop
-        /// field or ReFit question, or an armature whose bone buttons do not fit beside its name. One in compact rows.</summary>
+        /// field or ReFit question, an update, or an armature whose bone buttons do not fit beside its name. One in
+        /// compact rows.</summary>
         private bool Tall(HierarchyRow row)
         {
             if (row == null || row.IsScene || row.Object == null || Compact) return false;
             if (row.IsBone) return false;
-            return row.HasMeshes || row.Light != null || row.DropTool != null || row.RefitTool != null || (row.Bones != null && !BonesFitInline(row));
+            return row.HasMeshes || row.Light != null || row.DropTool != null || row.RefitTool != null || row.Update != null || (row.Bones != null && !BonesFitInline(row));
         }
 
         // Name, badges and six bone buttons on one line: the indent plus about 430 points.
