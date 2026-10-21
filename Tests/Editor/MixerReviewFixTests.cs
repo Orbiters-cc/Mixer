@@ -114,6 +114,26 @@ namespace Orbiters.Mixer.Editor.Tests
             Assert.That(AssetDatabase.GetAssetPath(recommitted), Is.EqualTo(path));
         }
 
+        // Unity's step of an entry forgotten with its session (committed, reverted, ended for Play) still comes back on
+        // Ctrl+Z: it changes nothing in Mixer, and a notice says so instead of the undo looking broken.
+        [Test]
+        public void UndoingAStepOfAForgottenSessionSaysItChangesNothing()
+        {
+            var mesh = Asset(MixerCoreTestsFixtures.Cylinder(16, 8, 0.3f, 2f), "Forgotten");
+            var r = Skinned(root, "Body", mesh, new[] { lower, upper });
+            var target = MixerSession.Edit(r);
+            int before = MixerHistory.Count;
+            Inflate(target, target.World[0]);
+            Assert.That(MixerHistory.Count, Is.GreaterThan(before), "the stroke is a step");
+            MixerHistory.Forget(target);
+            var notices = new System.Collections.Generic.List<string>();
+            System.Action<string> listen = notices.Add;
+            MixerHistory.Notice += listen;
+            try { Undo.PerformUndo(); }
+            finally { MixerHistory.Notice -= listen; }
+            Assert.That(notices.Any(n => n.Contains("changes nothing in Mixer")), Is.True, "the undo says it changed nothing");
+        }
+
         [Test]
         public void APickedShapeShowsAtOnceAndItsFirstStrokeUndoesToIt()
         {

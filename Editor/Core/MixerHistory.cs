@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using UnityEditor;
 using UnityEngine;
 
@@ -31,6 +32,11 @@ namespace Orbiters.Mixer.Editor
         // Serials at or below this were dropped (memory cap) or lost to a script reload: undoing to them changes nothing.
         private static int floor = nextSerial;
         private static long bytes;
+        // Serials of entries forgotten with their target (committed, reverted, its session ended for Play or closed):
+        // Unity's steps for them still come back and change nothing, which a notice says. The anchor's serial as the
+        // history last saw it tells which steps an undo or redo crossed.
+        private static readonly HashSet<int> forgotten = new HashSet<int>();
+        private static int seenSerial;
         private static Anchor anchor;
         private static bool applying;
         private static readonly HashSet<EditTarget> touched = new HashSet<EditTarget>();
@@ -104,6 +110,7 @@ namespace Orbiters.Mixer.Editor
             if (!joinCurrentGroup) { Undo.IncrementCurrentGroup(); Undo.SetCurrentGroupName("Mixer: " + entry.Label); }
             Undo.RegisterCompleteObjectUndo(a, "Mixer: " + entry.Label);
             a.revision = entry.Serial;
+            seenSerial = entry.Serial;
             if (!joinCurrentGroup) Undo.IncrementCurrentGroup();
             Trim();
             Changed?.Invoke();
@@ -134,6 +141,7 @@ namespace Orbiters.Mixer.Editor
             {
                 if (entries[i].Target != target) continue;
                 bytes -= entries[i].Bytes;
+                forgotten.Add(entries[i].Serial);
                 entries.RemoveAt(i);
                 if (i < cursor) cursor--;
                 any = true;
@@ -144,6 +152,7 @@ namespace Orbiters.Mixer.Editor
         public static void Clear()
         {
             entries.Clear();
+            forgotten.Clear();
             bytes = 0;
             cursor = 0;
             floor = nextSerial;
@@ -208,10 +217,19 @@ namespace Orbiters.Mixer.Editor
                 if (anchor.revision > nextSerial) nextSerial = anchor.revision;
             }
             int serial = anchor.revision;
+            int seen = seenSerial;
+            seenSerial = serial;
             // Entries at or below the anchor's serial are in effect, the others not.
             int target = 0;
             while (target < entries.Count && entries[target].Serial <= serial) target++;
-            if (target == cursor && serial >= floor) return;
+            if (target == cursor && serial >= floor)
+            {
+                // Only steps of entries forgotten since crossed: said, so the undo does not look broken.
+                int low = Math.Min(seen, serial), high = Math.Max(seen, serial);
+                if (forgotten.Any(s => s > low && s <= high))
+                    Notice?.Invoke("This undo or redo step is a Mixer edit of a session that was committed, reverted or ended since (Play mode ends sessions): it changes nothing in Mixer.");
+                return;
+            }
             // A stroke held while Undo or Redo came: its records were taken before them, so it is put back first.
             MixerSceneTool.CancelStroke();
             applying = true;
