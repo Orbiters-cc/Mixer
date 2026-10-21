@@ -87,6 +87,7 @@ namespace Orbiters.Mixer.Editor
             HierarchyVrchat.Changed += MarkDirty;
             BoneSubSelection.Changed += OnSubSelectionChanged;
             Undo.undoRedoPerformed += MarkDirty;
+            HookUnity();
         }
 
         private void OnDisable()
@@ -106,6 +107,7 @@ namespace Orbiters.Mixer.Editor
             HierarchyVrchat.Changed -= MarkDirty;
             BoneSubSelection.Changed -= OnSubSelectionChanged;
             Undo.undoRedoPerformed -= MarkDirty;
+            UnhookUnity();
             PersistExpanded(force: true);
         }
 
@@ -185,7 +187,7 @@ namespace Orbiters.Mixer.Editor
             searchField.AddToClassList("mx-field");
             searchField.AddToClassList("mxh-search");
             searchField.tooltip = "Search by name; t:Light or c:Rigidbody by type";
-            searchField.RegisterValueChangedCallback(evt => { search = evt.newValue; filter.Pattern = searchOptions.For(search); MarkDirty(); });
+            searchField.RegisterValueChangedCallback(evt => { search = evt.newValue; LeaveUnitySearch(); filter.Pattern = searchOptions.For(search); MarkDirty(); });
             searchField.RegisterCallback<KeyDownEvent>(evt => { if (evt.keyCode == KeyCode.Escape) { searchField.value = string.Empty; root.Focus(); evt.StopPropagation(); } else if (evt.keyCode == KeyCode.DownArrow) { root.Focus(); evt.StopPropagation(); } });
             var searchIcon = new VectorIcon(IconGlyph.Search); searchIcon.AddToClassList("mxh-search__icon");
             searchField.Add(searchIcon);
@@ -253,6 +255,7 @@ namespace Orbiters.Mixer.Editor
             if (!built) return;
             PersistExpanded(force: false);
             PollThumbnails();
+            TickHooks();
             if (!visible || !dirty) return;
             // Hierarchy changes come in bursts (an import, a prefab apply): one rebuild per 60 ms is plenty.
             if (EditorApplication.timeSinceStartup - lastRebuild < 0.06) return;
@@ -410,7 +413,8 @@ namespace Orbiters.Mixer.Editor
             var rename = new TextField(); rename.AddToClassList("mxh-row__rename"); MixerUi.Show(rename, false); line.Add(rename);
             line.Add(MixerUi.Box("mxh-row__badges", PickingMode.Ignore));
             line.Add(MixerUi.Spacer());
-            line.Add(MixerUi.Box("mxh-row__components", PickingMode.Ignore));
+            var components = MixerUi.Box("mxh-row__components", PickingMode.Ignore);
+            line.Add(components);
             // As Unity's Hierarchy: a click switches the object and its children, Alt+click the object alone.
             var pick = MixerUi.Icon(IconGlyph.Lock, "Pickable in the Scene view (Alt+click: this object only)", null, evt =>
             {
@@ -429,6 +433,8 @@ namespace Orbiters.Mixer.Editor
             switches.Add(pick);
             switches.Add(eye);
             line.Add(switches);
+            // Other tools' decorations, first so everything on the line draws over them.
+            line.Insert(0, MakeDecorations(row, components, switches));
             body.Add(MakeSecondLine(row));
             body.Add(MakeAvatarLines(row));
             // Right of the lines: a light's turning ball, My Avatar's drop field on an avatar root.
@@ -487,6 +493,8 @@ namespace Orbiters.Mixer.Editor
             element.EnableInClassList("mxh-row--odd", index % 2 == 1);
             element.EnableInClassList("mxh-row--excluded", row.Excluded);
             element.EnableInClassList("mxh-row--cut", !row.IsScene && IsCut(row.InstanceId));
+            element.EnableInClassList("mxh-row--ping", pingId != 0 && !row.IsScene && row.InstanceId == pingId);
+            BindDecorations(element);
             name.text = row.IsScene ? row.Name + (row.Scene.isLoaded && row.Scene.isDirty ? " *" : "") + (row.Scene.isLoaded || row.IsDontDestroyOnLoad ? "" : " (not loaded)") : row.Name;
             name.EnableInClassList("mxh-row__name--active-scene", row.IsScene && row.Active);
             bool renaming = row.Object != null && row.InstanceId == renamingId;

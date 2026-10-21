@@ -612,5 +612,91 @@ namespace Orbiters.Mixer.Editor.Tests
         }
 
         private static string ParentOf(string path) => path.Substring(0, path.LastIndexOf('/'));
+
+        // ---- Unity's hooks into its Project window (UnityWindowHooks, UnityCreateFlow) -------------------------------------
+
+        private static readonly Type BrowserType = typeof(EditorWindow).Assembly.GetType("UnityEditor.ProjectBrowser");
+
+        [Test]
+        public void UnitysPingShowsTheAssetInTheMixerProject()
+        {
+            UnityWindowHooks.Keep();
+            Assume.That(UnityWindowHooks.ListensToPings, Is.True, "this Unity version lets Mixer hear its pings");
+            var window = OpenHidden();
+            var onlyBefore = UnityWindowHooks.OnlyTo;
+            // The user's own Mixer windows are left as they are.
+            UnityWindowHooks.OnlyTo = new EditorWindow[] { window };
+            try
+            {
+                window.Navigate(Root);
+                Repaint(window);
+                string path = Root + "/Sub/Deep/Jump.anim";
+                EditorGUIUtility.PingObject(AssetDatabase.LoadAssetAtPath<AnimationClip>(path));
+                UnityWindowHooks.Poll();
+                Assert.That(window.PingedPath, Is.EqualTo(path), "the asset's line flashes");
+                Assert.That(window.IndexOf(path), Is.GreaterThanOrEqualTo(0), "its folders unfolded in place");
+            }
+            finally
+            {
+                UnityWindowHooks.OnlyTo = onlyBefore;
+                window.Close();
+            }
+        }
+
+        [Test]
+        public void UnitysCreateItemsCreateInTheFolderAskedForAndAreNamedInPlace()
+        {
+            Assume.That(UnityCreateFlow.Available, Is.True, "this Unity version lets a stand-in take Unity's naming");
+            var window = OpenHidden();
+            try
+            {
+                window.Navigate(Root);
+                Repaint(window);
+                string target = Root + "/Sub";
+                // Unity's Avatar Mask item hands its new asset over to be named (as Assets › Create items do).
+                RunUnityCreate(window, "Assets/Create/Avatar Mask", target);
+                var pending = window.PendingCreate;
+                Assert.That(pending, Is.Not.Null, "Unity handed the naming over");
+                Assert.That(pending.Folder, Is.EqualTo(target));
+                Assert.That(window.IndexOf(MixerProjectWindow.PendingPath), Is.GreaterThanOrEqualTo(0), "its line shows in the folder, being renamed");
+                Assert.That(AssetDatabase.FindAssets("t:AvatarMask", new[] { target }), Is.Empty, "nothing is made before it is named");
+                // The stand-in is gone: no ProjectBrowser left behind, none as Unity's last clicked one.
+                Assert.That(Resources.FindObjectsOfTypeAll(BrowserType).Cast<EditorWindow>().Any(w => (w.hideFlags & HideFlags.HideAndDontSave) == HideFlags.HideAndDontSave), Is.False);
+                var last = BrowserType.GetField("s_LastInteractedProjectBrowser", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic).GetValue(null) as EditorWindow;
+                Assert.That(last == null || (last.hideFlags & HideFlags.HideAndDontSave) != HideFlags.HideAndDontSave, Is.True);
+
+                window.EndPending("Hands Only", true);
+                Assert.That(AssetDatabase.LoadAssetAtPath<AvatarMask>(target + "/Hands Only.mask"), Is.Not.Null, "Enter makes it under the name typed, where it was asked for");
+                Assert.That(window.PendingCreate, Is.Null);
+                Assert.That(window.Picked, Is.EquivalentTo(new[] { target + "/Hands Only.mask" }), "and lights it up");
+
+                // Unity's Folder item, then Escape: nothing is made; again with a name: the folder is made.
+                RunUnityCreate(window, "Assets/Create/Folder", Root);
+                Assert.That(window.PendingCreate, Is.Not.Null);
+                Assert.That(window.PendingCreate.IsFolder, Is.True);
+                window.EndPending(null, false);
+                Assert.That(AssetDatabase.IsValidFolder(Root + "/New Folder"), Is.False, "Escape makes nothing");
+                RunUnityCreate(window, "Assets/Create/Folder", Root);
+                window.EndPending("Made Here", true);
+                Assert.That(AssetDatabase.IsValidFolder(Root + "/Made Here"), Is.True);
+            }
+            finally
+            {
+                window.Close();
+            }
+        }
+
+        [Test]
+        public void ImportNewAssetIsTheMixerProjectsOwn()
+        {
+            // The context menu brings files into the folder clicked (Unity's own imports into its Project window's folder,
+            // or Assets): Unity's item is left out of the Assets items listed there.
+            Assert.That(Unsupported.GetSubmenus("Assets"), Does.Contain("Assets/Import New Asset..."), "the item Mixer's replaces is Unity's");
+            var items = (List<string>)typeof(MixerProjectWindow).GetMethod("UnityAssetItems", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic).Invoke(null, null);
+            Assert.That(items, Does.Not.Contain("Assets/Import New Asset..."));
+        }
+
+        private static void RunUnityCreate(MixerProjectWindow window, string menuPath, string target) =>
+            typeof(MixerProjectWindow).GetMethod("RunUnityCreate", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).Invoke(window, new object[] { menuPath, target });
     }
 }

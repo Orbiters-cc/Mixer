@@ -34,6 +34,10 @@
 /* A bone sub-selected in Weight Paint: Mixer's pick, lighter than Unity's selection, its name in the accent. */
 .mxh-row.mxh-row--subselected, .mxh-row.mxh-row--subselected:hover { background-color: rgba(0, 218, 109, 0.09); }
 .mxh-row.mxh-row--subselected .mxh-row__name { color: #3cf29a; -unity-font-style: bold; }
+/* A ping (an Inspector field's click, the Console, a tool's "show"): the Project's flash. */
+.mxh-row.mxh-row--ping, .mxh-row.mxh-row--ping:hover { background-color: rgba(245, 183, 79, 0.22); transition-property: background-color; transition-duration: 0.3s; }
+/* Other tools' decorations (EditorApplication.hierarchyWindowItemOnGUI) over the name's line, under its own controls. */
+.mxh-row__decorations { position: absolute; left: 0; top: 0; right: 0; bottom: 0; }
 .mxh-row--scene { background-color: #343434; border-bottom-width: 1px; border-bottom-color: var(--mx-line); }
 .mxh-row--scene:hover { background-color: #3a3a3a; }
 .mxh-row__indent { flex-shrink: 0; }

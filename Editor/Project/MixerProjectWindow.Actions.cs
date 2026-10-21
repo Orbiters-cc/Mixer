@@ -256,6 +256,7 @@ namespace Orbiters.Mixer.Editor
         private void CommitRename(TextField field, bool apply)
         {
             if (renamingPath == null) return;
+            if (renamingPath == PendingPath) { CommitPending(field, apply); return; }
             bool ours = field.userData is string bound && bound == renamingPath;
             string path = renamingPath;
             renamingPath = null;
@@ -397,19 +398,32 @@ namespace Orbiters.Mixer.Editor
         private static readonly System.Reflection.MethodInfo ActiveFolderPath = typeof(ProjectWindowUtil).GetMethod("GetActiveFolderPath",
             System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public, null, Type.EmptyTypes, null);
 
-        // Unity's create items make their asset in its Project window's folder, or in Assets without one: what they made
-        // there (within a few seconds) moves to the folder asked for, then is renamed in place. Only what appears in that
-        // folder counts (a tool, an import or an autosave elsewhere is left alone). An item that asked where to save (a
-        // dialog: it took the user a moment) made its asset where the user chose: it is shown there, not moved.
+        // Unity's create items ask its Project window for the folder and hand it the new asset to name: while one runs from
+        // here, UnityCreateFlow's stand-in shows the folder asked for, and a naming it is handed is ended here, in place.
+        // What an item makes itself in Unity's folder, or in Assets (its own choice), within a few seconds, moves to the
+        // folder asked for, then is renamed in place. Only what appears in those folders counts (a tool, an import or an
+        // autosave elsewhere is left alone). An item that asked where to save (a dialog: it took the user a moment) made its
+        // asset where the user chose: it is shown there, not moved.
         private void RunUnityCreate(string menuPath, string target)
         {
             var before = new HashSet<string>(AssetDatabase.GetAllAssetPaths(), StringComparer.Ordinal);
-            string unityFolder = "Assets";
-            try { if (ActiveFolderPath?.Invoke(null, null) is string active && AssetDatabase.IsValidFolder(active)) unityFolder = active; }
-            catch (Exception) { }
+            string unityFolder = UnityCreateFlow.Available ? target : "Assets";
+            if (!UnityCreateFlow.Available)
+            {
+                try { if (ActiveFolderPath?.Invoke(null, null) is string active && AssetDatabase.IsValidFolder(active)) unityFolder = active; }
+                catch (Exception) { }
+            }
             creating = true;
             double started = EditorApplication.timeSinceStartup;
-            if (!EditorApplication.ExecuteMenuItem(menuPath)) { creating = false; toasts.Show("Unity could not run " + menuPath.Substring("Assets/".Length) + ".", true); return; }
+            bool ran = false;
+            var naming = UnityCreateFlow.Run(this, target, () => ran = EditorApplication.ExecuteMenuItem(menuPath));
+            if (naming != null)
+            {
+                creating = false;
+                BeginPending(naming, target);
+                return;
+            }
+            if (!ran) { creating = false; toasts.Show("Unity could not run " + menuPath.Substring("Assets/".Length) + ".", true); return; }
             bool asked = EditorApplication.timeSinceStartup - started > 1.0;
             double until = EditorApplication.timeSinceStartup + 3.0, next = 0;
             EditorApplication.CallbackFunction poll = null;
@@ -565,6 +579,7 @@ namespace Orbiters.Mixer.Editor
                 evt.menu.AppendAction("Copy", _ => CopyPicked());
                 evt.menu.AppendAction("Paste", _ => Paste(), ClipboardPaths().Count > 0 && ProjectFiles.IsWritable(target) ? DropdownMenuAction.Status.Normal : DropdownMenuAction.Status.Disabled);
                 evt.menu.AppendAction("Reimport", _ => { foreach (string path in PickedRoots()) AssetDatabase.ImportAsset(path, ImportAssetOptions.ImportRecursive); });
+                evt.menu.AppendAction("Import New Asset…", _ => ImportNewAsset(target), ProjectFiles.IsWritable(target) ? DropdownMenuAction.Status.Normal : DropdownMenuAction.Status.Disabled);
                 AppendFavouriteActions(evt.menu, item);
                 evt.menu.AppendSeparator();
                 // Unity's own Assets menu (Import, Export Package, Find References, Properties, other tools' items).
@@ -572,6 +587,7 @@ namespace Orbiters.Mixer.Editor
                 evt.menu.AppendSeparator();
             }
             else if (ClipboardPaths().Count > 0) evt.menu.AppendAction("Paste", _ => Paste(), ProjectFiles.IsWritable(target) ? DropdownMenuAction.Status.Normal : DropdownMenuAction.Status.Disabled);
+            if (item == null || item.IsHeading) evt.menu.AppendAction("Import New Asset…", _ => ImportNewAsset(target), ProjectFiles.IsWritable(target) ? DropdownMenuAction.Status.Normal : DropdownMenuAction.Status.Disabled);
             AppendCreateMenu(evt.menu, target);
             if (!Searching && !showRecent)
             {

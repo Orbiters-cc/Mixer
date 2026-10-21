@@ -285,6 +285,7 @@ namespace Orbiters.Mixer.Editor
         private static readonly HashSet<string> OurAssetItems = new HashSet<string>(StringComparer.Ordinal)
         {
             "Assets/Show in Explorer", "Assets/Open", "Assets/Delete", "Assets/Rename", "Assets/Copy Path", "Assets/Refresh", "Assets/Reimport",
+            "Assets/Import New Asset...",
         };
 
         private static List<string> UnityAssetItems()

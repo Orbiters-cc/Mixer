@@ -163,6 +163,7 @@ namespace Orbiters.Mixer.Editor
             else if (showRecent) BuildRecentRows();
             else if (folder == PackagesPath) AddItems(PackageItems(), 0);
             else AddItems(ProjectFiles.Children(folder, sort, kinds), 0);
+            InsertPending();
             rowIndex.Clear();
             for (int i = 0; i < rows.Count; i++) if (!rows[i].IsHeading) rowIndex[rows[i].Path] = i;
             // What lit up and is no longer shown (another folder, another search) is not what Delete or Copy act on.
@@ -396,11 +397,11 @@ namespace Orbiters.Mixer.Editor
             ext.text = item.IsFolder ? string.Empty : item.IsSubAsset ? "  " + (item.SubAsset != null ? ObjectNames.NicifyVariableName(item.SubAsset.GetType().Name) : "") : item.Extension;
             element.EnableInClassList("mxp-row--subasset", item.IsSubAsset);
             MixerUi.Show(chip, item.IsNew);
-            MixerUi.Show(date, !item.IsSubAsset);
+            MixerUi.Show(date, !item.IsSubAsset && !IsPending(item));
             date.text = DateText(item);
             date.tooltip = item.Added == default ? string.Empty
                 : "Added " + item.Added.ToLocalTime().ToString("g") + "\nModified " + item.Modified.ToLocalTime().ToString("g") + (item.Used != default ? "\nUsed " + item.Used.ToLocalTime().ToString("g") : "");
-            MixerUi.Show(target, !item.IsFolder && !item.IsSubAsset);
+            MixerUi.Show(target, !item.IsFolder && !item.IsSubAsset && !IsPending(item));
             target.EnableInClassList("mxp-row__target--on", usagePath == item.Path);
             target.EnableInClassList("mxp-row__target--busy", usageBusy && usagePath == item.Path);
             element.EnableInClassList("mxp-row--picked", picked.Contains(item.Path));
@@ -458,6 +459,9 @@ namespace Orbiters.Mixer.Editor
 
         private static Texture IconOf(ProjectItem item)
         {
+            // An asset being named before it exists: the icon Unity's create item gave.
+            if (item.Tag is UnityCreateFlow.Pending made)
+                return made.Icon != null ? made.Icon : item.IsFolder ? FolderIcon(false, true) : EditorGUIUtility.IconContent("DefaultAsset Icon").image;
             if (item.IsFolder) return FolderIcon(item.Expanded, !item.HasChildren);
             if (item.IsSubAsset) return item.SubAsset != null ? AssetPreview.GetMiniThumbnail(item.SubAsset) : null;
             return AssetDatabase.GetCachedIcon(item.Path) ?? EditorGUIUtility.IconContent("DefaultAsset Icon").image;
@@ -466,7 +470,7 @@ namespace Orbiters.Mixer.Editor
         // A picture of the asset (a material's ball, a texture, a model) once Unity made one; its icon meanwhile.
         private Texture PreviewOf(ProjectItem item)
         {
-            if (item.IsFolder) return IconOf(item);
+            if (item.IsFolder || IsPending(item)) return IconOf(item);
             if (previewCache.TryGetValue(item.Path, out var cached) && cached != null) return cached;
             var asset = item.IsSubAsset ? item.SubAsset : AssetDatabase.LoadMainAssetAtPath(item.Path);
             if (asset == null) return IconOf(item);

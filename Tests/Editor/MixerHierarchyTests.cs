@@ -433,5 +433,144 @@ namespace Orbiters.Mixer.Editor.Tests
                 MixerHierarchyWindow.AskToSaveScene = before;
             }
         }
+
+        // ---- Unity's hooks into its Hierarchy (UnityWindowHooks) ---------------------------------------------------------
+
+        private const System.Reflection.BindingFlags AnyStatic = System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
+        private static readonly System.Type HierarchyWindowType = typeof(EditorWindow).Assembly.GetType("UnityEditor.SceneHierarchyWindow");
+
+        [Test]
+        public void UnitysPingOpensTheWayToTheObjectAndFlashesItsRow()
+        {
+            UnityWindowHooks.Keep();
+            Assume.That(UnityWindowHooks.ListensToPings, Is.True, "this Unity version lets Mixer hear its pings");
+            var window = OpenHidden();
+            var onlyBefore = UnityWindowHooks.OnlyTo;
+            // The user's own Mixer windows are left as they are.
+            UnityWindowHooks.OnlyTo = new EditorWindow[] { window };
+            try
+            {
+                var cube = root.transform.Find("Child 2/Cube 2").gameObject;
+                // A component's ping, as an Inspector field's click sends: its object is shown.
+                EditorGUIUtility.PingObject(cube.GetComponent<MeshRenderer>());
+                UnityWindowHooks.Poll();
+                Assert.That(window.PingedId, Is.EqualTo(cube.GetInstanceID()), "the pinged object's row flashes");
+                ScrollToTop(window, root);
+                Repaint(window);
+                var row = RowNamed(window, "Cube 2");
+                Assert.That(row, Is.Not.Null, "the folds above it opened");
+                Assert.That(row.ClassListContains("mxh-row--ping"), Is.True);
+
+                // The listener is no window of Unity's: GetWindow (Window › General › Hierarchy) still opens a real one.
+                Assert.That(Resources.FindObjectsOfTypeAll(HierarchyWindowType).Cast<EditorWindow>().Any(w => (w.hideFlags & HideFlags.HideAndDontSave) == HideFlags.HideAndDontSave),
+                    Is.False, "no hidden Hierarchy for GetWindow to find");
+                // Unity's last clicked Hierarchy, which its visibility shortcuts read without a check, answers.
+                var last = HierarchyWindowType.GetProperty("lastInteractedHierarchyWindow", AnyStatic).GetValue(null);
+                Assert.That(last, Is.Not.Null);
+                var scenes = new System.Collections.Generic.List<Scene>();
+                Assert.DoesNotThrow(() => HierarchyWindowType.GetMethod("GetSelectedScenes").Invoke(last, new object[] { scenes }));
+            }
+            finally
+            {
+                UnityWindowHooks.OnlyTo = onlyBefore;
+                window.Close();
+            }
+        }
+
+        [Test]
+        public void FindReferencesInSceneShowsInTheSearchAndLeavingItClearsTheSceneViews()
+        {
+            var views = SceneView.sceneViews.Cast<SceneView>().Where(v => v != null).ToList();
+            Assume.That(views.Count > 0 && UnityWindowHooks.SceneViewSearch(views[0]) != null, Is.True, "a Scene view takes Unity's search");
+            var searchesBefore = views.ToDictionary(v => v, v => UnityWindowHooks.SceneViewSearch(v));
+            var target = root.transform.Find("Child 0");
+            var holder = new GameObject("Holder");
+            SceneManager.MoveGameObjectToScene(holder, scene);
+            holder.AddComponent<SkinnedMeshRenderer>().rootBone = target;
+            var window = OpenHidden();
+            var onlyBefore = UnityWindowHooks.OnlyTo;
+            UnityWindowHooks.OnlyTo = new EditorWindow[] { window };
+            try
+            {
+                // What the Scene views held before is not news.
+                UnityWindowHooks.Poll();
+                typeof(SearchableEditorWindow).GetMethod("SearchForReferencesToInstanceID", AnyStatic).Invoke(null, new object[] { target.GetInstanceID() });
+                UnityWindowHooks.Poll();
+                Assert.That(window.Search, Does.StartWith("ref:"), "the Mixer Hierarchy shows Unity's search");
+                var model = (HierarchyModel)typeof(MixerHierarchyWindow).GetField("model", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance).GetValue(window);
+                var matches = model.Rows.Where(r => r.Object != null && r.Match).Select(r => r.Object).ToList();
+                Assert.That(matches, Has.Member(holder), "what refers to it matches");
+                Assert.That(matches, Has.No.Member(target.gameObject));
+
+                // The user clears the field: the Scene views Unity greyed show everything again.
+                window.rootVisualElement.Q<TextField>(className: "mxh-search").value = string.Empty;
+                Assert.That(views.All(v => string.IsNullOrEmpty(UnityWindowHooks.SceneViewSearch(v))), Is.True);
+            }
+            finally
+            {
+                UnityWindowHooks.OnlyTo = onlyBefore;
+                window.Close();
+                var set = typeof(SearchableEditorWindow).GetMethod("SetSearchFilter", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic, null,
+                    new[] { typeof(string), typeof(SearchableEditorWindow.SearchMode), typeof(bool), typeof(bool) }, null);
+                foreach (var pair in searchesBefore)
+                    if (pair.Key != null && UnityWindowHooks.SceneViewSearch(pair.Key) != pair.Value)
+                        set.Invoke(pair.Key, new object[] { pair.Value ?? string.Empty, SearchableEditorWindow.SearchMode.All, false, false });
+                UnityWindowHooks.Poll();
+            }
+        }
+
+        [Test]
+        public void OtherToolsRowDecorationsDrawOnTheRowsAndGetTheirClicks()
+        {
+            var drawn = new System.Collections.Generic.Dictionary<int, Rect>();
+            int clicked = 0;
+            int rootId = root.GetInstanceID();
+            // As Easy Quest Switch decorates: an icon at the right end of Unity's row, a click on it used.
+            EditorApplication.HierarchyWindowItemCallback decorate = (id, rect) =>
+            {
+                drawn[id] = rect;
+                var icon = new Rect(rect.xMax - 18f, rect.y, 18f, rect.height);
+                if (id == rootId && Event.current.type == EventType.MouseUp && icon.Contains(Event.current.mousePosition)) { clicked++; Event.current.Use(); }
+            };
+            var before = EditorApplication.hierarchyWindowItemOnGUI;
+            EditorApplication.hierarchyWindowItemOnGUI += decorate;
+            var window = OpenHidden();
+            try
+            {
+                window.RevealObject(root);
+                ScrollToTop(window, root);
+                Repaint(window);
+                Assert.That(drawn.ContainsKey(rootId), Is.True, "the tool draws on the fixture's row");
+                var rect = drawn[rootId];
+                Assert.That(rect.height, Is.EqualTo(16f), "a row of Unity's height");
+                Assert.That(rect.width, Is.GreaterThan(80f), "the name's line, up to the row's own icons");
+
+                var row = RowNamed(window, "MixerHierarchyFixture");
+                var decorations = row.Q<IMGUIContainer>(className: "mxh-row__decorations");
+                Click(window, decorations.LocalToWorld(new Vector2(rect.xMax - 9f, rect.center.y)));
+                Assert.That(clicked, Is.EqualTo(1), "a click on the tool's icon reaches it");
+
+                // A click the tool does not use (on the name) still selects the row.
+                Selection.activeObject = null;
+                Click(window, decorations.LocalToWorld(new Vector2(rect.x + 30f, rect.center.y)));
+                Assert.That(Selection.activeGameObject, Is.SameAs(root), "the row under it still selects");
+            }
+            finally
+            {
+                EditorApplication.hierarchyWindowItemOnGUI = before;
+                window.Close();
+            }
+        }
+
+        // A press and a release at a point, through the window's own event handling: IMGUI code (the decorations) reads
+        // its mouse position only from events Unity hands the window itself.
+        private static void Click(EditorWindow window, Vector2 point)
+        {
+            // A press another test sent without its release (its window is gone) still holds the pointer and would take
+            // this release: it is let go first, at the window's bottom corner, away from the rows.
+            window.SendEvent(new Event { type = EventType.MouseUp, mousePosition = new Vector2(2f, window.position.height - 2f), button = 0 });
+            window.SendEvent(new Event { type = EventType.MouseDown, mousePosition = point, button = 0, clickCount = 1 });
+            window.SendEvent(new Event { type = EventType.MouseUp, mousePosition = point, button = 0, clickCount = 1 });
+        }
     }
 }

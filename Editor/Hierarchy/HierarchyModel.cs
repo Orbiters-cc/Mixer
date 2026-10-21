@@ -220,8 +220,10 @@ namespace Orbiters.Mixer.Editor
             var pattern = filter.Pattern ?? SearchPattern.Empty;
             string typeName = null, componentName = null;
             var words = new List<string>();
+            // Find References In Scene's search ("ref:" and an asset's path or an object's ID): Unity finds what refers to it.
+            var referring = !pattern.IsRegex && UnityWindowHooks.IsReferenceSearch(pattern.Text) ? Referring(pattern.Text.Trim()) : null;
             // A regular expression is matched against names as it is; plain words may name types with t: and c:.
-            foreach (string token in pattern.IsRegex || pattern.IsEmpty ? Array.Empty<string>() : pattern.Text.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries))
+            foreach (string token in pattern.IsRegex || pattern.IsEmpty || referring != null ? Array.Empty<string>() : pattern.Text.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries))
             {
                 if (token.StartsWith("t:", StringComparison.OrdinalIgnoreCase)) typeName = token.Substring(2);
                 else if (token.StartsWith("c:", StringComparison.OrdinalIgnoreCase)) componentName = token.Substring(2);
@@ -234,7 +236,7 @@ namespace Orbiters.Mixer.Editor
             {
                 var row = Rows[i];
                 while (ancestors.Count > 0 && Rows[ancestors.Peek()].Depth >= row.Depth) ancestors.Pop();
-                bool match = !row.IsScene && Matches(row, pattern, words, typeName, componentName, filter);
+                bool match = !row.IsScene && Matches(row, pattern, words, typeName, componentName, referring, filter);
                 matched[i] = match;
                 if (match)
                 {
@@ -255,10 +257,11 @@ namespace Orbiters.Mixer.Editor
             Rows.AddRange(kept);
         }
 
-        private static bool Matches(HierarchyRow row, SearchPattern pattern, List<string> words, string typeName, string componentName, HierarchyFilter filter)
+        private static bool Matches(HierarchyRow row, SearchPattern pattern, List<string> words, string typeName, string componentName, HashSet<int> referring, HierarchyFilter filter)
         {
             var go = row.Object;
-            if (pattern.IsRegex) { if (!pattern.Matches(go.name)) return false; }
+            if (referring != null) { if (!referring.Contains(row.InstanceId)) return false; }
+            else if (pattern.IsRegex) { if (!pattern.Matches(go.name)) return false; }
             else foreach (string w in words) if (go.name.IndexOf(w, pattern.Comparison) < 0) return false;
             if (typeName != null && !row.Components.Any(c => c != null && c.GetType().Name.IndexOf(typeName, StringComparison.OrdinalIgnoreCase) >= 0)) return false;
             if (componentName != null && !row.Components.Any(c => c != null && c.GetType().Name.IndexOf(componentName, StringComparison.OrdinalIgnoreCase) >= 0)) return false;
@@ -272,6 +275,19 @@ namespace Orbiters.Mixer.Editor
             if (filter.Missing && (row.MissingScript || row.PrefabMissing)) return true;
             if (filter.Inactive && !go.activeInHierarchy) return true;
             return false;
+        }
+
+        // The objects Unity's own search finds (its Hierarchy's): in the open prefab's scene in Prefab Mode, else in the
+        // loaded scenes.
+        private static HashSet<int> Referring(string query)
+        {
+            var found = new HashSet<int>();
+            var property = new HierarchyProperty(UnityEditor.HierarchyType.GameObjects, false);
+            var stage = PrefabStageUtility.GetCurrentPrefabStage();
+            if (stage != null) property.SetCustomScenes(new[] { stage.scene.handle });
+            property.SetSearchFilter(query, (int)SearchableEditorWindow.SearchMode.All);
+            while (property.Next(null)) found.Add(property.instanceID);
+            return found;
         }
 
         // Each scene keeps its own exclusions (where the Blender link and MixerLink.IsKeptOutOfBlender read them).

@@ -70,6 +70,7 @@ namespace Orbiters.Mixer.Editor
             AssetContentIndex.Updated += OnIndexUpdated;
             ProjectFavourites.Changed += OnFavouritesChanged;
             ProjectPreviews.Changed += OnAssetsChanged;
+            HookUnity();
         }
 
         private void OnDisable()
@@ -80,6 +81,7 @@ namespace Orbiters.Mixer.Editor
             AssetContentIndex.Updated -= OnIndexUpdated;
             ProjectFavourites.Changed -= OnFavouritesChanged;
             ProjectPreviews.Changed -= OnAssetsChanged;
+            UnhookUnity();
             // A background tab never built its rows: its folds are still the ones kept.
             if (!built) return;
             treeOpen = treeOpenSet.ToList();
@@ -292,6 +294,7 @@ namespace Orbiters.Mixer.Editor
             double now = EditorApplication.timeSinceStartup;
             if (pingPath != null && now > pingUntil) { pingPath = null; RefreshContent(); }
             if (AssetContentIndex.Building && now - lastFooter > 0.5) UpdateFooter();
+            if (visible) TickPending();
             if (!visible || !(dirty || treeDirty)) return;
             // Imports come in bursts and every key typed in the search asks again: one rebuild per 80 ms (120 searching).
             if (now - lastRebuild < (Searching ? 0.12 : 0.08)) return;
