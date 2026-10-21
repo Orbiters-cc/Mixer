@@ -235,6 +235,29 @@ saved as a native mesh asset when you commit.
     Short button presses, Random parameter drivers and the sil viseme behave as in VRChat. Bakes of sessions still
     recording, or where the avatar changed, say what is missing. Long audio tracks are streamed, so hour-long sessions
     keep their sound.
+- Review fixes, second round (2026-10-21):
+  - Blender link: Blender's work is no longer thrown away. Meshes Unity sends again (after a commit, a revert, a resend)
+    are patched into Blender's copy, so UVs, seams, normals, colours and keys and groups made in Blender stay; a copy that
+    must be rebuilt for another topology is kept hidden first. Edits made in Blender under a claim Unity refused or ended
+    stay in Blender, marked in its Mixer panel, until you send them or take Unity's mesh (Blender's then kept in a copy).
+    Ctrl+Z and Ctrl+Y in Unity reach Blender; an undo of a mesh Blender is editing ends Blender's claim and keeps its
+    edits there. Claims are numbered, so a late answer no longer cancels a newer claim. Shift+D copies in Blender are
+    no longer the Unity object. A link dropped by a script reload or a long render links again on its own; only another
+    Blender taking it waits for Connect. Needs the Mixer extension of this release.
+  - Data safety: a script reload after the mesh was reimported, even with as many vertices, starts from the new import
+    instead of mixing old and new. A mesh left by a session that could not come back after a reload gets its original
+    again, so scenes never save it missing. Ctrl+Z after committing a mesh Mixer saved before gives that asset what it
+    held; a Mixer mesh that a prefab, a closed scene or a waiting session uses gets a file of its own. A bone posed in
+    Weight Paint goes back when Weight Paint ends, and scene saves and uploads never get the pose. Painting a vertex's
+    last bone away with Normalize off leaves it on that bone instead of the rig's first bone. Undoing a bone move made
+    before Play keeps the skin. A session set aside by an undo comes back with its edits after a reload when the mesh is
+    edited again. An undo step of a session committed, reverted or ended since (Play ends sessions) says it changes
+    nothing in Mixer.
+  - Performance bakes play the avatar as an upload builds it: face tracking prefabs, toggles and merged animators from
+    VRCFury or Modular Avatar move the face and toggles, under the parameter names VRChat recorded. The clip still
+    animates the avatar in the scene; what only the build has is left out, and a note says how much. When the build
+    fails, the bake uses the avatar as the scene has it and says what failed. The Bake button says "Baking…" while the
+    avatar is built, and the result shows which animators played.
 - Requires Orbiters Toolkit 0.4.1, which holds the avatar gizmos (bones, weight paint, mesh edges, avatar budget) and
   lets Mixer take the armature overlay's bone clicks.
 
@@ -269,6 +292,10 @@ arrives as a collection `Unity: <scene>`; skinned meshes get an armature built f
 - Right-click an object in the Mixer Hierarchy, Blender, **Keep out of Blender** to leave it (and its children) out
   of the project; **Send to Blender** puts it back. The exclusions are saved per scene under `Assets/Orbiters/Mixer/Link`.
 - Topology changes (vertices added or removed in Blender) are not applied by the link: export an FBX for those.
+- Unity's meshes are patched into Blender's copy: what the link does not carry (UVs, seams, normals, colours, keys and
+  groups made in Blender) stays there. What Unity does not take (a claim refused or ended by a commit, revert or undo)
+  stays in Blender too, marked in its Mixer panel, until **Send to Unity** or **Reload from Unity** (which keeps
+  Blender's copy in the hidden `Mixer: kept copies` collection first).
 - What Blender gets is the whole mesh:
   - every face;
   - UV channels 1-7 (`UVMap1`…);
