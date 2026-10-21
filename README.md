@@ -236,6 +236,15 @@ saved as a native mesh asset when you commit.
     recording, or where the avatar changed, say what is missing. Long audio tracks are streamed, so hour-long sessions
     keep their sound.
 - Review fixes, second round (2026-10-21):
+  - Unity's own features now reach the Mixer Hierarchy and Project that replace its windows. A ping (an object field's
+    click, the Console, Find References, any tool's "show") opens the way to the object or asset and flashes its line.
+    Find References In Scene shows its search in the Mixer Hierarchy, and clearing it there brings the Scene view back.
+    Other tools' row icons (`EditorApplication.hierarchyWindowItemOnGUI`, such as Easy Quest Switch) draw on Mixer
+    Hierarchy rows and get their clicks. Unity's create items in the Mixer Project's + and Create menus make their asset
+    in the folder and name it in place, as in Unity's window (Escape makes nothing). Import New Asset in its context menu
+    brings the file into the folder you clicked. Unity's scene visibility shortcuts (H, L) and Create Empty Parent no
+    longer throw while the Hierarchy is replaced. Unity's main menu Assets > Create and Import New Asset, used outside
+    the Mixer Project, still put their asset in Assets.
   - Blender link: Blender's work is no longer thrown away. Meshes Unity sends again (after a commit, a revert, a resend)
     are patched into Blender's copy, so UVs, seams, normals, colours and keys and groups made in Blender stay; a copy that
     must be rebuilt for another topology is kept hidden first. Edits made in Blender under a claim Unity refused or ended
@@ -317,6 +326,10 @@ reorder, drop prefabs from the Project. The eye and lock at the right switch the
 With Blender dots on (window menu), the dot before each object is its Blender state: green in the Blender project,
 grey kept out, violet being edited in Blender, hollow when Blender is not linked.
 
+Pings from Unity and other tools (an object field's click, the Console) open the way to the object and flash its row.
+Find References In Scene filters the rows; clear the search to show everything again in the Scene view too. Other
+tools' row icons show at the end of each row's name.
+
 ## Mixer Project
 
 Tools, Orbiters, Mixer Project, or in place of Unity's Project window. Folders on the left (Recent first, then Assets
@@ -329,9 +342,10 @@ Backspace goes up, Ctrl+F searches. A click on a folder lights it up here only: 
 as they were. The four buttons at the top create a folder, a material, an animation or an animator controller in the
 highlighted folder, or the open one. The target button on a file lists where it is used.
 
-Unity creates the assets of its main menu's **Assets > Create** in Assets when no Unity Project window is open; the
-Mixer Project's own Create menu (right-click) puts them in the folder you clicked. Unity's pings (a click on an object
-field) do not reach the Mixer Project; selecting the asset shows it.
+Unity's create items in the Mixer Project's + and Create (right-click) menus make their asset in the folder and name it
+in place, as Unity's window does. Unity's main menu **Assets > Create** and **Import New Asset** still put their asset in
+Assets: Unity asks a Project window of its own for the folder, so use the Mixer Project's menus (its right-click menu has
+Import New Asset too). Unity's pings (a click on an object field, the Console, Find References) show the asset here.
 
 ## Armature
 
