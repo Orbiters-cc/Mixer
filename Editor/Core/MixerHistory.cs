@@ -55,7 +55,7 @@ namespace Orbiters.Mixer.Editor
         {
             Undo.undoRedoPerformed += OnUndoRedo;
             Undo.undoRedoEvent += OnUndoRedoEvent;
-            AssemblyReloadEvents.beforeAssemblyReload += () => { entries.Clear(); cursor = 0; SessionState.SetInt(SerialKey, nextSerial); };
+            AssemblyReloadEvents.beforeAssemblyReload += () => { foreach (var e in entries) e.Dropped(); entries.Clear(); cursor = 0; SessionState.SetInt(SerialKey, nextSerial); };
         }
 
         public static int Count => entries.Count;
@@ -100,7 +100,7 @@ namespace Orbiters.Mixer.Editor
             if (entry == null) return;
             var a = GetAnchor();
             // Redo branch gone, as in every undo system.
-            while (entries.Count > cursor) { bytes -= entries[entries.Count - 1].Bytes; entries.RemoveAt(entries.Count - 1); }
+            while (entries.Count > cursor) { bytes -= entries[entries.Count - 1].Bytes; entries[entries.Count - 1].Dropped(); entries.RemoveAt(entries.Count - 1); }
             entry.Serial = ++nextSerial;
             entries.Add(entry);
             // A new step: Unity's redo list is empty now.
@@ -142,6 +142,7 @@ namespace Orbiters.Mixer.Editor
                 if (entries[i].Target != target) continue;
                 bytes -= entries[i].Bytes;
                 forgotten.Add(entries[i].Serial);
+                entries[i].Dropped();
                 entries.RemoveAt(i);
                 if (i < cursor) cursor--;
                 any = true;
@@ -151,6 +152,7 @@ namespace Orbiters.Mixer.Editor
 
         public static void Clear()
         {
+            foreach (var e in entries) e.Dropped();
             entries.Clear();
             forgotten.Clear();
             bytes = 0;
@@ -201,6 +203,7 @@ namespace Orbiters.Mixer.Editor
             {
                 bytes -= entries[0].Bytes;
                 floor = Math.Max(floor, entries[0].Serial);
+                entries[0].Dropped();
                 entries.RemoveAt(0);
                 cursor--;
             }

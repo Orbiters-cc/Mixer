@@ -358,8 +358,9 @@ namespace Orbiters.Mixer.Editor
         }
 
         // The edits written into the Mixer asset the target started from, in the commit's undo step (Ctrl+Z gives the
-        // asset what it held, Ctrl+Y the edits). Null when the asset does not hold them afterwards: it is put back as it
-        // was (what else points at it keeps its mesh) and the caller saves a file of its own.
+        // asset what it held, Ctrl+Y the edits: Unity's redo does not bring a mesh asset's content back, so the history
+        // keeps both and writes them). Null when the asset does not hold them afterwards: it is put back as it was (what
+        // else points at it keeps its mesh) and the caller saves a file of its own.
         private static Mesh ReplaceInPlace(EditTarget target, Mesh built, string step)
         {
             var existing = target.Original;
@@ -372,7 +373,14 @@ namespace Orbiters.Mixer.Editor
             try
             {
                 var asset = MeshAssets.Replace(built, existing);
-                if (asset.vertexCount == doc.VertexCount && MixerAutosave.FingerprintOf(asset.vertices) == expected) return asset;
+                if (asset.vertexCount == doc.VertexCount && MixerAutosave.FingerprintOf(asset.vertices) == expected)
+                {
+                    var after = Object.Instantiate(asset);
+                    after.hideFlags = HideFlags.HideAndDontSave;
+                    MixerHistory.Push(new InPlaceCommitEdit { Label = "Commit " + target.Name, Asset = asset, Before = before, After = after }, joinCurrentGroup: true);
+                    before = null;
+                    return asset;
+                }
                 MeshAssets.Replace(before, existing);
             }
             catch (Exception e)

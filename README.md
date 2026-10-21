@@ -256,7 +256,7 @@ saved as a native mesh asset when you commit.
   - Data safety: a script reload after the mesh was reimported, even with as many vertices, starts from the new import
     instead of mixing old and new. A mesh left by a session that could not come back after a reload gets its original
     again, so scenes never save it missing. Ctrl+Z after committing a mesh Mixer saved before gives that asset what it
-    held; a Mixer mesh that a prefab, a closed scene or a waiting session uses gets a file of its own. A bone posed in
+    held, and Ctrl+Y the commit again; a Mixer mesh that a prefab, a closed scene or a waiting session uses gets a file of its own. A bone posed in
     Weight Paint goes back when Weight Paint ends, and scene saves and uploads never get the pose. Painting a vertex's
     last bone away with Normalize off leaves it on that bone instead of the rig's first bone. Undoing a bone move made
     before Play keeps the skin. A session set aside by an undo comes back with its edits after a reload when the mesh is

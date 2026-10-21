@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using Orbiters.Toolkit.Editor.Meshes;
 using UnityEngine;
+using Object = UnityEngine.Object;
 
 namespace Orbiters.Mixer.Editor
 {
@@ -15,6 +17,8 @@ namespace Orbiters.Mixer.Editor
         public abstract long Bytes { get; }
         public abstract void Undo();
         public abstract void Redo();
+        /// <summary>The history let go of the entry (memory cap, a new step over its redo, a clear, a script reload).</summary>
+        public virtual void Dropped() { }
 
         /// <summary>
         /// Brings a target's world picture, uploads and overlay up to date after entries changed its document. Entries
@@ -75,6 +79,38 @@ namespace Orbiters.Mixer.Editor
             // The step was made on another layer: show that one, with the renderer's weights to match.
             if (switched) Target.AfterLayerChange();
             else RefreshUnlessBatched();
+        }
+    }
+
+    /// <summary>
+    /// What an in-place commit wrote into a Mixer asset, before and after (copies kept in memory). Unity's Undo puts a mesh
+    /// asset's content back, but its redo leaves the content as the undo made it (Unity 2022.3): the history writes it
+    /// both ways. No target (the session ended with the commit), so forgetting the session keeps it.
+    /// </summary>
+    internal sealed class InPlaceCommitEdit : HistoryEntry
+    {
+        public Mesh Asset, Before, After;
+
+        public override long Bytes => 256 + Weight(Before) + Weight(After);
+
+        private static long Weight(Mesh mesh) => mesh == null ? 0 : mesh.vertexCount * (64L + mesh.blendShapeCount * 36L);
+
+        public override void Undo() => Write(Before);
+        public override void Redo() => Write(After);
+
+        // Written only when the asset does not hold it already (Unity's own undo of the step does put it back).
+        private void Write(Mesh content)
+        {
+            if (Asset == null || content == null) return;
+            if (Asset.vertexCount == content.vertexCount && MixerAutosave.FingerprintOf(Asset.vertices) == MixerAutosave.FingerprintOf(content.vertices)) return;
+            MeshAssets.Replace(Object.Instantiate(content), Asset);
+        }
+
+        public override void Dropped()
+        {
+            if (Before != null) Object.DestroyImmediate(Before);
+            if (After != null) Object.DestroyImmediate(After);
+            Before = After = null;
         }
     }
 
