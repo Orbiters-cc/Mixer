@@ -5,6 +5,7 @@ using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using UnityEngine.UIElements;
 
 namespace Orbiters.Mixer.Editor.Tests
 {
@@ -169,6 +170,71 @@ namespace Orbiters.Mixer.Editor.Tests
             finally
             {
                 Object.DestroyImmediate(mesh);
+            }
+        }
+
+        private sealed class InspectorHost : EditorWindow { }
+
+        [Test]
+        public void TheShapeKeyPanelLinesUpItsColumnsAndItsSliderShowsTheEditedShape()
+        {
+            const string longName = "orbit face look in fix right with a name far too long for its column";
+            var skinned = Skinned("Body");
+            var deltas = new Vector3[skinned.sharedMesh.vertexCount];
+            for (int v = 0; v < deltas.Length; v++) deltas[v] = new Vector3(0.01f, 0f, 0f);
+            skinned.sharedMesh.AddBlendShapeFrame("A", 100f, deltas, null, null);
+            skinned.sharedMesh.AddBlendShapeFrame(longName, 100f, deltas, null, null);
+            var target = MixerSession.Edit(skinned);
+            MixerSession.SetLayer(target, "Fresh", true);
+            Inflate(target);
+
+            var host = ScriptableObject.CreateInstance<InspectorHost>();
+            var editor = UnityEditor.Editor.CreateEditor(skinned, typeof(SkinnedMeshRendererInspector));
+            try
+            {
+                host.position = new Rect(-32000, -32000, 420, 900);
+                var show = typeof(EditorWindow).GetMethod("ShowPopupWithMode", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                show.Invoke(host, new object[] { System.Enum.Parse(typeof(EditorWindow).Assembly.GetType("UnityEditor.ShowMode"), "PopupMenu"), false });
+                host.rootVisualElement.Add(editor.CreateInspectorGUI());
+                var refresh = typeof(SkinnedMeshRendererInspector).GetMethod("Refresh", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                void Lay() { refresh.Invoke(editor, null); typeof(EditorWindow).GetMethod("RepaintImmediately", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance).Invoke(host, null); }
+                Lay();
+                VisualElement Row(string name) => host.rootVisualElement.Query(className: "mx-shape").ToList().First(r => r.name == name);
+                Slider SliderOf(string name) => Row(name).Q<Slider>(className: "mx-shape__slider");
+
+                var rows = host.rootVisualElement.Query(className: "mx-shape").ToList();
+                Assert.That(rows.Select(r => r.name), Is.SupersetOf(new[] { "A", longName, "Fresh" }));
+                foreach (var row in rows)
+                {
+                    var slider = row.Q<Slider>(className: "mx-shape__slider");
+                    Assert.That(slider.worldBound.x, Is.EqualTo(SliderOf("A").worldBound.x).Within(0.01f), "every slider starts at the same place, whatever the name");
+                    Assert.That(row.Q<Label>(className: "mx-shape__value").worldBound.x, Is.EqualTo(Row("A").Q<Label>(className: "mx-shape__value").worldBound.x).Within(0.01f), "and so does every value");
+                    Assert.That(row.Q<Label>(className: "mx-shape__name").worldBound.xMax, Is.LessThanOrEqualTo(slider.worldBound.x), "a long name is cut short, not pushing the columns");
+                    var track = slider.Q(className: "unity-base-slider__tracker").worldBound;
+                    var knob = slider.Q(className: "unity-base-slider__dragger").worldBound;
+                    Assert.That(knob.center.y, Is.EqualTo(track.center.y).Within(0.01f), "the knob sits on its track");
+                }
+
+                var fresh = SliderOf("Fresh");
+                Assert.That(fresh.enabledSelf, Is.True, "the edited shape's slider can be moved");
+                Assert.That(fresh.value, Is.EqualTo(100f), "shown whole while it is edited");
+                fresh.value = 40f;
+                Assert.That(target.Document.LayerWeight, Is.EqualTo(0.4f).Within(1e-4f), "the slider shows the new shape at its weight");
+                Assert.That(Row("Fresh").Q<Label>(className: "mx-shape__value").text, Is.EqualTo("40"));
+
+                MixerSession.SetLayer(target, "Other", true);
+                Lay();
+                SliderOf("Fresh").value = 70f;
+                Assert.That(target.Document.Layer, Is.EqualTo("Fresh"), "a shape only Mixer has becomes the edited one when its slider moves");
+                Assert.That(target.Document.LayerWeight, Is.EqualTo(0.7f).Within(1e-4f));
+
+                SliderOf("A").value = 25f;
+                Assert.That(skinned.GetBlendShapeWeight(skinned.sharedMesh.GetBlendShapeIndex("A")), Is.EqualTo(25f), "the mesh's own shapes still set the renderer's weight");
+            }
+            finally
+            {
+                host.Close();
+                Object.DestroyImmediate(editor);
             }
         }
     }

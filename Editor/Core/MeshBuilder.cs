@@ -34,8 +34,16 @@ namespace Orbiters.Mixer.Editor
                 if (doc.MovedBase.Count > 0)
                 {
                     ring = MovedRing(doc);
+                    // The original's normals turned as their faces turned (as the session showed them), not recomputed:
+                    // authored normals (smoothed, custom) keep their shading where the base hardly moved.
                     var welded = WeldedNormals(doc.Positions, doc);
-                    foreach (int v in ring) normals[v] = welded[v];
+                    var was = WeldedNormals(doc.OriginalPositions, doc);
+                    foreach (int v in ring)
+                    {
+                        var n = normals[v] + (welded[v] - was[v]);
+                        float length = Mathf.Sqrt(n.sqrMagnitude);
+                        normals[v] = length > 1e-6f ? n / length : welded[v];
+                    }
                 }
                 mesh.normals = normals;
                 if (ring != null) RecalculateTangents(mesh, ring);

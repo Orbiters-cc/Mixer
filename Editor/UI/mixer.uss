@@ -291,16 +291,19 @@
 .mx-shape:hover { background-color: var(--mx-hover); }
 .mx-shape--on { background-color: rgba(0, 218, 109, 0.14); }
 .mx-shape--editing .mx-shape__name { color: #3cf29a; }
-.mx-shape__dot { width: 6px; height: 6px; border-radius: 3px; margin-right: 8px; background-color: #4a4a4a; }
+.mx-shape__dot { width: 6px; height: 6px; border-radius: 3px; margin-right: 8px; flex-shrink: 0; background-color: #4a4a4a; }
 .mx-shape--editing .mx-shape__dot { background-color: #3cf29a; }
-.mx-shape__name { flex-grow: 1; margin: 0; padding: 0; font-size: 12px; color: #d6d6d6; overflow: hidden; text-overflow: ellipsis; }
+/* The name takes what the fixed columns leave, never its text's width: sliders and values line up on every row. */
+.mx-shape__name { flex-grow: 1; flex-shrink: 1; flex-basis: 0; min-width: 0; margin: 0; padding: 0; font-size: 12px; color: #d6d6d6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mx-shape__rename { flex-grow: 1; margin: 0 6px 0 0; }
 .mx-shape__rename .unity-base-text-field__input { min-height: 20px; padding-left: 6px; border-radius: 6px; background-color: #1b1b1f; border-color: rgba(0, 218, 109, 0.5); color: #eaeaea; font-size: 12px; }
 .mx-shape__slider { width: 110px; margin: 0 6px; flex-shrink: 0; }
-.mx-shape__slider .unity-base-slider__tracker { height: 3px; border-radius: 2px; background-color: #3a3a3f; }
-.mx-shape__slider .unity-base-slider__dragger { width: 10px; height: 10px; border-radius: 5px; margin-top: -4px; background-color: #3cf29a; border-width: 0; }
-.mx-shape__value { width: 40px; margin: 0; padding: 0; font-size: 11px; color: #9a9a9a; -unity-text-align: middle-right; }
-.mx-shape .mx-icon-button { width: 20px; height: 20px; margin-left: 2px; opacity: 0; }
+/* Track and knob placed on their own in the 13 px slider, both centred 7 px down (in the flow, the knob came 1.5 px high). */
+.mx-shape__slider .unity-base-slider__tracker { position: absolute; left: 0; right: 0; top: 5px; height: 4px; margin: 0; border-radius: 2px; background-color: #3a3a3f; }
+.mx-shape__slider .unity-base-slider__dragger { position: absolute; top: 2px; width: 10px; height: 10px; margin: 0; border-radius: 5px; background-color: #3cf29a; border-width: 0; }
+.mx-shape__slider .unity-base-slider__dragger-border { display: none; }
+.mx-shape__value { width: 32px; flex-shrink: 0; margin: 0; padding: 0; font-size: 11px; color: #9a9a9a; -unity-text-align: middle-right; }
+.mx-shape .mx-icon-button { width: 22px; min-width: 22px; height: 20px; margin: 0 0 0 1px; border-radius: 6px; opacity: 0; }
 .mx-shape:hover .mx-icon-button, .mx-shape--on .mx-icon-button { opacity: 1; }
 .mx-shape .mx-shape__target--on { opacity: 1; background-color: rgba(0, 218, 109, 0.14); }
 .mx-shape__target--on .mx-icon { --icon-color: #3cf29a; }

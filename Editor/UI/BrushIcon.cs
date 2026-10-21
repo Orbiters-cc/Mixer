@@ -4,7 +4,7 @@ using UnityEngine.UIElements;
 
 namespace Orbiters.Mixer.Editor
 {
-    internal enum BrushGlyph { Grab, Smooth, Inflate, Flatten, Clay, Pinch, Crease, Mask, WeightDraw, WeightBlur, WeightReplace }
+    internal enum BrushGlyph { Grab, Smooth, Inflate, Bump, Flatten, Clay, Pinch, Crease, Mask, WeightDraw, WeightBlur, WeightReplace }
 
     /// <summary>
     /// A brush's picture, after Blender's tool icons: a cut through the surface with what the brush does to it (the
@@ -55,6 +55,13 @@ namespace Orbiters.Mixer.Editor
                     pen.Arrow(12, 11, 12, 3.5f);
                     pen.Arrow(7.3f, 13.2f, 3.2f, 9.1f);
                     pen.Arrow(16.7f, 13.2f, 20.8f, 9.1f);
+                    break;
+                case BrushGlyph.Bump:
+                    pen.Ghost(p => { p.M(5, 19); p.L(19, 19); });
+                    pen.Ground(p => { p.M(2, 19); p.L(5, 19); p.C(8, 19, 9, 12.5f, 12, 12.5f); p.C(15, 12.5f, 16, 19, 19, 19); p.L(22, 19); });
+                    pen.Arrow(12, 10.5f, 12, 3.5f);
+                    pen.Arrow(7.5f, 13.5f, 7.5f, 8);
+                    pen.Arrow(16.5f, 13.5f, 16.5f, 8);
                     break;
                 case BrushGlyph.Flatten:
                     pen.Ghost(p => { p.M(3, 14); p.C(5, 14, 6, 7, 8.5f, 7); p.C(11, 7, 11.5f, 14, 13, 14); p.C(15, 14, 15.5f, 9.5f, 17.5f, 9.5f); p.C(19.5f, 9.5f, 20, 14, 21, 14); });

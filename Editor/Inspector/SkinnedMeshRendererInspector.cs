@@ -200,16 +200,16 @@ namespace Orbiters.Mixer.Editor
                 }
                 shapesCount.text = names.Count == 0 ? string.Empty : names.Count + (names.Count == 1 ? " shape" : " shapes");
             }
-            // Values follow the renderer (an animation, another inspector); the shape Mixer edits shows its own weight,
-            // held while it is shown at 100 %. Only rows whose weight changed are touched.
-            var held = session != null && session.Alive ? session.HeldWeights : null;
+            // Values follow the renderer (an animation, another inspector); the shape Mixer edits shows the weight it is
+            // shown at through the working vertices (100 % unless its slider tried another). Only rows whose weight changed
+            // are touched.
             foreach (var parts in shapeRows)
             {
                 parts.Row.EnableInClassList("mx-shape--on", (string)parts.Row.name == activeShape);
                 int index = parts.Index;
-                if (index < 0 || mesh == null || index >= mesh.blendShapeCount) continue;
                 bool editing = (string)parts.Row.name == layer;
-                float weight = editing && held != null && index < held.Length && !float.IsNaN(held[index]) ? held[index] : renderer.GetBlendShapeWeight(index);
+                if (!editing && (index < 0 || mesh == null || index >= mesh.blendShapeCount)) continue;
+                float weight = editing ? session.Document.LayerWeight * 100f : renderer.GetBlendShapeWeight(index);
                 if (weight == parts.Shown && editing == parts.Editing) continue;
                 parts.Shown = weight;
                 parts.Editing = editing;
@@ -217,7 +217,7 @@ namespace Orbiters.Mixer.Editor
                 {
                     FitRange(parts.Slider, weight);
                     if (Math.Abs(parts.Slider.value - weight) > 0.001f) parts.Slider.SetValueWithoutNotify(weight);
-                    parts.Slider.SetEnabled(!editing);
+                    parts.Slider.tooltip = SliderTip(index, editing);
                 }
                 if (parts.Value != null) parts.Value.text = weight.ToString("0");
             }
@@ -226,9 +226,9 @@ namespace Orbiters.Mixer.Editor
             if (commitPill.style.display != shown) { commitPill.style.display = shown; revertPill.style.display = shown; }
             commitPill.SetEnabled(edits);
             string hint = session == null ? "Mixer opens this mesh when you add or sculpt a shape; nothing changes the mesh asset until Commit."
-                : layer != null ? (edits ? "Sculpt mode shapes '" + layer + "' (shown at 100 % while it is edited). Commit writes the edits to the mesh asset." : null)
+                : layer != null ? (edits ? "Sculpt mode shapes '" + layer + "' (its slider tries weights; a stroke shows it whole). Commit writes the edits to the mesh asset." : null)
                 : edits ? "Edits of the base mesh wait for Commit." : "Open in Mixer: pick a shape and Sculpt, or sculpt the base mesh.";
-            if (hint == null) hint = "Sculpt mode shapes '" + layer + "' (shown at 100 % while it is edited).";
+            if (hint == null) hint = "Sculpt mode shapes '" + layer + "' (its slider tries weights; a stroke shows it whole).";
             if (hint != shownHint) { shownHint = hint; shapesHint.text = hint; }
         }
 
@@ -239,29 +239,45 @@ namespace Orbiters.Mixer.Editor
             row.userData = index;
             row.EnableInClassList("mx-shape--editing", editing);
             row.Add(MixerUi.Box("mx-shape__dot", PickingMode.Ignore));
+            // Picked (not ignored) so a name cut short shows whole in its tooltip; presses still reach the row.
             var label = MixerUi.Text(name, "mx-shape__name");
-            label.pickingMode = PickingMode.Ignore;
             row.Add(label);
             var rename = new TextField { value = name };
             rename.AddToClassList("mx-shape__rename");
             MixerUi.Show(rename, false);
             row.Add(rename);
             var slider = new Slider(0f, 100f);
-            if (index >= 0) { FitRange(slider, Renderer.GetBlendShapeWeight(index)); slider.SetValueWithoutNotify(Renderer.GetBlendShapeWeight(index)); }
+            var session = MixerSession.TargetOf(Renderer);
+            float shown = editing && session != null ? session.Document.LayerWeight * 100f : index >= 0 ? Renderer.GetBlendShapeWeight(index) : 0f;
+            FitRange(slider, shown);
+            slider.SetValueWithoutNotify(shown);
             slider.AddToClassList("mx-shape__slider");
-            slider.SetEnabled(index >= 0 && !editing);
-            slider.tooltip = index < 0 ? "A new shape: it exists on the mesh asset after Commit"
-                : editing ? "Shown at 100 % while Mixer edits it; its own weight comes back when you leave it"
-                : "The shape's weight on the renderer";
+            slider.tooltip = SliderTip(index, editing);
             slider.RegisterValueChangedCallback(evt =>
             {
-                if (index < 0 || name == MixerSession.TargetOf(Renderer)?.Document.Layer) return;
+                var value = row.Q<Label>(className: "mx-shape__value");
+                var target = MixerSession.TargetOf(Renderer);
+                // The edited shape, or one only Mixer has (not on the working mesh, so the renderer cannot weigh it): shown
+                // at the weight through the working vertices, the latter becoming the edited shape.
+                if (target != null && target.Alive && (name == target.Document.Layer || index < 0))
+                {
+                    if (name != target.Document.Layer)
+                    {
+                        if (!target.Document.HasShape(name)) return;
+                        MixerSession.SetLayer(target, name, false);
+                        activeShape = name;
+                    }
+                    MixerSession.SetLayerWeight(target, evt.newValue / 100f);
+                    value.text = evt.newValue.ToString("0");
+                    return;
+                }
+                if (index < 0) return;
                 Undo.RecordObject(Renderer, "Shape key " + name);
                 Renderer.SetBlendShapeWeight(index, evt.newValue);
-                row.Q<Label>(className: "mx-shape__value").text = evt.newValue.ToString("0");
+                value.text = evt.newValue.ToString("0");
             });
             row.Add(slider);
-            row.Add(MixerUi.Text(index >= 0 ? Renderer.GetBlendShapeWeight(index).ToString("0") : "new", "mx-shape__value"));
+            row.Add(MixerUi.Text(editing || index >= 0 ? shown.ToString("0") : "new", "mx-shape__value"));
             var uses = MixerUi.Icon(IconGlyph.Target, "Where it is used: animations, animator controllers, MCB's corrective shapes, VRCFury's BlendShape Links", () => ToggleUses(name), "mx-shape__target");
             uses.EnableInClassList("mx-shape__target--on", name == usesShape);
             row.Add(uses);
@@ -304,6 +320,11 @@ namespace Orbiters.Mixer.Editor
             }, TrickleDown.TrickleDown);
             return row;
         }
+
+        private static string SliderTip(int index, bool editing) =>
+            editing ? "Mixer edits this shape: the slider shows it at that weight; a stroke shows it whole again"
+            : index < 0 ? "A shape only Mixer has until Commit: the slider makes it the edited shape and shows it at that weight"
+            : "The shape's weight on the renderer";
 
         private void NewShape()
         {

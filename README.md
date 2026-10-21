@@ -7,7 +7,7 @@ saved as a native mesh asset when you commit.
 
 ## 0.1.0 — 2026-10-19
 
-- First release: sculpting with seven brushes (Grab, Smooth, Inflate, Flatten, Clay, Pinch, Crease), falloffs,
+- First release: sculpting with eight brushes (Grab, Smooth, Inflate, Bump, Flatten, Clay, Pinch, Crease), falloffs,
   symmetry, blendshape layers (sculpt the base mesh or any shape, new or existing), Ctrl+Z and Ctrl+Y through Unity's
   own Undo for every stroke, autosave of edits in progress, commit to a native mesh asset and revert.
 - A Mask brush (Ctrl unmasks; Clear and Invert): masked vertices stay still under the other brushes.
@@ -267,6 +267,15 @@ saved as a native mesh asset when you commit.
     animates the avatar in the scene; what only the build has is left out, and a note says how much. When the build
     fails, the bake uses the avatar as the scene has it and says what failed. The Bake button says "Baking…" while the
     avatar is built, and the result shows which animators played.
+- A Bump brush (Blender's Draw): the surface under the brush rises together along its mean normal, so a bump keeps
+  its shape over creases; Ctrl presses a dent.
+- Sculpting keeps the mesh's own normals: where a brush moved the surface they turn as its faces turned, instead of
+  being computed again from the faces. Smooth (and every brush) left dents and blotches in the shading wherever it
+  touched authored or smoothed normals, even where the surface hardly moved; committed base edits keep them the same way.
+- The shape key panel's slider of the shape being edited works: it shows the shape at that weight (a new shape too, and
+  a session-only shape that is not edited becomes the edited one); the next stroke shows it whole again. Its columns
+  line up whatever a shape's name (long names are cut with an ellipsis, the full name is in the tooltip) and the
+  slider knobs sit on their tracks.
 - Requires Orbiters Toolkit 0.4.1, which holds the avatar gizmos (bones, weight paint, mesh edges, avatar budget) and
   lets Mixer take the armature overlay's bone clicks.
 
@@ -285,7 +294,7 @@ saved as a native mesh asset when you commit.
 
 The **Layer** card picks what strokes change: the base mesh, or a blendshape. Type a name and press **Create** to make
 a new shape and sculpt it; pick an existing shape to edit its deltas. While a shape is edited the renderer shows it at
-100 %. On commit, new shapes are appended to the mesh and edited ones rebuilt, with their normals following the sculpt.
+100 %; its slider in the inspector's Shape keys panel tries other weights until the next stroke. On commit, new shapes are appended to the mesh and edited ones rebuilt, with their normals following the sculpt.
 
 ## Blender
 

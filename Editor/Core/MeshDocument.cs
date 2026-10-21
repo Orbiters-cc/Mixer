@@ -79,9 +79,14 @@ namespace Orbiters.Mixer.Editor
         public string Layer
         {
             get => layer;
-            set { layer = value; if (value != null) Shape(value); }
+            set { if (layer != value) LayerWeight = 1f; layer = value; if (value != null) Shape(value); }
         }
         private string layer;
+        /// <summary>
+        /// How much of the edited shape shows (1: all of it, as strokes need; the shape key panel's slider tries others).
+        /// Back to 1 whenever another layer is picked.
+        /// </summary>
+        public float LayerWeight = 1f;
         /// <summary>Bumped by every change, edits and display alike (a picked layer, the mask): what views refresh on.</summary>
         public int Revision;
         /// <summary>Mesh vertices changed since the last flush to the working mesh.</summary>
@@ -612,17 +617,19 @@ namespace Orbiters.Mixer.Editor
         public Vector3 LayerPosition(int v)
         {
             var p = Positions[v];
-            if (Layer != null && ShapeEdits.TryGetValue(Layer, out var layer)) p += layer.Deltas[v];
+            if (Layer != null && ShapeEdits.TryGetValue(Layer, out var layer)) p += layer.Deltas[v] * LayerWeight;
             return p;
         }
 
-        /// <summary>Positions of the active layer for every vertex, into <paramref name="into"/>.</summary>
+        /// <summary>Positions of the active layer (at <see cref="LayerWeight"/>) for every vertex, into <paramref name="into"/>.</summary>
         public void DisplayPositions(Vector3[] into)
         {
             Array.Copy(Positions, into, VertexCount);
             if (Layer == null || !ShapeEdits.TryGetValue(Layer, out var layer)) return;
             var d = layer.Deltas;
-            for (int v = 0; v < VertexCount; v++) into[v] += d[v];
+            float weight = LayerWeight;
+            if (weight == 1f) for (int v = 0; v < VertexCount; v++) into[v] += d[v];
+            else for (int v = 0; v < VertexCount; v++) into[v] += d[v] * weight;
         }
 
         /// <summary>Moves a vertex of the active layer by <paramref name="delta"/> (mesh space).</summary>
@@ -717,25 +724,74 @@ namespace Orbiters.Mixer.Editor
 
         private void RecomputeNormals(List<int> ring, int from, int to, MeshNeighbors weld, Vector3[] display)
         {
-            var triangles = Triangles;
-            for (int k = from; k < to; k++)
+            var before = FaceNormalsOfOriginal(weld);
+            for (int k = from; k < to; k++) Turn(ring[k], weld, display, before);
+        }
+
+        /// <summary>
+        /// The normals of every vertex for the shown positions: the original's wherever their faces did not move, turned
+        /// by how much their faces turned elsewhere.
+        /// </summary>
+        public void RefreshAllNormals(Vector3[] display)
+        {
+            var weld = NormalWeld;
+            var before = FaceNormalsOfOriginal(weld);
+            Parallel.ForEach(Partitioner.Create(0, weld.WeldedCount, 4096), range =>
             {
-                int w = ring[k];
-                float x = 0f, y = 0f, z = 0f;
-                foreach (int t in weld.TrianglesOf[w])
-                {
-                    int i = t * 3;
-                    Vector3 a = display[triangles[i]], b = display[triangles[i + 1]], c = display[triangles[i + 2]];
-                    float ux = b.x - a.x, uy = b.y - a.y, uz = b.z - a.z;
-                    float vx = c.x - a.x, vy = c.y - a.y, vz = c.z - a.z;
-                    x += uy * vz - uz * vy;
-                    y += uz * vx - ux * vz;
-                    z += ux * vy - uy * vx;
-                }
-                float length = (float)Math.Sqrt(x * x + y * y + z * z);
-                if (length <= 0f) continue;
-                var n = new Vector3(x / length, y / length, z / length);
-                foreach (int m in weld.Members[w]) Normals[m] = n;
+                for (int w = range.Item1; w < range.Item2; w++) Turn(w, weld, display, before);
+            });
+            Unflushed = true;
+        }
+
+        // A welded vertex's normals for the shown positions. The original's (authored, often smoothed or custom) turned by
+        // the change of the faces' normal, not the faces' normal itself: recomputing the normals outright changed the
+        // shading wherever a brush touched the surface, even where it hardly moved (dents and blotches after Smooth), and
+        // flattened the members' own normals (soft edges up to 60 degrees apart) into one.
+        private void Turn(int w, MeshNeighbors weld, Vector3[] display, Vector3[] before)
+        {
+            var now = FaceNormal(w, weld, display);
+            var was = before[w];
+            foreach (int m in weld.Members[w])
+            {
+                if (now == was) { Normals[m] = OriginalNormals[m]; continue; }
+                var n = OriginalNormals[m] + (now - was);
+                float length = (float)Math.Sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+                Normals[m] = length > 1e-6f ? n / length : now;
+            }
+        }
+
+        // The area-weighted normal of a welded vertex's faces (zero for faces of no area).
+        private Vector3 FaceNormal(int w, MeshNeighbors weld, Vector3[] positions)
+        {
+            var triangles = Triangles;
+            float x = 0f, y = 0f, z = 0f;
+            foreach (int t in weld.TrianglesOf[w])
+            {
+                int i = t * 3;
+                Vector3 a = positions[triangles[i]], b = positions[triangles[i + 1]], c = positions[triangles[i + 2]];
+                float ux = b.x - a.x, uy = b.y - a.y, uz = b.z - a.z;
+                float vx = c.x - a.x, vy = c.y - a.y, vz = c.z - a.z;
+                x += uy * vz - uz * vy;
+                y += uz * vx - ux * vz;
+                z += ux * vy - uy * vx;
+            }
+            float length = (float)Math.Sqrt(x * x + y * y + z * z);
+            return length > 0f ? new Vector3(x / length, y / length, z / length) : Vector3.zero;
+        }
+
+        // The faces' normal of each welded vertex on the original, made the same way as the shown ones (so an untouched
+        // vertex compares exactly equal). Made once, on the first refresh.
+        private Vector3[] originalFaceNormals;
+        private readonly object originalFaceNormalsLock = new object();
+
+        private Vector3[] FaceNormalsOfOriginal(MeshNeighbors weld)
+        {
+            lock (originalFaceNormalsLock)
+            {
+                if (originalFaceNormals != null && originalFaceNormals.Length == weld.WeldedCount) return originalFaceNormals;
+                var result = new Vector3[weld.WeldedCount];
+                for (int w = 0; w < result.Length; w++) result[w] = FaceNormal(w, weld, OriginalPositions);
+                return originalFaceNormals = result;
             }
         }
 

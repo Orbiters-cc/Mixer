@@ -139,6 +139,22 @@ namespace Orbiters.Mixer.Editor
         }
     }
 
+    internal sealed class BumpBrush : Brush
+    {
+        public override string Name => "Bump";
+        public override BrushGlyph Glyph => BrushGlyph.Bump;
+        public override string Description => "Raise a bump: the surface under the brush rises together along its mean normal (Blender's Draw); Ctrl presses a dent.";
+
+        public override void Step(BrushContext ctx, Vector3[] moves)
+        {
+            // One direction for the whole dab, where Inflate follows each vertex's own normal: the bump keeps its shape
+            // over creases and does not swell sideways.
+            Average(ctx, out _, out var normal);
+            float amount = ctx.Radius * 0.05f * ctx.Strength * (ctx.Invert ? -1f : 1f);
+            for (int i = 0; i < ctx.Welded.Count; i++) moves[i] = normal * (amount * ctx.Weight[i]);
+        }
+    }
+
     internal sealed class FlattenBrush : Brush
     {
         public override string Name => "Flatten";
@@ -241,7 +257,7 @@ namespace Orbiters.Mixer.Editor
     {
         public static readonly Brush[] All =
         {
-            new GrabBrush(), new SmoothBrush(), new InflateBrush(), new FlattenBrush(), new ClayBrush(), new PinchBrush(), new CreaseBrush(), new MaskBrush(),
+            new GrabBrush(), new SmoothBrush(), new InflateBrush(), new BumpBrush(), new FlattenBrush(), new ClayBrush(), new PinchBrush(), new CreaseBrush(), new MaskBrush(),
         };
 
         /// <summary>The brush of that name, else the first one (Grab): for saved preferences, which may name an old brush.</summary>

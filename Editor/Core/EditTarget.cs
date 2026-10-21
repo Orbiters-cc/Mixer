@@ -263,6 +263,8 @@ namespace Orbiters.Mixer.Editor
         public void BeginStroke()
         {
             inStroke = true;
+            // Strokes move the shape as it is shown: all of it.
+            if (Document.Layer != null && Document.LayerWeight != 1f) SetLayerWeight(1f);
             if (worldStale)
             {
                 Skin.Refresh(Renderer, Working);
@@ -455,41 +457,27 @@ namespace Orbiters.Mixer.Editor
         }
 
         /// <summary>
-        /// The normals as a commit would make them, for the active layer: the original's, recomputed where the base
-        /// moved, plus the active shape's turn of the welded normals (what its normal deltas will be).
+        /// The normals for the shown positions (the active layer at its weight): the original's, turned where faces moved,
+        /// close to what a commit writes (the base's turned normals plus the shape's normal deltas).
         /// </summary>
         public void RecomputeAllNormals()
         {
+            Document.DisplayPositions(display);
+            Document.RefreshAllNormals(display);
+        }
+
+        /// <summary>
+        /// Shows the edited shape at <paramref name="weight"/> (1: all of it) through the working vertices, as the renderer
+        /// would show it committed at that weight. A stroke shows it whole again.
+        /// </summary>
+        public void SetLayerWeight(float weight)
+        {
             var doc = Document;
-            doc.DisplayPositions(display);
-            var normals = doc.Normals;
-            Array.Copy(doc.OriginalNormals, normals, normals.Length);
-            bool layerMoves = false;
-            Vector3[] deltas = null;
-            if (doc.Layer != null && doc.ShapeEdits.TryGetValue(doc.Layer, out var layer))
-            {
-                deltas = layer.Deltas;
-                for (int v = 0; v < deltas.Length && !layerMoves; v++) layerMoves = deltas[v].sqrMagnitude > 0f;
-            }
-            if (doc.MovedBase.Count > 0 || layerMoves)
-            {
-                var weldedBase = MeshBuilder.WeldedNormals(doc.Positions, doc);
-                if (doc.MovedBase.Count > 0)
-                    foreach (int v in MeshBuilder.MovedRing(doc)) normals[v] = weldedBase[v];
-                if (layerMoves)
-                {
-                    var shaped = MeshBuilder.WeldedNormals(display, doc);
-                    for (int v = 0; v < normals.Length; v++)
-                    {
-                        var d = shaped[v] - weldedBase[v];
-                        if (d.sqrMagnitude < 1e-12f) continue;
-                        var n = normals[v] + d;
-                        float length = Mathf.Sqrt(n.sqrMagnitude);
-                        if (length > 0f) normals[v] = n / length;
-                    }
-                }
-            }
-            doc.Unflushed = true;
+            if (doc.Layer == null || doc.LayerWeight == weight) return;
+            doc.LayerWeight = weight;
+            RebuildWorld();
+            doc.MarkAllDirty();
+            RecomputeAllNormals();
         }
 
         // Profiler markers of the per-frame work of a stroke (Unity's Profiler names them in the editor loop).

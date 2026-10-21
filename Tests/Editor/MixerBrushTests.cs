@@ -219,6 +219,96 @@ namespace Orbiters.Mixer.Editor.Tests
         }
 
         [Test]
+        public void BumpRaisesTheSurfaceInOneDirection()
+        {
+            var front = new Vector3(0, 0, -0.5f);
+            var edit = Stroke("Bump", front, front + Vector3.right * 0.01f, 0.15f);
+            Assert.That(edit, Is.Not.Null);
+            var moves = edit.Indices.Select(i => target.Document.Positions[i] - mesh.vertices[i]).Where(m => m.sqrMagnitude > 1e-12f).ToList();
+            var mean = moves.Aggregate(Vector3.zero, (a, b) => a + b).normalized;
+            Assert.That(mean.z, Is.LessThan(-0.95f), "the front rises toward the viewer, out of the sphere");
+            Assert.That(moves.Max(m => m.magnitude), Is.GreaterThan(0.003f));
+            foreach (var m in moves) Assert.That(Vector3.Dot(m.normalized, mean), Is.GreaterThan(0.98f), "every vertex moves the same way (Inflate would spread them along their own normals)");
+            float raised = edit.Indices.Average(RadiusAt);
+            Stroke("Bump", front, front + Vector3.right * 0.01f, 0.15f, invert: true);
+            Assert.That(edit.Indices.Average(RadiusAt), Is.LessThan(raised), "Ctrl presses it back in");
+        }
+
+        [Test]
+        public void StrokesKeepAuthoredNormalsWhereTheSurfaceDidNotTurn()
+        {
+            // Authored normals that are not the faces' own (a smoothed or custom-normal mesh): each leans 10 degrees up.
+            MixerSession.Revert(target);
+            var authored = mesh.normals.Select(n => (Quaternion.AngleAxis(10f, Vector3.Cross(n, Vector3.up).sqrMagnitude > 1e-6f ? Vector3.Cross(n, Vector3.up).normalized : Vector3.right) * n).normalized).ToArray();
+            mesh.normals = authored;
+            target = MixerSession.Edit(renderer);
+            var front = new Vector3(0, 0, -0.5f);
+            Stroke("Inflate", front, front + Vector3.right * 0.02f, 0.05f);
+            Stroke("Smooth", front, front + Vector3.right * 0.02f, 0.2f, 0.3f);
+            target.Flush();
+            var doc = target.Document;
+            var tris = mesh.triangles;
+            var facesMoved = new bool[mesh.vertexCount];
+            for (int t = 0; t < tris.Length; t += 3)
+            {
+                bool moved = false;
+                for (int k = 0; k < 3; k++) moved |= MeshDocument.Differs(doc.Positions[tris[t + k]], mesh.vertices[tris[t + k]]);
+                if (moved) for (int k = 0; k < 3; k++) facesMoved[tris[t + k]] = true;
+            }
+            int touched = 0, still = 0;
+            for (int v = 0; v < mesh.vertexCount; v++)
+            {
+                // Welded seam vertices share faces with their twins: count only vertices whose own and twins' faces held still.
+                if (facesMoved[v]) { touched++; continue; }
+                bool twinMoved = doc.NormalWeld.Members[doc.NormalWeld.Weld[v]].Any(m => facesMoved[m]);
+                if (twinMoved) continue;
+                still++;
+                Assert.That(Vector3.Angle(doc.Normals[v], authored[v]), Is.LessThan(0.01f), "a vertex whose faces did not move keeps its authored normal");
+            }
+            Assert.That(touched, Is.GreaterThan(20));
+            Assert.That(still, Is.GreaterThan(100));
+            // Where the surface moved, the normal turns as the faces turned instead of becoming the faces' normal: it keeps
+            // its authored lean (recomputed outright it would lose the 10 degrees everywhere a brush touched).
+            var faces = MeshBuilderNormals(doc.Positions);
+            var original = MeshBuilderNormals(mesh.vertices);
+            for (int v = 0; v < mesh.vertexCount; v++)
+            {
+                if (!facesMoved[v]) continue;
+                float turned = Vector3.Angle(faces[v], original[v]);
+                Assert.That(Vector3.Angle(doc.Normals[v], authored[v]), Is.LessThan(turned + 0.5f), "the shown normal turns no more than its faces did");
+            }
+            var committed = MixerSession.Commit(target);
+            var written = committed.normals;
+            for (int v = 0; v < mesh.vertexCount; v++)
+                if (facesMoved[v]) Assert.That(Vector3.Angle(written[v], authored[v]), Is.LessThan(Vector3.Angle(faces[v], original[v]) + 0.5f), "the commit writes the turned normals too");
+        }
+
+        private Vector3[] MeshBuilderNormals(Vector3[] positions) => MeshBuilder.WeldedNormals(positions, target.Document);
+
+        [Test]
+        public void TheEditedShapeShowsAtTheSlidersWeightUntilTheNextStroke()
+        {
+            MixerSession.SetLayer(target, "Try", true);
+            var front = new Vector3(0, 0, -0.5f);
+            var edit = Stroke("Inflate", front, front + Vector3.right * 0.01f, 0.15f);
+            var doc = target.Document;
+            int v = edit.Indices.OrderByDescending(i => doc.Shape("Try").Deltas[i].sqrMagnitude).First();
+            var delta = doc.Shape("Try").Deltas[v];
+            Assert.That(delta.magnitude, Is.GreaterThan(0.002f));
+            MixerSession.SetLayerWeight(target, 0.5f);
+            target.Flush();
+            Assert.That(Vector3.Distance(target.Display[v], doc.Positions[v] + delta * 0.5f), Is.LessThan(1e-6f), "shown at half the shape");
+            Assert.That(Vector3.Distance(target.World[v], renderer.transform.TransformPoint(doc.Positions[v] + delta * 0.5f)), Is.LessThan(1e-5f), "brushes aim at what shows");
+            Assert.That(doc.Shape("Try").Deltas[v], Is.EqualTo(delta), "a look, not an edit");
+            Stroke("Inflate", front + Vector3.up * 0.3f, front + Vector3.up * 0.31f, 0.05f);
+            Assert.That(doc.LayerWeight, Is.EqualTo(1f), "a stroke shows the shape whole again");
+            MixerSession.SetLayerWeight(target, 0.2f);
+            MixerSession.SetLayer(target, null, false);
+            MixerSession.SetLayer(target, "Try", false);
+            Assert.That(doc.LayerWeight, Is.EqualTo(1f), "picking a layer shows it whole");
+        }
+
+        [Test]
         public void ABrushNamedByACallerIsThatBrushOrNone()
         {
             Assert.That(Brushes.TryNamed("smooth"), Is.SameAs(Brushes.Named("Smooth")), "any case");

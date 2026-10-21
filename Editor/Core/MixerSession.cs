@@ -510,6 +510,16 @@ namespace Orbiters.Mixer.Editor
             NoteEdited(target);
         }
 
+        /// <summary>
+        /// Shows the edited shape at <paramref name="weight"/> (1: all of it) until the next stroke or another layer: a way
+        /// to look at it, not an edit (no undo step, nothing to commit).
+        /// </summary>
+        public static void SetLayerWeight(EditTarget target, float weight)
+        {
+            if (target == null || !target.Alive || target.Document.Layer == null) return;
+            target.SetLayerWeight(weight);
+        }
+
         public static void DeleteShape(EditTarget target, string shape)
         {
             if (target == null || !target.Document.HasShape(shape)) return;
