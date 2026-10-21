@@ -51,6 +51,8 @@ namespace Orbiters.Mixer.Editor.Performance
         MixerToasts toasts;
         readonly List<SessionInfo> sessions = new List<SessionInfo>();
         BakeResult last;
+        // The bake under way (the avatar's build first): a reload drops it with the build.
+        [NonSerialized] BakeJob baking;
 
         [MenuItem(MenuPath, priority = 2002)]
         public static void Open()
@@ -179,7 +181,7 @@ namespace Orbiters.Mixer.Editor.Performance
         {
             var card = MixerUi.Card("BAKE", out var bodyBox);
             parent.Add(card);
-            bodyBox.Add(MixerUi.Setting("Face and toggles", "Everything the avatar's animator showed: face tracking, gestures, toggles", new ToggleSwitch(face, v => { face = v; Refresh(); }), first: true));
+            bodyBox.Add(MixerUi.Setting("Face and toggles", "Everything the avatar's animators showed, with what VRCFury and Modular Avatar add at upload: face tracking, gestures, toggles", new ToggleSwitch(face, v => { face = v; Refresh(); }), first: true));
             bodyBox.Add(MixerUi.Setting("Lip sync", "The visemes VRChat showed from your voice", new ToggleSwitch(visemes, v => { visemes = v; Refresh(); })));
             bodyBox.Add(MixerUi.Setting("Body", "VRChat's own pose with the capture kit; otherwise from the headset, controllers and trackers calibrated by your T-pose, or from VRChat's head and hand poses", new ToggleSwitch(body, v => { body = v; Refresh(); })));
             bodyBox.Add(MixerUi.Setting("Joystick movement", "Where VRChat moved you, estimated from its velocity", new ToggleSwitch(locomotion, v => { locomotion = v; Refresh(); })));
@@ -318,7 +320,8 @@ namespace Orbiters.Mixer.Editor.Performance
             }
             RefreshKit();
             footerText.text = s == null ? "Pick a session" : s.Name + (s.Seconds > 0 ? " · " + Duration(s.Seconds) : "") + " · " + Rates[rate].ToString("0") + " fps";
-            bakeButton.SetEnabled(s != null && avatar != null);
+            MixerUi.SetPillText(bakeButton, baking != null ? "Baking…" : "Bake");
+            bakeButton.SetEnabled(s != null && avatar != null && baking == null);
         }
 
         void RefreshKit()
@@ -385,28 +388,47 @@ namespace Orbiters.Mixer.Editor.Performance
 
         void Bake()
         {
-            if (avatar == null || string.IsNullOrEmpty(selectedFolder)) return;
+            if (avatar == null || string.IsNullOrEmpty(selectedFolder) || baking != null) return;
             try
             {
                 var session = PerformanceSession.Load(selectedFolder);
-                last = PerformanceBaker.Bake(session, avatar, Options(), (k, label) => !EditorUtility.DisplayCancelableProgressBar("Baking the performance", label, k));
-                ShowResult(last);
-                toasts.Show("Baked " + Duration(last.Seconds) + " into " + Path.GetFileName(last.ClipPath) + (last.Warnings.Count > 0 ? " (see the notes)" : "."));
-                EditorGUIUtility.PingObject(last.Clip);
-            }
-            catch (OperationCanceledException)
-            {
-                toasts.Show("Bake cancelled.");
+                // The avatar is built as an upload builds it on the next frame (with its own progress), then baked.
+                var job = PerformanceBaker.Start(session, avatar, Options(), (k, label) => !EditorUtility.DisplayCancelableProgressBar("Baking the performance", label, k));
+                baking = job;
+                job.Completed += () => Baked(job);
+                if (job.Done) Baked(job);
             }
             catch (Exception e)
             {
                 Debug.LogException(e);
                 toasts.Show("Bake failed: " + e.Message, true);
             }
-            finally
+            Refresh();
+        }
+
+        void Baked(BakeJob job)
+        {
+            EditorUtility.ClearProgressBar();
+            // Closed meanwhile: the clip is made all the same.
+            if (this == null) return;
+            if (baking == job) baking = null;
+            if (job.Error is OperationCanceledException)
             {
-                EditorUtility.ClearProgressBar();
+                toasts.Show("Bake cancelled.");
             }
+            else if (job.Error != null)
+            {
+                Debug.LogException(job.Error);
+                toasts.Show("Bake failed: " + job.Error.Message, true);
+            }
+            else
+            {
+                last = job.Result;
+                ShowResult(last);
+                toasts.Show("Baked " + Duration(last.Seconds) + " into " + Path.GetFileName(last.ClipPath) + (last.Warnings.Count > 0 ? " (see the notes)" : "."));
+                EditorGUIUtility.PingObject(last.Clip);
+            }
+            Refresh();
         }
 
         void ShowResult(BakeResult r)
@@ -420,6 +442,7 @@ namespace Orbiters.Mixer.Editor.Performance
                 : r.BodyFromVrChat ? "From VRChat's head and hand poses"
                 : "From the animation (no tracking or calibration)";
             resultBody.Add(MixerUi.Setting("Body", bodyFrom, null));
+            resultBody.Add(MixerUi.Setting("Animators", r.Built ? "As an upload builds them (VRCFury, Modular Avatar)" : "The scene avatar's own, not built (see the notes)", null));
             foreach (string a in r.AudioPaths) resultBody.Add(MixerUi.Setting("Audio", Path.GetFileName(a), MixerUi.Pill("Select", () => Selection.activeObject = AssetDatabase.LoadAssetAtPath<AudioClip>(a), "ghost")));
             if (!string.IsNullOrEmpty(r.TimelinePath))
                 resultBody.Add(MixerUi.Setting("Timeline", Path.GetFileName(r.TimelinePath), MixerUi.Pill("Select", () => Selection.activeObject = AssetDatabase.LoadMainAssetAtPath(r.TimelinePath), "ghost")));

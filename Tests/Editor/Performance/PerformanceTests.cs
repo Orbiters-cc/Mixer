@@ -1,7 +1,10 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection;
+using System.Text.RegularExpressions;
 using NUnit.Framework;
 using Orbiters.Contracts;
 using UnityEditor;
@@ -9,8 +12,11 @@ using UnityEditor.Animations;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using UnityEngine.TestTools;
 using VRC.SDK3.Avatars.Components;
+using VRC.SDK3.Avatars.ScriptableObjects;
 using VRC.SDKBase;
+using VRC.SDKBase.Editor.BuildPipeline;
 using Object = UnityEngine.Object;
 
 namespace Orbiters.Mixer.Editor.Performance.Tests
@@ -733,6 +739,96 @@ namespace Orbiters.Mixer.Editor.Performance.Tests
             Assert.IsFalse(result.BodyFromTracking);
             Assert.IsTrue(AssetDatabase.LoadAssetAtPath<AnimationClip>(result.ClipPath) != null);
         }
+
+        // ------------------------------------------------------------------------------------------- build
+
+        static IEnumerator Wait(BakeJob job)
+        {
+            double until = EditorApplication.timeSinceStartup + 60.0;
+            while (!job.Done && EditorApplication.timeSinceStartup < until) yield return null;
+            Assert.IsTrue(job.Done, "the bake ends");
+        }
+
+        [UnityTest]
+        public IEnumerator TheBakePlaysWhatTheBuildAdds()
+        {
+            // The scene avatar has a hat and no FX layer of its own. The build (a step standing in for VRCFury) moves the hat
+            // under the head as an armature link does and adds an FX layer on a renamed parameter: what VRChat recorded.
+            var avatar = TestAvatar.Build(scene);
+            avatar.name = PerformanceBuildStep.AvatarName;
+            var hat = new GameObject("Hat");
+            hat.transform.SetParent(avatar.transform, false);
+            hat.transform.localPosition = new Vector3(0f, 1.7f, 0f);
+            hat.SetActive(false);
+            var session = new PerformanceSession { Name = "Build", Parameters = new ParameterTable() };
+            session.Parameters.Parameters.Add(new ParameterTable.ParameterInfo { Id = 0, Name = PerformanceBuildStep.Parameter, Address = "/avatar/parameters/" + PerformanceBuildStep.Parameter, Kind = "bool" });
+            foreach (var (t, on) in new[] { (0.0, false), (0.5, true), (1.5, false), (2.0, false) })
+                session.Changes.Add(ParameterChange.Bool((ulong)(t * 1e9), 0, on));
+            bool registered = PerformanceBuildStep.Register();
+            try
+            {
+                var job = PerformanceBaker.Start(session, avatar.GetComponent<VRCAvatarDescriptor>(), new BakeOptions { FrameRate = 30f, Body = false, Audio = false, Timeline = false, OutputFolder = Folder },
+                    skip: type => type != typeof(PerformanceBuildStep));
+                Assert.IsFalse(job.Done, "the build waits for the next frame");
+                yield return Wait(job);
+                Assert.IsNull(job.Error, job.Error?.ToString());
+                var result = job.Result;
+                Assert.IsTrue(result.Built, string.Join("\n", result.Warnings));
+                Assert.AreEqual(1, PerformanceBuildStep.Runs, "built once, on the copy");
+                Assert.IsTrue(hat.transform.parent == avatar.transform && hat.name == "Hat", "the scene avatar is left as it was");
+
+                var bindings = AnimationUtility.GetCurveBindings(result.Clip);
+                AnimationCurve Curve(string property) => AnimationUtility.GetEditorCurve(result.Clip, bindings.Single(b => b.path == "Hat" && b.propertyName == property));
+                // The build's layer follows the recorded parameter, on the hat where the scene avatar has it.
+                var shown = Curve("m_IsActive");
+                Assert.AreEqual(0f, shown.Evaluate(0.25f));
+                Assert.AreEqual(1f, shown.Evaluate(1.0f));
+                Assert.AreEqual(0f, shown.Evaluate(1.9f));
+                Assert.AreEqual(1.5f, Curve("m_LocalScale.x").Evaluate(1.0f), 1e-3f);
+                Assert.AreEqual(1f, Curve("m_LocalScale.x").Evaluate(0.25f), 1e-3f);
+                // Placed under its own parent in the scene (the avatar's root), not under the head bone it hangs from in the build.
+                Assert.AreEqual(1.7f, Curve("m_LocalPosition.y").Evaluate(1.0f), 0.1f);
+                // The object the build made has no target on the scene avatar: left out, and said.
+                Assert.IsFalse(bindings.Any(b => b.path.Contains(PerformanceBuildStep.Glow) || b.path.Contains("[VF1]")), string.Join("\n", bindings.Select(b => b.path).Distinct()));
+                Assert.AreEqual(1, result.LeftOut, string.Join("\n", result.Warnings));
+                Assert.IsTrue(result.Warnings.Any(w => w.Contains("left out of the clip") && w.Contains(PerformanceBuildStep.Glow)), string.Join("\n", result.Warnings));
+            }
+            finally
+            {
+                PerformanceBuildStep.Reset(registered);
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator AFailedBuildBakesTheAvatarAsTheSceneHasItAndSaysWhy()
+        {
+            var avatar = TestAvatar.Build(scene, withFx: true, folder: Folder);
+            avatar.name = PerformanceBuildStep.AvatarName;
+            var session = Session((0, 0, 0f), (0.5, 0, 1f), (2.0, 0, 0f));
+            bool registered = PerformanceBuildStep.Register();
+            PerformanceBuildStep.Fail = true;
+            LogAssert.Expect(LogType.Exception, new Regex("the test's build step failed"));
+            try
+            {
+                var job = PerformanceBaker.Start(session, avatar.GetComponent<VRCAvatarDescriptor>(), new BakeOptions { FrameRate = 30f, Body = false, Audio = false, Timeline = false, OutputFolder = Folder },
+                    skip: type => type != typeof(PerformanceBuildStep));
+                yield return Wait(job);
+                Assert.IsNull(job.Error, job.Error?.ToString());
+                var result = job.Result;
+                Assert.IsFalse(result.Built);
+                Assert.AreEqual(1, PerformanceBuildStep.Runs);
+                StringAssert.Contains("could not be built", result.Warnings[0]);
+                StringAssert.Contains("the test's build step failed", result.Warnings[0], "names what failed");
+                // The avatar's own FX layer still plays.
+                var bindings = AnimationUtility.GetCurveBindings(result.Clip);
+                var smile = AnimationUtility.GetEditorCurve(result.Clip, bindings.First(b => b.propertyName == "blendShape.Smile"));
+                Assert.AreEqual(100f, smile.Evaluate(1.0f), 0.5f);
+            }
+            finally
+            {
+                PerformanceBuildStep.Reset(registered);
+            }
+        }
     }
 
     /// <summary>A small humanoid with a VRChat descriptor, a face mesh with visemes and, optionally, an FX layer.</summary>
@@ -842,6 +938,102 @@ namespace Orbiters.Mixer.Editor.Performance.Tests
             tree.AddChild(on, 1f);
             AssetDatabase.SaveAssets();
             return controller;
+        }
+    }
+
+    /// <summary>
+    /// A build step standing in for VRCFury: on the test avatar only (by name, while a test armed it), it moves the hat under
+    /// the head and renames it, as an armature link does, makes an object of its own, and gives the avatar an FX layer on a
+    /// renamed parameter that shows both and scales the hat. Anywhere else it does nothing: the SDK runs every assembly's
+    /// build steps at every upload. Its controller is made without Unity's editing calls, which record Undo steps.
+    /// </summary>
+    internal sealed class PerformanceBuildStep : IVRCSDKPreprocessAvatarCallback
+    {
+        internal const string AvatarName = "Mixer performance build test", Parameter = "VF1_Hat", Glow = "VF1 Glow";
+        static bool armed;
+        internal static bool Fail;
+        internal static int Runs;
+
+        public int callbackOrder => -10000;
+
+        public bool OnPreprocessAvatar(GameObject avatar)
+        {
+            if (!armed || avatar == null || avatar.name != AvatarName) return true;
+            Runs++;
+            if (Fail) throw new InvalidOperationException("the test's build step failed");
+            var root = avatar.transform;
+            var hat = root.Find("Hat");
+            hat.SetParent(avatar.GetComponent<Animator>().GetBoneTransform(HumanBodyBones.Head), true);
+            hat.name = "[VF1] Hat";
+            var glow = new GameObject(Glow);
+            glow.transform.SetParent(root, false);
+            glow.SetActive(false);
+            string hatPath = AnimationUtility.CalculateTransformPath(hat, root);
+            AnimatorState State(string name, bool on)
+            {
+                var clip = new AnimationClip { name = name };
+                AnimationUtility.SetEditorCurve(clip, EditorCurveBinding.FloatCurve(hatPath, typeof(GameObject), "m_IsActive"), AnimationCurve.Constant(0f, 1f, on ? 1f : 0f));
+                AnimationUtility.SetEditorCurve(clip, EditorCurveBinding.FloatCurve(Glow, typeof(GameObject), "m_IsActive"), AnimationCurve.Constant(0f, 1f, on ? 1f : 0f));
+                foreach (string axis in new[] { "x", "y", "z" })
+                    AnimationUtility.SetEditorCurve(clip, EditorCurveBinding.FloatCurve(hatPath, typeof(Transform), "m_LocalScale." + axis), AnimationCurve.Constant(0f, 1f, on ? 1.5f : 1f));
+                return new AnimatorState { name = name, motion = clip, writeDefaultValues = true };
+            }
+            AnimatorStateTransition Go(AnimatorState to, AnimatorConditionMode mode) => new AnimatorStateTransition
+            {
+                destinationState = to, hasExitTime = false, duration = 0f,
+                conditions = new[] { new AnimatorCondition { mode = mode, parameter = Parameter } },
+            };
+            var off = State("Hat off", false);
+            var shown = State("Hat on", true);
+            off.transitions = new[] { Go(shown, AnimatorConditionMode.If) };
+            shown.transitions = new[] { Go(off, AnimatorConditionMode.IfNot) };
+            var machine = new AnimatorStateMachine { name = "VF1 Hat" };
+            machine.states = new[] { new ChildAnimatorState { state = off }, new ChildAnimatorState { state = shown, position = Vector3.right * 300f } };
+            machine.defaultState = off;
+            var controller = new AnimatorController
+            {
+                name = "VF1 FX",
+                parameters = new[] { new AnimatorControllerParameter { name = Parameter, type = AnimatorControllerParameterType.Bool } },
+                layers = new[] { new AnimatorControllerLayer { name = "VF1 Hat", stateMachine = machine, defaultWeight = 1f } },
+            };
+            var descriptor = avatar.GetComponent<VRCAvatarDescriptor>();
+            var layers = descriptor.baseAnimationLayers;
+            for (int i = 0; i < layers.Length; i++)
+                if (layers[i].type == VRCAvatarDescriptor.AnimLayerType.FX)
+                    layers[i] = new VRCAvatarDescriptor.CustomAnimLayer { type = VRCAvatarDescriptor.AnimLayerType.FX, isDefault = false, isEnabled = true, animatorController = controller };
+            descriptor.baseAnimationLayers = layers;
+            var parameters = ScriptableObject.CreateInstance<VRCExpressionParameters>();
+            parameters.parameters = new[] { new VRCExpressionParameters.Parameter { name = Parameter, valueType = VRCExpressionParameters.ValueType.Bool } };
+            descriptor.expressionParameters = parameters;
+            return true;
+        }
+
+        /// <summary>Arms the step and puts it in the SDK's list of build steps when the SDK didn't find it itself (true then).</summary>
+        internal static bool Register()
+        {
+            armed = true;
+            Fail = false;
+            Runs = 0;
+            var list = Callbacks();
+            if (list.Any(c => c is PerformanceBuildStep)) return false;
+            list.Add(new PerformanceBuildStep());
+            return true;
+        }
+
+        internal static void Reset(bool registered)
+        {
+            armed = Fail = false;
+            Runs = 0;
+            if (registered) Callbacks().RemoveAll(c => c is PerformanceBuildStep);
+        }
+
+        // Where the SDK keeps them, and Orbiters Toolkit's hidden builds read them.
+        static List<IVRCSDKPreprocessAvatarCallback> Callbacks()
+        {
+            var field = typeof(VRCBuildPipelineCallbacks).GetField("_preprocessAvatarCallbacks", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+            var list = field?.GetValue(null) as List<IVRCSDKPreprocessAvatarCallback>;
+            Assert.IsNotNull(list, "the SDK's list of build steps");
+            return list;
         }
     }
 }

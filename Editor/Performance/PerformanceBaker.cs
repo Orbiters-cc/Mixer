@@ -4,15 +4,13 @@ using System.IO;
 using System.Linq;
 using Orbiters.Contracts;
 using Orbiters.Toolkit.Editor.Storage;
+using Orbiters.Toolkit.Editor.VRChat;
 using Orbiters.Toolkit.Storage;
 using UnityEditor;
-using UnityEditor.SceneManagement;
 using UnityEngine;
-using UnityEngine.SceneManagement;
 using VRC.Core;
 using VRC.SDK3.Avatars.Components;
 using VRC.SDKBase;
-using Object = UnityEngine.Object;
 
 namespace Orbiters.Mixer.Editor.Performance
 {
@@ -48,7 +46,31 @@ namespace Orbiters.Mixer.Editor.Performance
         public bool BodyFromSkeleton;
         /// <summary>The body came from VRChat's head and wrist poses (no T-pose needed).</summary>
         public bool BodyFromVrChat;
+        /// <summary>The animators played were the avatar's as an upload builds them (VRCFury, Modular Avatar...).</summary>
+        public bool Built;
+        /// <summary>Animated properties left out: on objects or components the build adds, which the scene avatar doesn't have.</summary>
+        public int LeftOut;
         public TimeSpan Elapsed;
+    }
+
+    /// <summary>A bake under way (<see cref="PerformanceBaker.Start"/>): the avatar's build, then the bake, on later editor frames.</summary>
+    internal sealed class BakeJob
+    {
+        public BakeResult Result;
+        /// <summary>Why it failed; an <see cref="OperationCanceledException"/> when it was cancelled.</summary>
+        public Exception Error;
+        public bool Done;
+        /// <summary>Runs once, when the bake is done, failed or was cancelled.</summary>
+        public event Action Completed;
+
+        internal void Finish(BakeResult result, Exception error)
+        {
+            if (Done) return;
+            Result = result;
+            Error = error;
+            Done = true;
+            try { Completed?.Invoke(); } catch (Exception ex) { Debug.LogException(ex); }
+        }
     }
 
     /// <summary>
@@ -56,16 +78,131 @@ namespace Orbiters.Mixer.Editor.Performance
     /// recorded parameters through its own playable layers (<see cref="VrcLayerStack"/>), lip sync and IK go on top,
     /// and every frame the humanoid pose (muscles and root) and whatever the layers animate (blend shapes, toggles,
     /// material properties, extra bones) are sampled into one humanoid clip. Audio tracks are aligned to the clip.
+    /// The copy is built the way an upload builds it first (<see cref="Start"/>), so what VRCFury and Modular Avatar add
+    /// only then plays too, under the parameter names VRChat recorded; the clip still names the scene avatar's objects.
     /// </summary>
     internal static class PerformanceBaker
     {
-        /// <summary>Bakes; <paramref name="progress"/> gets (fraction, label) and returns false to cancel.</summary>
-        public static BakeResult Bake(PerformanceSession session, VRCAvatarDescriptor avatar, BakeOptions options, Func<float, string, bool> progress = null)
+        // Build steps the bake leaves out (as My Avatar's checks do): My Avatar's optimization merges meshes and renames or
+        // folds objects (the clip would name objects the scene avatar doesn't have), and VRCFury's compressor only carries
+        // the parameters over the network (the recording has every parameter's own value).
+        static readonly string[] LeftOutSteps =
+        {
+            "Orbiters.MyAvatar.Editor.Optimization.UploadOptimizer+Structure",
+            "Orbiters.MyAvatar.Editor.Optimization.UploadOptimizer+Materials",
+            "VF.Hooks.ParameterCompressorHook",
+        };
+
+        /// <summary>
+        /// Bakes the avatar as VRChat runs it: a hidden copy goes through the SDK's build steps as an upload's would
+        /// (<see cref="HiddenAvatarBuild"/>: VRCFury, Modular Avatar, MCB, My Avatar; their face tracking, toggles and merged
+        /// animators), then is baked on a later editor frame and closed. When the build fails, the avatar is baked as the
+        /// scene has it, with a warning saying what failed. <paramref name="progress"/> as for <see cref="Bake"/>;
+        /// <paramref name="skip"/> leaves more build steps out.
+        /// </summary>
+        public static BakeJob Start(PerformanceSession session, VRCAvatarDescriptor avatar, BakeOptions options, Func<float, string, bool> progress = null, Func<Type, bool> skip = null)
+        {
+            Check(avatar);
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            var job = new BakeJob();
+            var source = avatar.gameObject;
+            HiddenAvatarBuild build = null;
+            ScenePaths paths = null;
+            bool scheduled = false;
+
+            void Finish()
+            {
+                BakeResult result = null;
+                Exception error = null;
+                try
+                {
+                    if (avatar == null) throw new InvalidOperationException("The avatar is gone.");
+                    if (build != null && build.Cancelled) throw new OperationCanceledException();
+                    if (build != null && build.Error == null)
+                    {
+                        // Play Mode closed every copy after the build.
+                        if (build.Copy == null) throw new InvalidOperationException("The avatar's built copy was closed before the bake (Play Mode started).");
+                        result = BakeOn(session, avatar, build.Copy, paths, options, progress, null);
+                        result.Built = true;
+                    }
+                    else
+                    {
+                        string note = build == null ? null
+                            : "The avatar could not be built as an upload builds it (" + build.Error + "): what VRCFury and Modular Avatar add at upload (face tracking, toggles, merged animators) is not in the bake.";
+                        result = Bake(session, avatar, options, progress, note);
+                        // A VRCFury test copy is built already.
+                        result.Built = build == null;
+                    }
+                    result.Elapsed = watch.Elapsed;
+                }
+                catch (Exception e)
+                {
+                    error = e;
+                }
+                finally
+                {
+                    build?.Release();
+                }
+                job.Finish(result, error);
+            }
+
+            // Never in the build's own callback: it also ends inside script reloads and Play Mode changes, and may end
+            // before Start returns. A reload drops this with the build.
+            void Later()
+            {
+                if (scheduled) return;
+                scheduled = true;
+                EditorApplication.CallbackFunction once = null;
+                once = () =>
+                {
+                    EditorApplication.update -= once;
+                    Finish();
+                };
+                EditorApplication.update += once;
+            }
+
+            // VRCFury refuses to build its test copies again: they are built already.
+            if (VrcFury.IsTestCopy(source))
+            {
+                Later();
+                return job;
+            }
+            build = HiddenAvatarBuild.Start(source, type => LeftOutSteps.Contains(type.FullName) || skip != null && skip(type), copy => paths = new ScenePaths(copy, source));
+            build.Completed += Later;
+            if (build.Finished) Later();
+            return job;
+        }
+
+        /// <summary>
+        /// Bakes the avatar as the scene has it, without the build steps (what VRCFury or Modular Avatar add at upload is
+        /// left out; <see cref="Start"/> builds it first). <paramref name="progress"/> gets (fraction, label) and returns
+        /// false to cancel.
+        /// </summary>
+        public static BakeResult Bake(PerformanceSession session, VRCAvatarDescriptor avatar, BakeOptions options, Func<float, string, bool> progress = null) =>
+            Bake(session, avatar, options, progress, null);
+
+        static BakeResult Bake(PerformanceSession session, VRCAvatarDescriptor avatar, BakeOptions options, Func<float, string, bool> progress, string note)
+        {
+            Check(avatar);
+            using (var hidden = new HiddenAvatarCopy(avatar.gameObject))
+                return BakeOn(session, avatar, hidden.Copy, new ScenePaths(hidden.Copy, avatar.gameObject), options, progress, note);
+        }
+
+        static void Check(VRCAvatarDescriptor avatar)
+        {
+            if (avatar == null) throw new ArgumentException("No avatar.");
+            if (avatar.GetComponent<Animator>() == null) throw new ArgumentException(avatar.name + " has no Animator.");
+        }
+
+        /// <summary>
+        /// Bakes on <paramref name="copy"/>, a hidden copy of <paramref name="avatar"/> (built or not) that the caller closes;
+        /// <paramref name="paths"/> places its objects on the scene avatar. <paramref name="note"/> is the first warning.
+        /// </summary>
+        static BakeResult BakeOn(PerformanceSession session, VRCAvatarDescriptor avatar, GameObject copy, ScenePaths paths, BakeOptions options, Func<float, string, bool> progress, string note)
         {
             var watch = System.Diagnostics.Stopwatch.StartNew();
             var result = new BakeResult();
-            if (avatar == null) throw new ArgumentException("No avatar.");
-            if (avatar.GetComponent<Animator>() == null) throw new ArgumentException(avatar.name + " has no Animator.");
+            if (note != null) result.Warnings.Add(note);
             double end = Math.Min(options.End, session.Duration);
             double start = Math.Max(0, Math.Min(options.Start, end));
             double rate = Math.Max(1.0, options.FrameRate);
@@ -84,19 +221,13 @@ namespace Orbiters.Mixer.Editor.Performance
             AvatarChanges(timeline, blueprint, avatar.name, result.Warnings);
             var tracking = new TrackingTimeline(session);
             var recorded = new HashSet<string>(timeline.Tracks.Values.Where(t => t.IsAvatarParameter).Select(t => t.Name));
-            var scene = EditorSceneManager.NewPreviewScene();
-            GameObject copy = null;
             VrcLayerStack stack = null;
             HumanPoseHandler poses = null;
             try
             {
-                copy = Object.Instantiate(avatar.gameObject);
-                copy.name = avatar.name + " (Mixer performance)";
-                copy.hideFlags = HideFlags.HideAndDontSave;
-                SceneManager.MoveGameObjectToScene(copy, scene);
                 copy.transform.SetPositionAndRotation(Vector3.zero, Quaternion.identity);
-                copy.SetActive(true);
                 var animator = copy.GetComponent<Animator>();
+                if (animator == null) throw new InvalidOperationException("The build removed " + avatar.name + "'s Animator.");
                 var descriptor = copy.GetComponent<VRCAvatarDescriptor>();
                 bool humanoid = animator.avatar != null && animator.avatar.isHuman;
                 if (!humanoid) result.Warnings.Add(avatar.name + " is not humanoid: only what its animator animates is baked, no body.");
@@ -142,7 +273,15 @@ namespace Orbiters.Mixer.Editor.Performance
                 bool emulateVisemes = options.Visemes && visemes.Style != VRC_AvatarDescriptor.LipSyncStyle.Default && visemes.Style != VRC_AvatarDescriptor.LipSyncStyle.VisemeParameterOnly;
 
                 var curves = new CurveSet();
-                var samplers = options.Face ? Samplers(copy.transform, animator, stack, descriptor, emulateVisemes, curves) : new List<Sampler>();
+                var left = new List<string>();
+                var samplers = options.Face ? Samplers(copy.transform, animator, stack, descriptor, emulateVisemes, curves, paths, left) : new List<Sampler>();
+                result.LeftOut = left.Count;
+                if (left.Count > 0)
+                {
+                    var names = left.Distinct().ToList();
+                    result.Warnings.Add(left.Count + (left.Count == 1 ? " animated property is" : " animated properties are") + " on what the build adds (VRCFury, Modular Avatar), which " +
+                                        avatar.name + " in the scene doesn't have: left out of the clip (" + string.Join(", ", names.Take(3)) + (names.Count > 3 ? "…" : "") + ").");
+                }
                 int[] muscleChannels = null, rootChannels = null;
                 HumanPose pose = default;
                 Quaternion lastRoot = Quaternion.identity;
@@ -291,8 +430,6 @@ namespace Orbiters.Mixer.Editor.Performance
             {
                 stack?.Dispose();
                 poses?.Dispose();
-                if (copy != null) Object.DestroyImmediate(copy);
-                EditorSceneManager.ClosePreviewScene(scene);
                 result.Elapsed = watch.Elapsed;
             }
         }
@@ -312,9 +449,10 @@ namespace Orbiters.Mixer.Editor.Performance
         /// <summary>
         /// What to sample: every property the layers' clips animate except humanoid muscles and humanoid bones (the
         /// pose covers those), plus the lip sync shapes. Blend shapes, activity and transforms are read directly; anything
-        /// else through the animation system.
+        /// else through the animation system. Read on the copy, keyed on the scene avatar (<paramref name="paths"/>); what
+        /// the scene avatar doesn't have goes in <paramref name="left"/> (the copy's paths).
         /// </summary>
-        static List<Sampler> Samplers(Transform root, Animator animator, VrcLayerStack stack, VRCAvatarDescriptor descriptor, bool visemes, CurveSet curves)
+        static List<Sampler> Samplers(Transform root, Animator animator, VrcLayerStack stack, VRCAvatarDescriptor descriptor, bool visemes, CurveSet curves, ScenePaths paths, List<string> left)
         {
             var humanBones = new HashSet<Transform>();
             if (animator.isHuman)
@@ -347,15 +485,24 @@ namespace Orbiters.Mixer.Editor.Performance
             }
 
             var samplers = new List<Sampler>();
-            var transforms = new HashSet<Transform>();
+            var transforms = new Dictionary<Transform, string>();
             foreach (var b in bindings.Values)
             {
                 if (b.type == typeof(Animator)) continue;
                 var target = string.IsNullOrEmpty(b.path) ? root : root.Find(b.path);
                 if (target == null) continue;
+                // The clip animates the scene avatar: the object where it was before the build moved or renamed it, and only
+                // what the scene avatar has (an object, component or blend shape a build step made has no target there).
+                var scene = b;
+                scene.path = paths.Of(target);
+                if (scene.path == null || !paths.Takes(scene))
+                {
+                    left.Add(b.path);
+                    continue;
+                }
                 if (b.type == typeof(Transform))
                 {
-                    if (!humanBones.Contains(target)) transforms.Add(target);
+                    if (!humanBones.Contains(target)) transforms[target] = scene.path;
                     continue;
                 }
                 if (b.type == typeof(SkinnedMeshRenderer) && b.propertyName.StartsWith("blendShape.", StringComparison.Ordinal))
@@ -363,50 +510,110 @@ namespace Orbiters.Mixer.Editor.Performance
                     var smr = target.GetComponent<SkinnedMeshRenderer>();
                     int index = smr != null && smr.sharedMesh != null ? smr.sharedMesh.GetBlendShapeIndex(b.propertyName.Substring("blendShape.".Length)) : -1;
                     if (index < 0) continue;
-                    samplers.Add(new Sampler { Channels = new[] { curves.ChannelFor(b, 0.25f) }, Read = _ => smr.GetBlendShapeWeight(index) });
+                    samplers.Add(new Sampler { Channels = new[] { curves.ChannelFor(scene, 0.25f) }, Read = _ => smr.GetBlendShapeWeight(index) });
                     continue;
                 }
                 if (b.type == typeof(GameObject) && b.propertyName == "m_IsActive")
                 {
                     var go = target.gameObject;
-                    samplers.Add(new Sampler { Channels = new[] { curves.ChannelFor(b, 0f, true) }, Read = _ => go.activeSelf ? 1f : 0f });
+                    samplers.Add(new Sampler { Channels = new[] { curves.ChannelFor(scene, 0f, true) }, Read = _ => go.activeSelf ? 1f : 0f });
                     continue;
                 }
                 bool step = b.propertyName == "m_Enabled";
                 var binding = b;
                 samplers.Add(new Sampler
                 {
-                    Channels = new[] { curves.ChannelFor(b, step ? 0f : 0.001f, step) },
+                    Channels = new[] { curves.ChannelFor(scene, step ? 0f : 0.001f, step) },
                     Read = _ => AnimationUtility.GetFloatValue(root.gameObject, binding, out float v) ? v : float.NaN,
                 });
             }
-            foreach (var t in transforms)
+            foreach (var pair in transforms)
             {
-                string path = AnimationUtility.CalculateTransformPath(t, root);
+                var t = pair.Key;
+                string path = pair.Value;
                 var props = new[] { "m_LocalPosition.x", "m_LocalPosition.y", "m_LocalPosition.z", "m_LocalRotation.x", "m_LocalRotation.y", "m_LocalRotation.z", "m_LocalRotation.w", "m_LocalScale.x", "m_LocalScale.y", "m_LocalScale.z" };
                 var channels = props.Select((p, i) => curves.ChannelFor(EditorCurveBinding.FloatCurve(path, typeof(Transform), p), i < 3 ? 0.0001f : i < 7 ? 0.0005f : 0.001f)).ToArray();
-                var last = t.localRotation;
+                // Relative to its parent on the scene avatar: a build step may have moved it under another object (an
+                // armature merge keeps it where it was in the world).
+                int slash = path.LastIndexOf('/');
+                var parent = paths.Find(slash < 0 ? "" : path.Substring(0, slash));
+                bool moved = parent != null && parent != t.parent;
+                Vector3 position = default, scale = default;
+                var last = moved ? Quaternion.Inverse(parent.rotation) * t.rotation : t.localRotation;
                 samplers.Add(new Sampler
                 {
                     Channels = channels,
                     Read = i =>
                     {
-                        if (i < 3) return t.localPosition[i];
-                        if (i < 7)
+                        if (i == 0)
                         {
-                            var q = t.localRotation;
-                            if (i == 3)
+                            Quaternion q;
+                            if (moved)
                             {
-                                if (Quaternion.Dot(q, last) < 0f) q = new Quaternion(-q.x, -q.y, -q.z, -q.w);
-                                last = q;
+                                position = parent.InverseTransformPoint(t.position);
+                                q = Quaternion.Inverse(parent.rotation) * t.rotation;
+                                Vector3 s = t.lossyScale, p = parent.lossyScale;
+                                scale = new Vector3(Ratio(s.x, p.x), Ratio(s.y, p.y), Ratio(s.z, p.z));
                             }
-                            return last[i - 3];
+                            else
+                            {
+                                position = t.localPosition;
+                                q = t.localRotation;
+                                scale = t.localScale;
+                            }
+                            if (Quaternion.Dot(q, last) < 0f) q = new Quaternion(-q.x, -q.y, -q.z, -q.w);
+                            last = q;
                         }
-                        return t.localScale[i - 7];
+                        return i < 3 ? position[i] : i < 7 ? last[i - 3] : scale[i - 7];
                     },
                 });
             }
             return samplers;
+        }
+
+        static float Ratio(float a, float b) => Mathf.Abs(b) > 1e-8f ? a / b : a;
+
+        /// <summary>
+        /// Where each object of a copy sits on the scene avatar it was copied from: read before any build step ran (VRCFury's
+        /// and Modular Avatar's armature merges move and rename objects), so the clip names the scene avatar's objects.
+        /// </summary>
+        internal sealed class ScenePaths
+        {
+            readonly Dictionary<Transform, string> paths = new Dictionary<Transform, string>();
+            readonly Dictionary<string, Transform> objects = new Dictionary<string, Transform>();
+            readonly GameObject scene;
+
+            public ScenePaths(GameObject copy, GameObject sceneAvatar)
+            {
+                scene = sceneAvatar;
+                foreach (var t in copy.GetComponentsInChildren<Transform>(true))
+                {
+                    string path = AnimationUtility.CalculateTransformPath(t, copy.transform);
+                    paths[t] = path;
+                    // Like Transform.Find, the first of two objects with one name.
+                    if (!objects.ContainsKey(path)) objects[path] = t;
+                }
+            }
+
+            /// <summary>The object's path on the scene avatar; null for one a build step made.</summary>
+            public string Of(Transform copied) => copied != null && paths.TryGetValue(copied, out var path) ? path : null;
+
+            /// <summary>The copy's object that was at <paramref name="path"/> before the build (null when a step removed it).</summary>
+            public Transform Find(string path) => objects.TryGetValue(path, out var t) && t != null ? t : null;
+
+            /// <summary>Whether the scene avatar has what the binding animates (the object, its component, the blend shape).</summary>
+            public bool Takes(EditorCurveBinding binding)
+            {
+                var target = scene == null ? null : string.IsNullOrEmpty(binding.path) ? scene.transform : scene.transform.Find(binding.path);
+                if (target == null) return false;
+                if (binding.type == typeof(Transform) || binding.type == typeof(GameObject)) return true;
+                if (binding.type == typeof(SkinnedMeshRenderer) && binding.propertyName.StartsWith("blendShape.", StringComparison.Ordinal))
+                {
+                    var smr = target.GetComponent<SkinnedMeshRenderer>();
+                    return smr != null && smr.sharedMesh != null && smr.sharedMesh.GetBlendShapeIndex(binding.propertyName.Substring("blendShape.".Length)) >= 0;
+                }
+                return AnimationUtility.GetFloatValue(scene, binding, out _);
+            }
         }
 
         static BodySolver.Pose Target(BodyCalibration calibration, BodyCalibration.Binding binding, Vector3 position, Quaternion rotation)
