@@ -463,10 +463,14 @@ namespace Orbiters.Mixer.Editor.Tests
                 string meshId = MixerLinkService.MeshIdOf(renderer);
                 var moved = Enumerable.Range(0, n.WeldedCount).Select(w => doc.Positions[n.Representative[w]] + Vector3.up).ToArray();
                 // Same vertex count, other faces: the copy in Blender is of another topology.
-                var statuses = blender.SendAndPump(MixerLinkProtocol.FrameType.Positions, MeshDataCodec.EncodePositions(meshId, null, MeshDataCodec.Topology(doc) ^ 0x5555UL, moved), 0.5);
+                var answer = blender.SendAndPump(MixerLinkProtocol.FrameType.Positions, MeshDataCodec.EncodePositions(meshId, null, MeshDataCodec.Topology(doc) ^ 0x5555UL, moved), 0.5);
                 Assert.That(doc.Positions[0], Is.EqualTo(mesh.vertices[0]), "positions for another topology are not applied");
-                Assert.That(statuses.Any(f => f.type == MixerLinkProtocol.FrameType.Status && MixerLinkProtocol.Read<MixerLinkProtocol.StatusMessage>(f.payload).level == "error"), Is.True, "and Blender is told");
+                var ended = BlenderRelease(answer);
+                Assert.That(ended, Is.Not.Null, "and the claim ends, so Blender knows its edits stay there");
+                Assert.That(ended.reason, Does.Contain("topology"));
+                Assert.That(MixerLinkService.IsBlenderOwned(target), Is.False);
                 // An in-between key edited live stays Blender's: no shape of that name appears.
+                blender.Claim(renderer);
                 blender.SendAndPump(MixerLinkProtocol.FrameType.Positions, MeshDataCodec.EncodePositions(meshId, "Wide @50", MeshDataCodec.Topology(doc), moved), 0.5);
                 Assert.That(doc.HasShape("Wide @50"), Is.False, "an in-between key is not taken for a shape");
                 Assert.That(doc.Positions[0], Is.EqualTo(mesh.vertices[0]));
