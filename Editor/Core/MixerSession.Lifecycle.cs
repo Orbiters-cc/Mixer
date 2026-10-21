@@ -17,7 +17,8 @@ namespace Orbiters.Mixer.Editor
     /// <item>script reloads: the working meshes survive (HideAndDontSave), the documents are written at once before the
     /// reload and rebuilt from the originals and the autosave after it;</item>
     /// <item>scene saves and uploads get the originals: the meshes, the renderer's own weights, the bone list without
-    /// added leaf bones, and bones placed for the original bind poses (<see cref="RestPosePlacement"/>);</item>
+    /// added leaf bones, bones placed for the original bind poses (<see cref="RestPosePlacement"/>), and the bones
+    /// Weight Paint posed as they were (<see cref="BoneSubSelection"/>);</item>
     /// <item>Play, closing a scene, deleting an edited object, a crash or quitting: the session waits as a record and
     /// its autosave, and comes back when Play stops, the scene is reopened, Undo brings the object back or the editor
     /// starts again;</item>
@@ -80,6 +81,8 @@ namespace Orbiters.Mixer.Editor
             public readonly List<EditTarget> Shown = new List<EditTarget>();
             public readonly List<(SkinnedMeshRenderer renderer, Transform[] bones)> Bones = new List<(SkinnedMeshRenderer, Transform[])>();
             public List<RestPosePlacement.Pose> Poses;
+            /// <summary>Bones Weight Paint posed, as posed (put back after the save).</summary>
+            public List<RestPosePlacement.Pose> Posed;
         }
 
         private static string RecoveryFile => System.IO.Path.Combine(MixerAutosave.Folder, "sessions.tsv");
@@ -250,17 +253,55 @@ namespace Orbiters.Mixer.Editor
                 Changed?.Invoke();
                 return kept;
             }
+            // After a script reload only its record and working mesh are left: the session comes back from its autosave
+            // (its history is gone with the reload), with the bind poses Unity's Undo left (it undid the session's start).
+            string id = null;
+            int rendererId = renderer.GetInstanceID();
+            foreach (var r in waiting.Where(w => w.Kind == 'p' && w.Working != 0 && !parkedTargets.ContainsKey(w.Id)).ToList())
+            {
+                if (r.Renderer != rendererId && r.Id != (id ?? (id = SceneGraphExporter.IdOf(renderer.gameObject)))) continue;
+                var original = SceneGraphExporter.Resolve(r.Original) as Mesh;
+                var working = EditorUtility.InstanceIDToObject(r.Working) as Mesh;
+                if (original == null || working == null || shown != original || !MixerAutosave.Exists(r.Id)) continue;
+                waiting.Remove(r);
+                var opened = Open(renderer, original, working, r.Layer.Length > 0 ? r.Layer : null, r.Held, boneCorrection: false, out bool restored);
+                // The autosave does not fit the mesh any more: a new session starts instead.
+                if (!restored) { Revert(opened); return null; }
+                ArmatureEdit.SyncFromHolder(opened);
+                SaveState();
+                Changed?.Invoke();
+                return opened;
+            }
             return null;
         }
 
         /// <summary>A session kept whole while it waits (its renderer is shown another mesh by an undo).</summary>
         internal static bool IsParked(EditTarget t) => t != null && parkedTargets.TryGetValue(t.Id, out var p) && p == t;
 
+        // A working mesh some session shows or will show again: one being edited, one set aside by an undo or a delete
+        // (its renderer showing it again brings it back), or one a script reload is about to restore. Any other one on
+        // its renderer is left from a session that could not come back, and the guard gives the renderer its original.
+        private static bool OwnsWorking(Mesh working)
+        {
+            if (working == null) return false;
+            foreach (var t in targets) if (t.Working == working) return true;
+            foreach (var kept in parkedTargets.Values) if (kept.Working == working) return true;
+            int id = working.GetInstanceID();
+            foreach (var r in waiting) if (r.Working == id) return true;
+            foreach (string line in pendingRestore)
+            {
+                var parts = line.Split('\t');
+                if (parts.Length > 1 && int.TryParse(parts[1], out int pending) && pending == id) return true;
+            }
+            return false;
+        }
+
         // A waiting session goes for good: its autosave, and a parked working mesh (what showed it gets the original).
         private static void Drop(Record r, bool deleteAutosave = true)
         {
             waiting.Remove(r);
-            if (deleteAutosave) MixerAutosave.Delete(r.Id);
+            // Kept, the autosave is a new session's of the same object: so is the bind-pose holder kept for it.
+            if (deleteAutosave) { MixerAutosave.Delete(r.Id); ArmatureEdit.ForgetWaiting(r.Id); }
             if (parkedTargets.TryGetValue(r.Id, out var kept))
             {
                 parkedTargets.Remove(r.Id);
@@ -279,15 +320,18 @@ namespace Orbiters.Mixer.Editor
         private static void SaveState()
         {
             var lines = new List<string>();
-            foreach (var t in targets)
-            {
-                if (!t.Alive) continue;
-                lines.Add(t.Id + "\t" + t.Working.GetInstanceID() + "\t" + t.OriginalId + "\t" + (t.Document.Layer ?? "") + "\t" + HeldText(t.HeldWeights));
-            }
+            foreach (var t in targets) if (t.Alive) lines.Add(StateLine(t));
             SessionState.SetString(StateKey, string.Join("\n", lines));
             SessionState.SetString(WaitingKey, string.Join("\n", waiting.Select(r => r.Line)));
             WriteRecoveryFile();
         }
+
+        // What a script reload restores a session from: its id, working mesh, original, layer, held weights, which version
+        // of the original it started from (its positions' fingerprint), and the renderer's instance id (instance ids hold
+        // across reloads; an object of an unsaved scene may have no id of its own).
+        private static string StateLine(EditTarget t) =>
+            t.Id + "\t" + t.Working.GetInstanceID() + "\t" + t.OriginalId + "\t" + (t.Document.Layer ?? "") + "\t" + HeldText(t.HeldWeights)
+            + "\t" + t.Document.OriginalFingerprint.ToString(CultureInfo.InvariantCulture) + "\t" + t.RendererId.ToString(CultureInfo.InvariantCulture);
 
         // What a restarted editor can bring back: every session, and those waiting for Play or a closed scene (not the
         // deleted objects', which only Undo in this editor can bring back).
@@ -418,12 +462,21 @@ namespace Orbiters.Mixer.Editor
         {
             var parts = line.Split('\t');
             if (parts.Length < 3) return;
-            var renderer = RendererOf(parts[0], 0, null);
-            var original = SceneGraphExporter.Resolve(parts[2]) as Mesh;
-            if (renderer == null || original == null || TargetOf(renderer) != null) return;
+            int rendererId = parts.Length > 6 && int.TryParse(parts[6], NumberStyles.Integer, CultureInfo.InvariantCulture, out int instance) ? instance : 0;
+            var renderer = RendererOf(parts[0], rendererId, null);
+            if (renderer == null || TargetOf(renderer) != null) return;
             int.TryParse(parts[1], out int workingId);
             var working = workingId != 0 ? EditorUtility.InstanceIDToObject(workingId) as Mesh : null;
             var shown = MeshOf(renderer);
+            var original = SceneGraphExporter.Resolve(parts[2]) as Mesh;
+            if (original == null)
+            {
+                // Nothing to rebuild the session from. Its working mesh stays shown (no scene saves it); editing the
+                // renderer again starts a session on that copy, which a commit then saves.
+                if (working != null && shown == working)
+                    Debug.LogWarning("[Mixer] The mesh '" + renderer.name + "' was being edited on is gone (an FBX reimported with the mesh renamed or removed?): its uncommitted edits cannot come back. It shows Mixer's working copy, which scenes do not save: edit and commit it in Mixer to keep that, or give the renderer a mesh.");
+                return;
+            }
             string layer = parts.Length > 3 && parts[3].Length > 0 ? parts[3] : null;
             string held = parts.Length > 4 ? parts[4] : "";
             if (shown != working && shown != original)
@@ -433,12 +486,20 @@ namespace Orbiters.Mixer.Editor
                 if (working != null) { MixerMeshGuard.Released(working, original); Object.DestroyImmediate(working); }
                 return;
             }
-            // A working mesh made from another version of the mesh (reimported before the reload) is not reused.
-            if (working != null && (working.vertexCount != original.vertexCount || working.blendShapeCount != original.blendShapeCount))
+            // The working mesh is reused only when it was made from this version of the original (a reimport before the
+            // reload, even with as many vertices, is another: its shapes, UVs, triangles and bind poses would mix with the
+            // new import's), and only with an autosave it can take (or none): it shows what that autosave brings back.
+            if (working != null)
             {
-                MixerMeshGuard.Released(working, original);
-                Object.DestroyImmediate(working);
-                working = null;
+                long fingerprint = MixerAutosave.FingerprintOf(original.vertices);
+                bool sameVersion = parts.Length > 5 && long.TryParse(parts[5], NumberStyles.Integer, CultureInfo.InvariantCulture, out long started) && started == fingerprint
+                    && working.vertexCount == original.vertexCount && working.blendShapeCount == original.blendShapeCount;
+                if (!sameVersion || (MixerAutosave.Exists(parts[0]) && !MixerAutosave.Fits(parts[0], original.vertexCount, fingerprint)))
+                {
+                    MixerMeshGuard.Released(working, original);
+                    Object.DestroyImmediate(working);
+                    working = null;
+                }
             }
             Open(renderer, original, working, layer, held, boneCorrection: false, out _);
         }
@@ -625,7 +686,9 @@ namespace Orbiters.Mixer.Editor
                         NotePreviewed(t.Renderer);
                     }
                     if (keep) AddWaiting(RecordOf(t, 's'));
-                    EndSession(t, t.Original, deleteAutosave: !keep, notify: false);
+                    // Unity's undo goes on across Play (a bone move from before can be undone after it), not across closing
+                    // a scene: only Play's sessions keep their bind-pose holder.
+                    EndSession(t, t.Original, deleteAutosave: !keep, notify: false, keepHolder: keep && prepareScene);
                 }
                 catch (Exception e) { Debug.LogException(e); }
             }
@@ -643,6 +706,8 @@ namespace Orbiters.Mixer.Editor
         {
             if (change == PlayModeStateChange.ExitingEditMode)
             {
+                // Play never gets Weight Paint's pose (nor a rest-pose placement worked out from posed bones below).
+                BoneSubSelection.PutBackPosed();
                 if (targets.Count == 0) return;
                 var list = targets.Where(t => t.Alive).ToList();
                 Suspend(list, prepareScene: true);
@@ -745,9 +810,10 @@ namespace Orbiters.Mixer.Editor
             if (waiting.Count > 0) TryRecover();
             // Only renderers that show their working mesh: one another tool gave another mesh keeps it.
             var list = targets.Where(t => t.Alive && t.Renderer.gameObject.scene == scene && t.Shown == t.Working).ToList();
-            if (list.Count == 0) return;
+            var unposed = BoneSubSelection.Unposed(bone => bone.gameObject.scene == scene);
+            if (list.Count == 0 && unposed.Count == 0) return;
             RestoreStash(scene.handle);
-            stashes[scene.handle] = Stash(list);
+            stashes[scene.handle] = Stash(list, unposed);
             // A save that fails never sends sceneSaved: the scene shows the edits again on the next frame anyway.
             int handle = scene.handle;
             EditorApplication.CallbackFunction once = null;
@@ -755,12 +821,19 @@ namespace Orbiters.Mixer.Editor
             EditorApplication.update += once;
         }
 
-        // The targets as a scene file must hold them, with what puts them back (RestoreStash).
-        private static SaveStash Stash(List<EditTarget> list)
+        // The targets as a scene file must hold them, and the bones Weight Paint posed as they were before, with what puts
+        // them back (RestoreStash).
+        private static SaveStash Stash(List<EditTarget> list, List<RestPosePlacement.Pose> unposed)
         {
             var stash = new SaveStash();
             try
             {
+                // The pose first: the rest-pose placement is worked out from the bones as they rest.
+                if (unposed.Count > 0)
+                {
+                    stash.Posed = unposed.Select(p => new RestPosePlacement.Pose { Bone = p.Bone, Position = p.Bone.localPosition, Rotation = p.Bone.localRotation, Scale = p.Bone.localScale }).ToList();
+                    RestPosePlacement.Restore(unposed);
+                }
                 stash.Poses = RestPosePlacement.Apply(RestPosePlacement.AsOriginal(RestPosePlacement.RigsOf(list)));
                 foreach (var t in list)
                 {
@@ -784,6 +857,7 @@ namespace Orbiters.Mixer.Editor
             {
                 foreach (var (renderer, bones) in stash.Bones) if (renderer != null) renderer.bones = bones;
                 RestPosePlacement.Restore(stash.Poses);
+                RestPosePlacement.Restore(stash.Posed);
                 foreach (var t in stash.Shown) if (t.Alive && targets.Contains(t)) { t.Show(t.Working); t.HoldLayerWeight(); }
             }
             catch (Exception e) { Debug.LogException(e); }
@@ -807,6 +881,38 @@ namespace Orbiters.Mixer.Editor
 
         /// <summary>For tests: brings back the waiting sessions now (what the next frame does after an Undo or a scene opening).</summary>
         internal static void RecoverNow() => TryRecover();
+
+        /// <summary>
+        /// For tests: what a script reload does to the sessions of <paramref name="scene"/>. They are written as before a
+        /// reload, then dropped from memory with their history (their working meshes and bind-pose holders stay, as
+        /// HideAndDontSave objects do, and so do the records kept in SessionState), and rebuilt as after a reload;
+        /// <paramref name="whileReloading"/> runs in between (a reimport).
+        /// </summary>
+        internal static void SimulateReload(Scene scene, Action whileReloading = null)
+        {
+            BeforeReload();
+            bool InScene(EditTarget t) => t.Renderer != null && t.Renderer.gameObject.scene == scene;
+            var lines = new List<string>();
+            foreach (var t in targets.Where(InScene).ToList())
+            {
+                if (t.Alive) lines.Add(StateLine(t));
+                targets.Remove(t);
+                ArmatureEdit.DropForReload(t);
+                MixerHistory.Forget(t);
+                MixerLinkService.ReleaseForUnity(t);
+            }
+            foreach (var pair in parkedTargets.Where(p => InScene(p.Value)).ToList())
+            {
+                parkedTargets.Remove(pair.Key);
+                MixerHistory.Forget(pair.Value);
+                ArmatureEdit.DropForReload(pair.Value);
+            }
+            whileReloading?.Invoke();
+            foreach (string line in lines) pendingRestore.Add(line);
+            repairAfterRestore = true;
+            if (waiting.Count > 0) recoverDue = true;
+            Tick();
+        }
 
         // ---- Prefabs -------------------------------------------------------------------------------------------------
 
@@ -852,8 +958,8 @@ namespace Orbiters.Mixer.Editor
 
         /// <summary>
         /// Makes a copy of an avatar (an upload's build copy, an export's) carry nothing of Mixer: original meshes with
-        /// the renderers' own weights, bone lists without the leaf bones a session added, and bones where the original
-        /// bind poses want them. The scene's own objects are not touched.
+        /// the renderers' own weights, bone lists without the leaf bones a session added, bones where the original
+        /// bind poses want them, and the bones Weight Paint posed as they were. The scene's own objects are not touched.
         /// </summary>
         internal static void PrepareCopyForExport(GameObject root)
         {
@@ -862,14 +968,24 @@ namespace Orbiters.Mixer.Editor
             // Not a copy: the scene's own avatar is being built. It gets what a scene save gets, and the edits show again
             // on the next frame, so the sessions are not broken by it.
             var own = targets.Where(t => t.Alive && t.Shown == t.Working && t.Renderer.transform.IsChildOf(root.transform)).ToList();
-            if (own.Count > 0)
+            var ownPosed = BoneSubSelection.Unposed(bone => bone.IsChildOf(root.transform));
+            if (own.Count > 0 || ownPosed.Count > 0)
             {
                 int key = int.MinValue + (root.GetInstanceID() & 0x3fffffff);
                 RestoreStash(key);
-                stashes[key] = Stash(own);
+                stashes[key] = Stash(own, ownPosed);
                 EditorApplication.CallbackFunction once = null;
                 once = () => { EditorApplication.update -= once; RestoreStash(key); };
                 EditorApplication.update += once;
+            }
+            // A copy of bones Weight Paint posed gets them as they were, before the placement below is worked out.
+            foreach (var pose in BoneSubSelection.Unposed(bone => !bone.IsChildOf(root.transform)))
+            {
+                var copy = CopyOf(pose.Bone, root.transform);
+                if (copy == null) continue;
+                copy.localPosition = pose.Position;
+                copy.localRotation = pose.Rotation;
+                copy.localScale = pose.Scale;
             }
             var rigs = new List<RestPosePlacement.Rig>();
             var trims = new List<(SkinnedMeshRenderer renderer, int count)>();
@@ -900,6 +1016,20 @@ namespace Orbiters.Mixer.Editor
                 var original = MixerMeshGuard.OriginalOf(filter.sharedMesh);
                 if (original != null) filter.sharedMesh = original;
             }
+        }
+
+        // The object of a copy (under copyRoot) that stands for a scene bone: at the bone's path under one of its parents,
+        // and posed exactly as the bone is (a copy made just now).
+        private static Transform CopyOf(Transform bone, Transform copyRoot)
+        {
+            string path = bone.name;
+            for (var above = bone.parent; above != null; above = above.parent)
+            {
+                var found = copyRoot.Find(path);
+                if (found != null && found != bone && found.localPosition == bone.localPosition && found.localRotation == bone.localRotation && found.localScale == bone.localScale) return found;
+                path = above.name + "/" + path;
+            }
+            return null;
         }
     }
 }

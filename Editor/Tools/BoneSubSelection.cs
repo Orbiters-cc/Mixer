@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Orbiters.Toolkit.Editor.XRay;
 using UnityEditor;
@@ -11,7 +12,8 @@ namespace Orbiters.Mixer.Editor
     /// overlay or in the Mixer Hierarchy, sub-selects it: Mixer's own pick, while Unity's selection and the inspectors
     /// stay on the painted mesh. The bone becomes the painted bone and the one the weight overlay shows, is highlighted
     /// in the overlay and the hierarchy, and gets a move or rotate handle in the Scene view to pose it and try the weights.
-    /// Leaving Weight Paint, a click on empty space, a vertex group picked or another selection clears it.
+    /// Leaving Weight Paint, a click on empty space, a vertex group picked or another selection clears it. The pose is a
+    /// try only: scene saves and uploads get the bones as they were, and they go back when Weight Paint ends.
     /// </summary>
     [InitializeOnLoad]
     internal static class BoneSubSelection
@@ -22,6 +24,10 @@ namespace Orbiters.Mixer.Editor
 
         private static Transform bone;
         private static bool hidingTools, toolsHiddenBefore;
+        // The bones the handle posed in this Weight Paint, with their local transforms from before: as in Blender's pose
+        // mode, posing to try the weights never changes the avatar. Scene saves and builds get them as they were, and they
+        // go back when Weight Paint ends.
+        private static readonly Dictionary<Transform, RestPosePlacement.Pose> posed = new Dictionary<Transform, RestPosePlacement.Pose>();
 
         /// <summary>The sub-selection changed (picked, moved to another bone or cleared).</summary>
         public static event Action Changed;
@@ -32,7 +38,8 @@ namespace Orbiters.Mixer.Editor
             Selection.selectionChanged += OnSelectionChanged;
             // The painted mesh reverted, committed away or deleted: its rig is no longer what is painted.
             MixerSession.Changed += () => { if ((Bone != null || hidingTools) && !Accepts(Bone)) Clear(); };
-            AssemblyReloadEvents.beforeAssemblyReload += Clear;
+            // Weight Paint does not survive a reload: neither does its pose.
+            AssemblyReloadEvents.beforeAssemblyReload += () => { Clear(); PutBackPosed(); };
         }
 
         /// <summary>The sub-selected bone, or null.</summary>
@@ -148,13 +155,56 @@ namespace Orbiters.Mixer.Editor
             {
                 EditorGUI.BeginChangeCheck();
                 var moved = Handles.PositionHandle(t.position, local ? t.rotation : Quaternion.identity);
-                if (EditorGUI.EndChangeCheck())
-                {
-                    Undo.RecordObject(t, "Move " + t.name);
-                    t.position = moved;
-                }
+                if (EditorGUI.EndChangeCheck()) MoveBone(t, moved);
             }
             if (Tools.current != Tool.Move) RotationRings(t, local, view);
+        }
+
+        /// <summary>What the move handle does: poses the bone (recorded for Undo) until Weight Paint ends.</summary>
+        internal static void MoveBone(Transform t, Vector3 position)
+        {
+            if (t == null) return;
+            Remember(t);
+            Undo.RecordObject(t, "Move " + t.name);
+            t.position = position;
+        }
+
+        /// <summary>What the rotation rings do: pose the bone (recorded for Undo) until Weight Paint ends.</summary>
+        internal static void RotateBone(Transform t, Quaternion rotation)
+        {
+            if (t == null) return;
+            Remember(t);
+            Undo.RecordObject(t, "Rotate " + t.name);
+            t.rotation = rotation;
+        }
+
+        private static void Remember(Transform t)
+        {
+            if (!posed.ContainsKey(t)) posed[t] = new RestPosePlacement.Pose { Bone = t, Position = t.localPosition, Rotation = t.localRotation, Scale = t.localScale };
+        }
+
+        /// <summary>The bones Weight Paint posed that <paramref name="which"/> takes, as they were before (what a scene save or a build must get).</summary>
+        internal static List<RestPosePlacement.Pose> Unposed(Func<Transform, bool> which)
+        {
+            var result = new List<RestPosePlacement.Pose>();
+            foreach (var pose in posed.Values) if (pose.Bone != null && which(pose.Bone)) result.Add(pose);
+            return result;
+        }
+
+        /// <summary>Weight Paint ends (or Play starts, or a script reload comes): the bones it posed go back, in one undo step.</summary>
+        internal static void PutBackPosed()
+        {
+            if (posed.Count == 0) return;
+            var moved = posed.Values.Where(p => p.Bone != null && (p.Bone.localPosition != p.Position || p.Bone.localRotation != p.Rotation || p.Bone.localScale != p.Scale)).ToList();
+            posed.Clear();
+            if (moved.Count == 0) return;
+            Undo.IncrementCurrentGroup();
+            Undo.SetCurrentGroupName("Mixer: Put back the bones posed in Weight Paint");
+            Undo.RecordObjects(moved.Select(p => (UnityEngine.Object)p.Bone).ToArray(), "Mixer: Put back the bones posed in Weight Paint");
+            RestPosePlacement.Restore(moved);
+            Undo.IncrementCurrentGroup();
+            foreach (var target in MixerSession.Targets) if (target.Alive) target.MarkWorldStale();
+            SceneView.RepaintAll();
         }
 
         // Handles.Disc returns the rotation it was given at the press, turned by the drag about the press's axis: given
@@ -194,8 +244,7 @@ namespace Orbiters.Mixer.Editor
                 Handles.color = color;
             }
             if (!changed) return;
-            Undo.RecordObject(t, "Rotate " + t.name);
-            t.rotation = result;
+            RotateBone(t, result);
         }
     }
 }

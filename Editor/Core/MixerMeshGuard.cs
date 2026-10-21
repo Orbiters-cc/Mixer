@@ -15,8 +15,9 @@ namespace Orbiters.Mixer.Editor
     /// For the editor session (across script reloads) the guard remembers each working mesh's original, the renderer
     /// that showed it, and, once the session ended, the mesh that took its place (the committed asset, or the original
     /// after a revert); after Undo and Redo, after script reloads and before scene saves, a renderer showing a working
-    /// mesh no session shows gets that mesh. A copy of an edited object (Ctrl+D, paste) that shows another renderer's
-    /// working mesh is handed to <see cref="AdoptCopy"/>, else it gets the original.
+    /// mesh no session shows gets that mesh (on its own renderer too, when no session has it any more: a restore that
+    /// failed). A copy of an edited object (Ctrl+D, paste) that shows another renderer's working mesh is handed to
+    /// <see cref="AdoptCopy"/>, else it gets the original.
     /// </summary>
     internal static class MixerMeshGuard
     {
@@ -36,6 +37,8 @@ namespace Orbiters.Mixer.Editor
 
         /// <summary>A copy of an edited object (renderer, the working mesh it shows): true when a session took it over.</summary>
         internal static Func<Renderer, Mesh, bool> AdoptCopy;
+        /// <summary>Whether a session shows the working mesh, or will show it again (set aside, waiting, about to be restored).</summary>
+        internal static Func<Mesh, bool> Owned;
 
         /// <summary>A session shows <paramref name="working"/> in place of <paramref name="original"/> on <paramref name="renderer"/>.</summary>
         public static void Shown(Mesh working, Mesh original, Renderer renderer)
@@ -114,16 +117,18 @@ namespace Orbiters.Mixer.Editor
             if (id == 0 || !entries.TryGetValue(id, out var entry)) return false;
             if (!entry.Released && shown != null)
             {
-                // A live working mesh on its own renderer is a session's; on another one it is a copy of an edited object.
-                if (entry.Renderer == renderer.GetInstanceID()) return false;
-                if (AdoptCopy != null && AdoptCopy(renderer, shown)) return true;
+                // A live working mesh on its own renderer is a session's, unless no session has it (one whose restore
+                // failed after a reload): then the renderer gets the original. On another renderer it is a copy of an
+                // edited object.
+                if (entry.Renderer == renderer.GetInstanceID()) { if (Owned == null || Owned(shown)) return false; }
+                else if (AdoptCopy != null && AdoptCopy(renderer, shown)) return true;
             }
             var mesh = Resolve(entry.Mesh);
             if (mesh == null) return false;
             if (filter != null) filter.sharedMesh = mesh; else ((SkinnedMeshRenderer)renderer).sharedMesh = mesh;
             EditorUtility.SetDirty(holder);
             if (renderer.gameObject.scene.IsValid() && !EditorApplication.isPlaying) EditorSceneManager.MarkSceneDirty(renderer.gameObject.scene);
-            Debug.LogWarning("[Mixer] '" + renderer.name + "' was showing a Mixer working mesh no session shows (an Undo or Redo of a step recorded while it was edited, or a copy of an edited object): it shows '" + mesh.name + "' now.");
+            Debug.LogWarning("[Mixer] '" + renderer.name + "' was showing a Mixer working mesh no session shows (an Undo or Redo of a step recorded while it was edited, a copy of an edited object, or a session that could not come back after a reload): it shows '" + mesh.name + "' now.");
             return true;
         }
 

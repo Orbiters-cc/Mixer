@@ -59,6 +59,9 @@ namespace Orbiters.Mixer.Editor
         /// <summary>The original's positions, normals and bind poses as the session began.</summary>
         public readonly Vector3[] OriginalPositions, OriginalNormals;
         public readonly Matrix4x4[] OriginalBindPoses;
+        /// <summary>The hash of <see cref="OriginalPositions"/> (<see cref="MixerAutosave.FingerprintOf"/>): which version of the mesh the session started from.</summary>
+        public long OriginalFingerprint => originalFingerprint ?? (originalFingerprint = MixerAutosave.FingerprintOf(OriginalPositions)).Value;
+        private long? originalFingerprint;
         /// <summary>Whether the original has normals of its own (else <see cref="OriginalNormals"/> are computed).</summary>
         public readonly bool HasNormals;
         /// <summary>Every submesh's triangles in one array (the mesh's <c>triangles</c>).</summary>
@@ -172,11 +175,13 @@ namespace Orbiters.Mixer.Editor
 
         /// <summary>
         /// Sets a bone's weight on a vertex. With <paramref name="normalize"/> the other bones are scaled so the sum stays 1
-        /// (when they had any weight; a lone bone goes to 1). Weights under a thousandth are dropped.
+        /// (when they had any weight; a lone bone goes to 1). Weights under a thousandth are dropped; a vertex is never left
+        /// without a bone (see <see cref="KeepABone"/>).
         /// </summary>
         public void SetBoneWeight(int v, int bone, float weight, bool normalize)
         {
             var list = EnsureInfluences()[v];
+            var strongest = Strongest(list);
             weight = Mathf.Clamp01(weight);
             int index = -1;
             float others = 0f;
@@ -192,20 +197,40 @@ namespace Orbiters.Mixer.Editor
             }
             if (index >= 0) list[index] = new Influence(bone, weight); else if (weight > 0f) list.Add(new Influence(bone, weight));
             for (int i = list.Count - 1; i >= 0; i--) if (list[i].Weight < 0.001f) list.RemoveAt(i);
+            KeepABone(list, strongest);
             list.Sort(ByWeightDescending);
             WeightEdited.Add(v);
             WeightsDirty = true;
         }
 
+        /// <summary>Sets a vertex's influences (an undo, Blender, an autosave); an empty list keeps a bone (see <see cref="KeepABone"/>).</summary>
         public void SetInfluences(int v, Influence[] influences)
         {
             var list = EnsureInfluences()[v];
+            var strongest = Strongest(list);
             list.Clear();
             list.AddRange(influences);
+            KeepABone(list, strongest);
             // Unity reads the strongest first (and keeps only the first four at the usual quality): Blender's order is any.
             list.Sort(ByWeightDescending);
             WeightEdited.Add(v);
             WeightsDirty = true;
+        }
+
+        // Unity skins every vertex by some bone: one left with none would be committed on the first bone (the root or the
+        // hips) and spike when the avatar moves. A change that would take a vertex's last bone away (painting it to 0 with
+        // Normalize off, Blender sending the vertex without groups) leaves it the bone that weighed most on it before, as
+        // it was: alone, that bone moves the vertex fully, as before the change.
+        private static void KeepABone(List<Influence> list, Influence strongest)
+        {
+            if (list.Count == 0 && strongest.Weight > 0f) list.Add(strongest);
+        }
+
+        private static Influence Strongest(List<Influence> list)
+        {
+            var best = default(Influence);
+            for (int i = 0; i < list.Count; i++) if (list[i].Weight > best.Weight) best = list[i];
+            return best;
         }
 
         private static readonly Comparison<Influence> ByWeightDescending = (a, b) => b.Weight.CompareTo(a.Weight);
@@ -224,7 +249,8 @@ namespace Orbiters.Mixer.Editor
                 var list = lists[v];
                 if (list.Count == 0)
                 {
-                    // Unity needs at least one influence per vertex: the first bone at full weight.
+                    // Unity needs at least one influence per vertex: one the original had without any (edits never empty
+                    // a vertex, see KeepABone) gets the first bone at full weight.
                     perVertex[v] = 1;
                     weights[cursor++] = new BoneWeight1 { boneIndex = 0, weight = 1f };
                     continue;

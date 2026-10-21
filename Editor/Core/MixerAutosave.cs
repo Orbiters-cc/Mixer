@@ -130,6 +130,22 @@ namespace Orbiters.Mixer.Editor
             }
         }
 
+        /// <summary>
+        /// Whether the autosave of <paramref name="targetId"/> is one this version of Mixer reads, made for the mesh with
+        /// <paramref name="fingerprint"/> (<see cref="FingerprintOf"/> of its positions); false when there is none.
+        /// </summary>
+        public static bool Fits(string targetId, int vertexCount, long fingerprint)
+        {
+            string path = PathFor(targetId);
+            if (!File.Exists(path)) return false;
+            try
+            {
+                using (var reader = new BinaryReader(File.OpenRead(path)))
+                    return Encoding.ASCII.GetString(reader.ReadBytes(4)) == Magic && reader.ReadInt32() == Version && reader.ReadInt32() == vertexCount && reader.ReadInt64() == fingerprint;
+            }
+            catch (Exception) { return false; }
+        }
+
         /// <summary>Old autosaves nobody points at any more, and temporary files writes left behind.</summary>
         public static void CleanUp(ICollection<string> keepIds, TimeSpan olderThan)
         {
@@ -171,7 +187,7 @@ namespace Orbiters.Mixer.Editor
             public static Snapshot Of(EditTarget target)
             {
                 var doc = target.Document;
-                var s = new Snapshot { VertexCount = doc.VertexCount, Fingerprint = FingerprintOf(doc.OriginalPositions), Layer = doc.Layer ?? "", Order = new List<string>(doc.ShapeOrder) };
+                var s = new Snapshot { VertexCount = doc.VertexCount, Fingerprint = doc.OriginalFingerprint, Layer = doc.Layer ?? "", Order = new List<string>(doc.ShapeOrder) };
                 s.Moved = new int[doc.MovedBase.Count];
                 doc.MovedBase.CopyTo(s.Moved);
                 s.MovedPositions = new Vector3[s.Moved.Length];
@@ -287,7 +303,7 @@ namespace Orbiters.Mixer.Editor
             if (reader.ReadInt32() != Version) return false;
             int vertexCount = reader.ReadInt32();
             if (vertexCount != doc.VertexCount) return false;
-            if (reader.ReadInt64() != FingerprintOf(doc.OriginalPositions))
+            if (reader.ReadInt64() != doc.OriginalFingerprint)
             {
                 Debug.LogWarning("[Mixer] '" + target.Name + "' changed since its edits were autosaved (reimported?): they were made on the mesh before, and are not applied.");
                 return false;

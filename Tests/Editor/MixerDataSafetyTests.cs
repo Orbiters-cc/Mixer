@@ -12,7 +12,9 @@ namespace Orbiters.Mixer.Editor.Tests
     /// The data-loss cases of the 2026-10-20 review: Ctrl+Z after Commit and Revert never leaves a renderer on a destroyed
     /// mesh; nothing done just before a reload is lost; a deleted object, Play and a duplicate keep their sessions; scene
     /// saves and uploads during rest-pose editing get the original avatar; shape names can be reused and renames keep
-    /// frames and weights; the history undoes the right step after another mesh was committed.
+    /// frames and weights; the history undoes the right step after another mesh was committed. And those of the second
+    /// review: a reload after a reimport, a working mesh no session has, in-place commits (Undo, other users), a pose
+    /// tried in Weight Paint, undo across Play, a session set aside by an undo across a reload.
     /// </summary>
     public sealed class MixerDataSafetyTests
     {
@@ -210,6 +212,75 @@ namespace Orbiters.Mixer.Editor.Tests
         }
 
         [Test]
+        public void UndoingAnInPlaceCommitGivesTheAssetWhatItHeld()
+        {
+            var target = MixerSession.Edit(renderer);
+            Inflate(target, new Vector3(0.3f, 0.5f, 0f));
+            var first = MixerSession.Commit(target);
+            var held = first.vertices;
+            var again = MixerSession.Edit(renderer);
+            Inflate(again, new Vector3(-0.3f, 1.5f, 0f));
+            var edited = (Vector3[])again.Document.Positions.Clone();
+            var second = MixerSession.Commit(again);
+            Assert.That(second, Is.SameAs(first), "nothing else uses it: updated in place");
+            Assert.That(MaxDistance(first.vertices, edited), Is.LessThan(1e-6f));
+
+            Undo.PerformUndo();
+            Assert.That(renderer.sharedMesh, Is.SameAs(first));
+            Assert.That(MaxDistance(first.vertices, held), Is.LessThan(1e-6f), "Ctrl+Z gives the asset what the first commit saved");
+            Undo.PerformRedo();
+            Assert.That(MaxDistance(first.vertices, edited), Is.LessThan(1e-6f), "Ctrl+Y the second commit");
+        }
+
+        [Test]
+        public void AMixerMeshAPrefabUsesGetsAFileOfItsOwn()
+        {
+            var target = MixerSession.Edit(renderer);
+            Inflate(target, new Vector3(0.3f, 0.5f, 0f));
+            var first = MixerSession.Commit(target);
+            var user = new GameObject("PrefabUser");
+            SceneManager.MoveGameObjectToScene(user, scene);
+            user.AddComponent<MeshFilter>().sharedMesh = first;
+            PrefabUtility.SaveAsPrefabAsset(user, Folder + "/User.prefab");
+            Object.DestroyImmediate(user);
+            var before = first.vertices;
+
+            var again = MixerSession.Edit(renderer);
+            Inflate(again, new Vector3(-0.3f, 1.5f, 0f));
+            var second = MixerSession.Commit(again);
+            Assert.That(AssetDatabase.GetAssetPath(second), Is.Not.EqualTo(AssetDatabase.GetAssetPath(first)), "the prefab's mesh is not changed under it");
+            Assert.That(MaxDistance(first.vertices, before), Is.LessThan(1e-7f));
+        }
+
+        [Test]
+        public void AMixerMeshTheSessionOfADeletedObjectUsesGetsAFileOfItsOwn()
+        {
+            var target = MixerSession.Edit(renderer);
+            Inflate(target, new Vector3(0.3f, 0.5f, 0f));
+            var first = MixerSession.Commit(target);
+            var copy = Skinned(root, "Copy", first);
+            var copySession = MixerSession.Edit(copy);
+            Inflate(copySession, new Vector3(0.3f, 1f, 0f));
+            Undo.IncrementCurrentGroup();
+            Undo.DestroyObjectImmediate(copy.gameObject);
+            MixerSession.Tick();
+            Assert.That(MixerSession.Targets, Has.No.Member(copySession), "the deleted copy's session waits for an Undo");
+            var before = first.vertices;
+
+            var again = MixerSession.Edit(renderer);
+            Inflate(again, new Vector3(-0.3f, 1.5f, 0f));
+            var second = MixerSession.Commit(again);
+            Assert.That(AssetDatabase.GetAssetPath(second), Is.Not.EqualTo(AssetDatabase.GetAssetPath(first)), "the waiting session's mesh is not changed under it");
+            Assert.That(MaxDistance(first.vertices, before), Is.LessThan(1e-7f));
+
+            // Back to the copy (the commit, the stroke, the delete): its session comes back, and the tear-down reverts it.
+            Undo.PerformUndo();
+            Undo.PerformUndo();
+            Undo.PerformUndo();
+            MixerSession.Tick();
+        }
+
+        [Test]
         public void PickingALayerOrUndoingEverythingIsNothingToCommit()
         {
             var target = MixerSession.Edit(renderer);
@@ -270,6 +341,106 @@ namespace Orbiters.Mixer.Editor.Tests
                 Assert.That(built.GetBonesPerVertex()[painted], Is.EqualTo(2), "and the painted weights");
             }
             finally { Object.DestroyImmediate(built); }
+        }
+
+        [Test]
+        public void AReloadKeepsTheWorkingMeshAndTheEdits()
+        {
+            var target = MixerSession.Edit(renderer);
+            Inflate(target, new Vector3(0.3f, 0.5f, 0f));
+            var edited = (Vector3[])target.Document.Positions.Clone();
+            var working = target.Working;
+            MixerSession.SimulateReload(scene);
+            var back = MixerSession.TargetOf(renderer);
+            Assert.That(back, Is.Not.Null.And.Not.SameAs(target), "the session is made again");
+            Assert.That(back.Working, Is.SameAs(working), "on the working mesh it had");
+            Assert.That(renderer.sharedMesh, Is.SameAs(working));
+            Assert.That(MaxDistance(back.Document.Positions, edited), Is.LessThan(1e-7f), "with its edits");
+        }
+
+        [Test]
+        public void AReloadAfterAReimportWithAsManyVerticesStartsFromTheNewMesh()
+        {
+            var target = MixerSession.Edit(renderer);
+            Inflate(target, new Vector3(0.3f, 0.5f, 0f));
+            var working = target.Working;
+            // A reimport with the same vertex count but the vertices in another order.
+            var reordered = mesh.vertices.Reverse().ToArray();
+            MixerSession.SimulateReload(scene, () => mesh.vertices = reordered);
+            var back = MixerSession.TargetOf(renderer);
+            Assert.That(working == null, Is.True, "the working mesh made from the old import is not reused");
+            Assert.That(back, Is.Not.Null);
+            Assert.That(renderer.sharedMesh, Is.SameAs(back.Working));
+            Assert.That(MaxDistance(back.Working.vertices, reordered), Is.LessThan(1e-6f), "the renderer shows the new import");
+            Assert.That(back.Document.HasDifferences(), Is.False, "the edits made on the old one are not applied to it");
+        }
+
+        [Test]
+        public void AnAutosaveAReloadCannotUseGivesAFreshWorkingMesh()
+        {
+            var target = MixerSession.Edit(renderer);
+            Inflate(target, new Vector3(0.3f, 0.5f, 0f));
+            var working = target.Working;
+            string path = MixerAutosave.PathFor(target.Id);
+            // An autosave of another format (another version of Mixer wrote it).
+            MixerSession.SimulateReload(scene, () => System.IO.File.WriteAllBytes(path, System.Text.Encoding.ASCII.GetBytes("MIXA").Concat(System.BitConverter.GetBytes(-1)).ToArray()));
+            var back = MixerSession.TargetOf(renderer);
+            Assert.That(working == null, Is.True, "the working mesh showing what the autosave held is not reused");
+            Assert.That(back, Is.Not.Null);
+            Assert.That(renderer.sharedMesh, Is.SameAs(back.Working));
+            Assert.That(MaxDistance(back.Working.vertices, mesh.vertices), Is.LessThan(1e-6f), "the renderer shows what the document holds: the original");
+        }
+
+        [Test]
+        public void AWorkingMeshNoSessionHasGetsItsOriginalBack()
+        {
+            // What a session whose restore failed after a reload leaves: its working mesh on its own renderer, no session.
+            var orphan = Object.Instantiate(mesh);
+            orphan.hideFlags = HideFlags.HideAndDontSave;
+            try
+            {
+                MixerMeshGuard.Shown(orphan, mesh, renderer);
+                renderer.sharedMesh = orphan;
+                MixerMeshGuard.RepairUnder(root);
+                Assert.That(renderer.sharedMesh, Is.SameAs(mesh), "the renderer gets its original, which a scene saves");
+            }
+            finally
+            {
+                MixerMeshGuard.Released(orphan, mesh);
+                Object.DestroyImmediate(orphan);
+            }
+        }
+
+        [Test]
+        public void ASessionSetAsideByAnUndoIsTakenUpAgainAfterAReload()
+        {
+            // A step made before the session kept the whole renderer, with the mesh it had then.
+            Undo.IncrementCurrentGroup();
+            Undo.RegisterCompleteObjectUndo(renderer, "Blend shape weight");
+            renderer.SetBlendShapeWeight(0, 30f);
+            Undo.IncrementCurrentGroup();
+            var target = MixerSession.Edit(renderer);
+            var working = target.Working;
+            // Edits outside Mixer's history (as an autosave brings them back after a reload): undoing past the session's
+            // start keeps them.
+            var doc = target.Document;
+            int top = Enumerable.Range(0, doc.VertexCount).OrderByDescending(v => doc.Positions[v].y).First();
+            doc.SetLayerPosition(null, top, doc.Positions[top] + Vector3.up * 0.1f);
+            doc.MarkEdited(new[] { top });
+            target.Flush();
+            var edited = (Vector3[])doc.Positions.Clone();
+
+            Undo.PerformUndo(); // the step before the session: the renderer gets the mesh it had then, the session waits
+            Assert.That(renderer.sharedMesh, Is.SameAs(mesh));
+            Assert.That(MixerSession.TargetOf(renderer), Is.Null);
+            MixerSession.SimulateReload(scene);
+            Assert.That(MixerSession.TargetOf(renderer), Is.Null, "after a reload it still waits");
+            Assert.That(renderer.sharedMesh, Is.SameAs(mesh));
+
+            var again = MixerSession.Edit(renderer);
+            Assert.That(again.Working, Is.SameAs(working), "editing it again takes it up, on its working mesh");
+            Assert.That(renderer.sharedMesh, Is.SameAs(working));
+            Assert.That(MaxDistance(again.Document.Positions, edited), Is.LessThan(1e-7f), "with its edits, not a new session over them");
         }
 
         [Test]
@@ -416,6 +587,22 @@ namespace Orbiters.Mixer.Editor.Tests
             Assert.That(MaxDistance(Baked(renderer), shown), Is.LessThan(1e-4f), "the mesh shows as before Play");
         }
 
+        [Test]
+        public void UndoingABoneMoveFromBeforePlayKeepsTheSkin()
+        {
+            var rest = Baked(renderer);
+            var target = MoveUpperBoneInRestPose();
+            var original = (Matrix4x4[])target.Document.OriginalBindPoses.Clone();
+            MixerSession.SimulatePlay(scene, null);
+            var back = MixerSession.TargetOf(renderer);
+            Assert.That(back, Is.Not.Null.And.Not.SameAs(target), "the session comes back when Play stops");
+
+            Undo.PerformUndo();
+            Assert.That(Vector3.Distance(upper.localPosition, new Vector3(0, 1f, 0)), Is.LessThan(1e-6f), "the move from before Play is undone");
+            Assert.That(back.Document.BindPoses, Is.EqualTo(original), "with its bind poses");
+            Assert.That(MaxDistance(Baked(renderer), rest), Is.LessThan(1e-4f), "so the mesh is not deformed");
+        }
+
         // ---- Saves and uploads during rest-pose editing ----------------------------------------------------------------
 
         [Test]
@@ -458,6 +645,47 @@ namespace Orbiters.Mixer.Editor.Tests
             Assert.That(MaxDistance(copied.Select(v => v - offset).ToArray(), shown), Is.LessThan(1e-4f), "the uploaded avatar is not deformed");
             Assert.That(renderer.sharedMesh, Is.SameAs(target.Working), "the scene's own avatar is not touched");
             Object.DestroyImmediate(holder);
+        }
+
+        [Test]
+        public void APoseTriedInWeightPaintIsNeitherSavedNorUploadedAndGoesWhenItEnds()
+        {
+            var modeBefore = MixerSceneTool.Mode;
+            var focusBefore = MixerSceneTool.FocusTarget;
+            var target = MixerSession.Edit(renderer);
+            var rest = upper.localRotation;
+            try
+            {
+                MixerSceneTool.FocusTarget = target;
+                MixerSceneTool.Mode = MixerMode.Weights;
+                Assert.That(BoneSubSelection.Pick(upper), Is.True);
+                // What the bone's rotation rings do with a turn.
+                BoneSubSelection.RotateBone(upper, Quaternion.AngleAxis(30f, Vector3.forward) * upper.rotation);
+                var posed = upper.localRotation;
+                Assert.That(Quaternion.Angle(posed, rest), Is.GreaterThan(29f));
+
+                MixerSession.SimulateSceneSave(scene, () =>
+                    Assert.That(Quaternion.Angle(upper.localRotation, rest), Is.LessThan(0.01f), "the scene file gets the bone as it was"));
+                Assert.That(Quaternion.Angle(upper.localRotation, posed), Is.LessThan(0.01f), "the pose goes on after the save");
+
+                // The SDK's build copy; made under an object of the test's scene, never in the open scene.
+                var holder = new GameObject("BuildCopies");
+                SceneManager.MoveGameObjectToScene(holder, scene);
+                var copy = Object.Instantiate(root, holder.transform);
+                MixerSession.PrepareCopyForExport(copy);
+                Assert.That(Quaternion.Angle(copy.transform.Find("Lower/Upper").localRotation, rest), Is.LessThan(0.01f), "the upload gets the bone as it was");
+                Assert.That(Quaternion.Angle(upper.localRotation, posed), Is.LessThan(0.01f), "the scene's own bone stays posed");
+                Object.DestroyImmediate(holder);
+
+                MixerSceneTool.Mode = MixerMode.None;
+                Assert.That(Quaternion.Angle(upper.localRotation, rest), Is.LessThan(0.01f), "leaving Weight Paint puts the bone back");
+            }
+            finally
+            {
+                MixerSceneTool.Mode = MixerMode.None;
+                MixerSceneTool.FocusTarget = focusBefore;
+                MixerSceneTool.Mode = modeBefore;
+            }
         }
 
         [Test]

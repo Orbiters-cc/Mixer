@@ -36,6 +36,8 @@ namespace Orbiters.Mixer.Editor
         private static readonly Dictionary<EditTarget, Matrix4x4[]> rest = new Dictionary<EditTarget, Matrix4x4[]>();
         private static readonly Dictionary<EditTarget, MixerBindPoseHolder> holders = new Dictionary<EditTarget, MixerBindPoseHolder>();
         private static readonly Dictionary<EditTarget, int> recordedGroup = new Dictionary<EditTarget, int>();
+        // Holders of sessions waiting for Play to stop, by session id.
+        private static readonly Dictionary<string, MixerBindPoseHolder> waitingHolders = new Dictionary<string, MixerBindPoseHolder>();
         private static Dictionary<string, MixerBindPoseHolder> survivors;
         private static int selectedBone = -1;
 
@@ -156,14 +158,19 @@ namespace Orbiters.Mixer.Editor
         {
             if (target == null) return null;
             if (holders.TryGetValue(target, out var holder) && holder != null) return holder;
-            // After a script reload: the holders survive, the dictionary does not (looked for once per reload).
-            if (survivors == null)
+            // A session back from Play takes its holder again: Unity's steps of the bone moves before name that one.
+            if (waitingHolders.TryGetValue(target.Id, out holder)) waitingHolders.Remove(target.Id);
+            if (holder == null)
             {
-                survivors = new Dictionary<string, MixerBindPoseHolder>();
-                foreach (var found in Resources.FindObjectsOfTypeAll<MixerBindPoseHolder>())
-                    if (found != null && !string.IsNullOrEmpty(found.targetId)) survivors[found.targetId] = found;
+                // After a script reload: the holders survive, the dictionary does not (looked for once per reload).
+                if (survivors == null)
+                {
+                    survivors = new Dictionary<string, MixerBindPoseHolder>();
+                    foreach (var found in Resources.FindObjectsOfTypeAll<MixerBindPoseHolder>())
+                        if (found != null && !string.IsNullOrEmpty(found.targetId)) survivors[found.targetId] = found;
+                }
+                if (survivors.TryGetValue(target.Id, out holder)) survivors.Remove(target.Id);
             }
-            if (survivors.TryGetValue(target.Id, out holder)) survivors.Remove(target.Id);
             if (holder == null)
             {
                 if (!create) return null;
@@ -206,6 +213,39 @@ namespace Orbiters.Mixer.Editor
             var holder = HolderOf(target, create: false);
             holders.Remove(target);
             if (holder != null) UnityEngine.Object.DestroyImmediate(holder);
+        }
+
+        /// <summary>
+        /// The session waits for Play to stop: its holder stays, kept by the session's id, for the session that comes back,
+        /// so undoing a bone move made before Play still gives the bind poses back with the bone.
+        /// </summary>
+        internal static void Park(EditTarget target)
+        {
+            if (target == null) return;
+            var holder = HolderOf(target, create: false);
+            rest.Remove(target);
+            dirty.Remove(target);
+            recordedGroup.Remove(target);
+            holders.Remove(target);
+            if (holder != null) waitingHolders[target.Id] = holder;
+        }
+
+        /// <summary>A waiting session went for good: the holder kept for it goes too.</summary>
+        internal static void ForgetWaiting(string targetId)
+        {
+            if (targetId == null || !waitingHolders.TryGetValue(targetId, out var holder)) return;
+            waitingHolders.Remove(targetId);
+            if (holder != null) UnityEngine.Object.DestroyImmediate(holder);
+        }
+
+        /// <summary>For tests: what a script reload takes of a session here (its holder stays, found again by the session's id).</summary>
+        internal static void DropForReload(EditTarget target)
+        {
+            rest.Remove(target);
+            dirty.Remove(target);
+            recordedGroup.Remove(target);
+            holders.Remove(target);
+            survivors = null;
         }
 
         /// <summary>Puts the bind poses Unity's Undo restored into the target's document; true when they changed.</summary>

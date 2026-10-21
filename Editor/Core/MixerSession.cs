@@ -1,10 +1,12 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Orbiters.Toolkit.Editor;
 using Orbiters.Toolkit.Editor.Meshes;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 using Object = UnityEngine.Object;
 
 namespace Orbiters.Mixer.Editor
@@ -31,6 +33,7 @@ namespace Orbiters.Mixer.Editor
             EditorApplication.update += Tick;
             MixerHistory.Notice += text => Notice?.Invoke(text, false);
             MixerMeshGuard.AdoptCopy = AdoptCopy;
+            MixerMeshGuard.Owned = OwnsWorking;
             HookLifecycle();
         }
 
@@ -253,7 +256,8 @@ namespace Orbiters.Mixer.Editor
 
         /// <summary>
         /// Builds the final mesh, saves it as an asset and shows it on the renderer, in one Undo step (Ctrl+Z shows the
-        /// mesh the renderer had before the session; Ctrl+Y the committed one). Rig mates whose rest pose was edited with it
+        /// mesh the renderer had before the session, a Mixer asset updated in place with what it held; Ctrl+Y the committed
+        /// one). Rig mates whose rest pose was edited with it
         /// are committed in the same step, so the bones they share stay right for all of them. Nothing different from the
         /// original (edits all undone): the session closes, nothing is saved and null is returned.
         /// </summary>
@@ -304,22 +308,11 @@ namespace Orbiters.Mixer.Editor
             if (!SameMeshAsStart(target))
                 Say(target.Name + "'s mesh changed on disk while it was edited (reimported?): the commit keeps the mesh as you edited it.", false);
             var built = MeshBuilder.Build(target);
-            // A mesh Mixer saved before is updated in place (what points at it follows), unless something else uses it
-            // too (another avatar, another session): then the edit gets a file of its own and the others keep theirs.
+            // A mesh Mixer saved before is updated in place, unless something else uses it too (another avatar, another
+            // session, a prefab or a scene file): then the edit gets a file of its own and the others keep theirs.
             bool inPlace = MeshAssets.IsOwnedBy(target.Original, "Mixer") && !UsedElsewhere(target);
-            Mesh asset;
-            if (inPlace)
-            {
-                long expected = MixerAutosave.FingerprintOf(doc.Positions);
-                asset = MeshAssets.Replace(built, target.Original);
-                // The asset must hold the edits now; if it does not, they go to a file of their own rather than nowhere.
-                if (asset.vertexCount != doc.VertexCount || MixerAutosave.FingerprintOf(asset.vertices) != expected)
-                {
-                    Debug.LogWarning("[Mixer] '" + AssetDatabase.GetAssetPath(asset) + "' could not be updated in place: the commit of " + target.Name + " goes to a file of its own.");
-                    asset = MeshAssets.Save(MeshBuilder.Build(target), MeshAssets.Folder("Mixer", owner), name);
-                }
-            }
-            else asset = MeshAssets.Save(built, MeshAssets.Folder("Mixer", owner), name);
+            Mesh asset = inPlace ? ReplaceInPlace(target, built, "Mixer: Commit " + name) : null;
+            if (asset == null) asset = MeshAssets.Save(inPlace ? MeshBuilder.Build(target) : built, MeshAssets.Folder("Mixer", owner), name);
             MixerSidecar.Save(AssetDatabase.GetAssetPath(asset), doc);
             target.ShowChannel(WeightChannel.None);
             target.RestoreWeights();
@@ -364,12 +357,52 @@ namespace Orbiters.Mixer.Editor
             return asset;
         }
 
-        // Another renderer of the open scenes (or of the target's own scene, a preview one too), or another session,
-        // shows this Mixer asset too.
+        // The edits written into the Mixer asset the target started from, in the commit's undo step (Ctrl+Z gives the
+        // asset what it held, Ctrl+Y the edits). Null when the asset does not hold them afterwards: it is put back as it
+        // was (what else points at it keeps its mesh) and the caller saves a file of its own.
+        private static Mesh ReplaceInPlace(EditTarget target, Mesh built, string step)
+        {
+            var existing = target.Original;
+            var doc = target.Document;
+            long expected = MixerAutosave.FingerprintOf(doc.Positions);
+            Undo.RegisterCompleteObjectUndo(existing, step);
+            // Replace puts the old content back when it throws, not when it writes something else: a copy for that.
+            var before = Object.Instantiate(existing);
+            before.hideFlags = HideFlags.HideAndDontSave;
+            try
+            {
+                var asset = MeshAssets.Replace(built, existing);
+                if (asset.vertexCount == doc.VertexCount && MixerAutosave.FingerprintOf(asset.vertices) == expected) return asset;
+                MeshAssets.Replace(before, existing);
+            }
+            catch (Exception e)
+            {
+                Debug.LogException(e);
+                if (built != null && !AssetDatabase.Contains(built)) Object.DestroyImmediate(built);
+            }
+            finally
+            {
+                if (before != null) Object.DestroyImmediate(before);
+            }
+            Debug.LogWarning("[Mixer] '" + AssetDatabase.GetAssetPath(existing) + "' could not be updated in place (it keeps what it had): the commit of " + target.Name + " goes to a file of its own.");
+            return null;
+        }
+
+        // Something besides the target uses its Mixer asset: another renderer of the open scenes (or of the target's own
+        // scene, a preview one too), another session (being edited, set aside by an undo, waiting for Play, its scene or
+        // a reload), or a prefab or scene file (an open scene is checked as it is now, not as saved).
         private static bool UsedElsewhere(EditTarget target)
         {
             var mesh = target.Original;
             foreach (var t in targets) if (t != target && t.Original == mesh) return true;
+            foreach (var kept in parkedTargets.Values) if (kept != target && kept.Original == mesh) return true;
+            string id = target.OriginalId;
+            foreach (var r in waiting) if (r.Id != target.Id && r.Original == id) return true;
+            foreach (string line in pendingRestore)
+            {
+                var parts = line.Split('\t');
+                if (parts.Length > 2 && parts[0] != target.Id && parts[2] == id) return true;
+            }
             bool Uses(SkinnedMeshRenderer r) => r != null && r != target.Renderer && r.sharedMesh == mesh;
             bool UsesFilter(MeshFilter f) => f != null && f != target.Filter && f.sharedMesh == mesh;
             foreach (var r in Object.FindObjectsOfType<SkinnedMeshRenderer>(true)) if (Uses(r)) return true;
@@ -381,7 +414,14 @@ namespace Orbiters.Mixer.Editor
                     foreach (var r in go.GetComponentsInChildren<SkinnedMeshRenderer>(true)) if (Uses(r)) return true;
                     foreach (var f in go.GetComponentsInChildren<MeshFilter>(true)) if (UsesFilter(f)) return true;
                 }
-            return false;
+            var open = new HashSet<string>();
+            for (int s = 0; s < SceneManager.sceneCount; s++)
+            {
+                var loaded = SceneManager.GetSceneAt(s);
+                if (loaded.isLoaded && !string.IsNullOrEmpty(loaded.path)) open.Add(loaded.path);
+            }
+            string path = AssetDatabase.GetAssetPath(mesh);
+            return ProjectReferences.DirectUsers(new[] { path }, "t:Prefab", "t:Scene").TryGetValue(path, out var users) && users.Any(u => !open.Contains(u));
         }
 
         // The original still has the vertices the session started from (not reimported with other ones).
@@ -389,18 +429,19 @@ namespace Orbiters.Mixer.Editor
         {
             var original = target.Original;
             if (original == null || original.vertexCount != target.Document.VertexCount) return false;
-            return MixerAutosave.FingerprintOf(original.vertices) == MixerAutosave.FingerprintOf(target.Document.OriginalPositions);
+            return MixerAutosave.FingerprintOf(original.vertices) == target.Document.OriginalFingerprint;
         }
 
         /// <summary>
         /// Ends a session: its history and link claim go, the guard learns what replaces its working mesh (wherever an
-        /// undo brings it back), the working mesh is destroyed.
+        /// undo brings it back), the working mesh is destroyed. With <paramref name="keepHolder"/> (Play) the session comes
+        /// back later: its bind-pose holder stays for it, so Unity's steps of earlier bone moves still reach its bind poses.
         /// </summary>
-        private static void EndSession(EditTarget target, Mesh replacement, bool deleteAutosave, bool notify = true)
+        private static void EndSession(EditTarget target, Mesh replacement, bool deleteAutosave, bool notify = true, bool keepHolder = false)
         {
             MixerHistory.Forget(target);
             MixerLinkService.ReleaseForUnity(target);
-            ArmatureEdit.Forget(target);
+            if (keepHolder) ArmatureEdit.Park(target); else ArmatureEdit.Forget(target);
             // Also when something else destroyed the working mesh: the guard still knows its id.
             if ((object)target.Working != null) MixerMeshGuard.Released(target.Working, replacement);
             if (target.Working != null) Object.DestroyImmediate(target.Working);

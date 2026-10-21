@@ -114,6 +114,8 @@ namespace Orbiters.Mixer.Editor
                 mode = value;
                 ClearHover();
                 if (mode != MixerMode.Weights) BoneSubSelection.Clear();
+                // Weight Paint's pose goes with it (before Edit Armature takes the skin as it is for the rest pose).
+                if (previous == MixerMode.Weights) BoneSubSelection.PutBackPosed();
                 if (previous == MixerMode.Weights || previous == MixerMode.Armature) LeaveWeights();
                 if (mode == MixerMode.Weights || mode == MixerMode.Armature) EnterWeights();
                 if (previous == MixerMode.Armature) ArmatureEdit.Leave();

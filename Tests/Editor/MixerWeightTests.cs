@@ -8,7 +8,7 @@ using UnityEngine.SceneManagement;
 
 namespace Orbiters.Mixer.Editor.Tests
 {
-    /// <summary>Weight painting on the skinned cylinder: normalization, undo, commit, groups and their sidecar, mirror names.</summary>
+    /// <summary>Weight painting on the skinned cylinder: normalization, a vertex's last bone, undo, commit, groups and their sidecar, mirror names.</summary>
     public sealed class MixerWeightTests
     {
         private Scene scene;
@@ -113,6 +113,41 @@ namespace Orbiters.Mixer.Editor.Tests
             float before = target.Document.BoneWeight(spot, 0);
             MixerSceneTool.WeightStrokeBetween(target, WeightBrushKind.Blur, WeightChannel.OfBone(0), side, side, 1, 0.2f, 1f, 1f, normalize: false);
             Assert.That(target.Document.BoneWeight(spot, 0), Is.LessThan(before), "blur spreads the spot");
+        }
+
+        [Test]
+        public void AVertexNeverLosesItsLastBone()
+        {
+            var target = MixerSession.Edit(renderer);
+            var doc = target.Document;
+            // The top ring is on bone 1 only: Replace with 0, Normalize off, would leave it no bone.
+            var top = new Vector3(0.3f, 1.9f, 0f);
+            int probe = Enumerable.Range(0, mesh.vertexCount).OrderBy(v => Vector3.Distance(mesh.vertices[v], top)).First();
+            MixerSceneTool.WeightStrokeBetween(target, WeightBrushKind.Replace, WeightChannel.OfBone(1), top, top + Vector3.forward * 0.2f, 6, 0.2f, 1f, 0f, normalize: false);
+            Assert.That(doc.EnsureInfluences()[probe].Count, Is.EqualTo(1));
+            Assert.That(doc.BoneWeight(probe, 1), Is.GreaterThan(0f), "its last bone stays");
+            // Blender sending a vertex without groups: the same.
+            doc.SetInfluences(probe, new MeshDocument.Influence[0]);
+            Assert.That(doc.BoneWeight(probe, 1), Is.GreaterThan(0f));
+            // Each bone of a vertex painted away in turn: the last one stays, not the first bone of the mesh.
+            int middle = Enumerable.Range(0, mesh.vertexCount).First(v => Mathf.Abs(mesh.vertices[v].y - 0.75f) < 1e-4f);
+            Assert.That(doc.BoneWeight(middle, 0), Is.EqualTo(0.75f).Within(1e-4f));
+            doc.SetBoneWeight(middle, 0, 0f, normalize: false);
+            doc.SetBoneWeight(middle, 1, 0f, normalize: false);
+            Assert.That(doc.BoneWeight(middle, 0), Is.EqualTo(0f));
+            Assert.That(doc.BoneWeight(middle, 1), Is.EqualTo(0.25f).Within(1e-4f), "as it was");
+
+            var asset = MixerSession.Commit(target);
+            var counts = asset.GetBonesPerVertex();
+            var weights = asset.GetAllBoneWeights();
+            foreach (int v in new[] { probe, middle })
+            {
+                int start = 0;
+                for (int i = 0; i < v; i++) start += counts[i];
+                Assert.That(counts[v], Is.EqualTo(1));
+                Assert.That(weights[start].boneIndex, Is.EqualTo(1), "the commit skins it to that bone, not to bone 0");
+                Assert.That(weights[start].weight, Is.EqualTo(1f).Within(1e-6f), "fully");
+            }
         }
 
         [Test]
