@@ -10,7 +10,8 @@ namespace Orbiters.Mixer.Editor.Splats
 {
     /// <summary>
     /// Reads Gaussian splat PLYs: binary little-endian vertices with the reference 3DGS properties (<c>x y z
-    /// f_dc_0..2 opacity scale_0..2 rot_0..3</c>; others, such as normals or higher spherical harmonics, are skipped).
+    /// f_dc_0..2 opacity scale_0..2 rot_0..3</c>; others, such as normals or higher spherical harmonics, are skipped),
+    /// and where Orbiters desktop wrote them, its <see cref="Seen"/> properties.
     /// Orbiters desktop writes them in the right-handed world of the contracts (Unity's with Z negated, rotations as
     /// (w, −x, −y, z)); reading mirrors that back. The vertices are read a block at a time, never the whole file.
     /// </summary>
@@ -23,6 +24,10 @@ namespace Orbiters.Mixer.Editor.Splats
         const int MaxHeader = 65536;
 
         static readonly string[] Required = { "x", "y", "z", "f_dc_0", "f_dc_1", "f_dc_2", "opacity", "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3" };
+
+        /// <summary>Orbiters desktop's own properties: the sky shell, and what the training keyframes saw of each splat
+        /// (<see cref="SplatCloud.seen"/>).</summary>
+        public static readonly string[] Seen = { "sky", "seen_weight", "seen_views", "seen_sectors", "seen_rate", "seen_beyond" };
 
         /// <summary>What the header says: where the vertices start, how many, how long each one is, where its properties are.</summary>
         internal sealed class Header
@@ -65,10 +70,22 @@ namespace Orbiters.Mixer.Editor.Splats
                 read[k] = Reader(type);
                 at[k] = offset;
             }
+            bool hasSeen = Array.TrueForAll(Seen, header.Properties.ContainsKey);
+            var readSeen = new Func<byte[], int, float>[Seen.Length];
+            var atSeen = new int[Seen.Length];
+            for (int k = 0; hasSeen && k < Seen.Length; k++)
+            {
+                (int offset, string type) = header.Properties[Seen[k]];
+                readSeen[k] = Reader(type);
+                atSeen[k] = offset;
+            }
             var positions = new Vector3[count];
             var rotations = new Quaternion[count];
             var scales = new Vector3[count];
             var colors = new Color32[count];
+            var seen = new Vector4[hasSeen ? count : 0];
+            var sky = new bool[hasSeen ? count : 0];
+            var beyond = new float[hasSeen ? count : 0];
             int kept = 0;
             stream.Position = header.DataStart;
             int block = Math.Max(1, (1 << 20) / stride);
@@ -95,6 +112,13 @@ namespace Orbiters.Mixer.Editor.Splats
                     byte Channel(float dc) => (byte)Mathf.Clamp(Mathf.RoundToInt((0.5f + ShC0 * dc) * 255f), 0, 255);
                     float opacity = 1f / (1f + Mathf.Exp(-P(6)));
                     colors[kept] = new Color32(Channel(P(3)), Channel(P(4)), Channel(P(5)), (byte)Mathf.Clamp(Mathf.RoundToInt(opacity * 255f), 0, 255));
+                    if (hasSeen)
+                    {
+                        float S(int k) => readSeen[k](buffer, o + atSeen[k]);
+                        sky[kept] = S(0) > 0.5f;
+                        seen[kept] = new Vector4(S(1), S(2), S(3), S(4));
+                        beyond[kept] = S(5);
+                    }
                     kept++;
                 }
             }
@@ -104,18 +128,30 @@ namespace Orbiters.Mixer.Editor.Splats
                 Array.Resize(ref rotations, kept);
                 Array.Resize(ref scales, kept);
                 Array.Resize(ref colors, kept);
+                if (hasSeen)
+                {
+                    Array.Resize(ref seen, kept);
+                    Array.Resize(ref sky, kept);
+                    Array.Resize(ref beyond, kept);
+                }
             }
             var cloud = ScriptableObject.CreateInstance<SplatCloud>();
             cloud.positions = positions;
             cloud.rotations = rotations;
             cloud.scales = scales;
             cloud.colors = colors;
+            cloud.seen = seen;
+            cloud.sky = sky;
+            cloud.beyond = beyond;
             cloud.core = Core(positions);
+            cloud.hasHorizon = Horizon(positions, colors, sky, out cloud.horizon);
             var hash = new Hash128();
             hash.Append(positions);
             hash.Append(rotations);
             hash.Append(scales);
             hash.Append(colors);
+            hash.Append(seen);
+            hash.Append(beyond);
             cloud.contentHash = hash.ToString();
             return cloud;
         }
@@ -195,6 +231,51 @@ namespace Orbiters.Mixer.Editor.Splats
             if (stream.Length < end + (long)header.Count * header.Stride)
                 throw new FormatException("The PLY is cut short.");
             return header;
+        }
+
+        /// <summary>The sky's colour at the horizon, as Orbiters desktop's viewer finds it (its <c>sky::horizon</c>): the
+        /// sky shell's splats from 2° below to 12° above the horizon, seen from the per-axis median of the other splats,
+        /// by opacity. False without any.</summary>
+        internal static bool Horizon(Vector3[] positions, Color32[] colors, bool[] sky, out Color horizon)
+        {
+            horizon = default;
+            if (sky.Length != positions.Length)
+                return false;
+            var ground = new List<Vector3>();
+            for (int i = 0; i < positions.Length; i++)
+                if (!sky[i])
+                    ground.Add(positions[i]);
+            if (ground.Count == 0)
+                return false;
+            Vector3 centre = default;
+            for (int a = 0; a < 3; a++)
+            {
+                var axis = ground.ConvertAll(p => p[a]);
+                axis.Sort();
+                centre[a] = axis[axis.Count / 2];
+            }
+            double r = 0, g = 0, b = 0, w = 0;
+            for (int i = 0; i < positions.Length; i++)
+            {
+                if (!sky[i])
+                    continue;
+                Vector3 d = positions[i] - centre;
+                float length = d.magnitude;
+                if (length <= 0f)
+                    continue;
+                float elevation = Mathf.Asin(Mathf.Clamp(d.y / length, -1f, 1f)) * Mathf.Rad2Deg;
+                if (elevation < -2f || elevation > 12f)
+                    continue;
+                double weight = colors[i].a / 255.0;
+                r += weight * colors[i].r / 255.0;
+                g += weight * colors[i].g / 255.0;
+                b += weight * colors[i].b / 255.0;
+                w += weight;
+            }
+            if (w <= 0)
+                return false;
+            horizon = new Color((float)(r / w), (float)(g / w), (float)(b / w), 1f);
+            return true;
         }
 
         /// <summary>Where the scene is, for framing: the 2nd to 98th percentile per axis of the splats within 100 m of

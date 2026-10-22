@@ -26,6 +26,26 @@ namespace Orbiters.Mixer.Splats
         /// <summary>Colour as captured (encoded sRGB) and opacity.</summary>
         public Color32[] colors = new Color32[0];
 
+        /// <summary>What the training keyframes saw of each splat (Orbiters desktop's <c>seen_*</c> PLY properties): the
+        /// largest blending weight it reached (negative where unknown), the keyframes that saw it, the compass sectors
+        /// they looked from (bits, by the direction from the splat towards the camera, 0 = +Z, clockwise towards +X) and
+        /// their finest sampling rate (pixels per metre). Empty where the PLY does not say.</summary>
+        public Vector4[] seen = new Vector4[0];
+
+        /// <summary>Whether each splat is on the trainer's sky shell (the PLY's <c>sky</c>). Empty where the PLY does not
+        /// say.</summary>
+        public bool[] sky = new bool[0];
+
+        /// <summary>How far each splat lies beyond what the capture's depth frames reached, metres (the PLY's
+        /// <c>seen_beyond</c>): the far field <see cref="SplatRenderer.farField"/> fogs or crops. Empty where the PLY does
+        /// not say.</summary>
+        public float[] beyond = new float[0];
+
+        /// <summary>The sky's colour at the horizon (encoded sRGB), from the sky shell's splats; what fog and haze turn
+        /// to. Meaningful only with <see cref="hasHorizon"/>.</summary>
+        public Color horizon;
+        public bool hasHorizon;
+
         /// <summary>Where most of the splats are (the 2nd to 98th percentile per axis, so not the far sky shell): what
         /// framing looks at.</summary>
         public Bounds core;

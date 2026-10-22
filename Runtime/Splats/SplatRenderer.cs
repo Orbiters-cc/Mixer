@@ -17,16 +17,57 @@ namespace Orbiters.Mixer.Splats
     {
         public SplatCloud cloud;
 
-        /// <summary>The GPU layout of a splat (40 bytes; Splats.shader and SplatSort.compute read the same).</summary>
+        /// <summary>How the splats the keyframes saw poorly show: those seen weakly, in few keyframes, from one side
+        /// only, or from much farther than the camera now is (where the cloud says what its keyframes saw; never the sky
+        /// shell).</summary>
+        [Tooltip("How the splats the capture saw poorly show: weakly, in few keyframes, from one side only, or from much farther than the camera now is.")]
+        public PoorlySeen poorlySeen = PoorlySeen.Shown;
+
+        /// <summary>How strongly <see cref="poorlySeen"/> acts, from 0 (as trained) to 1.</summary>
+        [Range(0f, 1f)]
+        public float strength = 0.75f;
+
+        public enum PoorlySeen
+        {
+            Shown,
+            Faded,
+            Blurred,
+            /// <summary>Towards the sky's colour at the horizon (the cloud's, else the scene's fog colour).</summary>
+            Hazed,
+        }
+
+        /// <summary>How what lies beyond the reach of the capture's depth frames shows (where the cloud says; never the sky
+        /// shell): as trained, fogged towards the sky's colour at the horizon (the cloud's, else the scene's fog colour) as
+        /// 1 − e^(−beyond / <see cref="farDistance"/>), or cropped, fading out over <see cref="farDistance"/>.</summary>
+        [Tooltip("How what lies beyond the reach of the capture's depth shows: as trained, fogged towards the sky's horizon, or cropped.")]
+        public FarField farField = FarField.Shown;
+
+        /// <summary>The far field's distance: the fog's thickness, the crop's soft edge (metres).</summary>
+        [Range(5f, 100f)]
+        public float farDistance = 20f;
+
+        public enum FarField
+        {
+            Shown,
+            Fogged,
+            Cropped,
+        }
+
+        /// <summary>The GPU layout of a splat (64 bytes; Splats.shader and SplatSort.compute read the same): what the
+        /// keyframes saw of it (negative weight where unknown), flags (bit 0: the sky shell) and how far beyond the
+        /// depth frames' reach it lies.</summary>
         internal struct GpuSplat
         {
             public Vector3 position;
             public uint color;
             public Vector3 cov0;
             public Vector3 cov1;
+            public Vector4 seen;
+            public uint flags;
+            public float beyond;
         }
 
-        const int Stride = 40;
+        const int Stride = 64;
 
         ComputeBuffer splats;
         ComputeBuffer keys;
@@ -49,7 +90,11 @@ namespace Orbiters.Mixer.Splats
         static readonly int KId = Shader.PropertyToID("_K");
         static readonly int JId = Shader.PropertyToID("_J");
         static readonly int ObjectToWorldId = Shader.PropertyToID("_ObjectToWorld");
-        static readonly int ViewRow2Id = Shader.PropertyToID("_ViewRow2");
+        static readonly int CameraPositionId = Shader.PropertyToID("_CameraPosition");
+        static readonly int WorldToObjectId = Shader.PropertyToID("_WorldToObject");
+        static readonly int ConfidenceId = Shader.PropertyToID("_Confidence");
+        static readonly int FarId = Shader.PropertyToID("_Far");
+        static readonly int HorizonId = Shader.PropertyToID("_Horizon");
         static readonly int AccumulationId = Shader.PropertyToID("_SplatAccumulation");
         static readonly int SceneId = Shader.PropertyToID("_SplatScene");
 
@@ -92,7 +137,17 @@ namespace Orbiters.Mixer.Splats
             {
                 Covariance(c.rotations[i], c.scales[i], out Vector3 cov0, out Vector3 cov1);
                 Color32 col = c.colors[i];
-                packed[i] = new GpuSplat { position = c.positions[i], color = col.r | ((uint)col.g << 8) | ((uint)col.b << 16) | ((uint)col.a << 24), cov0 = cov0, cov1 = cov1 };
+                bool known = c.seen != null && c.seen.Length == packed.Length;
+                packed[i] = new GpuSplat
+                {
+                    position = c.positions[i],
+                    color = col.r | ((uint)col.g << 8) | ((uint)col.b << 16) | ((uint)col.a << 24),
+                    cov0 = cov0,
+                    cov1 = cov1,
+                    seen = known ? c.seen[i] : new Vector4(-1f, 0f, 0f, 0f),
+                    flags = known && c.sky != null && c.sky.Length == packed.Length && c.sky[i] ? 1u : 0u,
+                    beyond = known && c.beyond != null && c.beyond.Length == packed.Length ? c.beyond[i] : 0f,
+                };
             }
             return packed;
         }
@@ -214,7 +269,6 @@ namespace Orbiters.Mixer.Splats
                 buffers[cam] = cmd;
             }
             Matrix4x4 objectToWorld = transform.localToWorldMatrix;
-            Matrix4x4 view = cam.worldToCameraMatrix;
             int count = cloud.Count;
 
             int calc = sort.FindKernel("CalcKeys");
@@ -224,7 +278,7 @@ namespace Orbiters.Mixer.Splats
             cmd.SetComputeIntParam(sort, CountId, count);
             cmd.SetComputeIntParam(sort, PaddedId, paddedCount);
             cmd.SetComputeMatrixParam(sort, ObjectToWorldId, objectToWorld);
-            cmd.SetComputeVectorParam(sort, ViewRow2Id, view.GetRow(2));
+            cmd.SetComputeVectorParam(sort, CameraPositionId, cam.transform.position);
             cmd.SetComputeBufferParam(sort, calc, SplatsId, splats);
             foreach (int k in new[] { calc, local, global, merge })
             {
@@ -248,6 +302,12 @@ namespace Orbiters.Mixer.Splats
             properties.SetBuffer(OrderId, values);
             properties.SetInt(CountId, count);
             properties.SetMatrix(ObjectToWorldId, objectToWorld);
+            properties.SetMatrix(WorldToObjectId, objectToWorld.inverse);
+            properties.SetVector(ConfidenceId, new Vector4(poorlySeen == PoorlySeen.Shown ? 0f : Mathf.Clamp01(strength), poorlySeen == PoorlySeen.Blurred ? 1f : poorlySeen == PoorlySeen.Hazed ? 2f : 0f, 0f, 0f));
+            properties.SetVector(FarId, new Vector4(farField == FarField.Fogged ? 1f : farField == FarField.Cropped ? 2f : 0f, Mathf.Max(farDistance, 0.001f), 0f, 0f));
+            // The horizon (encoded sRGB, like the splats' colours): the cloud's sky, else the fog colour as authored.
+            Color horizon = cloud.hasHorizon ? cloud.horizon : RenderSettings.fogColor;
+            properties.SetVector(HorizonId, new Vector4(horizon.r, horizon.g, horizon.b, 1f));
             // The splats on their own, depth-tested against the camera's depth buffer; then what the camera drew so far
             // under them, both in encoded sRGB, written back.
             cmd.GetTemporaryRT(AccumulationId, -1, -1, 0, FilterMode.Point, RenderTextureFormat.ARGBHalf, RenderTextureReadWrite.Linear, Samples(cam));

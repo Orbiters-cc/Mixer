@@ -1,5 +1,6 @@
-// Back-to-front order of a splat cloud for one camera: depth keys, then a bitonic sort of (key, index) pairs over a
-// power-of-two count (padding sorts last). Blocks of 512 sort in shared memory; longer merges go through memory.
+// Back-to-front order of a splat cloud for one camera: keys by distance from the eye (an order that stays put as the
+// view turns, unlike depth along the view), then a bitonic sort of (key, index) pairs over a power-of-two count
+// (padding sorts last). Blocks of 512 sort in shared memory; longer merges go through memory.
 
 #pragma kernel CalcKeys
 #pragma kernel SortLocal
@@ -12,6 +13,9 @@ struct Splat
     uint color;
     float3 cov0;
     float3 cov1;
+    float4 seen;
+    uint flags;
+    float beyond;
 };
 
 StructuredBuffer<Splat> _Splats;
@@ -22,8 +26,8 @@ uint _PaddedCount;
 uint _K;
 uint _J;
 float4x4 _ObjectToWorld;
-// Third row of the camera's world-to-view matrix (Unity's view space looks down -Z).
-float4 _ViewRow2;
+// The camera's position in the world.
+float4 _CameraPosition;
 
 [numthreads(256, 1, 1)]
 void CalcKeys(uint3 id : SV_DispatchThreadID)
@@ -35,9 +39,8 @@ void CalcKeys(uint3 id : SV_DispatchThreadID)
     if (i < _Count)
     {
         float3 world = mul(_ObjectToWorld, float4(_Splats[i].position, 1.0)).xyz;
-        float depth = -(dot(_ViewRow2.xyz, world) + _ViewRow2.w);
-        // Far first: larger depths get smaller keys (positive floats order like their bits).
-        key = ~asuint(max(depth, 0.0));
+        // Far first: larger distances get smaller keys (positive floats order like their bits).
+        key = ~asuint(distance(world, _CameraPosition.xyz));
     }
     _Keys[i] = key;
     _Values[i] = i;

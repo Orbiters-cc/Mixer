@@ -7,7 +7,7 @@ namespace Orbiters.Mixer.Editor.Splats
     /// Imports <c>.splats</c> files (a Gaussian splat PLY under Mixer's own extension, so other PLY importers never
     /// see it) as a <see cref="Orbiters.Mixer.Splats.SplatCloud"/>.
     /// </summary>
-    [ScriptedImporter(2, "splats")]
+    [ScriptedImporter(3, "splats")]
     public sealed class SplatImporter : ScriptedImporter
     {
         public override void OnImportAsset(AssetImportContext ctx)

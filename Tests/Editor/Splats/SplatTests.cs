@@ -125,6 +125,49 @@ namespace Orbiters.Mixer.Editor.Splats.Tests
             }
         }
 
+        /// <summary>Orbiters desktop's record of what the keyframes saw of each splat, and its sky flag, come along where
+        /// the PLY has them; a PLY without them says nothing.</summary>
+        [Test]
+        public void ReadsWhatTheKeyframesSawOfEachSplat()
+        {
+            SplatCloud with = PlyReader.Read(Ply(new[] { A, B }, PlyReader.Seen));
+            SplatCloud without = PlyReader.Read(Ply(new[] { A }));
+            try
+            {
+                Assert.That(with.seen, Is.EqualTo(new[] { new Vector4(123f, 123f, 123f, 123f), new Vector4(123f, 123f, 123f, 123f) }));
+                Assert.That(with.sky, Is.EqualTo(new[] { true, true }));
+                Assert.That(with.beyond, Is.EqualTo(new[] { 123f, 123f }));
+                // Every splat on the sky shell: nothing to see the horizon from.
+                Assert.That(with.hasHorizon, Is.False);
+                Assert.That(without.seen, Is.Empty);
+                Assert.That(without.sky, Is.Empty);
+                // Uploaded: known where the cloud says, unknown (a negative weight) where it does not.
+                Assert.That(SplatRenderer.Pack(with)[1].seen, Is.EqualTo(new Vector4(123f, 123f, 123f, 123f)));
+                Assert.That(SplatRenderer.Pack(with)[1].flags, Is.EqualTo(1u));
+                Assert.That(SplatRenderer.Pack(with)[1].beyond, Is.EqualTo(123f));
+                Assert.That(SplatRenderer.Pack(without)[0].seen.x, Is.LessThan(0f));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(with);
+                UnityEngine.Object.DestroyImmediate(without);
+            }
+        }
+
+        /// <summary>The horizon's colour: the sky shell's splats near the horizon as seen from the middle of the rest, by
+        /// opacity; the zenith and the ground's colours stay out of it.</summary>
+        [Test]
+        public void TheHorizonIsTheSkyNearTheHorizon()
+        {
+            var positions = new[] { new Vector3(0, 0, 0), new Vector3(1, 0, 1), new Vector3(400, 10, 0), new Vector3(0, 20, -400), new Vector3(0, 400, 0) };
+            var colors = new[] { new Color32(10, 200, 10, 255), new Color32(10, 200, 10, 255), new Color32(100, 150, 250, 255), new Color32(100, 150, 250, 128), new Color32(250, 0, 0, 255) };
+            var sky = new[] { false, false, true, true, true };
+            Assert.That(PlyReader.Horizon(positions, colors, sky, out Color horizon), Is.True);
+            Assert.That(horizon.r, Is.EqualTo(100f / 255f).Within(1e-4f));
+            Assert.That(horizon.b, Is.EqualTo(250f / 255f).Within(1e-4f));
+            Assert.That(PlyReader.Horizon(positions, colors, new bool[0], out _), Is.False);
+        }
+
         [Test]
         public void RefusesWhatIsNotASplatPly()
         {
