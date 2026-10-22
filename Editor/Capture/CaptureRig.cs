@@ -21,6 +21,11 @@ namespace Orbiters.Mixer.Editor.Capture
         public float[] Depth;
         /// <summary>The values the frame's strip must decode to, bit for bit.</summary>
         public StripPayload Payload;
+
+        /// <summary>The depth code a true depth of <see cref="Depth"/> stands for, as the kit shader writes it: 0 (nothing
+        /// there) where nothing was drawn, else the contracts' code (<see cref="DepthFrames.Unknown"/> nearer than
+        /// 0.1 m).</summary>
+        public static ushort Code(float depth) => depth > 0f ? DepthFrames.Quantize(depth) : (ushort)0;
     }
 
     /// <summary>

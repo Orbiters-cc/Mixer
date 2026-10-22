@@ -70,15 +70,15 @@ namespace Orbiters.Mixer.Editor.Capture.Tests
                 for (int gy = 0; gy < layout.GridHeight; gy++)
                 for (int gx = 0; gx < layout.GridWidth; gx++)
                 {
-                    if (!layout.TileUsed(gx / DepthLayout.SamplesX, gy / DepthLayout.SamplesY)) continue;
+                    if (!layout.GridSampled(gx, gy)) continue;
                     layout.GridPixel(gx, gy, out int x, out int y);
                     float z = CaptureTestScene.DepthAt(frame, x, y);
-                    int expected = DepthFrames.Quantize(z);
+                    int expected = CaptureFrame.Code(z);
                     Assert.That(Math.Abs(codes[gy * layout.GridWidth + gx] - expected), Is.LessThanOrEqualTo(1), "sample at " + x + ", " + y + " (" + z + " m)");
                     samples++;
                     if (expected != 0) drawn++;
                 }
-                Assert.That(tilesOk, Is.GreaterThan(300), "333 tiles at 720p are outside the strip");
+                Assert.That(tilesOk, Is.EqualTo(layout.Regions().Count), "every tile of the layout reads: 268 at 720p, 13 of them with cells twice as large");
                 Assert.That(drawn, Is.GreaterThan(samples / 3), "the floor and the boxes fill much of the view");
                 // The camera at z = -4 looks straight at the middle box, whose front face is at z = -0.5.
                 float centre = CaptureTestScene.DepthAt(frame, 640, 360);
@@ -116,10 +116,10 @@ namespace Orbiters.Mixer.Editor.Capture.Tests
                 for (int gy = 0; gy < layout.GridHeight; gy++)
                 for (int gx = 0; gx < layout.GridWidth; gx++)
                 {
-                    if (!layout.TileUsed(gx / DepthLayout.SamplesX, gy / DepthLayout.SamplesY)) continue;
+                    if (!layout.GridSampled(gx, gy)) continue;
                     layout.GridPixel(gx, gy, out int x, out int y);
                     samples++;
-                    if (Math.Abs(codes[gy * layout.GridWidth + gx] - DepthFrames.Quantize(CaptureTestScene.DepthAt(depth, x, y))) <= 1) within++;
+                    if (Math.Abs(codes[gy * layout.GridWidth + gx] - CaptureFrame.Code(CaptureTestScene.DepthAt(depth, x, y))) <= 1) within++;
                 }
                 Assert.That(within / (float)samples, Is.GreaterThan(0.99f), within + " of " + samples + " depth samples within ±1 under typical post-processing");
             }

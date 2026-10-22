@@ -31,6 +31,10 @@ namespace Orbiters.Mixer.Editor.Performance
         public const string RendererName = "Kit";
         public const string RecordParameter = "OrbitersRecord";
         public const string DepthParameter = "OrbitersDepthFrames";
+        /// <summary>VRChat's built-in: true on the wearer's own client.</summary>
+        public const string LocalParameter = "IsLocal";
+        /// <summary>The controller's layer that sets the kit material's <c>_OrbitersLocal</c> from <see cref="LocalParameter"/>.</summary>
+        public const string LocalLayer = ObjectName + " · local";
         public const string ShaderName = "Hidden/Orbiters/CaptureKit";
         /// <summary>Where the kit keeps its assets: the shared controller and menu here, each avatar's mesh and material in a folder of its own.</summary>
         public const string Root = "Assets/Orbiters/Capture Kit";
@@ -277,13 +281,18 @@ namespace Orbiters.Mixer.Editor.Performance
 
         /// <summary>
         /// The FX controller every kit shares: off, recording, recording with depth frames, following
-        /// <see cref="RecordParameter"/> and <see cref="DepthParameter"/>. Paths are relative to the kit's object.
+        /// <see cref="RecordParameter"/> and <see cref="DepthParameter"/>, and the local layer (<see cref="LocalLayer"/>,
+        /// added to a controller made before it). Paths are relative to the kit's object.
         /// </summary>
         internal static AnimatorController SharedController(string root)
         {
             string path = root + "/Capture kit FX.controller";
             var existing = AssetDatabase.LoadAssetAtPath<AnimatorController>(path);
-            if (existing != null) return existing;
+            if (existing != null)
+            {
+                AddLocalLayer(existing);
+                return existing;
+            }
             if (!AssetPaths.EnsureFolder(root)) throw new InvalidOperationException("Could not create " + root + ".");
             var controller = AnimatorController.CreateAnimatorControllerAtPath(path);
             controller.AddParameter(RecordParameter, AnimatorControllerParameterType.Bool);
@@ -313,8 +322,40 @@ namespace Orbiters.Mixer.Editor.Performance
             Transition(recording, depth, (DepthParameter, AnimatorConditionMode.If));
             Transition(depth, off, (RecordParameter, AnimatorConditionMode.IfNot));
             Transition(depth, recording, (DepthParameter, AnimatorConditionMode.IfNot));
+            AddLocalLayer(controller);
             EditorUtility.SetDirty(controller);
             return controller;
+        }
+
+        /// <summary>
+        /// The layer that lets the kit draw on the wearer's own client only: the contracts' kit shader (0.4.0 on) draws
+        /// nothing until <c>_OrbitersLocal</c> is 1, which this layer sets from VRChat's <see cref="LocalParameter"/>, so
+        /// other players' copies of the avatar never put strips or depth symbols in their pictures and streams.
+        /// </summary>
+        internal static void AddLocalLayer(AnimatorController controller)
+        {
+            if (controller.layers.Any(l => l.name == LocalLayer)) return;
+            if (!controller.parameters.Any(p => p.name == LocalParameter))
+                controller.AddParameter(LocalParameter, AnimatorControllerParameterType.Bool);
+            var machine = new AnimatorStateMachine { name = LocalLayer, hideFlags = HideFlags.HideInHierarchy };
+            AssetDatabase.AddObjectToAsset(machine, controller);
+            AnimatorState Add(string name, float local, Vector3 position)
+            {
+                var clip = new AnimationClip { name = name };
+                AnimationUtility.SetEditorCurve(clip, EditorCurveBinding.FloatCurve(RendererName, typeof(SkinnedMeshRenderer), "material._OrbitersLocal"), AnimationCurve.Constant(0f, 1f / 60f, local));
+                AssetDatabase.AddObjectToAsset(clip, controller);
+                var state = machine.AddState(name, position);
+                state.motion = clip;
+                state.writeDefaultValues = false;
+                return state;
+            }
+            var remote = Add("Remote", 0f, new Vector3(300f, 0f));
+            var local = Add("Local", 1f, new Vector3(300f, 100f));
+            machine.defaultState = remote;
+            Transition(remote, local, (LocalParameter, AnimatorConditionMode.If));
+            Transition(local, remote, (LocalParameter, AnimatorConditionMode.IfNot));
+            controller.AddLayer(new AnimatorControllerLayer { name = LocalLayer, stateMachine = machine, defaultWeight = 1f });
+            EditorUtility.SetDirty(controller);
         }
 
         static void Transition(AnimatorState from, AnimatorState to, params (string parameter, AnimatorConditionMode mode)[] conditions)

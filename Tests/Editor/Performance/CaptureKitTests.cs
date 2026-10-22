@@ -99,6 +99,8 @@ namespace Orbiters.Mixer.Editor.Performance.Tests
             var animator = avatar.GetComponent<Animator>();
             var smr = CaptureKit.Build(avatar.GetComponent<VRCAvatarDescriptor>(), CaptureKit.Reach.NearYou, Folder);
             smr.enabled = true;
+            // The wearer's own client (the kit's local layer sets it from IsLocal).
+            smr.sharedMaterial.SetFloat("_OrbitersLocal", 1f);
             // A pose: the arm raised and twisted, the head turned, the hips moved after the kit was made.
             animator.GetBoneTransform(HumanBodyBones.LeftUpperArm).localRotation = Quaternion.Euler(10f, 20f, 75f);
             animator.GetBoneTransform(HumanBodyBones.LeftLowerArm).localRotation = Quaternion.Euler(-30f, 5f, 40f);
@@ -125,6 +127,18 @@ namespace Orbiters.Mixer.Editor.Performance.Tests
                 float angle = Quaternion.Angle(bone.rotation, new Quaternion(r[0], r[1], r[2], r[3]));
                 Assert.Less(angle, 0.05f, ((HumanBodyBones)b) + " is " + angle + "° off");
             }
+        }
+
+        /// <summary>Another player's copy of the avatar (<c>_OrbitersLocal</c> 0) draws nothing, in VRChat's camera too.</summary>
+        [Test]
+        public void RemoteCopiesShowNothing()
+        {
+            var avatar = TestAvatar.Build(scene);
+            var smr = CaptureKit.Build(avatar.GetComponent<VRCAvatarDescriptor>(), CaptureKit.Reach.NearYou, Folder);
+            smr.enabled = true;
+            var hips = avatar.GetComponent<Animator>().GetBoneTransform(HumanBodyBones.Hips);
+            Render(hips.position, 2f, out var strip, out _);
+            Assert.IsNull(strip, "a strip from a remote copy");
         }
 
         [Test]
@@ -158,7 +172,19 @@ namespace Orbiters.Mixer.Editor.Performance.Tests
             Assert.IsTrue(VrcFury.IsGlobalParameter(content, CaptureKit.DepthParameter));
 
             var controller = AssetDatabase.LoadAssetAtPath<AnimatorController>(Folder + "/Capture kit FX.controller");
-            CollectionAssert.AreEquivalent(new[] { CaptureKit.RecordParameter, CaptureKit.DepthParameter }, controller.parameters.Select(p => p.name));
+            CollectionAssert.AreEquivalent(new[] { CaptureKit.RecordParameter, CaptureKit.DepthParameter, CaptureKit.LocalParameter }, controller.parameters.Select(p => p.name));
+            // The local layer: remote by default, local while IsLocal, each setting the material's _OrbitersLocal.
+            var local = controller.layers.Single(l => l.name == CaptureKit.LocalLayer);
+            Assert.AreEqual(1f, local.defaultWeight);
+            Assert.AreEqual("Remote", local.stateMachine.defaultState.name);
+            var set = local.stateMachine.states.Select(s => s.state).ToDictionary(s => s.name, s => AnimationUtility.GetEditorCurve((AnimationClip)s.motion, EditorCurveBinding.FloatCurve(CaptureKit.RendererName, typeof(SkinnedMeshRenderer), "material._OrbitersLocal")).Evaluate(0f));
+            Assert.AreEqual(0f, set["Remote"]);
+            Assert.AreEqual(1f, set["Local"]);
+            // A controller made before the layer gets it, once.
+            controller.RemoveLayer(System.Array.FindIndex(controller.layers, l => l.name == CaptureKit.LocalLayer));
+            CaptureKit.SharedController(Folder);
+            CaptureKit.SharedController(Folder);
+            Assert.AreEqual(1, controller.layers.Count(l => l.name == CaptureKit.LocalLayer));
             var parameters = AssetDatabase.LoadAssetAtPath<VRCExpressionParameters>(Folder + "/Capture kit parameters.asset");
             var record = parameters.parameters.Single(p => p.name == CaptureKit.RecordParameter);
             Assert.IsFalse(record.saved || record.networkSynced, "local and not saved");

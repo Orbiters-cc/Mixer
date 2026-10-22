@@ -24,6 +24,7 @@ namespace Orbiters.Mixer.Editor.Capture
         HeavyBloom,
         Grading,
         ChromaticAberration,
+        Bloom,
     }
 
     /// <summary>A camera position and rotation (Unity world, the camera looks down its +Z).</summary>
@@ -73,6 +74,7 @@ namespace Orbiters.Mixer.Editor.Capture
             {
                 case CapturePost.Scene: return "scene";
                 case CapturePost.Typical: return "typical";
+                case CapturePost.Bloom: return "bloom";
                 case CapturePost.HeavyBloom: return "heavy-bloom";
                 case CapturePost.Grading: return "grading";
                 case CapturePost.ChromaticAberration: return "chromatic-aberration";
@@ -86,7 +88,8 @@ namespace Orbiters.Mixer.Editor.Capture
             {
                 case CapturePost.Scene: return "Scene";
                 case CapturePost.Typical: return "Typical";
-                case CapturePost.HeavyBloom: return "Bloom";
+                case CapturePost.Bloom: return "Bloom";
+                case CapturePost.HeavyBloom: return "Heavy";
                 case CapturePost.Grading: return "Grading";
                 case CapturePost.ChromaticAberration: return "Aberration";
                 default: return "None";

@@ -17,7 +17,7 @@ namespace Orbiters.Mixer.Editor.Capture
         private static readonly int[] Rates = { 24, 30, 60 };
         private static readonly int[] DepthChoices = { 0, 2, 3, 4, 8 };
         private static readonly float[] LapChoices = { 0.5f, 1f, 2f };
-        private static readonly CapturePost[] Posts = { CapturePost.None, CapturePost.Scene, CapturePost.Typical, CapturePost.HeavyBloom, CapturePost.Grading, CapturePost.ChromaticAberration };
+        private static readonly CapturePost[] Posts = { CapturePost.None, CapturePost.Scene, CapturePost.Typical, CapturePost.Bloom, CapturePost.HeavyBloom, CapturePost.Grading, CapturePost.ChromaticAberration };
         private static readonly CultureInfo Culture = CultureInfo.InvariantCulture;
 
         private Label pathTitle, recordInfo, postCaption, checkCaption;

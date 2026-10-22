@@ -10,9 +10,9 @@ namespace Orbiters.Mixer.Editor.Capture
 {
     /// <summary>
     /// Post Processing Stack v2 on the capture camera: the scene's own layer and volumes (as VRChat applies the world's
-    /// reference camera), or a test preset in a hidden global volume on a layer nothing else listens to. The preset
-    /// volume is only enabled during the capture camera's own render, so no other camera ever sees it. Without the
-    /// package installed every choice renders without post-processing.
+    /// reference camera), or a test preset in a hidden global volume on a layer nothing else listens to, in the scene the
+    /// camera renders. The preset volume is only enabled during the capture camera's own render, so no other camera ever
+    /// sees it. Without the package installed every choice renders without post-processing.
     /// </summary>
     internal sealed class CapturePostRig : IDisposable
     {
@@ -68,6 +68,9 @@ namespace Orbiters.Mixer.Editor.Capture
             layer.antialiasingMode = post == CapturePost.Typical ? PostProcessLayer.Antialiasing.FastApproximateAntialiasing : PostProcessLayer.Antialiasing.None;
             volume = PostProcessManager.instance.QuickVolume(layerIndex, 100f, Preset(post));
             volume.gameObject.name = CaptureScene.ObjectPrefix + " post volume";
+            // In the scene the camera renders: in the editor PPv2 skips volumes outside it (StageUtility), so a preview
+            // scene's capture never saw a preset made in the open scene.
+            if (volume.gameObject.scene != scene) SceneManager.MoveGameObjectToScene(volume.gameObject, scene);
             volume.gameObject.SetActive(false);
             Note = Describe(post);
         }
@@ -102,6 +105,13 @@ namespace Orbiters.Mixer.Editor.Capture
                     var vignette = Effect<Vignette>();
                     vignette.intensity.Override(0.3f);
                     return new PostProcessEffectSettings[] { bloom, grading, vignette };
+                }
+                case CapturePost.Bloom:
+                {
+                    var bloom = Effect<Bloom>();
+                    bloom.intensity.Override(3f);
+                    bloom.threshold.Override(1f);
+                    return new PostProcessEffectSettings[] { bloom };
                 }
                 case CapturePost.HeavyBloom:
                 {
@@ -188,6 +198,7 @@ namespace Orbiters.Mixer.Editor.Capture
             {
                 case CapturePost.Scene: return "The scene's own post-processing: its camera's Post-process Layer and the volumes it listens to.";
                 case CapturePost.Typical: return "Typical world: bloom 1, ACES tonemapping, vignette 0.3 and FXAA.";
+                case CapturePost.Bloom: return "Bloom on its own, as a bright world sets it: intensity 3 from a threshold of 1.";
                 case CapturePost.HeavyBloom: return "Heavy bloom: intensity 10 from a threshold of 0.5.";
                 case CapturePost.Grading: return "Wild grading: hue 60, saturation and contrast +40, a channel mixer.";
                 case CapturePost.ChromaticAberration: return "Chromatic aberration 0.3: known to break depth frames.";

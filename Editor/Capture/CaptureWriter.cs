@@ -136,9 +136,9 @@ namespace Orbiters.Mixer.Editor.Capture
             for (int gy = 0; gy < layout.GridHeight; gy++)
             for (int gx = 0; gx < gw; gx++)
             {
-                if (!layout.TileUsed(gx / DepthLayout.SamplesX, gy / DepthLayout.SamplesY)) continue;
+                if (!layout.GridSampled(gx, gy)) continue;
                 layout.GridPixel(gx, gy, out int x, out int y);
-                codes[gy * gw + gx] = DepthFrames.Quantize(bottomUpDepth[(Height - 1 - y) * Width + x]);
+                codes[gy * gw + gx] = CaptureFrame.Code(bottomUpDepth[(Height - 1 - y) * Width + x]);
             }
             return codes;
         }

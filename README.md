@@ -282,6 +282,14 @@ saved as a native mesh asset when you commit.
   a session-only shape that is not edited becomes the edited one); the next stroke shows it whole again. Its columns
   line up whatever a shape's name (long names are cut with an ellipsis, the full name is in the tooltip) and the
   slider knobs sit on their tracks.
+- Capture simulator and capture kit on contracts 0.5.0: depth frames have larger tiles towards the edges, where
+  chromatic aberration smears small cells, and the simulator's checks follow the layout's own tiles and samples (where
+  nothing was drawn, the true depth is "nothing there"). Post-processing presets now run in the simulator's hidden
+  scenes (they rendered like None before), and a Bloom preset (3 from a threshold of 1, as bright worlds set it) sits
+  beside Heavy. The capture kit draws only on the wearer's own client: its FX controller gains a layer that sets the
+  kit's `_OrbitersLocal` from VRChat's `IsLocal`, so other players' copies of the avatar leave their pictures and
+  streams alone. Install the kit again (that adds the layer to the shared controller) and upload the avatar: a kit
+  installed before draws nothing with this release.
 - Requires Orbiters Toolkit 0.4.1, which holds the avatar gizmos (bones, weight paint, mesh edges, avatar budget) and
   lets Mixer take the armature overlay's bone clicks.
 
