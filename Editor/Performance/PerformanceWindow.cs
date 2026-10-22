@@ -48,6 +48,9 @@ namespace Orbiters.Mixer.Editor.Performance
         Label avatarInfo, footerText, footerRight, empty, kitInfo;
         ObjectField avatarField;
         Button bakeButton, kitInstall, kitRemove;
+        SegmentedControl kitReachControl;
+        // The avatar whose installed kit the Drawn switch was last set from.
+        [NonSerialized] VRCAvatarDescriptor kitReachOf;
         MixerToasts toasts;
         readonly List<SessionInfo> sessions = new List<SessionInfo>();
         BakeResult last;
@@ -170,9 +173,9 @@ namespace Orbiters.Mixer.Editor.Performance
             buttons.Add(kitRemove);
             buttons.Add(kitInstall);
             bodyBox.Add(MixerUi.Setting("On this avatar", "Draws your pose and the camera's into the frames VRChat's camera streams, only while you record", buttons, first: true));
-            var reach = new SegmentedControl(new[] { "Near you", "Everywhere" }, i => { kitReach = i; Refresh(); });
-            reach.SetIndex(kitReach);
-            bodyBox.Add(MixerUi.Setting("Drawn", "Near you: when the camera sees you or is within 2 m. Everywhere: always, but VRChat ranks the bounds Very Poor", reach));
+            kitReachControl = new SegmentedControl(new[] { "Near you", "Everywhere" }, i => { kitReach = i; Refresh(); });
+            kitReachControl.SetIndex(kitReach);
+            bodyBox.Add(MixerUi.Setting("Drawn", "Near you: when the camera sees you or is within 2 m. Everywhere: always, but VRChat ranks the bounds Very Poor", kitReachControl));
             kitInfo = MixerUi.Text("", "mx-caption mx-perf-info");
             bodyBox.Add(kitInfo);
         }
@@ -329,6 +332,16 @@ namespace Orbiters.Mixer.Editor.Performance
             var animator = avatar != null ? avatar.GetComponent<Animator>() : null;
             bool human = animator != null && animator.isHuman;
             var kit = avatar != null ? CaptureKit.Inspect(avatar) : null;
+            // Picked up with a kit, the avatar's switch shows how that kit is drawn, so Install again keeps it.
+            if (avatar != kitReachOf)
+            {
+                kitReachOf = avatar;
+                if (kit != null && kit.Installed)
+                {
+                    kitReach = kit.Reach == CaptureKit.Reach.Everywhere ? 1 : 0;
+                    kitReachControl.SetIndex(kitReach);
+                }
+            }
             MixerUi.SetPillText(kitInstall, kit != null && kit.Installed ? "Install again" : "Install");
             kitInstall.SetEnabled(human && kit.VrcFury);
             MixerUi.Show(kitRemove, kit != null && kit.Installed);
