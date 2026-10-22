@@ -428,6 +428,147 @@ namespace Orbiters.Mixer.Editor.Splats.Tests
             }
         }
 
+        /// <summary>A sky map <paramref name="width"/> texels across as Orbiters desktop writes it (a PNG, rows from the
+        /// top) and Mixer loads it: <paramref name="colour"/> of each texel by column and row from the top.</summary>
+        static byte[] SkyPng(int width, Func<int, int, Color32> colour)
+        {
+            int height = width / 2;
+            var pixels = new Color32[width * height];
+            for (int row = 0; row < height; row++)
+                for (int x = 0; x < width; x++)
+                    pixels[(height - 1 - row) * width + x] = colour(x, row);
+            var image = new Texture2D(width, height, TextureFormat.RGB24, false, true);
+            try
+            {
+                image.SetPixels32(pixels);
+                image.Apply(false, false);
+                return image.EncodeToPNG();
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(image);
+            }
+        }
+
+        static Texture2D Sky(int width, Func<int, int, Color32> colour)
+        {
+            Texture2D map = SkyMaps.Load(SkyPng(width, colour), out string problem);
+            Assert.That(map, Is.Not.Null, problem);
+            map.hideFlags = HideFlags.HideAndDontSave;
+            return map;
+        }
+
+        static void AreClose(Color32 want, Color32 got, string what)
+        {
+            Assert.That(got.r, Is.InRange(want.r - 3, want.r + 3), what + ": " + got);
+            Assert.That(got.g, Is.InRange(want.g - 3, want.g + 3), what + ": " + got);
+            Assert.That(got.b, Is.InRange(want.b - 3, want.b + 3), what + ": " + got);
+        }
+
+        [Test]
+        public void TheSkyMapShowsWhereNothingNearerWasDrawn()
+        {
+            Texture2D sky = Sky(64, (x, row) => new Color32(64, 128, 192, 255));
+            var black = new Material(Shader.Find("Unlit/Color")) { color = Color.black, hideFlags = HideFlags.HideAndDontSave };
+            GameObject cube = EditorUtility.CreateGameObjectWithHideFlags("Mixer splat test cube", HideFlags.HideAndDontSave, typeof(MeshFilter), typeof(MeshRenderer));
+            try
+            {
+                cube.GetComponent<MeshFilter>().sharedMesh = Resources.GetBuiltinResource<Mesh>("Cube.fbx");
+                cube.GetComponent<MeshRenderer>().sharedMaterial = black;
+                // Up and to the right, 2 m away: about 12 px wide around (53, 53).
+                cube.transform.position = new Vector3(0.35f, 0.35f, 2f);
+                cube.transform.localScale = new Vector3(0.2f, 0.2f, 0.2f);
+                foreach (bool hdr in new[] { false, true })
+                foreach (bool msaa in new[] { false, true })
+                {
+                    string variant = "HDR " + hdr + ", MSAA " + msaa;
+                    SplatCloud cloud = White(255, 10f);
+                    cloud.skyMap = sky;
+                    Color32[] pixels = Render(cloud, hdr, msaa, 1, cube);
+                    // The map's encoded colour, stored as such in an sRGB target, as Orbiters desktop shows it.
+                    AreClose(new Color32(64, 128, 192, 255), At(pixels, 2, 2), variant + ", the sky");
+                    Assert.That(At(pixels, Size / 2, Size / 2).r, Is.GreaterThan(240), variant + ", the splat in front of it");
+                    Assert.That(At(pixels, 53, 53).b, Is.LessThan(8), variant + ", the scene in front of it");
+                }
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(cube);
+                UnityEngine.Object.DestroyImmediate(black);
+                UnityEngine.Object.DestroyImmediate(sky);
+            }
+        }
+
+        [Test]
+        public void TheSkyMapIsLookedUpByDirectionAsTrained()
+        {
+            // West of straight ahead (+Z, the map's middle column) red, east green; above the horizon bright blue.
+            Texture2D sky = Sky(64, (x, row) => new Color32((byte)(x < 32 ? 200 : 0), (byte)(x < 32 ? 0 : 200), (byte)(row < 16 ? 200 : 40), 255));
+            try
+            {
+                SplatCloud cloud = White(255, 10f);
+                cloud.skyMap = sky;
+                Color32[] pixels = Render(cloud);
+                // Stored from the bottom row: (16, 48) is left and up, (48, 16) right and down, 7.4° off the axis each way.
+                AreClose(new Color32(200, 0, 200, 255), At(pixels, 16, 48), "left, above the horizon");
+                AreClose(new Color32(0, 200, 40, 255), At(pixels, 48, 16), "right, below it");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(sky);
+            }
+        }
+
+        [Test]
+        public void TheSkyMapComesWithItsSplats()
+        {
+            string dir = Path.Combine(Path.GetTempPath(), "mixer-splats-" + Guid.NewGuid().ToString("N"), "reconstruction");
+            Directory.CreateDirectory(dir);
+            string title = "Mixer test " + Guid.NewGuid().ToString("N");
+            string asset = SplatImport.Folder + "/" + title + ".splats";
+            try
+            {
+                string ply = Path.Combine(dir, "splats.ply");
+                File.WriteAllBytes(ply, Ply(new[] { A, B }));
+                // The band from 2° below the horizon to 12° above (rows 14 and 15 of 32) in one colour, the rest dark.
+                File.WriteAllBytes(Path.Combine(dir, SkyMaps.FileName), SkyPng(64, (x, row) => row == 14 || row == 15 ? new Color32(90, 120, 150, 255) : new Color32(10, 10, 10, 255)));
+                SplatCloud cloud = SplatImport.Bring(ply, title);
+                Assert.That(File.Exists(SkyMaps.Beside(asset)), Is.True, "the map beside the splats");
+                Assert.That(cloud.skyMap, Is.Not.Null);
+                Assert.That(cloud.skyMap.width, Is.EqualTo(64));
+                Assert.That(cloud.skyMap.height, Is.EqualTo(32));
+                Assert.That(cloud.skyMap.wrapModeU, Is.EqualTo(TextureWrapMode.Repeat));
+                Assert.That(cloud.skyMap.wrapModeV, Is.EqualTo(TextureWrapMode.Clamp));
+                Assert.That(cloud.skyMap.isDataSRGB, Is.False, "encoded values filtered as they are");
+                Assert.That(AssetDatabase.GetAssetPath(cloud.skyMap), Is.EqualTo(asset), "kept inside the cloud's asset");
+                Assert.That(cloud.hasHorizon, Is.True);
+                Assert.That(cloud.horizon.r, Is.EqualTo(90f / 255f).Within(1e-4f), "the horizon from the map's band");
+                Assert.That(cloud.horizon.b, Is.EqualTo(150f / 255f).Within(1e-4f));
+            }
+            finally
+            {
+                AssetDatabase.DeleteAsset(asset);
+                AssetDatabase.DeleteAsset(SkyMaps.Beside(asset));
+                Directory.Delete(Path.GetDirectoryName(dir), true);
+            }
+        }
+
+        [Test]
+        public void ASkyMapIsTwiceAsWideAsHigh()
+        {
+            var square = new Texture2D(8, 8, TextureFormat.RGB24, false, true);
+            try
+            {
+                Assert.That(SkyMaps.Load(square.EncodeToPNG(), out string problem), Is.Null);
+                StringAssert.Contains("twice as wide as high", problem);
+                Assert.That(SkyMaps.Load(Encoding.ASCII.GetBytes("not a picture"), out _), Is.Null);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(square);
+            }
+        }
+
         [Test]
         public void SplatsShowOnlyInCamerasOfTheirScene()
         {

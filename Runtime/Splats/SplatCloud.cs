@@ -41,10 +41,15 @@ namespace Orbiters.Mixer.Splats
         /// not say.</summary>
         public float[] beyond = new float[0];
 
-        /// <summary>The sky's colour at the horizon (encoded sRGB), from the sky shell's splats; what fog and haze turn
-        /// to. Meaningful only with <see cref="hasHorizon"/>.</summary>
+        /// <summary>The sky's colour at the horizon (encoded sRGB), from <see cref="skyMap"/>'s band around it, else from
+        /// the sky shell's splats; what fog and haze turn to. Meaningful only with <see cref="hasHorizon"/>.</summary>
         public Color horizon;
         public bool hasHorizon;
+
+        /// <summary>The sky trained with the splats (Orbiters desktop's <c>sky.png</c>), drawn behind them: an
+        /// equirectangular map, longitude <c>atan2(x, z)</c> across from −180°, elevation from +90° at the top, its
+        /// encoded sRGB values kept as linear data. Null where the reconstruction keeps its sky as splats on a shell.</summary>
+        public Texture2D skyMap;
 
         /// <summary>Where most of the splats are (the 2nd to 98th percentile per axis, so not the far sky shell): what
         /// framing looks at.</summary>

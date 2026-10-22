@@ -8,8 +8,10 @@ namespace Orbiters.Mixer.Splats
     /// Draws a <see cref="SplatCloud"/> in the Scene and Game views (built-in render pipeline, compute shaders):
     /// before each camera's transparent pass, a command buffer sorts the splats back to front on the GPU, draws them as
     /// camera-facing Gaussians into a temporary target that shares the camera's depth buffer, and lays that over the
-    /// camera's image. They blend as Orbiters desktop's trainer fitted them, on encoded sRGB colours (Splats.shader). An
-    /// editor tool: imported clouds live on EditorOnly objects, so builds leave them out.
+    /// camera's image. They blend as Orbiters desktop's trainer fitted them, on encoded sRGB colours (Splats.shader). A
+    /// cloud's sky map goes first, behind everything the camera drew (where its depth is still the far plane), in place
+    /// of the scene's own sky, as Orbiters desktop's viewer draws it. An editor tool: imported clouds live on EditorOnly
+    /// objects, so builds leave them out.
     /// </summary>
     [ExecuteAlways]
     [AddComponentMenu("Orbiters/Mixer/Splat Renderer")]
@@ -97,6 +99,7 @@ namespace Orbiters.Mixer.Splats
         static readonly int HorizonId = Shader.PropertyToID("_Horizon");
         static readonly int AccumulationId = Shader.PropertyToID("_SplatAccumulation");
         static readonly int SceneId = Shader.PropertyToID("_SplatScene");
+        static readonly int SkyMapId = Shader.PropertyToID("_SkyMap");
 
         void OnEnable()
         {
@@ -308,6 +311,12 @@ namespace Orbiters.Mixer.Splats
             // The horizon (encoded sRGB, like the splats' colours): the cloud's sky, else the fog colour as authored.
             Color horizon = cloud.hasHorizon ? cloud.horizon : RenderSettings.fogColor;
             properties.SetVector(HorizonId, new Vector4(horizon.r, horizon.g, horizon.b, 1f));
+            // The sky map into the camera's own target, where nothing nearer than the far plane was drawn.
+            if (cloud.skyMap != null)
+            {
+                properties.SetTexture(SkyMapId, cloud.skyMap);
+                cmd.DrawProcedural(Matrix4x4.identity, material, 2, MeshTopology.Triangles, 3, 1, properties);
+            }
             // The splats on their own, depth-tested against the camera's depth buffer; then what the camera drew so far
             // under them, both in encoded sRGB, written back.
             cmd.GetTemporaryRT(AccumulationId, -1, -1, 0, FilterMode.Point, RenderTextureFormat.ARGBHalf, RenderTextureReadWrite.Linear, Samples(cam));

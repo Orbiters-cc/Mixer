@@ -290,6 +290,12 @@ saved as a native mesh asset when you commit.
   kit's `_OrbitersLocal` from VRChat's `IsLocal`, so other players' copies of the avatar leave their pictures and
   streams alone. Install the kit again (that adds the layer to the shared controller) and upload the avatar: a kit
   installed before draws nothing with this release.
+- Splats come with the sky Orbiters desktop trained with them: its reconstructions keep the far sky as a map
+  (`reconstruction/sky.png`) instead of a shell of discs, and an import copies it beside the cloud
+  (`<session>.splatsky`, a PNG the texture importer leaves alone). The Splat Renderer draws it behind everything the
+  camera drew, in place of the scene's own sky, looked up by direction as Orbiters desktop does, and fog and haze turn
+  towards its colours at the horizon. Without it (a reconstruction made before, or of a world that never showed the sky)
+  the splats draw over the scene as before.
 - Requires Orbiters Toolkit 0.4.1, which holds the avatar gizmos (bones, weight paint, mesh edges, avatar budget) and
   lets Mixer take the armature overlay's bone clicks.
 
@@ -401,14 +407,15 @@ Gaussian splats that Orbiters desktop reconstructed from a VRChat session show i
 world was captured. In Orbiters desktop, **Send to Mixer** in a reconstructed session's detail sends them to the Unity
 editor running Mixer; in Unity, **Tools > Orbiters > Mixer Splats…** picks a session's
 `reconstruction/splats.ply`. Either way the PLY is copied to `Assets/Orbiters/Splats/<session>.splats` (imported by
-Mixer as a splat cloud), and an EditorOnly **Splat Renderer** object (left out of builds) is added to the open scene,
-selected and framed.
+Mixer as a splat cloud), with the sky map trained with it (`sky.png`) beside it as `<session>.splatsky`, and an
+EditorOnly **Splat Renderer** object (left out of builds) is added to the open scene, selected and framed.
 
 The renderer sorts the splats back to front for each camera on the GPU (a bitonic sort in a compute shader) and draws
 them before the transparent pass, behind your scene's geometry where it is in front (built-in render pipeline, compute
 shaders). They blend as Orbiters desktop's trainer blended them while it fitted them, on encoded sRGB colours: the
 splats accumulate in a temporary target that shares the camera's depth buffer, then go over a copy of the camera's
-image in encoded sRGB and back in linear light, once per camera. Move the object to offset them. Each editor keeps an inbox for Orbiters desktop under
+image in encoded sRGB and back in linear light, once per camera. A cloud's sky map is drawn first, wherever the
+camera drew nothing nearer than the far plane. Move the object to offset them. Each editor keeps an inbox for Orbiters desktop under
 `%LOCALAPPDATA%/Orbiters/Mixer/inbox/<process id>/` (an `endpoint.json` naming the project, and the requests).
 
 ## Agents

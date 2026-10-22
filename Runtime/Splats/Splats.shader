@@ -7,7 +7,8 @@
 // that shares the camera's depth buffer (the scene in front hides them, as before); pass 1 lays that over a copy of the
 // camera's image and converts the result to linear light once. Blending in linear light instead showed half-transparent
 // splats brighter (50 % white over black at 0.735, not 0.5): sparse far content and the edges of what was seen looked
-// hazier than trained.
+// hazier than trained. Pass 2, before them, draws the cloud's sky map wherever the camera drew nothing nearer than the
+// far plane, looked up by direction as Orbiters desktop's renderer does (sky_lookup.wgsl).
 Shader "Hidden/Orbiters/Mixer/Splats"
 {
     SubShader
@@ -250,6 +251,72 @@ Shader "Hidden/Orbiters/Mixer/Splats"
                 float3 rgb = ToLinear(s.rgb + (1.0 - s.a) * ToSrgb(scene.rgb));
                 #endif
                 return float4(rgb, s.a + (1.0 - s.a) * scene.a);
+            }
+            ENDCG
+        }
+        // 2: the sky map, into the camera's target where its depth is still the far plane (before the splats).
+        Pass
+        {
+            ZWrite Off
+            ZTest LEqual
+            Cull Off
+            Blend Off
+
+            CGPROGRAM
+            #pragma vertex vert
+            #pragma fragment frag
+            #pragma target 4.5
+            #include "UnityCG.cginc"
+
+            // The far plane in clip space (built-in's includes have no UNITY_RAW_FAR_CLIP_VALUE).
+            #if defined(UNITY_REVERSED_Z)
+            #define SKY_FAR 0.0
+            #else
+            #define SKY_FAR 1.0
+            #endif
+
+            // Encoded sRGB kept as linear data: filtered as Orbiters desktop filters its texels, turned into light here.
+            Texture2D<float4> _SkyMap;
+            SamplerState sampler_SkyMap;
+            float4x4 _WorldToObject;
+
+            struct v2f
+            {
+                float4 pos : SV_POSITION;
+                float3 ray : TEXCOORD0;
+            };
+
+            v2f vert(uint vid : SV_VertexID)
+            {
+                // One triangle over the whole target, on the far plane.
+                float2 p = float2((vid << 1) & 2, vid & 2) * 2.0 - 1.0;
+                v2f o;
+                o.pos = float4(p, SKY_FAR, 1.0);
+                // The view ray through this corner under the projection the GPU uses (which flips Y when it renders into a
+                // texture), out of view space into the world, then into the cloud's own space, where the map was trained.
+                float3 view = float3((p.x + UNITY_MATRIX_P[0][2]) / UNITY_MATRIX_P[0][0], (p.y + UNITY_MATRIX_P[1][2]) / UNITY_MATRIX_P[1][1], -1.0);
+                float3 world = mul((float3x3)UNITY_MATRIX_I_V, view);
+                o.ray = mul((float3x3)_WorldToObject, world);
+                return o;
+            }
+
+            float3 ToLinear(float3 c)
+            {
+                c = max(c, 0.0);
+                return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
+            }
+
+            float4 frag(v2f i) : SV_Target
+            {
+                float3 d = normalize(i.ray);
+                // Longitude atan2(x, z) across from −180°, elevation from +90° at the map's top row (a texture's last).
+                float2 uv = float2(atan2(d.x, d.z) / 6.283185307 + 0.5, asin(clamp(d.y, -1.0, 1.0)) / 3.141592654 + 0.5);
+                float3 sky = _SkyMap.SampleLevel(sampler_SkyMap, uv, 0).rgb;
+                #ifdef UNITY_COLORSPACE_GAMMA
+                return float4(sky, 1.0);
+                #else
+                return float4(ToLinear(sky), 1.0);
+                #endif
             }
             ENDCG
         }
