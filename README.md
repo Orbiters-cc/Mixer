@@ -5,6 +5,11 @@ groups, edit armatures, join meshes and render with Blender's engine, with a liv
 a modern Hierarchy window. Nothing re-imports while you edit: edits show live on a working copy of the mesh and are
 saved as a native mesh asset when you commit.
 
+## 0.1.1 — 2026-10-23
+
+- `MixerLink.OriginalOf(mesh)`: the mesh a working copy stands for while a session edits it, for tools that read a
+  renderer's model file (MCB 1.12.13 finds the avatar's custom base through it while Mixer edits the body).
+
 ## 0.1.0 — 2026-10-19
 
 - First release: sculpting with eight brushes (Grab, Smooth, Inflate, Bump, Flatten, Clay, Pinch, Crease), falloffs,

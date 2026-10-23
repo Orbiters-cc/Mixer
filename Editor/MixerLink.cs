@@ -59,6 +59,12 @@ namespace Orbiters.Mixer.Editor
         public static void OpenMixer() => MixerWindow.Open();
 
         /// <summary>Whether Mixer shows a working copy of this renderer's mesh, and which side edits it.</summary>
+        /// <summary>
+        /// The mesh a Mixer working copy stands for while a session edits it (the working copy is no asset), null for any
+        /// other mesh: tools that read a renderer's model file look through it.
+        /// </summary>
+        public static Mesh OriginalOf(Mesh mesh) => MixerMeshGuard.OriginalOf(mesh);
+
         public static RendererState StateOf(Renderer renderer)
         {
             var target = renderer != null ? MixerSession.TargetOf(renderer) : null;

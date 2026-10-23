@@ -1,7 +1,7 @@
 {
   "name": "orbiters.mixer",
   "displayName": "Mixer",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "LicenseRef-Mixer-Proprietary",
   "unity": "2022.3",
   "description": "Blender inside the Unity editor: sculpt and create blendshapes, paint weights and manage vertex groups, edit armatures, join meshes and render with Blender's engine, with a live two-way link to the real Blender and a modern Hierarchy window. Nothing re-imports while you edit.",
