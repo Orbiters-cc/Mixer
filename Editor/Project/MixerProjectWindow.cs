@@ -18,7 +18,7 @@ namespace Orbiters.Mixer.Editor
     /// makes a folder, a material, an animation or an animator controller in the open folder. A click on a folder never
     /// changes Unity's selection (the Inspector keeps what it shows); a click on a file selects it as Unity's does. Each
     /// asset's target button shows where it is used: the place itself when there is one, a side panel listing them all
-    /// otherwise.
+    /// otherwise. A wide window keeps the assets used lately in a side panel at the right, beside the open folder.
     /// </summary>
     internal sealed partial class MixerProjectWindow : EditorWindow, IHasCustomMenu
     {
@@ -98,7 +98,11 @@ namespace Orbiters.Mixer.Editor
         {
             foreach (string path in paths) previewCache.Remove(path);
         }
-        private void OnRecentChanged() { if (showRecent) MarkDirty(); }
+        private void OnRecentChanged()
+        {
+            recentPanelDirty = true;
+            if (showRecent) MarkDirty();
+        }
         private void OnIndexUpdated() { if (Searching) MarkDirty(); }
         private bool Searching => !string.IsNullOrWhiteSpace(search);
 
@@ -154,6 +158,8 @@ namespace Orbiters.Mixer.Editor
             column.Add(emptyLabel);
             usagePanel = BuildUsagePanel();
             panes.Add(usagePanel);
+            recentPanel = BuildRecentPanel();
+            panes.Add(recentPanel);
             HookContent();
             root.Add(BuildStatusBar());
             toasts = new MixerToasts();
@@ -291,6 +297,8 @@ namespace Orbiters.Mixer.Editor
             // The open folder was deleted or moved by another tool: back to Assets rather than creating into nothing.
             if (!showRecent && folder != PackagesPath && !AssetDatabase.IsValidFolder(folder)) Navigate("Assets");
             PollPreviews();
+            SyncRecentDock();
+            if (recentDocked && recentPanelDirty && visible) FillRecentPanel();
             double now = EditorApplication.timeSinceStartup;
             if (pingPath != null && now > pingUntil) { pingPath = null; RefreshContent(); }
             if (AssetContentIndex.Building && now - lastFooter > 0.5) UpdateFooter();
@@ -418,6 +426,7 @@ namespace Orbiters.Mixer.Editor
             }
             RefreshRows();
             SyncUsageRows();
+            SyncRecentRows();
             UpdateFooter();
         }
 

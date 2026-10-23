@@ -118,6 +118,7 @@ Label.mxp-crumb { padding-top: 3px; }
 .mxp-usages__button { width: 22px; height: 22px; min-width: 22px; margin: 0 0 0 1px; }
 .mxp-usages__button .mx-icon { width: 11px; height: 11px; --icon-color: #9a9a9a; }
 .mxp-usages__list { flex-grow: 1; }
+.mxp-recent { width: 260px; min-width: 200px; }
 .mxp-usages__list .unity-scroll-view__content-container { padding: 4px 0 8px 0; }
 .mxp-usages__group { flex-direction: row; align-items: center; padding: 8px 10px 3px 12px; }
 .mxp-usages__group-name { margin: 0; padding: 0; font-size: 10px; -unity-font-style: bold; color: #8c8c8c; }

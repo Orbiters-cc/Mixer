@@ -9,6 +9,14 @@ saved as a native mesh asset when you commit.
 
 - `MixerLink.OriginalOf(mesh)`: the mesh a working copy stands for while a session edits it, for tools that read a
   renderer's model file (MCB 1.12.13 finds the avatar's custom base through it while Mixer edits the body).
+- The Hierarchy finds the armature and bones of a model placed whole without a humanoid Avatar (a generic rig, as
+  Ultirex-ULTRALowPoly10 is imported): its armature row has the armature icon and the quick bones its names give, its
+  bones the bone icon, where they showed as folders. Without hips found by name, the bone nearest the root sets the
+  armature.
+- The Project window keeps Recent in a side panel at the right once it is wide enough (its panes 760 points, beside
+  the usage panel when that is open): the open folder stays in view, a click shows the asset in its folder, a double
+  click opens it, and it drags like any asset. Narrower, Recent is the tree's line as before. Recent leaves out
+  deleted assets (their GUIDs still gave their old paths).
 
 ## 0.1.0 — 2026-10-19
 

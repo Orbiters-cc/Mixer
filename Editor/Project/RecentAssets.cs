@@ -56,6 +56,8 @@ namespace Orbiters.Mixer.Editor
             {
                 string path = AssetDatabase.GUIDToAssetPath(entry.guid);
                 if (string.IsNullOrEmpty(path) || AssetDatabase.IsValidFolder(path)) continue;
+                // A deleted asset's GUID still gives its old path.
+                if (string.IsNullOrEmpty(AssetDatabase.AssetPathToGUID(path, AssetPathToGUIDOptions.OnlyExistingAssets))) continue;
                 result.Add((path, new DateTime(entry.ticks, DateTimeKind.Utc)));
             }
             return result;

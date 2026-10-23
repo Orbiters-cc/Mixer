@@ -50,7 +50,8 @@ namespace Orbiters.Mixer.Editor
         {
             treeDirty = false;
             treeRows.Clear();
-            treeRows.Add(new ProjectItem { Path = RecentPath, Name = "Recent" });
+            // Docked at the right, the recent assets need no line here.
+            if (!recentDocked) treeRows.Add(new ProjectItem { Path = RecentPath, Name = "Recent" });
             AddFavouriteRows();
             AddTreeFolder("Assets", "Assets", 0);
             var packages = ProjectFiles.Packages();
@@ -219,8 +220,7 @@ namespace Orbiters.Mixer.Editor
                 var item = ProjectFiles.Item(path);
                 if (!ProjectFiles.Keeps(kinds, item)) continue;
                 item.Used = when;
-                var day = when.ToLocalTime().Date;
-                string heading = day == today ? "Today" : day == today.AddDays(-1) ? "Yesterday" : day > today.AddDays(-7) ? "This week" : "Earlier";
+                string heading = RecentHeading(when, today);
                 if (heading != section) { rows.Add(Heading(heading)); section = heading; }
                 rows.Add(item);
             }
