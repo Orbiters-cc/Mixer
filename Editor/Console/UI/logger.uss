@@ -2362,6 +2362,27 @@
     color: #ffd27a;
 }
 
+/* Short windows: the labels get a row of their own under the plot. */
+.lg-timeline__chips {
+    display: none;
+    height: 14px;
+    min-height: 14px;
+    margin-top: 3px;
+}
+
+.lg-timeline--chips .lg-timeline__chips {
+    display: flex;
+}
+
+.lg-timeline__chips .lg-timeline__marker {
+    top: 0;
+}
+
+.lg-root--short .lg-timeline--chips {
+    height: 71px;
+    min-height: 71px;
+}
+
 /* ---- Timings: reloads, Play Mode, avatar builds and uploads ---------------------------------------- */
 
 .lg-timeline--lane {
@@ -2376,6 +2397,16 @@
     border-radius: 4px;
     background-color: rgba(0, 0, 0, 0.12);
     cursor: link;
+}
+
+.lg-root--short .lg-timeline--lane {
+    height: 72px;
+    min-height: 72px;
+}
+
+.lg-root--short .lg-timeline--lane.lg-timeline--chips {
+    height: 89px;
+    min-height: 89px;
 }
 
 .lg-row--timing .lg-row__icon {

@@ -29,6 +29,8 @@ mesh asset when you commit.
   fingerprint and My Avatar's base detection see the original model while a session edits it.
 - The console's search field shows its Ctrl+F hint only when it is wide enough (beside a full top bar the hint covered
   the Aa switch), and a narrow placeholder ends with an ellipsis.
+- In a short console window (under 520 points tall) the graph's commit and release labels sit in a row of their own
+  under it, where they were cut off at its top, and the graph keeps its height while the timings lane shows.
 
 ## 0.1.1 — 2026-10-23
 

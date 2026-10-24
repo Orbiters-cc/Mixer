@@ -294,6 +294,8 @@ namespace Orbiters.Logger.Editor
         private int laneHover = -1;
         private long highlight;
         private VisualElement markerLabels;
+        private readonly VisualElement chipRow;
+        private bool labelsBelow;
         private string labelsKey = string.Empty;
         private long rangeFrom;
         private long rangeTo;
@@ -319,6 +321,10 @@ namespace Orbiters.Logger.Editor
             plot.Add(markerLabels);
             plot.RegisterCallback<GeometryChangedEvent>(_ => LayoutMarkerLabels());
             Add(plot);
+
+            // A short window leaves the plot too low for the labels: they move to this row under it.
+            chipRow = LoggerUi.Box("lg-timeline__chips", PickingMode.Ignore);
+            Add(chipRow);
 
             // Reloads, entries into Play Mode, builds and uploads: one stacked mark each, coloured by package.
             timingLane = LoggerUi.Box("lg-timeline__lane");
@@ -748,6 +754,7 @@ namespace Orbiters.Logger.Editor
             {
                 markerLabels?.Clear();
                 labelsKey = string.Empty;
+                ShowChipRow();
                 return;
             }
 
@@ -803,6 +810,27 @@ namespace Orbiters.Logger.Editor
                 label.style.left = left;
                 markerLabels.Add(label);
             }
+
+            ShowChipRow();
+        }
+
+        /// <summary>Short windows: the commit and release labels sit in a row under the plot instead of on it.</summary>
+        public void SetLabelsBelow(bool below)
+        {
+            if (below == labelsBelow)
+            {
+                return;
+            }
+
+            labelsBelow = below;
+            (below ? chipRow : plot).Add(markerLabels);
+            ShowChipRow();
+        }
+
+        // The row under the plot takes room only while it holds labels.
+        private void ShowChipRow()
+        {
+            EnableInClassList("lg-timeline--chips", labelsBelow && markerLabels != null && markerLabels.childCount > 0);
         }
 
         private void DrawLane(MeshGenerationContext context)

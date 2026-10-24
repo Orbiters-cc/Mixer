@@ -160,7 +160,9 @@ namespace Orbiters.Logger.Editor
             rootVisualElement.EnableInClassList("lg-root--s", width < 1000f);
             bool tiny = width < 780f;
             rootVisualElement.EnableInClassList("lg-root--xs", tiny);
-            rootVisualElement.EnableInClassList("lg-root--short", rootVisualElement.layout.height < 520f);
+            bool shortWindow = rootVisualElement.layout.height < 520f;
+            rootVisualElement.EnableInClassList("lg-root--short", shortWindow);
+            timeline?.SetLabelsBelow(shortWindow);
             if (searchBox == null || searchRow == null)
             {
                 return;
