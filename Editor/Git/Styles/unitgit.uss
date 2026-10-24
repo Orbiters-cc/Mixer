@@ -1,0 +1,2220 @@
+/* Mixer Git's tabs. Tokens, buttons and the top bar live in unitgit-shell.uss. */
+
+/* ---- Workspace, panes, toolbars ------------------------------------------------------------------- */
+
+.unitgit-workspace {
+    flex-grow: 1;
+    min-height: 0;
+    flex-direction: row;
+    background-color: var(--ug-bg);
+}
+
+.unitgit-split-view {
+    flex-grow: 1;
+    min-width: 0;
+    min-height: 0;
+}
+
+.unitgit-split-view > .unity-two-pane-split-view__dragline-anchor {
+    width: 1px;
+    background-color: var(--ug-line);
+}
+
+.unitgit-split-view > .unity-two-pane-split-view__dragline-anchor:hover {
+    background-color: rgba(0, 218, 109, 0.6);
+}
+
+/* Every pane's toolbar is the same grey, so the row of toolbars reads as one across the splits. */
+.ug-toolbar {
+    height: 38px;
+    min-height: 38px;
+    flex-direction: row;
+    align-items: center;
+    padding: 0 6px 0 6px;
+    border-bottom-width: 1px;
+    border-bottom-color: var(--ug-line);
+    background-color: var(--ug-surface);
+    flex-shrink: 0;
+}
+
+.ug-toolbar__search {
+    width: 170px;
+    min-width: 90px;
+    flex-shrink: 1;
+}
+
+/* ---- Rows (lists and trees) ------------------------------------------------------------------------ */
+
+.ug-row {
+    height: 26px;
+    min-height: 26px;
+    margin: 0 6px;
+    padding: 0 8px 0 6px;
+    flex-direction: row;
+    align-items: center;
+    border-width: 0;
+    border-radius: 6px;
+    background-color: rgba(0, 0, 0, 0);
+    background-image: none;
+    -unity-text-align: middle-left;
+    transition-property: background-color;
+    transition-duration: 0.08s;
+}
+
+.ug-row:hover {
+    background-color: var(--ug-hover);
+}
+
+.ug-row--selected,
+.ug-row--selected:hover {
+    background-color: var(--ug-select);
+}
+
+.ug-row__chevron {
+    width: 12px;
+    height: 12px;
+    margin-right: 6px;
+    --icon-color: #909090;
+    --icon-width: 2.4;
+}
+
+.ug-row__folder {
+    width: 15px;
+    height: 15px;
+    margin-right: 6px;
+    --icon-color: #8f9bb3;
+}
+
+.ug-row__icon {
+    width: 16px;
+    height: 16px;
+    min-width: 16px;
+    margin-right: 6px;
+    flex-shrink: 0;
+}
+
+.ug-row__name {
+    flex-shrink: 1;
+    min-width: 0;
+    color: #e4e4e4;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.ug-row--group .ug-row__name {
+    -unity-font-style: bold;
+    color: #f0f0f0;
+}
+
+.ug-row__count {
+    margin-left: 8px;
+    color: var(--ug-text-3);
+    font-size: 11px;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.ug-row__path {
+    flex-grow: 1;
+    flex-shrink: 1;
+    min-width: 0;
+    margin-left: 8px;
+    color: var(--ug-text-3);
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.ug-row__letter {
+    width: 14px;
+    margin-left: 6px;
+    font-size: 10px;
+    -unity-font-style: bold;
+    -unity-text-align: middle-center;
+    flex-shrink: 0;
+}
+
+/* JetBrains' status colours: modified blue, added green, deleted grey, new and unversioned amber, renamed violet. */
+.unitgit-root .ug-status--modified { color: var(--ug-modified); }
+.unitgit-root .ug-status--added { color: var(--ug-added); }
+.unitgit-root .ug-status--deleted { color: var(--ug-deleted); }
+.unitgit-root .ug-status--untracked { color: var(--ug-untracked); }
+.unitgit-root .ug-status--renamed { color: var(--ug-renamed); }
+.unitgit-root .ug-status--conflict { color: var(--ug-conflict); }
+
+/* ---- Empty states ----------------------------------------------------------------------------------- */
+
+.ug-empty {
+    flex-grow: 1;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+}
+
+.ug-empty__mark {
+    width: 38px;
+    height: 38px;
+    border-radius: 12px;
+    background-color: rgba(0, 218, 109, 0.12);
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 10px;
+}
+
+.ug-empty__mark .unitgit-icon {
+    width: 20px;
+    height: 20px;
+    --icon-color: #3cf29a;
+    --icon-width: 2.4;
+}
+
+.ug-empty__title {
+    color: #ececec;
+    font-size: 13px;
+    -unity-font-style: bold;
+}
+
+.ug-empty__text {
+    margin-top: 4px;
+    color: var(--ug-text-2);
+    font-size: 11px;
+    white-space: normal;
+    -unity-text-align: middle-center;
+}
+
+/* ---- Changes ---------------------------------------------------------------------------------------- */
+
+.unitgit-changes-pane {
+    min-width: 280px;
+    flex-grow: 1;
+    background-color: var(--ug-surface);
+}
+
+.unitgit-changes-list {
+    flex-grow: 1;
+    min-height: 0;
+    padding-top: 4px;
+}
+
+.unitgit-changes-list .unity-list-view__item {
+    background-color: rgba(0, 0, 0, 0);
+}
+
+.unitgit-notice {
+    flex-direction: row;
+    align-items: center;
+    min-height: 34px;
+    margin: 6px 6px 0 6px;
+    padding: 4px 4px 4px 10px;
+    border-radius: 10px;
+    background-color: rgba(227, 164, 91, 0.1);
+    flex-shrink: 0;
+}
+
+.unitgit-notice__icon {
+    width: 15px;
+    height: 15px;
+    margin-right: 8px;
+    --icon-color: #f0bd7e;
+}
+
+.unitgit-notice__texts {
+    flex-grow: 1;
+    flex-shrink: 1;
+    min-width: 0;
+    flex-direction: row;
+    align-items: center;
+    overflow: hidden;
+}
+
+.unitgit-notice__title {
+    color: #f6d3a6;
+    font-size: 12px;
+    -unity-font-style: bold;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.unitgit-notice__body {
+    margin-left: 8px;
+    color: #b9a58d;
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex-shrink: 1;
+    min-width: 0;
+}
+
+.unitgit-notice__button {
+    height: 26px;
+    min-height: 26px;
+    margin-left: 8px;
+    padding: 0 12px;
+}
+
+.unitgit-notice__close {
+    margin-left: 2px;
+}
+
+.unitgit-notice__close .unitgit-icon {
+    width: 12px;
+    height: 12px;
+}
+
+.unitgit-notice--conflict {
+    background-color: rgba(255, 107, 107, 0.1);
+}
+
+.unitgit-notice--conflict .unitgit-notice__icon {
+    --icon-color: #ff8a8a;
+}
+
+.unitgit-notice--conflict .unitgit-notice__title {
+    color: #ffb4b4;
+}
+
+.unitgit-notice--conflict .unitgit-notice__body {
+    color: #d3a9a9;
+}
+
+/* The commit box under the list: the message, Amend, what is included, Commit and Push. */
+.unitgit-local-commit-panel {
+    flex-shrink: 0;
+    padding: 8px 8px 8px 8px;
+    border-top-width: 1px;
+    border-top-color: var(--ug-line);
+    background-color: var(--ug-surface);
+}
+
+.unitgit-commit-progress { white-space: normal; flex-shrink: 0; font-size: 11px; color: #e0c491; background-color: #302d26; border-radius: 8px; padding: 8px 10px; margin: 4px 0; }
+
+.unitgit-local-commit-message {
+    margin: 0;
+    min-height: 46px;
+    height: 46px;
+}
+
+.unitgit-local-commit-message .unity-base-text-field__input,
+.unitgit-local-commit-message .unity-text-field__input {
+    padding: 6px 10px;
+    border-width: 1px;
+    border-radius: 10px;
+    border-color: var(--ug-field-border);
+    background-color: var(--ug-field);
+    color: var(--ug-text);
+    font-size: 12px;
+    -unity-text-align: upper-left;
+    white-space: normal;
+    transition-property: border-color, background-color;
+    transition-duration: 0.15s;
+}
+
+.unitgit-local-commit-message .unity-base-text-field__input:focus,
+.unitgit-local-commit-message .unity-text-field__input:focus {
+    border-color: rgba(0, 218, 109, 0.55);
+    background-color: var(--ug-field-focus);
+}
+
+.unitgit-local-commit-placeholder {
+    position: absolute;
+    left: 11px;
+    top: 7px;
+    color: #7c7c7c;
+    font-size: 12px;
+}
+
+.unitgit-root .unitgit-local-commit-placeholder {
+    color: #7c7c7c;
+}
+
+.unitgit-local-commit-actions {
+    flex-direction: row;
+    align-items: center;
+    margin-top: 8px;
+}
+
+.unitgit-local-amend {
+    flex-direction: row;
+    align-items: center;
+    padding: 0 6px 0 2px;
+    height: 24px;
+    border-radius: 6px;
+}
+
+.unitgit-local-amend:hover {
+    background-color: var(--ug-hover);
+}
+
+.unitgit-local-amend__label {
+    color: var(--ug-text-2);
+    font-size: 12px;
+}
+
+.unitgit-local-commit-summary {
+    margin-left: 10px;
+    color: var(--ug-text-3);
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex-shrink: 1;
+}
+
+/* ---- Diff ------------------------------------------------------------------------------------------- */
+
+.unitgit-diff-pane-container {
+    flex-grow: 1;
+    min-width: 0;
+}
+
+.unitgit-diff-pane {
+    flex-grow: 1;
+    min-width: 0;
+    min-height: 0;
+    background-color: var(--ug-bg);
+}
+
+.unitgit-diff-toolbar {
+    padding-left: 10px;
+    background-color: var(--ug-surface);
+}
+
+.ug-diff-file__icon {
+    width: 16px;
+    height: 16px;
+    min-width: 16px;
+    margin-right: 7px;
+}
+
+.ug-diff-file__name {
+    -unity-font-style: bold;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.ug-diff-file__path {
+    margin-left: 8px;
+    color: var(--ug-text-3);
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex-shrink: 1;
+    min-width: 0;
+}
+
+.ug-diff-search {
+    width: 150px;
+    min-width: 80px;
+    margin-left: 4px;
+    flex-shrink: 1;
+}
+
+.ug-diff-count {
+    min-width: 64px;
+}
+
+.unitgit-diff-toolbar .ugs-switch {
+    margin-right: 6px;
+}
+
+/* JetBrains' view options: fold unchanged lines, and a dropdown for whitespace. */
+.ug-diff-options {
+    flex-direction: row;
+    align-items: center;
+    flex-shrink: 0;
+}
+
+.ug-dropdown {
+    height: 28px;
+    min-height: 28px;
+    margin: 0 0 0 2px;
+    padding: 0 6px 0 9px;
+    flex-direction: row;
+    align-items: center;
+    flex-shrink: 1;
+    min-width: 0;
+    border-width: 0;
+    border-radius: 8px;
+    background-color: rgba(0, 0, 0, 0);
+    background-image: none;
+    scale: 1 1;
+    transition-property: background-color, scale;
+    transition-duration: 0.12s, 0.16s;
+    transition-timing-function: ease-out, ease-out-back;
+}
+
+.ug-dropdown:hover {
+    background-color: var(--ug-hover);
+}
+
+.ug-dropdown.ug-pressed {
+    background-color: var(--ug-press);
+    scale: 0.96 0.96;
+}
+
+.ug-dropdown__label {
+    color: var(--ug-text-2);
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex-shrink: 1;
+}
+
+.ug-dropdown:hover .ug-dropdown__label {
+    color: var(--ug-text);
+}
+
+.ug-dropdown .ug-dropdown__chevron {
+    width: 10px;
+    height: 10px;
+    margin-left: 6px;
+    --icon-color: #909090;
+    --icon-width: 2.6;
+}
+
+.ug-dropdown--on .ug-dropdown__label {
+    color: #3cf29a;
+}
+
+.ug-dropdown--on .ug-dropdown__chevron {
+    --icon-color: #3cf29a;
+}
+
+.ug-diff {
+    flex-grow: 1;
+    min-height: 0;
+    background-color: var(--ug-bg);
+}
+
+/* The two versions' names, over their text (past the markers and line numbers). */
+.unitgit-diff-header {
+    height: 26px;
+    min-height: 26px;
+    flex-direction: row;
+    padding: 0 12px;
+    border-bottom-width: 1px;
+    border-bottom-color: var(--ug-line);
+    background-color: var(--ug-header);
+}
+
+.unitgit-diff-header-cell {
+    flex-grow: 1;
+    flex-basis: 0;
+    min-width: 0;
+    padding-left: 52px;
+    color: var(--ug-text-2);
+    font-size: 11px;
+    -unity-font-style: bold;
+    -unity-text-align: middle-left;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.ug-diff-header__middle {
+    width: 28px;
+    flex-shrink: 0;
+}
+
+.ug-diff__body {
+    flex-grow: 1;
+    min-height: 0;
+    flex-direction: row;
+}
+
+/* JetBrains' error stripes: where every change is in the whole file, and the visible part, beside each side. */
+.ug-diff-overview {
+    width: 12px;
+    min-width: 12px;
+    flex-shrink: 0;
+}
+
+.ug-diff__list {
+    background-color: var(--ug-bg);
+}
+
+.ug-diff__list .unity-list-view__item {
+    background-color: rgba(0, 0, 0, 0);
+}
+
+.ug-diff__hscroll {
+    margin: 0 12px 1px 12px;
+}
+
+.unitgit-diff-line {
+    height: 20px;
+    flex-direction: row;
+}
+
+.unitgit-diff-cell {
+    height: 20px;
+    flex-grow: 1;
+    flex-basis: 0;
+    min-width: 0;
+    flex-direction: row;
+    overflow: hidden;
+}
+
+.ug-diff-number {
+    height: 20px;
+    padding: 0 8px 0 0;
+    margin: 0;
+    flex-shrink: 0;
+    color: #666666;
+    -unity-text-align: middle-right;
+}
+
+.ug-diff-text-area {
+    flex-grow: 1;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.ug-diff-text {
+    top: 1px;
+    height: 18px;
+    padding: 0;
+    margin: 0;
+    color: #d6d6d6;
+    -unity-text-align: middle-left;
+}
+
+/* The middle column joins the two versions of each change, like JetBrains' connectors. */
+.ug-dl__divider {
+    width: 28px;
+    min-width: 28px;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    border-left-width: 1px;
+    border-right-width: 1px;
+    border-color: #262626;
+}
+
+.ug-dl__revert {
+    width: 22px;
+    height: 18px;
+    min-width: 22px;
+    margin: 0;
+    padding: 0;
+    border-width: 0;
+    border-radius: 5px;
+    background-color: rgba(0, 0, 0, 0);
+    background-image: none;
+    align-items: center;
+    justify-content: center;
+    scale: 1 1;
+    transition-property: background-color, scale;
+    transition-duration: 0.12s, 0.16s;
+    transition-timing-function: ease-out, ease-out-back;
+}
+
+.ug-dl__revert .unitgit-icon {
+    width: 13px;
+    height: 13px;
+    --icon-color: #9cc4ff;
+    --icon-width: 2.4;
+}
+
+.ug-dl__revert:hover {
+    background-color: rgba(255, 255, 255, 0.12);
+}
+
+.ug-dl__revert:hover .unitgit-icon {
+    --icon-color: #ffffff;
+}
+
+.ug-dl__revert.ug-pressed {
+    scale: 0.86 0.86;
+}
+
+.unitgit-diff-line--added .ug-dl__revert .unitgit-icon {
+    --icon-color: #7fdca8;
+}
+
+.unitgit-diff-line--removed .ug-dl__revert .unitgit-icon {
+    --icon-color: #ff9b9b;
+}
+
+/* Tints: added green, removed red, changed blue; the side a line is missing from stays quiet. */
+.unitgit-diff-line--added .ug-diff-cell--right,
+.unitgit-diff-line--added .ug-dl__divider {
+    background-color: rgba(67, 209, 127, 0.13);
+}
+
+.unitgit-diff-line--added .ug-diff-cell--right .ug-diff-number {
+    color: #6fc493;
+}
+
+.unitgit-diff-line--removed .ug-diff-cell--left,
+.unitgit-diff-line--removed .ug-dl__divider {
+    background-color: rgba(255, 107, 107, 0.12);
+}
+
+.unitgit-diff-line--removed .ug-diff-cell--left .ug-diff-number {
+    color: #d98a8a;
+}
+
+.unitgit-diff-line--added .ug-diff-cell--left,
+.unitgit-diff-line--removed .ug-diff-cell--right {
+    background-color: rgba(255, 255, 255, 0.02);
+}
+
+.unitgit-diff-line--changed .unitgit-diff-cell,
+.unitgit-diff-line--changed .ug-dl__divider {
+    background-color: rgba(106, 167, 255, 0.12);
+}
+
+.unitgit-diff-line--changed .ug-diff-number {
+    color: #87a9dd;
+}
+
+/* Each change is outlined at its first and last line, so neighbouring changes read apart. */
+.ug-diff-line--block-start {
+    border-top-width: 1px;
+    border-top-color: rgba(255, 255, 255, 0.07);
+}
+
+.ug-diff-line--block-end {
+    border-bottom-width: 1px;
+    border-bottom-color: rgba(255, 255, 255, 0.07);
+}
+
+.unitgit-diff-line--added.ug-diff-line--current-change .ug-diff-cell--right,
+.unitgit-diff-line--added.ug-diff-line--current-change .ug-dl__divider {
+    background-color: rgba(67, 209, 127, 0.2);
+}
+
+.unitgit-diff-line--removed.ug-diff-line--current-change .ug-diff-cell--left,
+.unitgit-diff-line--removed.ug-diff-line--current-change .ug-dl__divider {
+    background-color: rgba(255, 107, 107, 0.19);
+}
+
+.unitgit-diff-line--changed.ug-diff-line--current-change .unitgit-diff-cell,
+.unitgit-diff-line--changed.ug-diff-line--current-change .ug-dl__divider {
+    background-color: rgba(106, 167, 255, 0.19);
+}
+
+.unitgit-diff-line--search-match .unitgit-diff-cell {
+    background-color: rgba(255, 201, 77, 0.12);
+}
+
+.unitgit-diff-line--search-current .unitgit-diff-cell {
+    background-color: rgba(255, 201, 77, 0.26);
+}
+
+/* Folded unchanged lines: a quiet band; the band shows them all, its arrows 20 more on either side. */
+.ug-dl__band {
+    flex-grow: 1;
+    height: 20px;
+    flex-direction: row;
+    align-items: center;
+    background-color: #303030;
+    border-top-width: 1px;
+    border-bottom-width: 1px;
+    border-color: #262626;
+    transition-property: background-color;
+    transition-duration: 0.1s;
+}
+
+.unitgit-diff-line--fold .ug-dl__band:hover {
+    background-color: #363636;
+}
+
+.ug-dl__band-buttons {
+    width: 44px;
+    flex-shrink: 0;
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-end;
+    padding-right: 6px;
+}
+
+.ug-dl__unfold {
+    width: 20px;
+    height: 18px;
+    min-width: 20px;
+    margin: 0 0 0 1px;
+    border-radius: 5px;
+}
+
+.ug-dl__unfold .unitgit-icon {
+    width: 12px;
+    height: 12px;
+    --icon-color: #8a8a8a;
+    --icon-width: 2.2;
+}
+
+.ug-dl__band-label {
+    margin-left: 8px;
+    color: #8a8a8a;
+    font-size: 11px;
+    white-space: nowrap;
+}
+
+.unitgit-diff-line--fold .ug-dl__band:hover .ug-dl__band-label {
+    color: #d6d6d6;
+}
+
+.unitgit-diff-line--fold-static .ug-dl__band-label {
+    -unity-font-style: italic;
+}
+
+.unitgit-diff-line--fold-static .ug-dl__band:hover {
+    background-color: #303030;
+}
+
+/* A section of the diff ("Staged changes", "Unstaged changes"). */
+.unitgit-diff-line--section .ug-dl__band {
+    background-color: var(--ug-header);
+}
+
+.unitgit-diff-line--section .ug-dl__band-label {
+    margin-left: 0;
+    color: #b0b0b0;
+    -unity-font-style: bold;
+}
+
+.ug-diff-placeholder {
+    flex-grow: 1;
+    align-items: center;
+    justify-content: center;
+}
+
+.ug-diff-placeholder__icon {
+    width: 30px;
+    height: 30px;
+    margin-bottom: 10px;
+    --icon-color: #5a5a5a;
+    --icon-width: 1.5;
+}
+
+.ug-diff-placeholder__text {
+    margin-top: 6px;
+    color: var(--ug-text-3);
+}
+
+/* ---- Log: branches ---------------------------------------------------------------------------------- */
+
+.unitgit-branches-pane {
+    min-width: 170px;
+    flex-grow: 1;
+    background-color: var(--ug-surface);
+}
+
+.ug-branches-search {
+    flex-grow: 1;
+    margin-right: 2px;
+}
+
+.unitgit-branch-scroll {
+    flex-grow: 1;
+    min-height: 0;
+    padding-top: 4px;
+}
+
+.unitgit-branch-row {
+    margin-top: 1px;
+}
+
+.unitgit-branch-icon {
+    width: 14px;
+    height: 14px;
+    margin-right: 7px;
+    --icon-color: #9e9e9e;
+    --icon-width: 2;
+}
+
+.unitgit-branch-name {
+    flex-grow: 1;
+    flex-shrink: 1;
+    min-width: 0;
+    color: #e2e2e2;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.unitgit-branch-hash {
+    margin-left: 8px;
+    color: var(--ug-text-3);
+    font-size: 11px;
+    white-space: nowrap;
+    flex-shrink: 0;
+    max-width: 110px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.ug-branch-row--head .unitgit-branch-icon,
+.unitgit-branch-row--current .unitgit-branch-icon {
+    --icon-color: #ffc94d;
+}
+
+.ug-branch-row--head .unitgit-branch-name {
+    -unity-font-style: bold;
+}
+
+.unitgit-branch-row--current .unitgit-branch-name {
+    -unity-font-style: bold;
+    color: #ffffff;
+}
+
+.ug-branch-row--section {
+    margin-top: 6px;
+}
+
+.ug-branch-row--section .unitgit-branch-icon {
+    width: 12px;
+    height: 12px;
+    --icon-color: #909090;
+    --icon-width: 2.4;
+}
+
+.ug-branch-row--section .unitgit-branch-name {
+    color: var(--ug-text-2);
+    font-size: 11px;
+    -unity-font-style: bold;
+}
+
+.ug-branch-row--folder .unitgit-branch-icon {
+    --icon-color: #8f9bb3;
+}
+
+.unitgit-branch-empty {
+    margin: 4px 0 4px 34px;
+    color: var(--ug-text-3);
+    font-size: 11px;
+}
+
+/* ---- Log: commits ----------------------------------------------------------------------------------- */
+
+.unitgit-log-pane {
+    flex-grow: 1;
+    min-width: 320px;
+    background-color: var(--ug-bg);
+}
+
+.ug-log-search {
+    width: 190px;
+    min-width: 110px;
+    margin-left: 4px;
+    flex-shrink: 1;
+}
+
+.ug-filter {
+    height: 28px;
+    min-height: 28px;
+    margin: 0 0 0 6px;
+    padding: 0 7px 0 8px;
+    flex-direction: row;
+    align-items: center;
+    flex-shrink: 0;
+    border-width: 0;
+    border-radius: 8px;
+    background-color: rgba(0, 0, 0, 0);
+    background-image: none;
+    scale: 1 1;
+    transition-property: background-color, scale;
+    transition-duration: 0.12s, 0.16s;
+    transition-timing-function: ease-out, ease-out-back;
+}
+
+.ug-filter:hover {
+    background-color: var(--ug-hover);
+}
+
+.ug-filter.ug-pressed {
+    scale: 0.95 0.95;
+}
+
+.ug-filter .unitgit-icon {
+    width: 14px;
+    height: 14px;
+    margin-right: 6px;
+    --icon-color: #909090;
+    --icon-width: 2;
+}
+
+.ug-filter__label {
+    color: var(--ug-text-2);
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.ug-filter .ug-filter__chevron {
+    width: 10px;
+    height: 10px;
+    margin: 0 0 0 5px;
+    --icon-width: 2.6;
+}
+
+.ug-filter--on {
+    background-color: var(--ug-select);
+}
+
+.ug-filter--on:hover {
+    background-color: var(--ug-select-strong);
+}
+
+.ug-filter--on .ug-filter__label {
+    color: #3cf29a;
+    -unity-font-style: bold;
+}
+
+.ug-filter--on .unitgit-icon {
+    --icon-color: #3cf29a;
+}
+
+.ug-log-count {
+    margin: 0 6px;
+    color: var(--ug-text-3);
+    font-size: 11px;
+    white-space: nowrap;
+}
+
+.unitgit-log-header {
+    height: 26px;
+    min-height: 26px;
+    flex-direction: row;
+    align-items: center;
+    padding-right: 12px;
+    border-bottom-width: 1px;
+    border-bottom-color: var(--ug-line);
+    background-color: var(--ug-header);
+    flex-shrink: 0;
+}
+
+.ug-log-graph-space {
+    flex-shrink: 0;
+}
+
+.unitgit-log-header-label {
+    color: var(--ug-text-3);
+    font-size: 11px;
+    -unity-font-style: bold;
+}
+
+.unitgit-log-header__commit {
+    flex-grow: 1;
+    min-width: 100px;
+    padding-left: 4px;
+}
+
+.unitgit-log-header__author {
+    width: 150px;
+}
+
+.unitgit-log-header__date {
+    width: 104px;
+}
+
+.unitgit-log-header__hash {
+    width: 66px;
+}
+
+.unitgit-log-list .unity-list-view__item {
+    background-color: rgba(0, 0, 0, 0);
+}
+
+.unitgit-log-row {
+    height: 28px;
+    flex-direction: row;
+    align-items: center;
+    padding-right: 12px;
+    transition-property: background-color;
+    transition-duration: 0.08s;
+}
+
+.unitgit-log-list .unitgit-log-row:hover {
+    background-color: rgba(255, 255, 255, 0.04);
+}
+
+.unitgit-log-list .unitgit-log-row--selected,
+.unitgit-log-list .unitgit-log-row--selected:hover {
+    background-color: var(--ug-select);
+}
+
+.ug-graph {
+    height: 28px;
+    flex-shrink: 0;
+}
+
+.unitgit-log-subject-wrap {
+    flex-grow: 1;
+    flex-shrink: 1;
+    min-width: 100px;
+    flex-direction: row;
+    align-items: center;
+    overflow: hidden;
+    padding-left: 4px;
+}
+
+.unitgit-log-subject {
+    flex-shrink: 1;
+    min-width: 40px;
+    color: #ececec;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.ug-log-row--merge .unitgit-log-subject {
+    color: var(--ug-text-2);
+}
+
+.ug-log-refs {
+    flex-direction: row;
+    align-items: center;
+    flex-shrink: 0;
+}
+
+.ug-log-refs .ug-chip {
+    height: 18px;
+    padding: 0 7px;
+    margin-left: 6px;
+    font-size: 10px;
+    -unity-font-style: bold;
+}
+
+.unitgit-log-author {
+    width: 150px;
+    flex-shrink: 0;
+    flex-direction: row;
+    align-items: center;
+    overflow: hidden;
+}
+
+.ug-avatar {
+    width: 18px;
+    height: 18px;
+    min-width: 18px;
+    margin-right: 7px;
+    border-radius: 9px;
+    color: #ffffff;
+    font-size: 10px;
+    -unity-font-style: bold;
+    -unity-text-align: middle-center;
+}
+
+.ug-avatar--large {
+    width: 30px;
+    height: 30px;
+    min-width: 30px;
+    margin-right: 10px;
+    border-radius: 15px;
+    font-size: 13px;
+}
+
+.ug-log-author__name {
+    flex-shrink: 1;
+    color: var(--ug-text-2);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.unitgit-log-date {
+    width: 104px;
+    flex-shrink: 0;
+    color: var(--ug-text-2);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.unitgit-log-hash {
+    width: 66px;
+    flex-shrink: 0;
+    color: var(--ug-text-3);
+    font-size: 11px;
+    -unity-text-align: middle-left;
+}
+
+.unitgit-log-row--selected .unitgit-log-hash,
+.unitgit-log-row--selected .ug-log-author__name,
+.unitgit-log-row--selected .unitgit-log-date {
+    color: #d8d8d8;
+}
+
+/* A release (avatar upload) between two commits. */
+.ug-log-release {
+    flex-grow: 1;
+    flex-shrink: 1;
+    min-width: 0;
+    flex-direction: row;
+    align-items: center;
+    padding-left: 4px;
+}
+
+.ug-log-release__pill {
+    height: 22px;
+    flex-direction: row;
+    align-items: center;
+    flex-shrink: 1;
+    min-width: 0;
+    padding: 0 10px 0 10px;
+    border-radius: 11px;
+    border-width: 1px;
+    border-color: rgba(0, 218, 109, 0.35);
+    background-color: rgba(0, 218, 109, 0.08);
+}
+
+.ug-log-release__name {
+    color: #f0f0f0;
+    -unity-font-style: bold;
+    white-space: nowrap;
+}
+
+.ug-log-release .ug-chip {
+    height: 16px;
+    padding: 0 7px;
+    font-size: 10px;
+}
+
+.ug-log-release__title {
+    margin-left: 8px;
+    color: var(--ug-text-2);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex-shrink: 1;
+}
+
+.ug-log-row--release.unitgit-log-row--selected .ug-log-release__pill {
+    border-color: rgba(0, 218, 109, 0.8);
+    background-color: rgba(0, 218, 109, 0.16);
+}
+
+/* ---- Log: details ----------------------------------------------------------------------------------- */
+
+.ug-details-host {
+    flex-grow: 1;
+    min-width: 0;
+}
+
+.unitgit-details-pane {
+    flex-grow: 1;
+    min-width: 240px;
+    min-height: 0;
+    background-color: var(--ug-surface);
+    opacity: 1;
+    transition-property: opacity;
+    transition-duration: 0.18s;
+}
+
+.ug-fade-enter {
+    opacity: 0.4;
+}
+
+.unitgit-split-view--vertical > .unity-two-pane-split-view__dragline-anchor {
+    height: 1px;
+    width: auto;
+    background-color: var(--ug-line);
+}
+
+.unitgit-files-panel {
+    flex-grow: 1;
+    min-height: 60px;
+}
+
+.ug-details-header__title {
+    margin-left: 6px;
+    color: #ececec;
+    -unity-font-style: bold;
+    white-space: nowrap;
+}
+
+.unitgit-files-scroll {
+    flex-grow: 1;
+    min-height: 0;
+    padding-top: 4px;
+}
+
+.unitgit-files-scroll .unity-list-view__item {
+    background-color: rgba(0, 0, 0, 0);
+}
+
+.unitgit-details-card {
+    flex-grow: 1;
+    min-height: 60px;
+    background-color: var(--ug-bg);
+}
+
+.unitgit-details-card .unity-scroll-view__content-container {
+    padding: 12px 14px 12px 14px;
+}
+
+.unitgit-details-title {
+    color: #f4f4f4;
+    font-size: 13px;
+    -unity-font-style: bold;
+    white-space: normal;
+}
+
+.ug-details-body {
+    margin-top: 6px;
+    color: var(--ug-text-2);
+    white-space: normal;
+}
+
+.ug-details-meta {
+    flex-direction: row;
+    align-items: center;
+    margin-top: 12px;
+}
+
+.ug-details-meta__texts {
+    flex-shrink: 1;
+    min-width: 0;
+}
+
+.ug-details-author {
+    color: #ececec;
+    -unity-font-style: bold;
+}
+
+.ug-details-date {
+    margin-top: 1px;
+    color: var(--ug-text-3);
+    font-size: 11px;
+    white-space: normal;
+}
+
+.ug-details-ids {
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-top: 10px;
+}
+
+.ug-hash-chip {
+    margin-left: 0;
+    color: #d0d0d0;
+    -unity-font-style: bold;
+}
+
+.ug-icon-button--small {
+    width: 22px;
+    height: 22px;
+    min-width: 22px;
+    margin-left: 2px;
+    border-radius: 6px;
+}
+
+.ug-icon-button--small .unitgit-icon {
+    width: 13px;
+    height: 13px;
+}
+
+.ug-details-ids__label {
+    margin: 0 4px 0 10px;
+    color: var(--ug-text-3);
+    font-size: 11px;
+}
+
+.ug-link {
+    height: 20px;
+    margin: 0 2px;
+    padding: 0 4px;
+    border-width: 0;
+    border-radius: 5px;
+    background-color: rgba(0, 0, 0, 0);
+    background-image: none;
+    color: #6aa7ff;
+    font-size: 11px;
+}
+
+.ug-link:hover {
+    background-color: rgba(106, 167, 255, 0.14);
+    color: #9cc4ff;
+}
+
+.ug-details-refs {
+    margin-top: 10px;
+    flex-wrap: wrap;
+}
+
+.ug-details-refs .ug-chip {
+    margin: 0 6px 4px 0;
+}
+
+.ug-details-commit {
+    flex-direction: row;
+    align-items: center;
+    height: 22px;
+    margin-top: 2px;
+}
+
+.ug-details-commit__hash {
+    width: 64px;
+    color: var(--ug-text-3);
+    font-size: 11px;
+}
+
+.ug-details-commit__subject {
+    flex-shrink: 1;
+    color: var(--ug-text-2);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* ---- Commit diff window ----------------------------------------------------------------------------- */
+
+.ug-diffwin__header {
+    flex-direction: row;
+    align-items: center;
+    min-height: 52px;
+    padding: 8px 14px;
+    background-color: var(--ug-bar);
+    border-bottom-width: 1px;
+    border-bottom-color: var(--ug-line);
+}
+
+.ug-diffwin__texts {
+    flex-shrink: 1;
+    min-width: 0;
+}
+
+.ug-diffwin__title {
+    color: #f4f4f4;
+    font-size: 14px;
+    -unity-font-style: bold;
+}
+
+.ug-diffwin__path {
+    margin-top: 2px;
+    color: var(--ug-text-3);
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.ug-diffwin__subject {
+    margin-left: 8px;
+    max-width: 320px;
+    color: var(--ug-text-2);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.unitgit-notice {
+    opacity: 1;
+    transition-property: opacity;
+    transition-duration: 0.18s;
+}
+
+.unitgit-notice--leave {
+    opacity: 0;
+}
+
+/* The log narrower than its columns: the hash goes first, then the author's name, then the date. */
+.ug-log--narrow .unitgit-log-hash,
+.ug-log--narrow .unitgit-log-header__hash {
+    display: none;
+}
+
+.ug-log--narrow .unitgit-log-author {
+    width: 28px;
+}
+
+.ug-log--narrow .unitgit-log-header__author {
+    width: 28px;
+    color: rgba(0, 0, 0, 0);
+}
+
+.ug-log--narrow .ug-log-author__name {
+    display: none;
+}
+
+.ug-log--compact .unitgit-log-date,
+.ug-log--compact .unitgit-log-header__date {
+    display: none;
+}
+
+.unitgit-empty {
+    margin: 14px;
+    color: var(--ug-text-3);
+    -unity-text-align: middle-center;
+    white-space: normal;
+}
+
+/* ---- Shelf ------------------------------------------------------------------------------------------ */
+
+.unitgit-shelf-pane {
+    flex-grow: 1;
+    min-width: 260px;
+    background-color: var(--ug-surface);
+}
+
+.unitgit-shelf-pane .ug-toolbar .ug-button {
+    margin-left: 0;
+}
+
+.unitgit-shelf-list {
+    flex-grow: 1;
+    min-height: 0;
+    padding-top: 4px;
+}
+
+.ug-shelf-row {
+    margin-top: 1px;
+}
+
+.ug-shelf-row__icon {
+    width: 15px;
+    height: 15px;
+    margin-right: 7px;
+    --icon-color: #c7a2ff;
+}
+
+.ug-shelf-row .ug-row__name {
+    -unity-font-style: bold;
+}
+
+.ug-shelf-loading {
+    margin: 4px 0 6px 46px;
+    color: var(--ug-text-3);
+    font-size: 11px;
+}
+
+/* ---- Console ---------------------------------------------------------------------------------------- */
+
+.unitgit-console-full {
+    flex-grow: 1;
+    min-height: 0;
+    background-color: var(--ug-bg);
+}
+
+.ug-console-root {
+    margin-right: 8px;
+    color: var(--ug-text-3);
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex-shrink: 1;
+    min-width: 0;
+}
+
+.ug-console .unity-list-view__item {
+    background-color: rgba(0, 0, 0, 0);
+}
+
+.ug-console-row {
+    height: 20px;
+    flex-direction: row;
+    align-items: center;
+    padding: 0 12px;
+}
+
+.ug-console-row:hover {
+    background-color: rgba(255, 255, 255, 0.03);
+}
+
+.ug-console-row__time {
+    width: 62px;
+    flex-shrink: 0;
+    color: #6a6a6a;
+    font-size: 11px;
+}
+
+.ug-console-row__label {
+    width: 120px;
+    flex-shrink: 0;
+    color: #8a8a8a;
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.ug-console-row__message {
+    flex-grow: 1;
+    flex-shrink: 1;
+    min-width: 0;
+    color: #cacaca;
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.ug-console-row--command .ug-console-row__message {
+    color: #9dbbff;
+}
+
+.ug-console-row--quiet .ug-console-row__message {
+    color: #6e6e6e;
+}
+
+.ug-console-row--ok .ug-console-row__message {
+    color: #6fd39b;
+}
+
+.ug-console-row--error .ug-console-row__message {
+    color: #ff8a8a;
+}
+
+/* ---- Settings --------------------------------------------------------------------------------------- */
+
+.unitgit-settings-root {
+    flex-grow: 1;
+    background-color: var(--ug-surface);
+}
+
+.unitgit-settings-root .unity-scroll-view__content-container {
+    padding: 16px;
+    align-items: center;
+}
+
+.ug-settings-header {
+    width: 100%;
+    max-width: 640px;
+    margin-bottom: 10px;
+}
+
+.ug-settings-header__title {
+    color: #f4f4f4;
+    font-size: 16px;
+    -unity-font-style: bold;
+}
+
+.ug-settings-header__text {
+    margin-top: 2px;
+    color: var(--ug-text-3);
+}
+
+.ug-settings-card {
+    width: 100%;
+    max-width: 640px;
+    margin-bottom: 12px;
+    padding: 4px 16px 6px 16px;
+    border-radius: 16px;
+    background-color: var(--ug-card);
+}
+
+.ug-settings-card__head {
+    flex-direction: row;
+    align-items: center;
+    height: 36px;
+}
+
+.ug-settings-card__head .unitgit-icon {
+    width: 15px;
+    height: 15px;
+    margin-right: 8px;
+    --icon-color: #3cf29a;
+    --icon-width: 2;
+}
+
+.ug-settings-card__title {
+    color: #ececec;
+    -unity-font-style: bold;
+}
+
+.ug-settings-row {
+    flex-direction: row;
+    align-items: center;
+    min-height: 48px;
+    padding: 6px 0;
+    border-top-width: 1px;
+    border-top-color: var(--ug-line);
+}
+
+.ug-settings-row__texts {
+    flex-grow: 1;
+    flex-shrink: 1;
+    min-width: 0;
+    margin-right: 12px;
+}
+
+.ug-settings-row__title {
+    color: #e6e6e6;
+}
+
+.ug-settings-row__detail {
+    margin-top: 2px;
+    color: var(--ug-text-3);
+    font-size: 11px;
+    white-space: normal;
+}
+
+/* ---- Messages (loading, errors, first commit) ------------------------------------------------------- */
+
+.unitgit-message-panel {
+    align-self: center;
+    width: 90%;
+    max-width: 560px;
+    margin-top: 28px;
+    padding: 18px 20px;
+    border-radius: 16px;
+    background-color: var(--ug-card);
+}
+
+.unitgit-message-title {
+    color: #f4f4f4;
+    font-size: 15px;
+    -unity-font-style: bold;
+}
+
+.unitgit-message-body {
+    margin-top: 6px;
+    color: var(--ug-text-2);
+    white-space: normal;
+}
+
+.unitgit-message-actions {
+    flex-direction: row;
+    margin-top: 14px;
+}
+
+.unitgit-message-actions .ug-button {
+    margin: 0 8px 0 0;
+}
+
+.unitgit-path-label {
+    margin-top: 10px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    background-color: var(--ug-field);
+    color: #9dbbff;
+    font-size: 11px;
+}
+
+.unitgit-init-toggle {
+    margin: 12px 0 0 0;
+}
+
+.unitgit-init-toggle-detail {
+    margin: 2px 0 0 22px;
+    color: var(--ug-text-3);
+    font-size: 11px;
+    white-space: normal;
+}
+
+.unitgit-section-header {
+    flex-direction: row;
+    align-items: center;
+    height: 38px;
+    padding: 0 12px;
+    border-bottom-width: 1px;
+    border-bottom-color: var(--ug-line);
+}
+
+.unitgit-section-title {
+    color: #ececec;
+    -unity-font-style: bold;
+}
+
+.unitgit-section-detail {
+    margin-left: 8px;
+    color: var(--ug-text-3);
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex-shrink: 1;
+}
+
+/* ---- Dialogs ---------------------------------------------------------------------------------------- */
+
+.ug-dialog {
+    padding: 18px 20px 16px 20px;
+    background-color: var(--ug-surface);
+}
+
+.ug-dialog__title {
+    color: #f4f4f4;
+    font-size: 15px;
+    -unity-font-style: bold;
+}
+
+.ug-dialog__subtitle {
+    margin-top: 4px;
+    color: var(--ug-text-2);
+    white-space: normal;
+}
+
+.ug-dialog__body {
+    flex-grow: 1;
+    margin-top: 14px;
+}
+
+.ug-dialog__field {
+    margin: 0;
+}
+
+.ug-dialog__field .unity-base-text-field__input,
+.ug-dialog__field .unity-text-field__input {
+    height: 32px;
+    padding: 0 10px;
+    border-width: 1px;
+    border-radius: 9px;
+    border-color: var(--ug-field-border);
+    background-color: var(--ug-field);
+    color: var(--ug-text);
+    font-size: 13px;
+}
+
+.ug-dialog__field .unity-base-text-field__input:focus,
+.ug-dialog__field .unity-text-field__input:focus {
+    border-color: rgba(0, 218, 109, 0.6);
+}
+
+.ug-dialog__field--multiline {
+    flex-grow: 1;
+}
+
+.ug-dialog__field--multiline .unity-base-text-field__input,
+.ug-dialog__field--multiline .unity-text-field__input {
+    height: auto;
+    flex-grow: 1;
+    padding: 8px 10px;
+    -unity-text-align: upper-left;
+    white-space: normal;
+}
+
+.ug-dialog__hint {
+    height: 16px;
+    margin: 6px 2px 0 2px;
+    color: #ff9b9b;
+    font-size: 11px;
+}
+
+.ug-dialog__row {
+    flex-direction: row;
+    align-items: center;
+    min-height: 36px;
+    margin-bottom: 6px;
+}
+
+.ug-dialog__label {
+    width: 130px;
+    flex-shrink: 0;
+    color: var(--ug-text-2);
+}
+
+.ug-dialog__actions {
+    flex-direction: row;
+    align-items: center;
+    margin-top: 14px;
+    flex-shrink: 0;
+}
+
+.ug-dialog__shortcut {
+    color: var(--ug-text-3);
+    font-size: 11px;
+}
+
+.ug-segmented {
+    flex-direction: row;
+    padding: 3px;
+    border-radius: 10px;
+    background-color: var(--ug-track);
+    flex-grow: 0;
+}
+
+.ug-segmented__option {
+    height: 26px;
+    margin: 0;
+    padding: 0 14px;
+    border-width: 0;
+    border-radius: 7px;
+    background-color: rgba(0, 0, 0, 0);
+    background-image: none;
+    color: var(--ug-text-2);
+    -unity-font-style: bold;
+    transition-property: background-color, color, scale;
+    transition-duration: 0.14s, 0.14s, 0.16s;
+}
+
+.ug-segmented__option--on {
+    background-color: var(--ug-raised);
+    color: #3cf29a;
+}
+
+.ug-segmented__option.ug-pressed {
+    scale: 0.95 0.95;
+}
+
+/* Choices shown as cards (reset modes): the chosen one is outlined in green, a destructive one in red. */
+.ug-option {
+    flex-direction: row;
+    align-items: flex-start;
+    margin-bottom: 6px;
+    padding: 10px 12px;
+    border-width: 1px;
+    border-radius: 12px;
+    border-color: rgba(0, 0, 0, 0);
+    background-color: var(--ug-card);
+    transition-property: border-color, background-color;
+    transition-duration: 0.14s;
+}
+
+.ug-option:hover {
+    background-color: var(--ug-field-hover);
+}
+
+.ug-option__dot {
+    width: 14px;
+    height: 14px;
+    margin: 1px 10px 0 0;
+    border-width: 2px;
+    border-radius: 7px;
+    border-color: #767676;
+    flex-shrink: 0;
+    transition-property: border-width, border-color;
+    transition-duration: 0.14s;
+}
+
+.ug-option__texts {
+    flex-shrink: 1;
+}
+
+.ug-option__title {
+    color: #ececec;
+    -unity-font-style: bold;
+}
+
+.ug-option__text {
+    margin-top: 2px;
+    color: var(--ug-text-2);
+    font-size: 11px;
+    white-space: normal;
+}
+
+.ug-option--on {
+    border-color: rgba(0, 218, 109, 0.55);
+    background-color: rgba(0, 218, 109, 0.08);
+}
+
+.ug-option--on .ug-option__dot {
+    border-width: 4px;
+    border-color: var(--ug-accent);
+}
+
+.ug-option--danger.ug-option--on {
+    border-color: rgba(255, 107, 107, 0.6);
+    background-color: rgba(255, 107, 107, 0.08);
+}
+
+.ug-option--danger.ug-option--on .ug-option__dot {
+    border-color: #ff6b6b;
+}
+
+/* ---- Release details -------------------------------------------------------------------------------- */
+
+.unitgit-release-panel {
+    flex-grow: 1;
+    min-height: 0;
+}
+
+.unitgit-release-card {
+    margin: 10px;
+    padding: 12px 14px;
+    border-radius: 14px;
+    background-color: var(--ug-card);
+}
+
+.unitgit-release-headline {
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.unitgit-release-details-name {
+    color: #f4f4f4;
+    font-size: 14px;
+    -unity-font-style: bold;
+}
+
+.unitgit-release-pill {
+    height: 20px;
+    margin-left: 8px;
+    padding: 0 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    -unity-font-style: bold;
+    -unity-text-align: middle-center;
+}
+
+.unitgit-release-scope {
+    margin-left: 8px;
+    color: var(--ug-text-3);
+    font-size: 11px;
+}
+
+.unitgit-release-details-title {
+    margin-top: 6px;
+    color: var(--ug-text-2);
+    white-space: normal;
+}
+
+.unitgit-release-thumbnail-frame {
+    margin-top: 10px;
+    border-radius: 10px;
+    overflow: hidden;
+    background-color: #222222;
+}
+
+.unitgit-release-thumbnail {
+    height: 150px;
+}
+
+.unitgit-release-meta {
+    margin-top: 8px;
+}
+
+.unitgit-release-changelog-header {
+    margin: 6px 14px 4px 14px;
+    color: #ececec;
+    -unity-font-style: bold;
+}
+
+.unitgit-release-changelog {
+    margin: 0 14px 14px 14px;
+    color: var(--ug-text-2);
+    white-space: normal;
+}
+
+/* Key/value rows: the key keeps its width and is never covered; the value wraps, or ends in an ellipsis for IDs and
+   file names. Narrow lists put each value under its key. */
+
+.ug-kv {
+    flex-direction: row;
+    align-items: flex-start;
+    min-height: 20px;
+    padding: 3px 0;
+}
+
+.ug-kv__key {
+    width: 92px;
+    flex-shrink: 0;
+    margin: 0 10px 0 0;
+    padding: 0;
+    color: var(--ug-text-3);
+    font-size: 11px;
+    white-space: normal;
+}
+
+.ug-kv__value {
+    flex-grow: 1;
+    flex-shrink: 1;
+    flex-basis: 0;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    color: #d8d8d8;
+    font-size: 11px;
+    white-space: normal;
+}
+
+.ug-kv__value--ellipsis {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.ug-kv__value--link {
+    color: #6aa7ff;
+}
+
+.ug-kv__value--link:hover {
+    color: #9cc4ff;
+}
+
+.ug-kv--id {
+    align-items: center;
+    padding: 0;
+}
+
+.ug-kv--id .ug-kv__value {
+    -unity-font-style: bold;
+    color: #d0d0d0;
+}
+
+.ug-kv--id .ug-icon-button--small {
+    margin: 0 -4px 0 2px;
+}
+
+.ug-kv-list--narrow .ug-kv {
+    flex-direction: column;
+    align-items: stretch;
+}
+
+.ug-kv-list--narrow .ug-kv__key {
+    width: auto;
+    margin: 0 0 1px 0;
+}
+
+.ug-kv-list--narrow .ug-kv--id {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    padding: 3px 0;
+}
+
+.ug-kv-list--narrow .ug-kv--id .ug-kv__key {
+    width: 100%;
+}
+
+/* ---- VRChat avatar upload ---------------------------------------------------------------------------- */
+
+.ug-upload {
+    margin: 10px 10px 14px 10px;
+    opacity: 1;
+    translate: 0 0;
+    transition-property: opacity, translate;
+    transition-duration: 0.22s, 0.3s;
+    transition-timing-function: ease-out, ease-out-cubic;
+}
+
+.ug-upload--enter {
+    opacity: 0;
+    translate: 0 6px;
+}
+
+.ug-upload__headline {
+    flex-direction: row;
+    align-items: center;
+    height: 24px;
+    margin: 0 2px 8px 2px;
+}
+
+.ug-upload__dot {
+    width: 8px;
+    height: 8px;
+    margin-right: 8px;
+    border-radius: 4px;
+    background-color: var(--ug-accent);
+}
+
+.ug-upload__headline-text {
+    color: #f4f4f4;
+    font-size: 13px;
+    -unity-font-style: bold;
+    white-space: nowrap;
+}
+
+.ug-upload__when {
+    margin-left: 6px;
+}
+
+.ug-upload__card {
+    scale: 1 1;
+    transition-property: scale, translate;
+    transition-duration: 0.18s, 0.18s;
+    transition-timing-function: ease-out-back, ease-out;
+}
+
+.ug-upload--enter .ug-upload__card {
+    scale: 0.94 0.94;
+}
+
+.ug-upload__card--link:hover {
+    scale: 1.025 1.025;
+    translate: 0 -2px;
+}
+
+.ug-upload__card--link.ug-pressed {
+    scale: 0.97 0.97;
+    translate: 0 0;
+}
+
+.ug-upload__actions {
+    flex-direction: row;
+    align-items: center;
+    margin-top: 10px;
+}
+
+.ug-upload__actions .ug-button {
+    height: 30px;
+    min-height: 30px;
+    border-radius: 15px;
+}
+
+.ug-upload__open {
+    flex-grow: 2;
+    flex-basis: 0;
+    margin-left: 0;
+}
+
+.ug-upload__copy {
+    flex-grow: 1;
+    flex-basis: 0;
+    margin-left: 8px;
+}
+
+.ug-upload__tiles {
+    flex-direction: row;
+    margin: 10px -3px 0 -3px;
+}
+
+.ug-upload__tile {
+    flex-grow: 1;
+    flex-basis: 0;
+    min-width: 0;
+    margin: 0 3px;
+    padding: 8px 10px 9px 10px;
+    border-radius: 12px;
+    background-color: var(--ug-card);
+}
+
+.ug-upload__tile-label {
+    color: var(--ug-text-3);
+    font-size: 10px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.ug-upload__tile-value {
+    margin-top: 2px;
+    color: #f4f4f4;
+    font-size: 14px;
+    -unity-font-style: bold;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.ug-upload__tile-detail {
+    margin-top: 1px;
+    color: var(--ug-text-2);
+    font-size: 10px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.ug-upload__group-title {
+    margin: 14px 4px 6px 4px;
+    color: var(--ug-text-2);
+    font-size: 11px;
+    -unity-font-style: bold;
+}
+
+.ug-upload__group {
+    padding: 7px 12px;
+    border-radius: 12px;
+    background-color: var(--ug-card);
+}
+
+.unitgit-changes-pane--tall .unitgit-local-commit-message {
+    height: 84px;
+    min-height: 84px;
+}
+
+.ug-dialog__row .ug-dialog__field {
+    flex-shrink: 1;
+    min-width: 0;
+}

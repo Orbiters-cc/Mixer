@@ -10,7 +10,7 @@ using Object = UnityEngine.Object;
 namespace Orbiters.Mixer.Editor
 {
     /// <summary>
-    /// One of Unity's windows replaced by a Mixer window (the Hierarchy, the Project), as the Logger does with the
+    /// One of Unity's windows replaced by a Mixer window (the Hierarchy, the Project), as the Mixer console does with the
     /// Console. Once the layout is loaded, every such Unity window docked somewhere gets a Mixer window of its own at its
     /// place (selected only if it was) and is closed, so two stay two; one opened later (the Window menu, a shortcut, a
     /// layout change) is swapped the same way half a second later, except one opened on purpose from the Mixer window's

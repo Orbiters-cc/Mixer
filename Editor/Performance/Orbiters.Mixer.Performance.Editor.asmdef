@@ -10,7 +10,8 @@
     "Orbiters.Contracts",
     "VRC.SDK3A",
     "VRC.SDKBase",
-    "Unity.Timeline"
+    "Unity.Timeline",
+    "Orbiters.Mixer.Brand.Editor"
   ],
   "includePlatforms": [
     "Editor"

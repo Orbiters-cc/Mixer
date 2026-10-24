@@ -1,0 +1,19 @@
+{
+  "name": "Orbiters.Mixer.Console.Editor.Toolkit",
+  "rootNamespace": "Orbiters.Logger.Editor.Toolkit",
+  "references": [
+    "Orbiters.Mixer.Console.Editor",
+    "Orbiters.Toolkit"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": false,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

@@ -21,7 +21,7 @@ namespace Orbiters.Mixer.Editor.Performance
     /// shader draws, only into the frames VRChat's camera renders (never in your view or in mirrors), the capture strip
     /// (the camera's pose), the skeleton band (the pose VRChat gave the avatar: every humanoid bone after IK, locomotion
     /// and animation) and, when asked, depth frames. The Action Menu toggle Orbiters › Record (avatar parameter
-    /// <see cref="RecordParameter"/>, local only) shows it and starts and stops Orbiters desktop's recording over OSC;
+    /// <see cref="RecordParameter"/>, local only) shows it and starts and stops Orbiters - N4N0's recording over OSC;
     /// Orbiters › Depth frames adds depth. A VRCFury Full Controller merges the toggles, so the avatar's own controllers,
     /// menus and parameters stay as they are.
     /// </summary>
@@ -409,7 +409,7 @@ namespace Orbiters.Mixer.Editor.Performance
             return sub != null && Declared(RecordParameter) && Declared(DepthParameter) && Toggled(RecordParameter) && Toggled(DepthParameter);
         }
 
-        // Orbiters desktop listens for these names: VRCFury must not give them a namespace of their own.
+        // Orbiters - N4N0 listens for these names: VRCFury must not give them a namespace of their own.
         static void MakeGlobal(Component fullController, params string[] names)
         {
             var serialized = new SerializedObject(fullController);

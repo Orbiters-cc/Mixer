@@ -1,0 +1,19 @@
+{
+  "name": "Orbiters.Mixer.Console.Editor.Git",
+  "rootNamespace": "Orbiters.Logger.Editor.UnitGit",
+  "references": [
+    "Orbiters.Mixer.Console.Editor",
+    "Orbiters.Mixer.Git.Editor"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": false,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

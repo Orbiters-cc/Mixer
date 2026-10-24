@@ -9,7 +9,7 @@ using UnityEngine;
 namespace Orbiters.Mixer.Editor.Splats
 {
     /// <summary>
-    /// Brings a session's reconstruction (Orbiters desktop's <c>reconstruction/splats.ply</c>, with the sky map trained
+    /// Brings a session's reconstruction (Orbiters - N4N0's <c>reconstruction/splats.ply</c>, with the sky map trained
     /// with it, <c>sky.png</c>, when there is one) into the project: the PLY becomes
     /// <c>Assets/Orbiters/Splats/&lt;name&gt;.splats</c>, the sky map a <c>.splatsky</c> beside it, and an EditorOnly
     /// object in the open scene draws them where the world was captured.
@@ -18,7 +18,7 @@ namespace Orbiters.Mixer.Editor.Splats
     {
         public const string Folder = "Assets/Orbiters/Splats";
 
-        /// <summary><c>Documents/Orbiters/Sessions</c>, where Orbiters desktop writes sessions by default.</summary>
+        /// <summary><c>Documents/Orbiters/Sessions</c>, where Orbiters - N4N0 writes sessions by default.</summary>
         static string Library => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Orbiters", "Sessions");
 
         // A sibling of the Mixer window's item: a menu path is either a command or a submenu.
@@ -26,7 +26,7 @@ namespace Orbiters.Mixer.Editor.Splats
         static void ImportFromMenu()
         {
             string start = Directory.Exists(Library) ? Library : "";
-            string path = EditorUtility.OpenFilePanel("Splats from Orbiters desktop (a session's reconstruction/splats.ply)", start, "ply");
+            string path = EditorUtility.OpenFilePanel("Splats from Orbiters - N4N0 (a session's reconstruction/splats.ply)", start, "ply");
             if (string.IsNullOrEmpty(path))
                 return;
             try

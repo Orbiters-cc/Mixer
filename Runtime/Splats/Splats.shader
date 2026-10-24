@@ -1,5 +1,5 @@
 // Gaussian splats as camera-facing ellipses (3DGS's EWA projection, the same frustum clamp and compensated 0.1 px²
-// filter as Orbiters desktop's renderer), drawn back to front in the order SplatSort.compute wrote, with its viewer's
+// filter as Orbiters - N4N0's renderer), drawn back to front in the order SplatSort.compute wrote, with its viewer's
 // guards: splats fade in over the first 20 cm from the eye instead of vanishing at the near plane, those whose visible
 // extent holds the eye are left out (they would fill the view), and none reaches further than 1024 px on screen (nor
 // than the screen's shorter side). They blend like the trainer fitted them: on the colours as captured (encoded sRGB),
@@ -8,7 +8,7 @@
 // camera's image and converts the result to linear light once. Blending in linear light instead showed half-transparent
 // splats brighter (50 % white over black at 0.735, not 0.5): sparse far content and the edges of what was seen looked
 // hazier than trained. Pass 2, before them, draws the cloud's sky map wherever the camera drew nothing nearer than the
-// far plane, looked up by direction as Orbiters desktop's renderer does (sky_lookup.wgsl).
+// far plane, looked up by direction as Orbiters - N4N0's renderer does (sky_lookup.wgsl).
 Shader "Hidden/Orbiters/Mixer/Splats"
 {
     SubShader
@@ -54,7 +54,7 @@ Shader "Hidden/Orbiters/Mixer/Splats"
             // The sky's colour at the horizon, encoded sRGB: what fog and haze turn to.
             float4 _Horizon;
 
-            // How far a splat can be trusted, as Orbiters desktop's viewer judges it (common.wgsl `trust`), seen from the
+            // How far a splat can be trusted, as Orbiters - N4N0's viewer judges it (common.wgsl `trust`), seen from the
             // camera `towardEye` away (the cloud's own space, from the splat): RadSplat's thresholds on its largest weight,
             // half as much seen in one keyframe, 0.2 less for each compass sector between the camera's and the nearest one
             // a keyframe looked from (at most three), and none once the camera samples it four times as finely as the
@@ -275,7 +275,7 @@ Shader "Hidden/Orbiters/Mixer/Splats"
             #define SKY_FAR 1.0
             #endif
 
-            // Encoded sRGB kept as linear data: filtered as Orbiters desktop filters its texels, turned into light here.
+            // Encoded sRGB kept as linear data: filtered as Orbiters - N4N0 filters its texels, turned into light here.
             Texture2D<float4> _SkyMap;
             SamplerState sampler_SkyMap;
             float4x4 _WorldToObject;

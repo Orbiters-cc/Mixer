@@ -1,0 +1,25 @@
+{
+  "name": "Orbiters.Mixer.Git.Editor",
+  "rootNamespace": "Orbiters.UnitGit.Editor",
+  "references": [
+    "Orbiters.Toolkit.Editor",
+    "Orbiters.Mixer.Brand.Editor"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [
+    {
+      "name": "com.vrchat.avatars",
+      "expression": "0.0.0",
+      "define": "UNITGIT_VRCHAT_AVATARS"
+    }
+  ],
+  "noEngineReferences": false
+}

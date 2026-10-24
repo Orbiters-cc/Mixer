@@ -3,7 +3,7 @@ using UnityEngine;
 namespace Orbiters.Mixer.Splats
 {
     /// <summary>
-    /// Gaussian splats of a reconstructed world (Orbiters desktop's Reconstruct), in Unity's world: imported from a
+    /// Gaussian splats of a reconstructed world (Orbiters - N4N0's Reconstruct), in Unity's world: imported from a
     /// <c>.splats</c> file (the session's <c>splats.ply</c>) by Mixer's importer and drawn by <see cref="SplatRenderer"/>.
     /// </summary>
     public sealed class SplatCloud : ScriptableObject
@@ -26,7 +26,7 @@ namespace Orbiters.Mixer.Splats
         /// <summary>Colour as captured (encoded sRGB) and opacity.</summary>
         public Color32[] colors = new Color32[0];
 
-        /// <summary>What the training keyframes saw of each splat (Orbiters desktop's <c>seen_*</c> PLY properties): the
+        /// <summary>What the training keyframes saw of each splat (Orbiters - N4N0's <c>seen_*</c> PLY properties): the
         /// largest blending weight it reached (negative where unknown), the keyframes that saw it, the compass sectors
         /// they looked from (bits, by the direction from the splat towards the camera, 0 = +Z, clockwise towards +X) and
         /// their finest sampling rate (pixels per metre). Empty where the PLY does not say.</summary>
@@ -46,7 +46,7 @@ namespace Orbiters.Mixer.Splats
         public Color horizon;
         public bool hasHorizon;
 
-        /// <summary>The sky trained with the splats (Orbiters desktop's <c>sky.png</c>), drawn behind them: an
+        /// <summary>The sky trained with the splats (Orbiters - N4N0's <c>sky.png</c>), drawn behind them: an
         /// equirectangular map, longitude <c>atan2(x, z)</c> across from −180°, elevation from +90° at the top, its
         /// encoded sRGB values kept as linear data. Null where the reconstruction keeps its sky as splats on a shell.</summary>
         public Texture2D skyMap;

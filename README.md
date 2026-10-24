@@ -1,9 +1,29 @@
 # Mixer
 
 Blender inside the Unity editor, by Orbiters: sculpt meshes and create blendshapes, paint weights and manage vertex
-groups, edit armatures, join meshes and render with Blender's engine, with a live two-way link to the real Blender and
-a modern Hierarchy window. Nothing re-imports while you edit: edits show live on a working copy of the mesh and are
-saved as a native mesh asset when you commit.
+groups, edit armatures, join meshes and render with Blender's engine, with a live two-way link to the real Blender,
+modern Hierarchy and Project windows, the Mixer console (a log hub in the Console's place) and Mixer Git (Git for VRChat
+projects). Nothing re-imports while you edit: edits show live on a working copy of the mesh and are saved as a native
+mesh asset when you commit.
+
+## 0.2.0 — 2026-10-24
+
+- The Logger became the **Mixer console** and Unit Git **Mixer Git**, both part of Mixer now (from Logger 0.2.7 and
+  Unit Git 0.2.10; their history stays in their own repositories): **Tools › Orbiters › Mixer console** (Ctrl+Alt+L) and
+  **Tools › Orbiters › Mixer Git**, their windows titled so, with Mixer's logo on their tab and in their top bar. The
+  console stays an assembly without references (`Orbiters.Mixer.Console.Editor`), so it keeps working while other
+  packages fail to compile; its parts for the Toolkit, Mixer Git and the VRChat SDK are assemblies of their own. Their
+  code keeps its names (namespaces, editor preferences, `Library/Orbiters/Logger/`, the `UnitGit-Release` trailer), so
+  settings, the message ledger, a commit visit under way and release checkpoints carry over. Mixer Git keeps backups in
+  Documents/Mixer Git Backups/<project> by default. Mixer's logo is an assembly of its own
+  (`Orbiters.Mixer.Brand.Editor`), which the console draws too, in its top bar and in the source chips of Mixer, the
+  Mixer console and Mixer Git.
+- MCB records its release checkpoints and ReFit files through Mixer Git, and My Avatar its Save checkpoints and
+  Versioning card: both look for Mixer 0.2 instead of Unit Git.
+- Mixer Git writes its headings into `.gitignore` only with a rule under them that the file lacks: a project that has
+  the rules under Unit Git's heading gets nothing more.
+- The console's search field shows its Ctrl+F hint only when it is wide enough (beside a full top bar the hint covered
+  the Aa switch), and a narrow placeholder ends with an ellipsis.
 
 ## 0.1.1 — 2026-10-23
 
@@ -80,7 +100,7 @@ saved as a native mesh asset when you commit.
   scene has it. The Blender extension has to be the matching version (Open scene in Blender reinstalls it).
 - Capture simulator (**Tools > Orbiters > Mixer Capture**): flies a camera through the open scene (a recorded Scene view
   flight, waypoints or an orbit), renders it as VRChat's Stream camera sees the capture avatar (strip, depth frames,
-  optional PPv2) into a raw capture with ground truth under Documents/Orbiters/Raw captures for Orbiters desktop, then
+  optional PPv2) into a raw capture with ground truth under Documents/Orbiters/Raw captures for Orbiters - N4N0, then
   decodes a sample back and checks it bit for bit. Formats come from the OrbitersContracts submodule in `Contracts/`.
 - Weight Paint sub-selects bones, as Blender does: a click on a bone in the Scene view's armature overlay, in the
   Mixer Hierarchy or in the bone list makes it the painted bone and the one the weight overlay shows, at once, while
@@ -245,9 +265,9 @@ saved as a native mesh asset when you commit.
   - Splats: **Import Splats…** is now **Tools > Orbiters > Mixer Splats…**. Imports work in a new project; PLYs Mixer
     cannot read are refused before they are copied, broken splats are skipped, and clouds over 8,388,608 splats are
     refused. Splats no longer draw in Prefab Mode, inspector previews or other tools' renders. Send to Mixer only takes
-    sessions on this computer's own drives. Splats blend as Orbiters desktop trained them, on their colours as captured
+    sessions on this computer's own drives. Splats blend as Orbiters - N4N0 trained them, on their colours as captured
     (encoded sRGB) and over the scene encoded the same way, so half-transparent ones are no longer brighter than in
-    Orbiters desktop and sparse far parts no longer look hazier: Mixer's render of a reconstruction now matches the
+    Orbiters - N4N0 and sparse far parts no longer look hazier: Mixer's render of a reconstruction now matches the
     trainer's at about 40 dB, where it differed at 27.5 dB.
   - Performance bakes: the last pose holds through gaps instead of jumping to the origin, and without foot trackers the
     feet follow the body when you walk. An old T-pose calibration no longer overrides VRChat's own head and hand poses.
@@ -303,10 +323,10 @@ saved as a native mesh asset when you commit.
   kit's `_OrbitersLocal` from VRChat's `IsLocal`, so other players' copies of the avatar leave their pictures and
   streams alone. Install the kit again (that adds the layer to the shared controller) and upload the avatar: a kit
   installed before draws nothing with this release.
-- Splats come with the sky Orbiters desktop trained with them: its reconstructions keep the far sky as a map
+- Splats come with the sky Orbiters - N4N0 trained with them: its reconstructions keep the far sky as a map
   (`reconstruction/sky.png`) instead of a shell of discs, and an import copies it beside the cloud
   (`<session>.splatsky`, a PNG the texture importer leaves alone). The Splat Renderer draws it behind everything the
-  camera drew, in place of the scene's own sky, looked up by direction as Orbiters desktop does, and fog and haze turn
+  camera drew, in place of the scene's own sky, looked up by direction as Orbiters - N4N0 does, and fog and haze turn
   towards its colours at the horizon. Without it (a reconstruction made before, or of a world that never showed the sky)
   the splats draw over the scene as before.
 - Requires Orbiters Toolkit 0.4.1, which holds the avatar gizmos (bones, weight paint, mesh edges, avatar budget) and
@@ -389,6 +409,341 @@ in place, as Unity's window does. Unity's main menu **Assets > Create** and **Im
 Assets: Unity asks a Project window of its own for the folder, so use the Mixer Project's menus (its right-click menu has
 Import New Asset too). Unity's pings (a click on an object field, the Console, Find References) show the asset here.
 
+## Mixer console
+
+### Get started
+
+The Mixer console comes with Mixer: open **Tools › Orbiters › Mixer console** (Ctrl+Alt+L). From the next start of Unity
+it takes the Console's place in your layout, and Window › General › Console (Ctrl+Shift+C) opens it (**Replace console**
+in its top bar turns that off). It shows everything logged since Unity started, including what was logged before it was
+installed. It was the Logger: its code keeps that name (namespace `Orbiters.Logger.Editor`, preferences
+`Orbiters.Logger.*`, `Library/Orbiters/Logger/`), so what the Logger kept carries over.
+
+### The window
+
+- **Levels**: the three pills show errors, warnings and logs that match the other filters. Click one to show or hide
+  it; Alt+click to show only it. The error count flashes when new errors arrive.
+- **Search** (Ctrl+F): text anywhere in the message, case-insensitive. **Aa** matches case, **.\*** reads a .NET
+  regular expression (an invalid one turns the field red with the reason, and the last results stay), the stack
+  button searches stack traces too. Enter applies at once, Escape clears.
+- **Sources**: show or hide where logs come from, or show only one ("Only" on hover). Counts follow the search and
+  levels.
+- **Replace console** (on by default): the Mixer console stands in for Unity's Console, at start-up and whenever the
+  Console is opened. Off, Unity's Console opens as usual.
+- **List / Groups**: every log in time order, or one row per text with its count and activity.
+- **Timeline**: hover reads the time and counts; click scrolls the list there; drag selects a time range (shown in
+  a chip with ✕); double-click or Escape shows the whole session again.
+- **Rows** show the time (to the millisecond; to the second for logs read from Unity's console), the source, the
+  message and, under it, the method and file that logged it (behind logger wrappers such as `MCBLogger.Log`). A
+  bulb means the Mixer console knows this message; a target means it is about an object in the scene.
+- **New logs** follow the end of the list while you are there. Scrolled up, a "N new" pill brings you back.
+- **Details** (bottom pane): the full message, the stack trace with links to each file and line (logging frames
+  such as `UnityEngine.Debug:Log` folded away), the explanation, and how often the message happens: a chart over
+  the session, the count, first and last time, peak per second and average interval. Select several logs to see a
+  summary and copy them together.
+
+#### Keyboard
+
+| Keys | Action |
+| --- | --- |
+| ↑ ↓, Page Up/Down, Home/End | Move; with Shift, select a range |
+| Ctrl+click, Shift+click | Add to the selection, select a range |
+| Ctrl+A | Select every shown log |
+| Ctrl+C / Ctrl+Shift+C | Copy the text / the text with stack traces |
+| Enter, double-click | Open the source file at the line |
+| F3 / Shift+F3 | Next / previous error |
+| Delete | Hide messages like the selected ones |
+| Ctrl+F | Search |
+| Ctrl+L | Clear |
+| Escape | Clear the selection, then the time range |
+
+Right-click a log for the same actions plus "Show only / Hide" its source and "Search for this text". Hidden
+messages are listed (and shown again) from the chip in the list header.
+
+#### Settings
+
+The sliders button opens the settings:
+
+- **Clear on Play, Clear on Build, Clear on Recompile, Error Pause** are Unity's console settings: changing them
+  here changes them in the Console too.
+- **Group similar messages**: "Loaded 12 assets in 3.4 ms" and "Loaded 7 assets in 1.2 ms" share a group.
+- **Compact rows**: one line per log. **Monospace font** for messages.
+- **Memory**: how many logs to keep (250K to 6M, 3M by default); the oldest fifth goes when the limit is reached.
+- **Unity's console**: open it, or read it again from scratch.
+- **Explanations from Orbiters**: keep the explanations up to date from Orbiters between releases (on by default).
+- **Timings**: measure script reloads, entering Play Mode, and avatar builds and uploads (all on by default), and
+  script reloads by package (off by default: it leaks editor memory at every reload).
+- **Beta**: the undo history timeline.
+
+**Clear** (Ctrl+L) empties the Mixer console and Unity's console. Compile errors that still stand stay, as in Unity.
+Clearing Unity's console from its own window doesn't clear the Mixer console.
+
+### Timings
+
+Each script reload, entry into Play Mode and avatar build or upload becomes a log under the **Timings** source:
+"Script reload took 6.6 s", "Entered Play Mode in 9.1 s", "Built and uploaded Rexouium in 2 min 13 s". Its row shows the
+time as a stacked bar, one colour per package (the engine's part in grey at the end), scaled to the slowest of its
+kind so rows compare at a glance. The details show the total, how it compares with the usual time, each package's
+share (click one for its parts: which startup method, which build step) and the same kind of timing over the session
+as stacked columns: when a package suddenly costs more, it shows. The timeline has a lane with one mark per timing,
+stacked by package; click a mark to show its log.
+
+- **Script reloads**: Unity writes a "Domain Reload Profiling" tree to Editor.log after each reload. With its
+  `EnableDomainReloadTimings` diagnostic switch on (the Mixer console turns it on only while “Script reloads by package” is on,
+  and back off when you turn it off; in Unity 2022.3 the switch leaks temporary memory at every reload) the tree lists every type and method that runs on load, every before/after-reload callback
+  and every window restored; the Mixer console reads it back on a worker thread and gives each entry to the package its code
+  belongs to. Unity's console notice about the switch is hidden while it is the only one on.
+- **Avatar builds and uploads** (VRChat SDK, through the `Orbiters.Mixer.Console.Editor.VRChat` assembly): from
+  Build & Publish or Build & Test to the end of the upload. A probe sits in front of each group of build steps in the
+  SDK's list, so each tool's step (VRCFury, MCB, My Avatar, ReFit, Orbiters Toolkit, the SDK's own…) is timed without
+  touching it, then the asset bundle and the upload. The asset bundle is split too: Unity times every callback it runs,
+  so each asset postprocessor that ran during it (TextMesh Pro's, Poiyomi's…) gets its time and package; the lines
+  Unity times itself in Editor.log give the script compilation for the build, the asset imports for the build target
+  and the bundle's size; the rest is shader compilation, writing and compressing the bundle.
+- **Entering Play Mode**: leaving Edit Mode, the script reload by package, the avatar build steps VRCFury runs on each
+  avatar of the scene (merged across avatars), then the scene load and first frames.
+
+### Since which commit
+
+For a message that keeps coming back, the details show **Appearing since**: the commit the project was at when it was
+first seen, its subject, when that was and how many commits ago. First and last appearances are kept per message in
+`Library/Orbiters/Logger/ledger.bin` (across editor sessions and clears, up to 100,000 messages); the commit comes
+from Git's own history of HEAD (`.git/logs/HEAD`), so no Git process runs. Click the hash to copy it.
+
+### Get help (project report)
+
+**Get help** in the top bar (or the lifebuoy on a log's details, which starts the note with that log, or **Tools ›
+Orbiters › Get Help**) opens a window that packs what a helper needs into one zip. Each part is a card; a press turns it
+on or off, and the choice is remembered:
+
+- **AI diagnosis** (Orbiters members, through Orbiters Toolkit; off until turned on, and connecting never turns it on):
+  Orbiters passes the report to a third-party AI provider (which one: orbiters.cc/legal/ai) with `POST
+  logger/diagnosis`. It sends the note, the project name, Unity version, platform, system, render pipeline and package
+  list, and only from the parts that are on: the 40 most important distinct messages (compile errors first, then the
+  most frequent errors, warnings and the latest logs) with the top of their stack traces (Logs), the Git branch, the
+  number of changed files and the last 15 commit subjects (Git history), and the scene names, object counts and up to
+  40 top-level object names (Scene description). Never files. The answer is a headline, a summary and up to five likely
+  causes with steps, shown as plain text and escaped in the Markdown files. It runs while the scene is exported; when
+  it fails, **Ask again** in the result (after connecting if needed) writes the answer into the file.
+- **Logs**: `logs/logs.txt` (every log, oldest first), `logs/messages.txt` (every distinct message with its count,
+  first and last time and stack trace) and the last 32 MB of Unity's `Editor.log` and `Editor-prev.log` (the previous
+  session, which may be another project). Unity's logs hold the Windows user name, computer name, Unity machine id,
+  license serial and project paths.
+- **Git history**: branch, last commit, remotes and Git LFS files, the last 300 commits with their author's name and
+  email and the files they touched, uncommitted changes, the reflog and stashes; with Mixer Git, its release records
+  (avatar and blueprint ids) and the newest 64 MB of its release pictures. A repository without commits yet is fine.
+- **Scene description**: every object of the open scenes with its components (inactive objects, prefab instances and
+  missing scripts marked) and the files the scenes use as a folder tree with sizes (packages from the registry
+  included).
+- **Scene export**: the saved open scenes with their dependencies as a `.unitypackage` (unsaved changes are not in it;
+  the card says so, and how big it will be). It holds those files as they are, purchased avatars, shaders and tools
+  included: the window says to send it only to people you trust, never in a public channel.
+
+**Anonymize** (under Privacy, off by default, remembered) also masks the Windows user name (with its 8.3 short and
+address spellings), computer name, machine and session ids, license serials, emails, Git authors (commits are listed
+without them), remote addresses, avatar and blueprint ids and paths outside the project, in every text of the report
+and in the AI request; the project folder becomes `%PROJECT%`, other folders `[path]`. Release pictures and the scene
+export can't be anonymized, so they are left out (the cards say so). It hides clues too: the window warns that the
+problem may be harder to find.
+
+Always masked, anonymized or not, before any text is cut: Orbiters, Git hosting and API tokens, `Authorization`
+headers (Bearer, Basic, token), secrets in addresses (`access_token=`, `key=`, `apiKey=`…), JSON and settings values
+named like secrets (`"token"`, `"password"`…), cookies, Discord webhooks, JSON web tokens, passwords in addresses
+(JSON-escaped ones too) and store license keys; the user folder becomes `%USERPROFILE%` in every spelling. Pictures
+and the scene export are copied as they are.
+
+The project's Unity version, platform, system, package list and manifests are always included, and `README.md` at the
+top of the zip sums it all up: the note, the project, the diagnosis, the messages that matter most, what was left out,
+what each file holds and what was masked. The zip is written as `….zip.partial` beside its final name and renamed once
+complete, after checking there is room for it: a cancel or a script reload (which stops the report; the window says so
+after it) leaves nothing behind. Git runs read-only (no optional locks, no password prompts, stopped with what it
+started at its timeout) from its installed location, never from the project folder. **Copy a message to send** puts a
+short summary on the clipboard, escaped so nothing in it becomes a link or a mention.
+
+### Undo history timeline (beta)
+
+Off by default: turn on **Undo history timeline** in the settings. A strip under the activity chart shows Unity's
+undo steps (Edit › Undo History) like a video's progress bar: one tick per step (selections smaller), the part already
+done filled, the playhead where the project is. Hover a step for a snapshot of the Scene view right after it, its
+name and when it happened (its moment is also marked on the activity chart). Click or drag to go there: the Mixer console
+undoes or redoes one step at a time until the project is as it was right after that step. Scroll over the strip for
+one step back or forward. A step's snapshot is taken once the change is done: nothing recorded for 0.4 s and no drag
+going on. It is read from the Scene view window's own framebuffer when it is the visible tab (no extra render), or
+rendered by its camera when another tab hides it, scaled down on the GPU and kept as a small JPEG (the last 600).
+
+### How it works
+
+- **Capture.** `Application.logMessageReceivedThreaded` queues each log with its time from any thread; the main
+  thread files them a few milliseconds per editor update. Identical texts are stored once, so a message repeated a
+  million times costs one string and 16 bytes per occurrence.
+- **Unity's console.** At the start of an editor session the Mixer console reads what Unity's console already holds
+  (`UnityEditor.LogEntries`, through compiled delegates): the first two lines and timestamp of each row, the full
+  entry once per distinct message. Up to 20,000 rows are read at once; more are read a slice per editor update with
+  progress in the toolbar, and appear when done. A step behind the live capture, each new console row is matched to
+  its log: that adds the object a log is about and the file of engine errors, and any row the Mixer console never received
+  live is added, so nothing Unity shows is missing.
+- **Compiler messages** come from the compilation pipeline. A compilation that reports a message again replaces the
+  earlier one; one that no longer reports it (or a script reload, which only happens once everything compiles) hides
+  it, as in Unity's console.
+- **Script reloads.** Before a reload the session is written to `Library/Orbiters/Logger/session.bin` (columns as
+  raw arrays: a million logs in tens of milliseconds) and read back after it, with what Unity logged in between. The
+  file belongs to the editor process; it is deleted when Unity quits.
+- **Filtering** is one pass over the logs that fills the rows, group counts, per-level and per-source counts, the
+  timeline and the sparklines. Search runs once per distinct text, not per log. Passes over large sessions run on a
+  worker thread while the last results stay on screen; new logs are added to the current results as they arrive.
+- **The list** is virtual and scrolls by row index, so a hundred million rows scroll like a hundred (Unity's
+  ListView loses pixels past a few million rows).
+- **No dependency.** The Mixer console only uses Unity's editor API, so it keeps working while other packages fail to
+  compile. Its building blocks follow Orbiters Toolkit's look and its press-first buttons.
+
+### Mixer Git
+
+An assembly of its own (`Orbiters.Mixer.Console.Editor.Git`) puts the project's history on the timeline: Mixer Git
+releases from its release catalog, and commits from `git log` (the last 30 days, read on a worker thread). Only what
+happened inside the logged time shows. It refreshes when Mixer Git records something and every minute while a Mixer
+console window is open. Every Git command Mixer Git runs is a log of the Mixer Git source too.
+
+Other tools can add their own markers:
+
+```csharp
+TimelineMarkers.Set("mytool", new[] { new TimelineMarker(DateTime.UtcNow, TimelineMarkerKind.Note, "Avatar uploaded") });
+```
+
+### Explanations for your tool
+
+```csharp
+using Orbiters.Logger.Editor;
+
+[UnityEditor.InitializeOnLoad]
+static class MyToolExplanations
+{
+    static MyToolExplanations()
+    {
+        LogExplanations.Register(new LogExplanation("mytool.no-avatar", "[MyTool] No avatar", "No avatar selected")
+        {
+            Source = "My Tool",
+            Severity = LogExplanationSeverity.Warning,
+            Summary = "My Tool needs an avatar with a VRC Avatar Descriptor.",
+            Fixes = new[] { "Select the avatar root in the Hierarchy.", "Click Refresh in My Tool." },
+            StackNeedle = null,     // text the stack trace must contain, for messages shared with other tools
+            Pattern = null          // a regular expression; named groups fill {name} placeholders
+        });
+    }
+}
+```
+
+Registered explanations are tried before the built-in ones. Reference the `Orbiters.Mixer.Console.Editor` assembly
+through a version define on `orbiters.mixer`, so your tool still compiles without Mixer.
+
+#### The explanation database
+
+The Mixer console's own explanations are in `Editor/Console/Knowledge/explanations.json` (`{ "explanations": [ … ] }`), one object per
+entry: `id`, `needle` (text the message must contain, checked first), optional `pattern` (.NET regex with named
+groups for `{name}` placeholders), `stackNeedle`, `levels` (`error`, `warning`, `log`), `priority` (catch-alls use
+negative values), `severity` (`harmless`, `info`, `warning`, `problem`, `blocking`), `source`, `title`, `summary`,
+`fixes`, `link`, `linkLabel`, and `updated` (yyyy-MM-dd, when the entry's text last changed). Entries tied to a stack
+trace are tried first, then by priority, then in file order.
+
+The same list lives on the Orbiters server (`GET /logger/explanations`, with `If-None-Match`), where it is updated
+between releases: the Mixer console asks for it every six hours, keeps the last answer per user in
+`%LOCALAPPDATA%/Orbiters/Logger/`, and server entries replace local ones with the same id, unless the local one's
+`updated` is later (a server entry without it is older than a dated local one). With Orbiters Toolkit
+installed (the `Orbiters.Mixer.Console.Editor.Toolkit` assembly), it asks the server Orbiters tools use, as the
+signed-in member.
+
+## Mixer Git
+
+**Tools › Orbiters › Mixer Git**: Git for VRChat Unity projects. It was Unit Git: its code keeps that name (namespace
+`Orbiters.UnitGit.Editor`, preferences `Orbiters.UnitGit.*`, the `UnitGit-Release` trailer of release checkpoints), so
+settings, a commit visit under way and release checkpoints carry over. MCB records its release checkpoints and ReFit
+files through it, and My Avatar its Save checkpoints and Versioning card. **Tools › Orbiters › Mixer Git › Health
+Checks › All Deterministic** runs its package checks (`Orbiters.UnitGit.Editor.UnitGitEditorHealthChecks.RunAllBatchmode`
+in batch mode).
+
+### Features
+
+The window follows JetBrains IDEs' Git tool window, in the style of the other Orbiters tools.
+
+- **Top bar**: the tabs (Changes with its count, Log, Shelf, Conflicts when needed, Backups, Console), what is running,
+  the size of the local Git data, the **branch widget** (current branch, commits to push and pull; click for every branch with Checkout, New branch
+  from, Merge into current, Update and Delete) and Update (pull, fast-forward only), Push, Fetch, Refresh and Settings.
+  Shortcuts: **Ctrl+K** commit, **Ctrl+Shift+K** push, **Ctrl+T** update, **F5** refresh. Results show as short
+  notifications; failures stay longer and lead to the Console.
+- **Changes**: every change with a box saying whether it goes into the next commit (Git's staging, per file or folder;
+  a folder's box shows when only some of its files are in), grouped as changes and unversioned files, in folders
+  (single-child chains shown as one row) or flat, with JetBrains' status colours and letters and a filter. Multi-select
+  with Ctrl/Shift, arrows, Space to include or exclude, Delete to roll back; the context menu opens, reveals and copies
+  paths. **Rollback** returns tracked files to their last commit and moves new files to the trash (assets) after a
+  confirmation. Under the list: the message (Ctrl+Enter commits), **Amend** (edits the last commit and its message) and
+  **Commit** / **Commit and Push**, which can be clicked while ticked files are still being added (the commit follows).
+- **Diff**: side by side, as in JetBrains IDEs: line numbers at each side's edge, added/removed/changed lines tinted and
+  the changed part of a changed line highlighted, a middle column joining the two versions of each change, and markers
+  beside each side showing where every change is in the whole file (drag them to scroll, click to jump). Unchanged
+  stretches fold away with 4 lines kept around each change (the band shows them all, its arrows 20 more lines; the
+  toolbar switches folding off). A dropdown ignores whitespace as JetBrains does (trim, all, all and empty lines). It
+  opens at the first change; the arrows (F7 / Shift+F7) move between changes, then on to the next file, or between
+  matches while searching (Ctrl+F). In Changes, **»** puts one change of the file on disk back as its last commit had it
+  (the notification can undo it). Scenes, prefabs and models also offer the Scene view and 3D (beta, below).
+- **Log**: branches on the left (HEAD, local, remote in folders; a click shows that branch's history, a double click
+  checks it out, a right click has the rest), the commit graph with every lane, branch and tag labels, avatar
+  initials, dates and hashes, search (text or hash) and Branch, User and Date filters; older commits load as you
+  scroll. Columns give way to the subject when the log is narrow. The selected commit's files (status colours, tree;
+  a double click opens its diff in a window) sit above its message, author, date, hash (copy) and parents (a click
+  selects them). A commit's menu: New branch from here, Visit this commit (look at an older version, then back to
+  the latest), Cherry-Pick, Revert, Rename, Reset current branch to here (Soft, Mixed, Keep, Hard), Squash selected
+  commits, copy hash or subject.
+- **Shelf**: changes set aside (Git stashes) with their files and diff; **Shelve changes** asks for a name,
+  **Unshelve** brings them back and removes the shelf, **Apply** keeps it, **Delete** asks first.
+- **Console**: every Git command and its output, newest at the bottom, filterable and copyable.
+- initialize a missing project-root Git repository with a VRChat Unity `.gitignore`
+- keep MCB's downloaded version patches (`Assets/MCB/assets/*/versions/**/*.bin`) out of Git, also in existing
+  repositories; when some were committed earlier, Changes offers **Stop tracking** (they stay on disk)
+- connect a GitHub or GitLab remote with their command line tools (Settings or the Log's branches)
+
+Only destructive operations ask first: deleting a branch or a shelf, rolling files back, resetting, squashing or
+rewriting commits. Commit, pull (fast-forward only), push (never forced), checkout and merge run at once; Git refuses
+anything that would lose local changes.
+
+#### Backups
+
+The **Backups** tab saves the whole history (every commit of every branch, as one `git bundle` file) to a folder of
+your choice, by default `Documents/Mixer Git Backups/<project>`. Put it on another drive or in a synced folder
+(OneDrive, Google Drive, Dropbox) to survive a broken disk or a deleted project. Each backup is read back in full to
+check it; **Check** does it again later, **Restore…** recreates the project in a new, empty folder (this project is not
+touched), and older backups beyond **Keep the last** are deleted. **Back up automatically once a day** makes a backup in
+the background when Unity opens the project and the history changed since the last one. Uncommitted changes and
+ignored files (Library, downloads) are not part of a backup; Git LFS files are kept as pointers.
+
+#### Scene view and 3D (beta)
+
+For scenes, prefabs and other Unity YAML files, the diff pane of Local Changes opens on **Scene view**: one card per
+GameObject (or prefab instance) with its components and each changed value as before → after, rotations in degrees and
+references by name. VRChat, VRCFury and Modular Avatar components carry their badge. **Text** shows the raw lines.
+Unity's bookkeeping fields (hints, serialization versions, object order) are left out.
+
+Models (`.fbx`, `.obj`) and prefabs also have a **3D** view: both versions side by side under one camera (drag to turn,
+right-drag to move, scroll to zoom, double-click to reset), each coloured by what changed: moved vertices from yellow to
+red, whole parts moved, other materials, other blendshapes or bones, added parts. A table lists every mesh with its
+numbers (vertices moved and how far, vertex counts, blendshapes added, removed or reshaped). Models are read straight
+from the file with Orbiters Toolkit's mesh comparison, so nothing is imported; prefab versions are imported into `Assets/__UnitGit Compare` (listed in the
+repository's local exclude file) and deleted afterwards. In the Log, **Compare** on a scene, prefab or model of a
+commit opens the same views for what that commit changed.
+
+#### Conflicts (beta)
+
+When a merge, a shelf or another Git operation leaves conflicting files, a **Conflicts** tab appears with their count.
+For each file:
+
+- scenes and prefabs go through Unity's own merge first (`UnityYAMLMerge`, never with an external fallback tool): it
+  merges object by object and lists the values it could not decide, with both sides;
+- text is split into parts, each chosen as **Mine**, **Theirs** or **Both**, labelled with the object it belongs to;
+- **Keep mine** / **Take theirs** keep a whole side (models, images and other binary files only offer this, with the
+  3D view to compare them);
+- a file deleted on one side is kept or deleted.
+
+The banner shows the progress, then **Finish merge** records the result with Git's prepared message; **Cancel merge**
+goes back to before it started.
+
 ## Armature
 
 The **Armature** mode lists the target's bones (the weighted vertices of each) and turns on rest-pose editing: move or
@@ -416,8 +771,8 @@ and renders it (the Mixer extension must have been installed once with **Open sc
 
 ## Splats
 
-Gaussian splats that Orbiters desktop reconstructed from a VRChat session show in the Scene and Game views, where the
-world was captured. In Orbiters desktop, **Send to Mixer** in a reconstructed session's detail sends them to the Unity
+Gaussian splats that Orbiters - N4N0 reconstructed from a VRChat session show in the Scene and Game views, where the
+world was captured. In Orbiters - N4N0, **Send to Mixer** in a reconstructed session's detail sends them to the Unity
 editor running Mixer; in Unity, **Tools > Orbiters > Mixer Splats…** picks a session's
 `reconstruction/splats.ply`. Either way the PLY is copied to `Assets/Orbiters/Splats/<session>.splats` (imported by
 Mixer as a splat cloud), with the sky map trained with it (`sky.png`) beside it as `<session>.splatsky`, and an
@@ -425,10 +780,10 @@ EditorOnly **Splat Renderer** object (left out of builds) is added to the open s
 
 The renderer sorts the splats back to front for each camera on the GPU (a bitonic sort in a compute shader) and draws
 them before the transparent pass, behind your scene's geometry where it is in front (built-in render pipeline, compute
-shaders). They blend as Orbiters desktop's trainer blended them while it fitted them, on encoded sRGB colours: the
+shaders). They blend as Orbiters - N4N0's trainer blended them while it fitted them, on encoded sRGB colours: the
 splats accumulate in a temporary target that shares the camera's depth buffer, then go over a copy of the camera's
 image in encoded sRGB and back in linear light, once per camera. A cloud's sky map is drawn first, wherever the
-camera drew nothing nearer than the far plane. Move the object to offset them. Each editor keeps an inbox for Orbiters desktop under
+camera drew nothing nearer than the far plane. Move the object to offset them. Each editor keeps an inbox for Orbiters - N4N0 under
 `%LOCALAPPDATA%/Orbiters/Mixer/inbox/<process id>/` (an `endpoint.json` naming the project, and the requests).
 
 ## Agents

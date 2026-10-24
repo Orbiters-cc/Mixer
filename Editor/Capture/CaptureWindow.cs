@@ -13,7 +13,7 @@ namespace Orbiters.Mixer.Editor.Capture
     /// <summary>
     /// Mixer's capture simulator: flies a camera through the open scene (a recorded Scene view flight, a path through
     /// waypoints, or an orbit), renders it the way VRChat's Stream camera sees the capture avatar (strip, depth frames,
-    /// optional PPv2) and writes a raw capture with ground truth for Orbiters desktop, then checks a sample of it.
+    /// optional PPv2) and writes a raw capture with ground truth for Orbiters - N4N0, then checks a sample of it.
     /// Same look as the Mixer window (mixer.uss): top bar with the path kinds, a stage, cards, a footer.
     /// </summary>
     internal sealed partial class CaptureWindow : EditorWindow, IHasCustomMenu

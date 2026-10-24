@@ -1,4 +1,4 @@
-/* Mixer Hierarchy: dense rows on the Logger's greys, Mixer's green for the selection, violet for Blender. */
+/* Mixer Hierarchy: dense rows on the Mixer console's greys, Mixer's green for the selection, violet for Blender. */
 
 .mxh-root { background-color: var(--mx-bg); }
 .mxh-topbar { height: 34px; min-height: 34px; flex-direction: row; align-items: center; padding: 0 6px 0 8px; background-color: var(--mx-bar); border-bottom-width: 1px; border-bottom-color: var(--mx-line); flex-shrink: 0; }

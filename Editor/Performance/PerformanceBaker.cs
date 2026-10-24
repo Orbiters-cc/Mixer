@@ -213,9 +213,9 @@ namespace Orbiters.Mixer.Editor.Performance
             result.Seconds = (frames - 1) / rate;
 
             if (session.MissingParameterTable)
-                result.Warnings.Add("This session has no parameters.json yet (it is still recording, or Orbiters desktop stopped before ending it): the face, gestures, toggles and VRChat's head and hand poses cannot be read.");
+                result.Warnings.Add("This session has no parameters.json yet (it is still recording, or Orbiters - N4N0 stopped before ending it): the face, gestures, toggles and VRChat's head and hand poses cannot be read.");
             if (session.MissingDeviceTable)
-                result.Warnings.Add("This session has no tracking.json yet (it is still recording, or Orbiters desktop stopped before ending it): the SteamVR tracking cannot be read.");
+                result.Warnings.Add("This session has no tracking.json yet (it is still recording, or Orbiters - N4N0 stopped before ending it): the SteamVR tracking cannot be read.");
             string blueprint = BlueprintId(avatar);
             var timeline = ParameterTimeline.Build(session, blueprint);
             AvatarChanges(timeline, blueprint, avatar.name, result.Warnings);
@@ -247,7 +247,7 @@ namespace Orbiters.Mixer.Editor.Performance
                     Vector3 eye = copy.transform.TransformPoint(descriptor.ViewPosition);
                     var vrchat = new VrChatPoses(timeline);
                     bool fromVrChat = vrchat.Has(VrChatPoses.Head);
-                    // A calibration from before the session (Orbiters desktop copies the latest one into every session) may be
+                    // A calibration from before the session (Orbiters - N4N0 copies the latest one into every session) may be
                     // days old, from another play space or other trackers: VRChat's own poses go first then.
                     var c = session.HasTracking ? session.CalibrationAt(start, beforeSession: !fromVrChat) : null;
                     if (c != null)

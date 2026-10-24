@@ -1,0 +1,24 @@
+{
+  "name": "Orbiters.Mixer.Git.Editor.Tests",
+  "rootNamespace": "Orbiters.UnitGit.Editor.Tests",
+  "references": [
+    "Orbiters.Mixer.Git.Editor",
+    "Orbiters.Toolkit.Editor"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": false,
+  "defineConstraints": [
+    "UNITY_INCLUDE_TESTS"
+  ],
+  "versionDefines": [],
+  "noEngineReferences": false,
+  "optionalUnityReferences": [
+    "TestAssemblies"
+  ]
+}

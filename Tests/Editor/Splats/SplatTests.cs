@@ -12,7 +12,7 @@ namespace Orbiters.Mixer.Editor.Splats.Tests
 {
     public sealed class SplatTests
     {
-        /// <summary>A splat as Orbiters desktop holds it: Unity world, log scales, opacity logit, encoded sRGB colour.</summary>
+        /// <summary>A splat as Orbiters - N4N0 holds it: Unity world, log scales, opacity logit, encoded sRGB colour.</summary>
         struct Gaussian
         {
             public Vector3 position;
@@ -22,7 +22,7 @@ namespace Orbiters.Mixer.Editor.Splats.Tests
             public Color color;
         }
 
-        /// <summary>Writes splats the way Orbiters desktop's ply::write does (Z mirrored), with `extra` float
+        /// <summary>Writes splats the way Orbiters - N4N0's ply::write does (Z mirrored), with `extra` float
         /// properties after the colour that a reader must skip.</summary>
         static byte[] Ply(IList<Gaussian> splats, params string[] extra)
         {
@@ -125,7 +125,7 @@ namespace Orbiters.Mixer.Editor.Splats.Tests
             }
         }
 
-        /// <summary>Orbiters desktop's record of what the keyframes saw of each splat, and its sky flag, come along where
+        /// <summary>Orbiters - N4N0's record of what the keyframes saw of each splat, and its sky flag, come along where
         /// the PLY has them; a PLY without them says nothing.</summary>
         [Test]
         public void ReadsWhatTheKeyframesSawOfEachSplat()
@@ -385,7 +385,7 @@ namespace Orbiters.Mixer.Editor.Splats.Tests
         [Test]
         public void SplatsBlendOnTheirEncodedColoursAsTheyWereTrained()
         {
-            // Orbiters desktop's trainer blends the encoded sRGB colours: white at half opacity over black stores 0.5
+            // Orbiters - N4N0's trainer blends the encoded sRGB colours: white at half opacity over black stores 0.5
             // (128); blending in linear light showed 0.735 (187). Two of them: 0.752 (192, not 226).
             Assert.That(At(Render(White(128, 3f)), Size / 2, Size / 2).r, Is.InRange(126, 130));
             Assert.That(At(Render(White(128, 3.1f, 3f)), Size / 2, Size / 2).r, Is.InRange(190, 194));
@@ -428,7 +428,7 @@ namespace Orbiters.Mixer.Editor.Splats.Tests
             }
         }
 
-        /// <summary>A sky map <paramref name="width"/> texels across as Orbiters desktop writes it (a PNG, rows from the
+        /// <summary>A sky map <paramref name="width"/> texels across as Orbiters - N4N0 writes it (a PNG, rows from the
         /// top) and Mixer loads it: <paramref name="colour"/> of each texel by column and row from the top.</summary>
         static byte[] SkyPng(int width, Func<int, int, Color32> colour)
         {
@@ -485,7 +485,7 @@ namespace Orbiters.Mixer.Editor.Splats.Tests
                     SplatCloud cloud = White(255, 10f);
                     cloud.skyMap = sky;
                     Color32[] pixels = Render(cloud, hdr, msaa, 1, cube);
-                    // The map's encoded colour, stored as such in an sRGB target, as Orbiters desktop shows it.
+                    // The map's encoded colour, stored as such in an sRGB target, as Orbiters - N4N0 shows it.
                     AreClose(new Color32(64, 128, 192, 255), At(pixels, 2, 2), variant + ", the sky");
                     Assert.That(At(pixels, Size / 2, Size / 2).r, Is.GreaterThan(240), variant + ", the splat in front of it");
                     Assert.That(At(pixels, 53, 53).b, Is.LessThan(8), variant + ", the scene in front of it");

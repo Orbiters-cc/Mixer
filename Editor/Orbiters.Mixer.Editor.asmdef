@@ -4,7 +4,8 @@
   "references": [
     "Orbiters.Mixer",
     "Orbiters.Toolkit",
-    "Orbiters.Toolkit.Editor"
+    "Orbiters.Toolkit.Editor",
+    "Orbiters.Mixer.Brand.Editor"
   ],
   "includePlatforms": [
     "Editor"

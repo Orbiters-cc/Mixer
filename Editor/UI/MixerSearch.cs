@@ -7,7 +7,7 @@ using UnityEngine.UIElements;
 namespace Orbiters.Mixer.Editor
 {
     /// <summary>
-    /// Match case ("Aa") and regular expression (".*") switches at the end of a Mixer search field, as in the Logger's,
+    /// Match case ("Aa") and regular expression (".*") switches at the end of a Mixer search field, as in the Mixer console's,
     /// before any other buttons the field holds (the Hierarchy's and the Project's Filter). The switches are kept per field
     /// in EditorPrefs. An invalid expression turns the field red, the reason in its tooltip, and searches nothing out; so
     /// does one found too slow while searching (<see cref="ShowState"/> after a search).

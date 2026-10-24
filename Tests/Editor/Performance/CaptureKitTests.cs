@@ -16,7 +16,7 @@ namespace Orbiters.Mixer.Editor.Performance.Tests
 {
     /// <summary>
     /// The capture kit: its mesh, what its shader draws into a camera's frames (decoded with the contracts' decoders,
-    /// as Orbiters desktop does) and its installation. Generated avatars in preview scenes, assets in a temporary folder.
+    /// as Orbiters - N4N0 does) and its installation. Generated avatars in preview scenes, assets in a temporary folder.
     /// </summary>
     public sealed class CaptureKitTests
     {
@@ -168,7 +168,7 @@ namespace Orbiters.Mixer.Editor.Performance.Tests
 
             var fury = kit.GetComponents(VrcFury.Component).Single();
             var content = VrcFury.Content(fury);
-            Assert.IsTrue(VrcFury.IsGlobalParameter(content, CaptureKit.RecordParameter), "Orbiters desktop listens for OrbitersRecord by name");
+            Assert.IsTrue(VrcFury.IsGlobalParameter(content, CaptureKit.RecordParameter), "Orbiters - N4N0 listens for OrbitersRecord by name");
             Assert.IsTrue(VrcFury.IsGlobalParameter(content, CaptureKit.DepthParameter));
 
             var controller = AssetDatabase.LoadAssetAtPath<AnimatorController>(Folder + "/Capture kit FX.controller");

@@ -17,7 +17,7 @@ namespace Orbiters.Mixer.Editor
         {
             var box = new VisualElement();
             box.Add(Feature("Replace Unity's Hierarchy",
-                "The Mixer Hierarchy takes each Hierarchy window's place, like the Logger does with the Console: search by type and component, kind filters, prefab and missing-script badges, the Blender state of each object. Off, Unity's Hierarchy comes back in its place; the Mixer Hierarchy stays in the Window menu, and its menu opens Unity's beside it.",
+                "The Mixer Hierarchy takes each Hierarchy window's place, like the Mixer console does with the Console: search by type and component, kind filters, prefab and missing-script badges, the Blender state of each object. Off, Unity's Hierarchy comes back in its place; the Mixer Hierarchy stays in the Window menu, and its menu opens Unity's beside it.",
                 HierarchyReplacement.Enabled, on => HierarchyReplacement.SetEnabled(on), first: true));
             box.Add(Feature("Replace Unity's Project window",
                 "The Mixer Project takes each Project window's place: folders that unfold in place, sorting by name or by the date things were added or changed, a \"new\" chip on what came in the last day, the assets used lately, a search inside animators, animations and VRChat components, and where each asset is used. A click on a folder no longer changes the selection. Off, Unity's Project window comes back in its place.",

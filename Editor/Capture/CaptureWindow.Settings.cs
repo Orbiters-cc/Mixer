@@ -319,9 +319,9 @@ namespace Orbiters.Mixer.Editor.Capture
             if (check == null)
             {
                 checkCaption.text = run != null && run.State == CaptureRun.Phase.Checking
-                    ? "Decoding " + run.CheckTotal + " frames as Orbiters desktop will…"
+                    ? "Decoding " + run.CheckTotal + " frames as Orbiters - N4N0 will…"
                     : "After each capture, up to " + CaptureSelfCheck.SamplePerKind + " colour and " + CaptureSelfCheck.SamplePerKind +
-                      " depth frames are read back from disk, decoded like Orbiters desktop does and compared with the ground truth.";
+                      " depth frames are read back from disk, decoded like Orbiters - N4N0 does and compared with the ground truth.";
                 MixerUi.Show(checkCaption, true);
                 return;
             }

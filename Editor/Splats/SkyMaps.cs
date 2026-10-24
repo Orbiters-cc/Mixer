@@ -3,7 +3,7 @@ using UnityEngine;
 namespace Orbiters.Mixer.Editor.Splats
 {
     /// <summary>
-    /// The sky Orbiters desktop trained with a reconstruction's splats (its <c>reconstruction/sky.png</c>, contracts
+    /// The sky Orbiters - N4N0 trained with a reconstruction's splats (its <c>reconstruction/sky.png</c>, contracts
     /// Docs/session-bundle.md): an equirectangular 8-bit sRGB map behind them, longitude <c>atan2(x, z)</c> across from
     /// −180°, elevation from +90° at the top row, in Unity's world. A cloud keeps it beside its <c>.splats</c> as a
     /// <c>.splatsky</c> file, which <see cref="SplatImporter"/> reads into the cloud.
@@ -22,7 +22,7 @@ namespace Orbiters.Mixer.Editor.Splats
 
         /// <summary>
         /// The map as a texture, or null with <paramref name="problem"/> saying why: its encoded sRGB values kept as they
-        /// are (linear data), so the renderer filters them and turns them into light as Orbiters desktop composites
+        /// are (linear data), so the renderer filters them and turns them into light as Orbiters - N4N0 composites
         /// them; around in longitude, clamped at the poles, bilinear, without mipmaps.
         /// </summary>
         public static Texture2D Load(byte[] png, out string problem)
@@ -59,7 +59,7 @@ namespace Orbiters.Mixer.Editor.Splats
             }
         }
 
-        /// <summary>The sky's colour at the horizon (encoded sRGB), as Orbiters desktop's viewer reads it from a map
+        /// <summary>The sky's colour at the horizon (encoded sRGB), as Orbiters - N4N0's viewer reads it from a map
         /// (<c>SkyMap::horizon</c>): the mean of the texel rows from 2° below the horizon to 12° above.</summary>
         public static Color Horizon(Texture2D map)
         {

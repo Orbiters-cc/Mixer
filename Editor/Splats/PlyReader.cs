@@ -11,8 +11,8 @@ namespace Orbiters.Mixer.Editor.Splats
     /// <summary>
     /// Reads Gaussian splat PLYs: binary little-endian vertices with the reference 3DGS properties (<c>x y z
     /// f_dc_0..2 opacity scale_0..2 rot_0..3</c>; others, such as normals or higher spherical harmonics, are skipped),
-    /// and where Orbiters desktop wrote them, its <see cref="Seen"/> properties.
-    /// Orbiters desktop writes them in the right-handed world of the contracts (Unity's with Z negated, rotations as
+    /// and where Orbiters - N4N0 wrote them, its <see cref="Seen"/> properties.
+    /// Orbiters - N4N0 writes them in the right-handed world of the contracts (Unity's with Z negated, rotations as
     /// (w, −x, −y, z)); reading mirrors that back. The vertices are read a block at a time, never the whole file.
     /// </summary>
     public static class PlyReader
@@ -25,7 +25,7 @@ namespace Orbiters.Mixer.Editor.Splats
 
         static readonly string[] Required = { "x", "y", "z", "f_dc_0", "f_dc_1", "f_dc_2", "opacity", "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3" };
 
-        /// <summary>Orbiters desktop's own properties: the sky shell, and what the training keyframes saw of each splat
+        /// <summary>Orbiters - N4N0's own properties: the sky shell, and what the training keyframes saw of each splat
         /// (<see cref="SplatCloud.seen"/>).</summary>
         public static readonly string[] Seen = { "sky", "seen_weight", "seen_views", "seen_sectors", "seen_rate", "seen_beyond" };
 
@@ -233,7 +233,7 @@ namespace Orbiters.Mixer.Editor.Splats
             return header;
         }
 
-        /// <summary>The sky's colour at the horizon, as Orbiters desktop's viewer finds it (its <c>sky::horizon</c>): the
+        /// <summary>The sky's colour at the horizon, as Orbiters - N4N0's viewer finds it (its <c>sky::horizon</c>): the
         /// sky shell's splats from 2° below to 12° above the horizon, seen from the per-axis median of the other splats,
         /// by opacity. False without any.</summary>
         internal static bool Horizon(Vector3[] positions, Color32[] colors, bool[] sky, out Color horizon)

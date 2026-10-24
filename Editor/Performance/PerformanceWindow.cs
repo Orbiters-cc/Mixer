@@ -15,7 +15,7 @@ using VRC.SDKBase;
 namespace Orbiters.Mixer.Editor.Performance
 {
     /// <summary>
-    /// Mixer's performance import: pick a session Orbiters desktop recorded (avatar parameters with face tracking,
+    /// Mixer's performance import: pick a session Orbiters - N4N0 recorded (avatar parameters with face tracking,
     /// voice, VRChat's sound, SteamVR tracking) and an avatar in the scene, and bake what the avatar did into a clip,
     /// with the audio lined up and a Timeline to play them together. Same look as the Mixer and Capture windows.
     /// </summary>
@@ -139,7 +139,7 @@ namespace Orbiters.Mixer.Editor.Performance
             parent.Add(card);
             list = MixerUi.Box("mx-perf-sessions");
             bodyBox.Add(list);
-            empty = MixerUi.Text("No session with a performance yet. Record one with Orbiters desktop: avatar parameters and face tracking, your voice, SteamVR tracking.", "mx-perf-empty");
+            empty = MixerUi.Text("No session with a performance yet. Record one with Orbiters - N4N0: avatar parameters and face tracking, your voice, SteamVR tracking.", "mx-perf-empty");
             bodyBox.Add(empty);
             var actions = MixerUi.Row("mx-perf-actions");
             actions.Add(MixerUi.Pill("Choose a folder…", ChooseSession, "ghost", IconGlyph.External, "Bake a session from anywhere"));
@@ -352,7 +352,7 @@ namespace Orbiters.Mixer.Editor.Performance
             else if (kit.Stale) kitInfo.text = "The armature or the avatar's name changed since the kit was made: install it again, then upload.";
             else
                 kitInfo.text = "Installed · " + kit.Bones + " bones · drawn " + (kit.Reach == CaptureKit.Reach.Everywhere ? "everywhere" : "near you") +
-                               ". In VRChat, Action Menu › Orbiters › Record shows it and starts Orbiters desktop's recording.";
+                               ". In VRChat, Action Menu › Orbiters › Record shows it and starts Orbiters - N4N0's recording.";
         }
 
         void InstallKit()

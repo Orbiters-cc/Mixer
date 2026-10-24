@@ -8,9 +8,9 @@ namespace Orbiters.Mixer.Splats
     /// Draws a <see cref="SplatCloud"/> in the Scene and Game views (built-in render pipeline, compute shaders):
     /// before each camera's transparent pass, a command buffer sorts the splats back to front on the GPU, draws them as
     /// camera-facing Gaussians into a temporary target that shares the camera's depth buffer, and lays that over the
-    /// camera's image. They blend as Orbiters desktop's trainer fitted them, on encoded sRGB colours (Splats.shader). A
+    /// camera's image. They blend as Orbiters - N4N0's trainer fitted them, on encoded sRGB colours (Splats.shader). A
     /// cloud's sky map goes first, behind everything the camera drew (where its depth is still the far plane), in place
-    /// of the scene's own sky, as Orbiters desktop's viewer draws it. An editor tool: imported clouds live on EditorOnly
+    /// of the scene's own sky, as Orbiters - N4N0's viewer draws it. An editor tool: imported clouds live on EditorOnly
     /// objects, so builds leave them out.
     /// </summary>
     [ExecuteAlways]

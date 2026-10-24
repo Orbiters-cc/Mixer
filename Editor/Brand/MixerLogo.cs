@@ -8,9 +8,10 @@ namespace Orbiters.Mixer.Editor
     /// <summary>
     /// Mixer's logo: an M whose legs fold in and meet at a point, one shape from the logo's SVG (a 240 x 242 box), so it
     /// fills in one colour at any size and takes the tint of where it sits. The window tab, which only takes a texture,
-    /// gets it rasterized at the screen's pixel density in the grey of Unity's own tab icons.
+    /// gets it rasterized at the screen's pixel density in the grey of Unity's own tab icons. An assembly of its own without
+    /// references, so the Mixer console (which depends on nothing) carries it too.
     /// </summary>
-    internal static class MixerLogo
+    public static class MixerLogo
     {
         /// <summary>The logo's box (the SVG's view box).</summary>
         public static readonly Vector2 Size = new Vector2(240f, 242f);

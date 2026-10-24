@@ -15,7 +15,7 @@ namespace Orbiters.Mixer.Editor.Performance
         /// <summary>Frames read or written at a time.</summary>
         const int BlockFrames = 1 << 16;
 
-        /// <summary>A float WAVE written by Orbiters desktop, read a block of frames at a time.</summary>
+        /// <summary>A float WAVE written by Orbiters - N4N0, read a block of frames at a time.</summary>
         internal sealed class FloatWave : IDisposable
         {
             public readonly int Rate, Channels;

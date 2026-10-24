@@ -9,7 +9,7 @@ using Orbiters.Contracts;
 namespace Orbiters.Mixer.Editor.Capture
 {
     /// <summary>
-    /// Decodes a sample of a capture's written frames the way Orbiters desktop will (QOI from disk, then
+    /// Decodes a sample of a capture's written frames the way Orbiters - N4N0 will (QOI from disk, then
     /// <see cref="CaptureStrip.TryDecode"/> and <see cref="DepthFrames.TryDecode"/>) and compares them with the ground
     /// truth: strip payloads bit for bit, depth codes within ±1 of the quantised true depth at every sample pixel.
     /// </summary>

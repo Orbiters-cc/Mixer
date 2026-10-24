@@ -1,4 +1,4 @@
-/* Mixer. The greys of the Unity editor and the Logger (a top bar continuing Unity's tab, panes at #2b2b2b with darker
+/* Mixer. The greys of the Unity editor and the Mixer console (a top bar continuing Unity's tab, panes at #2b2b2b with darker
    inset cards and fields), the Orbiters green, a violet for what Blender owns, frames at 16 px, cards at 12 px,
    pills at 14 px, presses that answer at once, and flat frames: fills tell surfaces apart, never a 1 px border. */
 
@@ -388,7 +388,7 @@
 .mx-root .unity-scroller .unity-base-slider__dragger:hover { background-color: rgba(255, 255, 255, 0.28); }
 .mx-root .unity-scroller .unity-scroller__slider { margin: 0; }
 
-/* Search fields' switches (match case, regular expression), as in the Logger's: at the end of the field, before its other buttons. */
+/* Search fields' switches (match case, regular expression), as in the Mixer console's: at the end of the field, before its other buttons. */
 .mx-search__options { position: absolute; right: 3px; top: 0; bottom: 0; flex-direction: row; align-items: center; }
 .mx-search__toggle { width: 22px; height: 18px; min-width: 22px; margin: 0 0 0 1px; padding: 0; border-width: 0; border-radius: 6px; background-color: rgba(0, 0, 0, 0); background-image: none; color: #8c8c8c; font-size: 10px; -unity-font-style: bold; -unity-text-align: middle-center; scale: 1 1; transition-property: background-color, color, scale; transition-duration: 0.12s, 0.12s, 0.16s; transition-timing-function: ease-out, ease-out, ease-out-back; }
 .mx-search__toggle:hover { background-color: var(--mx-hover); color: #e0e0e0; }

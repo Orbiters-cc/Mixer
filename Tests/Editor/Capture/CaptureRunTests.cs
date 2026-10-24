@@ -9,7 +9,7 @@ using UnityEngine;
 namespace Orbiters.Mixer.Editor.Capture.Tests
 {
     /// <summary>
-    /// A whole capture into a temporary folder: the raw capture layout of Docs/raw-capture.md, files Orbiters desktop can
+    /// A whole capture into a temporary folder: the raw capture layout of Docs/raw-capture.md, files Orbiters - N4N0 can
     /// read back, ground truth that matches the frames, a self-check that passes, and Cancel keeping a valid shorter capture.
     /// </summary>
     public sealed class CaptureRunTests

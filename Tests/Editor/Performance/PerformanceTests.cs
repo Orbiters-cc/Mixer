@@ -553,7 +553,7 @@ namespace Orbiters.Mixer.Editor.Performance.Tests
             var descriptor = TestAvatar.Build(scene).GetComponent<VRCAvatarDescriptor>();
             var options = new BakeOptions { FrameRate = 30f, End = 1.0, Face = false, Audio = false, Timeline = false, OutputFolder = Folder };
 
-            // Made a day before the session (Orbiters desktop copies the latest one in).
+            // Made a day before the session (Orbiters - N4N0 copies the latest one in).
             var old = Recorded(-86_400_000_000_000L, "head");
             Assert.AreSame(old.Calibrations.Items[0], old.CalibrationAt(0.0));
             Assert.IsNull(old.CalibrationAt(0.0, beforeSession: false));

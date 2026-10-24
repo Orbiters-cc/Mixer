@@ -7,7 +7,8 @@
     "Orbiters.Toolkit",
     "Orbiters.Toolkit.Editor",
     "Orbiters.Contracts",
-    "Unity.Postprocessing.Runtime"
+    "Unity.Postprocessing.Runtime",
+    "Orbiters.Mixer.Brand.Editor"
   ],
   "includePlatforms": [
     "Editor"

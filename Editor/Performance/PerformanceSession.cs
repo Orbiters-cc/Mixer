@@ -8,7 +8,7 @@ using Orbiters.Contracts;
 namespace Orbiters.Mixer.Editor.Performance
 {
     /// <summary>
-    /// What an Orbiters desktop session recorded besides the world's frames (contracts <c>Docs/performance.md</c>): the
+    /// What an Orbiters - N4N0 session recorded besides the world's frames (contracts <c>Docs/performance.md</c>): the
     /// avatar parameters VRChat sent over OSC, the SteamVR device poses, the T-pose calibrations and the audio tracks.
     /// Loaded whole; every time is in seconds since the session started.
     /// </summary>
@@ -32,8 +32,8 @@ namespace Orbiters.Mixer.Editor.Performance
         public bool HasSkeleton => Skeleton.Count > 0;
 
         /// <summary>
-        /// Values were recorded but the table that names them (<c>parameters.json</c>) is missing: Orbiters desktop writes
-        /// it when the session ends, so the session is still recording or Orbiters desktop stopped first.
+        /// Values were recorded but the table that names them (<c>parameters.json</c>) is missing: Orbiters - N4N0 writes
+        /// it when the session ends, so the session is still recording or Orbiters - N4N0 stopped first.
         /// </summary>
         public bool MissingParameterTable => Parameters == null && Changes.Count > 0;
 
@@ -109,7 +109,7 @@ namespace Orbiters.Mixer.Editor.Performance
             return found.OrderByDescending(d => Directory.GetLastWriteTimeUtc(d)).ToList();
         }
 
-        /// <summary><c>Documents/Orbiters/Sessions</c>, where Orbiters desktop writes sessions by default.</summary>
+        /// <summary><c>Documents/Orbiters/Sessions</c>, where Orbiters - N4N0 writes sessions by default.</summary>
         public static string DefaultLibrary => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Orbiters", "Sessions");
     }
 }

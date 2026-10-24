@@ -8,10 +8,10 @@ using UnityEngine;
 namespace Orbiters.Mixer.Editor.Splats
 {
     /// <summary>
-    /// Where Orbiters desktop's "Send to Mixer" lands: each editor keeps a folder
+    /// Where Orbiters - N4N0's "Send to Mixer" lands: each editor keeps a folder
     /// <c>%LOCALAPPDATA%/Orbiters/Mixer/inbox/&lt;pid&gt;/</c> with an <c>endpoint.json</c> naming its project, and
     /// imports the requests (<c>*.json</c>) dropped next to it. The folder goes away when the editor quits, and the next
-    /// editor to start clears the folders of editors that crashed; Orbiters desktop skips folders whose process is gone.
+    /// editor to start clears the folders of editors that crashed; Orbiters - N4N0 skips folders whose process is gone.
     /// </summary>
     [InitializeOnLoad]
     static class SplatInbox
@@ -72,7 +72,7 @@ namespace Orbiters.Mixer.Editor.Splats
             }
             catch (Exception e)
             {
-                UnityEngine.Debug.LogWarning("Mixer: Orbiters desktop cannot send splats here (" + e.Message + ").");
+                UnityEngine.Debug.LogWarning("Mixer: Orbiters - N4N0 cannot send splats here (" + e.Message + ").");
                 return;
             }
             EditorApplication.update += Poll;
@@ -86,7 +86,7 @@ namespace Orbiters.Mixer.Editor.Splats
 
         /// <summary>
         /// Clears the folders under <paramref name="inbox"/> of editors that are gone (they crashed, so they never removed
-        /// theirs): a process that later gets the same number would look like a live editor to Orbiters desktop, and what
+        /// theirs): a process that later gets the same number would look like a live editor to Orbiters - N4N0, and what
         /// it sends would never be imported. Only the files an inbox holds are deleted, never links or anything else.
         /// </summary>
         internal static void SweepDead(string inbox, int self)
@@ -206,7 +206,7 @@ namespace Orbiters.Mixer.Editor.Splats
                     tries.TryGetValue(file, out int n);
                     tries[file] = ++n;
                     if (n == MaxTries)
-                        UnityEngine.Debug.LogWarning("Mixer: a request from Orbiters desktop cannot be read (" + e.Message + "): " + file);
+                        UnityEngine.Debug.LogWarning("Mixer: a request from Orbiters - N4N0 cannot be read (" + e.Message + "): " + file);
                     if (n < MaxTries)
                     {
                         pending = true;
@@ -224,7 +224,7 @@ namespace Orbiters.Mixer.Editor.Splats
                 }
                 catch (Exception e)
                 {
-                    UnityEngine.Debug.LogError("Mixer: the splats Orbiters desktop sent could not be imported: " + e.Message);
+                    UnityEngine.Debug.LogError("Mixer: the splats Orbiters - N4N0 sent could not be imported: " + e.Message);
                 }
             }
         }
