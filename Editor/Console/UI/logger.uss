@@ -258,35 +258,6 @@
     flex-shrink: 0;
 }
 
-.lg-brand {
-    flex-direction: row;
-    align-items: center;
-    margin-right: 12px;
-    flex-shrink: 0;
-}
-
-.lg-brand__mark {
-    width: 26px;
-    height: 26px;
-    border-radius: 8px;
-    background-color: rgba(0, 218, 109, 0.14);
-    align-items: center;
-    justify-content: center;
-    margin-right: 8px;
-}
-
-.lg-brand__mark .lg-icon {
-    width: 18px;
-    height: 18px;
-    --icon-color: #3cf29a;
-}
-
-.lg-brand__name {
-    font-size: 13px;
-    -unity-font-style: bold;
-    color: #f4f4f4;
-}
-
 .lg-levels {
     flex-direction: row;
     align-items: center;
@@ -884,14 +855,6 @@
 }
 
 /* ---- Responsive toolbar ----------------------------------------------------------------------------- */
-
-.lg-root--m .lg-brand__name {
-    display: none;
-}
-
-.lg-root--m .lg-brand {
-    margin-right: 8px;
-}
 
 .lg-root--s .lg-tool-button__label,
 .lg-root--s .lg-segmented__label {

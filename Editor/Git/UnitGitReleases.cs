@@ -177,7 +177,7 @@ namespace Orbiters.UnitGit.Editor
 
         private static UnitGitReleaseResult FailUnreadableCatalog(string error)
         {
-            return Fail(error + "\nUnit Git left it unchanged so no release history is lost. Fix the file " +
+            return Fail(error + "\nMixer Git left it unchanged so no release history is lost. Fix the file " +
                         "(for example resolve merge conflict markers) or restore it from Git, then try again.");
         }
 

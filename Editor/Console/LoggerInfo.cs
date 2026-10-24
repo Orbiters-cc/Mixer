@@ -4,6 +4,8 @@ namespace Orbiters.Logger
     public static class LoggerInfo
     {
         public const string DisplayName = "Mixer console";
+        /// <summary>The window's tab: the name without Mixer's.</summary>
+        public const string TabTitle = "Console";
         public const string PackageName = "orbiters.mixer";
         public const string MenuPath = "Tools/Orbiters/Mixer console";
     }

@@ -445,41 +445,6 @@
     border-bottom-color: var(--ug-line);
 }
 
-.ug-brand {
-    flex-direction: row;
-    align-items: center;
-    margin-right: 14px;
-    flex-shrink: 0;
-}
-
-.ug-brand__mark {
-    width: 24px;
-    height: 24px;
-    border-radius: 7px;
-    background-color: rgba(0, 218, 109, 0.14);
-    align-items: center;
-    justify-content: center;
-    margin-right: 8px;
-}
-
-.ug-brand__logo {
-    width: 15px;
-    height: 15px;
-}
-
-.ug-brand__mark .unitgit-icon {
-    width: 16px;
-    height: 16px;
-    --icon-color: #3cf29a;
-    --icon-width: 2;
-}
-
-.ug-brand__name {
-    font-size: 13px;
-    -unity-font-style: bold;
-    color: #f4f4f4;
-}
-
 .ug-tabs {
     flex-direction: row;
     align-items: center;

@@ -88,7 +88,7 @@ namespace Orbiters.UnitGit.Editor
         internal static void OpenWindow()
         {
             var window = GetWindow<UnitGitWindow>();
-            window.titleContent = new GUIContent(UnitGitInfo.DisplayName, MixerLogo.TabIcon(), UnitGitInfo.DisplayName);
+            window.titleContent = new GUIContent(UnitGitInfo.TabTitle, MixerLogo.TabIcon(), UnitGitInfo.DisplayName);
             window.minSize = new Vector2(980f, 540f);
             window.Show();
         }
@@ -96,7 +96,7 @@ namespace Orbiters.UnitGit.Editor
         private void OnEnable()
         {
             // A tab restored from the layout gets its name and Mixer's icon too.
-            titleContent = new GUIContent(UnitGitInfo.DisplayName, MixerLogo.TabIcon(), UnitGitInfo.DisplayName);
+            titleContent = new GUIContent(UnitGitInfo.TabTitle, MixerLogo.TabIcon(), UnitGitInfo.DisplayName);
             if (!string.IsNullOrEmpty(pendingCommitDescription))
             {
                 commitIssue = "Unity reloaded during " + pendingCommitDescription + ". Your message is preserved. Check Log for a completed commit before retrying; no commit or push was restarted automatically.";

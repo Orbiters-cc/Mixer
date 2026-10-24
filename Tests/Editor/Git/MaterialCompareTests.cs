@@ -66,7 +66,7 @@ public class MaterialCompareTests
             Assert.AreEqual(blue, File.ReadAllText(path));
             Assert.AreEqual(roots, scene.rootCount);
             Assert.IsNull(MaterialCompareView.ReadMaterial("", path));
-            Assert.AreEqual(0, Directory.GetFiles("Assets/__UnitGit Compare", "*.mat", SearchOption.AllDirectories).Length);
+            Assert.AreEqual(0, Directory.GetFiles(Orbiters.UnitGit.Editor.Semantic.ModelVersions.Folder, "*.mat", SearchOption.AllDirectories).Length);
         }
         finally
         {

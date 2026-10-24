@@ -78,7 +78,7 @@ namespace Orbiters.Logger.Editor
         private void OnEnable()
         {
             openWindows++;
-            titleContent = new GUIContent(LoggerInfo.DisplayName, MixerLogo.TabIcon(), LoggerInfo.DisplayName);
+            titleContent = new GUIContent(LoggerInfo.TabTitle, MixerLogo.TabIcon(), LoggerInfo.DisplayName);
             minSize = new Vector2(520f, 300f);
             AssemblyReloadEvents.beforeAssemblyReload += runner.Cancel;
         }

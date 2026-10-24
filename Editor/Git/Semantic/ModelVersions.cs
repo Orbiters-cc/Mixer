@@ -13,7 +13,7 @@ namespace Orbiters.UnitGit.Editor.Semantic
     /// </summary>
     internal static class ModelVersions
     {
-        public const string Folder = "Assets/__UnitGit Compare";
+        public const string Folder = "Assets/__Mixer Git Compare";
 
         // Models read directly from the file: nothing is imported, so nothing lands in the project's import cache.
         public static bool IsModelPath(string path)

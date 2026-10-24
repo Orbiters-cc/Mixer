@@ -10,18 +10,23 @@ mesh asset when you commit.
 
 - The Logger became the **Mixer console** and Unit Git **Mixer Git**, both part of Mixer now (from Logger 0.2.7 and
   Unit Git 0.2.10; their history stays in their own repositories): **Tools › Orbiters › Mixer console** (Ctrl+Alt+L) and
-  **Tools › Orbiters › Mixer Git**, their windows titled so, with Mixer's logo on their tab and in their top bar. The
+  **Tools › Orbiters › Mixer Git**; their tabs read Console and Git, with Mixer's logo, and their top bars start with
+  their own controls. The
   console stays an assembly without references (`Orbiters.Mixer.Console.Editor`), so it keeps working while other
   packages fail to compile; its parts for the Toolkit, Mixer Git and the VRChat SDK are assemblies of their own. Their
   code keeps its names (namespaces, editor preferences, `Library/Orbiters/Logger/`, the `UnitGit-Release` trailer), so
   settings, the message ledger, a commit visit under way and release checkpoints carry over. Mixer Git keeps backups in
   Documents/Mixer Git Backups/<project> by default. Mixer's logo is an assembly of its own
-  (`Orbiters.Mixer.Brand.Editor`), which the console draws too, in its top bar and in the source chips of Mixer, the
+  (`Orbiters.Mixer.Brand.Editor`), which the console draws too, on its tab and in the source chips of Mixer, the
   Mixer console and Mixer Git.
 - MCB records its release checkpoints and ReFit files through Mixer Git, and My Avatar its Save checkpoints and
   Versioning card: both look for Mixer 0.2 instead of Unit Git.
 - Mixer Git writes its headings into `.gitignore` only with a rule under them that the file lacks: a project that has
   the rules under Unit Git's heading gets nothing more.
+- The console's details open on the explanation of the selected log (the bulb card), above its message and stack trace.
+- Mixer Git compares model versions in `Assets/__Mixer Git Compare`.
+- Mixer tells Orbiters Toolkit the mesh each working copy stands for (`WorkingMeshes.OriginalOf`), so the base
+  fingerprint and My Avatar's base detection see the original model while a session edits it.
 - The console's search field shows its Ctrl+F hint only when it is wide enough (beside a full top bar the hint covered
   the Aa switch), and a narrow placeholder ends with an ellipsis.
 

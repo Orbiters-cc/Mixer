@@ -224,9 +224,20 @@ namespace Orbiters.Logger.Editor
                 return;
             }
 
+            // Explanation first: what the message means and what to do about it, above the message and its stack trace.
+            string text = store.Texts.Plain(message.Text);
+            int explanation = ExplanationOf(messageId);
+            if (explanation >= 0)
+            {
+                var explained = LogExplanations.Explain(explanation, text);
+                if (explained != null)
+                {
+                    detailsBody.Insert(0, BuildExplanation(explained));
+                }
+            }
+
             // Message
             var messageCard = Card(main, null);
-            string text = store.Texts.Plain(message.Text);
             bool cut = text.Length > MaxDetailChars;
             var messageLabel = new Label(RichText.Literal(cut ? text.Substring(0, MaxDetailChars) : text));
             messageLabel.AddToClassList("lg-details__message");
@@ -272,17 +283,6 @@ namespace Orbiters.Logger.Editor
             else if (message.Stack > 0)
             {
                 BuildStack(Card(main, "Stack trace"), store.Texts[message.Stack]);
-            }
-
-            // Explanation
-            int explanation = ExplanationOf(messageId);
-            if (explanation >= 0)
-            {
-                var explained = LogExplanations.Explain(explanation, text);
-                if (explained != null)
-                {
-                    side.Add(BuildExplanation(explained));
-                }
             }
 
             // Since when (and since which commit) it keeps appearing

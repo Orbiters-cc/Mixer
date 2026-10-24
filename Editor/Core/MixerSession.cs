@@ -34,6 +34,8 @@ namespace Orbiters.Mixer.Editor
             MixerHistory.Notice += text => Notice?.Invoke(text, false);
             MixerMeshGuard.AdoptCopy = AdoptCopy;
             MixerMeshGuard.Owned = OwnsWorking;
+            // Tools that read a renderer's model file (My Avatar's base detection, the base fingerprint) see the original.
+            Orbiters.Toolkit.Editor.WorkingMeshes.OriginalOf = MixerMeshGuard.OriginalOf;
             HookLifecycle();
         }
 

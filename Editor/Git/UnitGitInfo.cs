@@ -4,5 +4,7 @@ namespace Orbiters.UnitGit
     public static class UnitGitInfo
     {
         public const string DisplayName = "Mixer Git";
+        /// <summary>The window's tab: the name without Mixer's.</summary>
+        public const string TabTitle = "Git";
     }
 }

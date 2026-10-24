@@ -76,17 +76,6 @@ namespace Orbiters.UnitGit.Editor
             var bar = new VisualElement();
             bar.AddToClassList("ug-topbar");
 
-            var brand = new VisualElement();
-            brand.AddToClassList("ug-brand");
-            var mark = new VisualElement();
-            mark.AddToClassList("ug-brand__mark");
-            var logo = new MixerLogo.Element();
-            logo.AddToClassList("ug-brand__logo");
-            mark.Add(logo);
-            brand.Add(mark);
-            brand.Add(UnitGitUi.Text(UnitGitInfo.DisplayName, "ug-brand__name"));
-            bar.Add(brand);
-
             tabs = new UnitGitTabs();
             tabs.Add(UnitGitTab.LocalChanges.ToString(), "Changes", UnitGitIconKind.Changes, () => SetActiveTab(UnitGitTab.LocalChanges),
                 changesBadge = UnitGitUi.Badge(0)).tooltip = "What changed since the last commit, and the commit (Ctrl+K)";
