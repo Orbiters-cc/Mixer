@@ -93,6 +93,7 @@ namespace Orbiters.Mixer.Editor.Capture
             {
                 var sheet = AssetDatabase.LoadAssetAtPath<StyleSheet>(path);
                 if (sheet != null) root.styleSheets.Add(sheet);
+                Orbiters.Mixer.Editor.MixerAccent.Apply(root);
             }
 
             BuildTopBar();

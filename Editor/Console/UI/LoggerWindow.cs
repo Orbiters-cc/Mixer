@@ -81,7 +81,11 @@ namespace Orbiters.Logger.Editor
             titleContent = new GUIContent(LoggerInfo.TabTitle, MixerLogo.TabIcon(), LoggerInfo.DisplayName);
             minSize = new Vector2(520f, 300f);
             AssemblyReloadEvents.beforeAssemblyReload += runner.Cancel;
+            MixerAccent.Changed += QueueAccentRefilter;
         }
+
+        // Source chips and charts take a new accent at once.
+        private void QueueAccentRefilter() => QueueRefilter();
 
         // A docked tab behind another one does no work; it catches up when shown again.
         private void OnBecameVisible()
@@ -96,6 +100,7 @@ namespace Orbiters.Logger.Editor
         {
             openWindows = Math.Max(0, openWindows - 1);
             AssemblyReloadEvents.beforeAssemblyReload -= runner.Cancel;
+            MixerAccent.Changed -= QueueAccentRefilter;
             runner.Cancel();
             Unbind();
             DisposeDetails();
@@ -130,6 +135,7 @@ namespace Orbiters.Logger.Editor
             if (sheet != null && !rootVisualElement.styleSheets.Contains(sheet))
             {
                 rootVisualElement.styleSheets.Add(sheet);
+                Orbiters.Mixer.Editor.MixerAccent.Apply(rootVisualElement);
             }
 
             rootVisualElement.EnableInClassList("lg-root--compact", Compact);

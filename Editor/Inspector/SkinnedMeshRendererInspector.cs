@@ -83,6 +83,7 @@ namespace Orbiters.Mixer.Editor
             }));
             if (targets.Length != 1 || Renderer == null) return root;
             if (Style != null) root.styleSheets.Add(Style);
+            Orbiters.Mixer.Editor.MixerAccent.Apply(root);
             if (!EditorGUIUtility.isProSkin) root.AddToClassList("mx-skin-light");
             root.Add(BuildShapeKeys());
             root.Add(BuildVertexGroups());

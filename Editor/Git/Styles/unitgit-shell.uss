@@ -24,11 +24,6 @@
     --ug-text: #e6e6e6;
     --ug-text-2: #a8a8a8;
     --ug-text-3: #7c7c7c;
-    --ug-accent: #00da6d;
-    --ug-accent-hover: #1ee57f;
-    --ug-on-accent: #06140c;
-    --ug-select: rgba(0, 218, 109, 0.15);
-    --ug-select-strong: rgba(0, 218, 109, 0.23);
     --ug-modified: #6aa7ff;
     --ug-added: #43d17f;
     --ug-deleted: #9e9e9e;
@@ -94,11 +89,11 @@
 }
 
 .ug-icon-button--on {
-    background-color: var(--ug-select);
+    background-color: var(--mixer-accent-a15);
 }
 
 .ug-icon-button--on .unitgit-icon {
-    --icon-color: #3cf29a;
+    --icon-color: var(--mixer-accent-text);
 }
 
 .ug-button {
@@ -153,19 +148,19 @@
 }
 
 .ug-button--primary {
-    background-color: var(--ug-accent);
+    background-color: var(--mixer-accent);
 }
 
 .ug-button--primary:hover {
-    background-color: var(--ug-accent-hover);
+    background-color: var(--mixer-accent-hover);
 }
 
 .ug-button--primary .ug-button__label {
-    color: var(--ug-on-accent);
+    color: var(--mixer-accent-on);
 }
 
 .ug-button--primary .unitgit-icon {
-    --icon-color: #06140c;
+    --icon-color: var(--mixer-accent-on);
 }
 
 .ug-button--ghost {
@@ -221,8 +216,8 @@
 }
 
 .ug-chip--accent {
-    background-color: rgba(0, 218, 109, 0.13);
-    color: #3cf29a;
+    background-color: var(--mixer-accent-a13);
+    color: var(--mixer-accent-text);
 }
 
 .ug-chip--head {
@@ -231,8 +226,8 @@
 }
 
 .ug-chip--local {
-    background-color: rgba(0, 218, 109, 0.13);
-    color: #3cf29a;
+    background-color: var(--mixer-accent-a13);
+    color: var(--mixer-accent-text);
 }
 
 .ug-chip--remote {
@@ -252,8 +247,8 @@
 
 /* The branch "Back" returns to, at its latest commit, while a commit is visited: the same green as the Back button. */
 .ug-chip--return {
-    background-color: var(--ug-accent);
-    color: var(--ug-on-accent);
+    background-color: var(--mixer-accent);
+    color: var(--mixer-accent-on);
 }
 
 .ug-badge {
@@ -270,8 +265,8 @@
 }
 
 .ug-badge--accent {
-    background-color: rgba(0, 218, 109, 0.18);
-    color: #3cf29a;
+    background-color: var(--mixer-accent-a18);
+    color: var(--mixer-accent-text);
 }
 
 .ug-badge--danger {
@@ -293,10 +288,10 @@
     bottom: 0;
     border-width: 2px;
     border-radius: 7px;
-    border-top-color: var(--ug-accent);
-    border-right-color: rgba(0, 218, 109, 0.35);
-    border-bottom-color: rgba(0, 218, 109, 0.1);
-    border-left-color: rgba(0, 218, 109, 0.1);
+    border-top-color: var(--mixer-accent);
+    border-right-color: var(--mixer-accent-a35);
+    border-bottom-color: var(--mixer-accent-a10);
+    border-left-color: var(--mixer-accent-a10);
 }
 
 .ug-enter {
@@ -336,7 +331,7 @@
 .ug-search:focus .unity-base-text-field__input,
 .ug-search .unity-base-text-field__input:focus,
 .ug-search .unity-text-field__input:focus {
-    border-color: rgba(0, 218, 109, 0.55);
+    border-color: var(--mixer-accent-a55);
     background-color: var(--ug-field-focus);
 }
 
@@ -409,7 +404,7 @@
     width: 11px;
     height: 11px;
     opacity: 0;
-    --icon-color: #06140c;
+    --icon-color: var(--mixer-accent-on);
     --icon-width: 3.2;
     transition-property: opacity;
     transition-duration: 0.1s;
@@ -417,14 +412,14 @@
 
 .ug-check--on,
 .ug-check--mixed {
-    border-color: var(--ug-accent);
-    background-color: var(--ug-accent);
+    border-color: var(--mixer-accent);
+    background-color: var(--mixer-accent);
 }
 
 .ug-check--on:hover,
 .ug-check--mixed:hover {
-    border-color: var(--ug-accent-hover);
-    background-color: var(--ug-accent-hover);
+    border-color: var(--mixer-accent-hover);
+    background-color: var(--mixer-accent-hover);
 }
 
 .ug-check--on .ug-check__mark,
@@ -519,7 +514,7 @@
 }
 
 .ug-tab--on .unitgit-icon {
-    --icon-color: #3cf29a;
+    --icon-color: var(--mixer-accent-text);
 }
 
 .ug-tab--conflicts .unitgit-icon {
@@ -580,7 +575,7 @@
 .ug-branch-widget .unitgit-icon {
     width: 15px;
     height: 15px;
-    --icon-color: #3cf29a;
+    --icon-color: var(--mixer-accent-text);
     --icon-width: 2;
 }
 
@@ -602,7 +597,7 @@
 }
 
 .ug-branch-widget__sync--ahead {
-    color: #3cf29a;
+    color: var(--mixer-accent-text);
 }
 
 .ug-branch-widget__sync--behind {
@@ -806,7 +801,7 @@
     padding: 6px 6px 6px 12px;
     border-radius: 12px;
     border-width: 1px;
-    border-color: rgba(0, 218, 109, 0.4);
+    border-color: var(--mixer-accent-a40);
     background-color: #2f3d34;
     opacity: 1;
     translate: 0 0;
@@ -834,7 +829,7 @@
     width: 15px;
     height: 15px;
     margin-right: 9px;
-    --icon-color: #3cf29a;
+    --icon-color: var(--mixer-accent-text);
     --icon-width: 2.4;
 }
 
@@ -913,7 +908,7 @@
 }
 
 .ug-popup__row:active {
-    background-color: var(--ug-select);
+    background-color: var(--mixer-accent-a15);
 }
 
 .ug-popup__row .unitgit-icon {
@@ -929,7 +924,7 @@
 }
 
 .ug-popup__row--action .unitgit-icon {
-    --icon-color: #3cf29a;
+    --icon-color: var(--mixer-accent-text);
 }
 
 .ug-popup__row--open {

@@ -49,6 +49,7 @@ namespace Orbiters.UnitGit.Editor
             {
                 var sheet = AssetDatabase.LoadAssetAtPath<StyleSheet>(path);
                 if (sheet != null) root.styleSheets.Add(sheet);
+                Orbiters.Mixer.Editor.MixerAccent.Apply(root);
             }
             var search = UnitGitUi.Search(string.Empty, "Search branches", value => { filter = value ?? string.Empty; Fill(); }, "ug-popup__search");
             root.Add(search);

@@ -21,7 +21,7 @@
 }
 
 .unitgit-split-view > .unity-two-pane-split-view__dragline-anchor:hover {
-    background-color: rgba(0, 218, 109, 0.6);
+    background-color: var(--mixer-accent-a60);
 }
 
 /* Every pane's toolbar is the same grey, so the row of toolbars reads as one across the splits. */
@@ -67,7 +67,7 @@
 
 .ug-row--selected,
 .ug-row--selected:hover {
-    background-color: var(--ug-select);
+    background-color: var(--mixer-accent-a15);
 }
 
 .ug-row__chevron {
@@ -157,7 +157,7 @@
     width: 38px;
     height: 38px;
     border-radius: 12px;
-    background-color: rgba(0, 218, 109, 0.12);
+    background-color: var(--mixer-accent-a12);
     align-items: center;
     justify-content: center;
     margin-bottom: 10px;
@@ -166,7 +166,7 @@
 .ug-empty__mark .unitgit-icon {
     width: 20px;
     height: 20px;
-    --icon-color: #3cf29a;
+    --icon-color: var(--mixer-accent-text);
     --icon-width: 2.4;
 }
 
@@ -314,7 +314,7 @@
 
 .unitgit-local-commit-message .unity-base-text-field__input:focus,
 .unitgit-local-commit-message .unity-text-field__input:focus {
-    border-color: rgba(0, 218, 109, 0.55);
+    border-color: var(--mixer-accent-a55);
     background-color: var(--ug-field-focus);
 }
 
@@ -478,11 +478,11 @@
 }
 
 .ug-dropdown--on .ug-dropdown__label {
-    color: #3cf29a;
+    color: var(--mixer-accent-text);
 }
 
 .ug-dropdown--on .ug-dropdown__chevron {
-    --icon-color: #3cf29a;
+    --icon-color: var(--mixer-accent-text);
 }
 
 .ug-diff {
@@ -955,20 +955,20 @@
 }
 
 .ug-filter--on {
-    background-color: var(--ug-select);
+    background-color: var(--mixer-accent-a15);
 }
 
 .ug-filter--on:hover {
-    background-color: var(--ug-select-strong);
+    background-color: var(--mixer-accent-a23);
 }
 
 .ug-filter--on .ug-filter__label {
-    color: #3cf29a;
+    color: var(--mixer-accent-text);
     -unity-font-style: bold;
 }
 
 .ug-filter--on .unitgit-icon {
-    --icon-color: #3cf29a;
+    --icon-color: var(--mixer-accent-text);
 }
 
 .ug-log-count {
@@ -1037,7 +1037,7 @@
 
 .unitgit-log-list .unitgit-log-row--selected,
 .unitgit-log-list .unitgit-log-row--selected:hover {
-    background-color: var(--ug-select);
+    background-color: var(--mixer-accent-a15);
 }
 
 .ug-graph {
@@ -1161,8 +1161,8 @@
     padding: 0 10px 0 10px;
     border-radius: 11px;
     border-width: 1px;
-    border-color: rgba(0, 218, 109, 0.35);
-    background-color: rgba(0, 218, 109, 0.08);
+    border-color: var(--mixer-accent-a35);
+    background-color: var(--mixer-accent-a08);
 }
 
 .ug-log-release__name {
@@ -1187,8 +1187,8 @@
 }
 
 .ug-log-row--release.unitgit-log-row--selected .ug-log-release__pill {
-    border-color: rgba(0, 218, 109, 0.8);
-    background-color: rgba(0, 218, 109, 0.16);
+    border-color: var(--mixer-accent-a80);
+    background-color: var(--mixer-accent-a16);
 }
 
 /* ---- Log: details ----------------------------------------------------------------------------------- */
@@ -1612,7 +1612,7 @@
     width: 15px;
     height: 15px;
     margin-right: 8px;
-    --icon-color: #3cf29a;
+    --icon-color: var(--mixer-accent-text);
     --icon-width: 2;
 }
 
@@ -1767,7 +1767,7 @@
 
 .ug-dialog__field .unity-base-text-field__input:focus,
 .ug-dialog__field .unity-text-field__input:focus {
-    border-color: rgba(0, 218, 109, 0.6);
+    border-color: var(--mixer-accent-a60);
 }
 
 .ug-dialog__field--multiline {
@@ -1839,7 +1839,7 @@
 
 .ug-segmented__option--on {
     background-color: var(--ug-raised);
-    color: #3cf29a;
+    color: var(--mixer-accent-text);
 }
 
 .ug-segmented__option.ug-pressed {
@@ -1893,13 +1893,13 @@
 }
 
 .ug-option--on {
-    border-color: rgba(0, 218, 109, 0.55);
-    background-color: rgba(0, 218, 109, 0.08);
+    border-color: var(--mixer-accent-a55);
+    background-color: var(--mixer-accent-a08);
 }
 
 .ug-option--on .ug-option__dot {
     border-width: 4px;
-    border-color: var(--ug-accent);
+    border-color: var(--mixer-accent);
 }
 
 .ug-option--danger.ug-option--on {
@@ -2095,7 +2095,7 @@
     height: 8px;
     margin-right: 8px;
     border-radius: 4px;
-    background-color: var(--ug-accent);
+    background-color: var(--mixer-accent);
 }
 
 .ug-upload__headline-text {

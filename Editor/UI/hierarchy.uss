@@ -10,10 +10,10 @@
 .mxh-filter.mx-pressed { scale: 0.94 0.94; }
 .mxh-filter__icon { width: 11px; height: 11px; margin-right: 4px; --icon-color: #9a9a9a; }
 .mxh-filter__text { margin: 0; padding: 0; font-size: 10px; color: #b5b5b5; -unity-font-style: bold; }
-.mxh-filter__count { margin: 0 0 0 4px; padding: 0 4px; min-width: 14px; height: 13px; border-radius: 7px; font-size: 9px; -unity-font-style: bold; -unity-text-align: middle-center; color: #0f1a14; background-color: #3cf29a; }
-.mxh-filter--on, .mxh-filter--on:hover { background-color: rgba(0, 218, 109, 0.16); }
-.mxh-filter--on .mxh-filter__text { color: #3cf29a; }
-.mxh-filter--on .mxh-filter__icon { --icon-color: #3cf29a; }
+.mxh-filter__count { margin: 0 0 0 4px; padding: 0 4px; min-width: 14px; height: 13px; border-radius: 7px; font-size: 9px; -unity-font-style: bold; -unity-text-align: middle-center; color: #0f1a14; background-color: var(--mixer-accent-text); }
+.mxh-filter--on, .mxh-filter--on:hover { background-color: var(--mixer-accent-a16); }
+.mxh-filter--on .mxh-filter__text { color: var(--mixer-accent-text); }
+.mxh-filter--on .mxh-filter__icon { --icon-color: var(--mixer-accent-text); }
 .mxh-search__icon { position: absolute; left: 8px; top: 5px; width: 14px; height: 14px; --icon-color: #8a8a8a; }
 .mxh-add { width: 24px; height: 24px; min-width: 24px; }
 .mxh-chips { flex-direction: row; flex-wrap: wrap; padding: 4px 6px 2px 8px; background-color: var(--mx-bar); border-bottom-width: 1px; border-bottom-color: var(--mx-line); flex-shrink: 0; }
@@ -22,18 +22,18 @@
 .mxh-chip.mx-pressed { scale: 0.94 0.94; }
 .mxh-chip__icon { width: 11px; height: 11px; margin-right: 4px; --icon-color: #9a9a9a; }
 .mxh-chip__text { margin: 0; padding: 0; font-size: 10px; color: #b5b5b5; -unity-font-style: bold; }
-.mxh-chip--on, .mxh-chip--on:hover { background-color: rgba(0, 218, 109, 0.16); }
-.mxh-chip--on .mxh-chip__text { color: #3cf29a; }
-.mxh-chip--on .mxh-chip__icon { --icon-color: #3cf29a; }
+.mxh-chip--on, .mxh-chip--on:hover { background-color: var(--mixer-accent-a16); }
+.mxh-chip--on .mxh-chip__text { color: var(--mixer-accent-text); }
+.mxh-chip--on .mxh-chip__icon { --icon-color: var(--mixer-accent-text); }
 
 .mxh-list { flex-grow: 1; }
 .mxh-row { flex-direction: row; align-items: center; padding-right: 4px; border-bottom-width: 0; }
 .mxh-row--odd { background-color: rgba(255, 255, 255, 0.012); }
 .mxh-row:hover { background-color: var(--mx-hover); }
-.mxh-row--selected, .mxh-row--selected:hover { background-color: rgba(0, 218, 109, 0.16); }
+.mxh-row--selected, .mxh-row--selected:hover { background-color: var(--mixer-accent-a16); }
 /* A bone sub-selected in Weight Paint: Mixer's pick, lighter than Unity's selection, its name in the accent. */
-.mxh-row.mxh-row--subselected, .mxh-row.mxh-row--subselected:hover { background-color: rgba(0, 218, 109, 0.09); }
-.mxh-row.mxh-row--subselected .mxh-row__name { color: #3cf29a; -unity-font-style: bold; }
+.mxh-row.mxh-row--subselected, .mxh-row.mxh-row--subselected:hover { background-color: var(--mixer-accent-a09); }
+.mxh-row.mxh-row--subselected .mxh-row__name { color: var(--mixer-accent-text); -unity-font-style: bold; }
 /* A ping (an Inspector field's click, the Console, a tool's "show"): the Project's flash. */
 .mxh-row.mxh-row--ping, .mxh-row.mxh-row--ping:hover { background-color: rgba(245, 183, 79, 0.22); transition-property: background-color; transition-duration: 0.3s; }
 /* Other tools' decorations (EditorApplication.hierarchyWindowItemOnGUI) over the name's line, under its own controls. */
@@ -45,7 +45,7 @@
 .mxh-row__chevron .mx-icon { width: 10px; height: 10px; --icon-color: #8a8a8a; transition-property: rotate; transition-duration: 0.12s; }
 .mxh-row__chevron--open .mx-icon { rotate: 90deg; }
 .mxh-row__dot { width: 7px; height: 7px; border-radius: 4px; margin: 0 6px 0 2px; border-width: 1px; border-color: rgba(255, 255, 255, 0.22); background-color: rgba(0, 0, 0, 0); flex-shrink: 0; }
-.mxh-row__dot--linked { border-width: 0; background-color: var(--mx-accent); }
+.mxh-row__dot--linked { border-width: 0; background-color: var(--mixer-accent); }
 .mxh-row__dot--excluded { border-width: 0; background-color: #5a5a5a; }
 .mxh-row__dot--owned { border-width: 0; background-color: var(--mx-violet); }
 .mxh-row__icon { width: 16px; height: 16px; margin-right: 5px; flex-shrink: 0; }
@@ -62,7 +62,7 @@
 .mxh-row__badges { flex-direction: row; align-items: center; margin-left: 6px; }
 .mxh-badge { margin: 0 3px 0 0; padding: 0 5px; height: 14px; border-radius: 7px; font-size: 9px; -unity-font-style: bold; color: #8fbaff; background-color: rgba(143, 186, 255, 0.14); -unity-text-align: middle-center; }
 .mxh-badge--missing { color: #ff8a8a; background-color: rgba(255, 107, 107, 0.16); }
-.mxh-badge--mixer { color: #3cf29a; background-color: rgba(0, 218, 109, 0.14); }
+.mxh-badge--mixer { color: var(--mixer-accent-text); background-color: var(--mixer-accent-a14); }
 .mxh-row__components { flex-direction: row; align-items: center; margin-right: 4px; }
 .mxh-row__component { width: 14px; height: 14px; margin-left: 2px; opacity: 0.75; }
 .mxh-row__more { margin: 0 0 0 2px; padding: 0; font-size: 10px; color: #7c7c7c; }
@@ -73,8 +73,8 @@
 .mxh-row--hidden .mxh-row__name { opacity: 0.6; }
 /* Cut, waiting for a Paste to move it. */
 .mxh-row--cut .mxh-row__body, .mxh-row--cut .mxh-row__picture { opacity: 0.45; }
-.mxh-dragline { position: absolute; right: 2px; height: 2px; border-radius: 1px; background-color: var(--mx-accent); }
-.mxh-dragline--onto { background-color: rgba(0, 218, 109, 0.2); border-radius: 6px; }
+.mxh-dragline { position: absolute; right: 2px; height: 2px; border-radius: 1px; background-color: var(--mixer-accent); }
+.mxh-dragline--onto { background-color: var(--mixer-accent-a20); border-radius: 6px; }
 .mxh-footer { height: 22px; min-height: 22px; padding: 0 10px; -unity-text-align: middle-left; color: #8c8c8c; font-size: 10px; background-color: var(--mx-bar); border-top-width: 1px; border-top-color: var(--mx-line); flex-shrink: 0; }
 .mxh-root--compact .mxh-row__icon { width: 14px; height: 14px; }
 .mxh-root--compact .mxh-row__name { font-size: 11px; }
@@ -86,12 +86,12 @@
 .mxh-row__active-check { width: 9px; height: 9px; --icon-color: #d8d8d8; opacity: 0; }
 .mxh-row__active--on { background-color: rgba(255, 255, 255, 0.1); border-color: rgba(255, 255, 255, 0); }
 .mxh-row__active--on .mxh-row__active-check { opacity: 1; }
-.mxh-row--selected .mxh-row__active--on .mxh-row__active-check { --icon-color: #3cf29a; }
+.mxh-row--selected .mxh-row__active--on .mxh-row__active-check { --icon-color: var(--mixer-accent-text); }
 .mxh-row__picture { flex-direction: row; align-items: center; justify-content: center; flex-shrink: 0; margin-right: 5px; }
 .mxh-row--picture .mxh-row__picture { width: 40px; height: 40px; margin-right: 8px; }
 .mxh-row__thumbnail { width: 40px; height: 40px; }
 .mxh-row__glyph { width: 14px; height: 14px; margin: 1px; --icon-color: #b4b4b4; }
-.mxh-row--selected .mxh-row__glyph { --icon-color: #3cf29a; }
+.mxh-row--selected .mxh-row__glyph { --icon-color: var(--mixer-accent-text); }
 .mxh-row__thumbnail--waiting { opacity: 0.55; }
 .mxh-row__sphere { margin: 0 2px 0 6px; }
 .mxh-row__sphere .orb-sphere__ball { width: 38px; height: 38px; border-radius: 19px; }
@@ -106,16 +106,16 @@
 .mxh-row__vrchat { margin: 0 5px 0 1px; }
 .mxh-drop { flex-direction: column; align-items: center; justify-content: center; flex-shrink: 0; width: 132px; height: 40px; margin: 0 2px 0 6px; padding: 0 8px; border-radius: 6px; border-width: 0; background-color: rgba(0, 0, 0, 0.12); transition-property: background-color; transition-duration: 0.12s; }
 .mxh-drop:hover { background-color: rgba(255, 255, 255, 0.04); }
-.mxh-drop--over, .mxh-drop--over:hover { background-color: rgba(0, 218, 109, 0.12); }
+.mxh-drop--over, .mxh-drop--over:hover { background-color: var(--mixer-accent-a12); }
 .mxh-drop__icon { width: 12px; height: 12px; margin-bottom: 3px; --icon-color: #8a8a8a; }
-.mxh-drop--over .mxh-drop__icon, .mxh-drop--busy .mxh-drop__icon { --icon-color: #3cf29a; }
+.mxh-drop--over .mxh-drop__icon, .mxh-drop--busy .mxh-drop__icon { --icon-color: var(--mixer-accent-text); }
 .mxh-drop__text { margin: 0; padding: 0; font-size: 10px; color: #9a9a9a; -unity-font-style: bold; }
-.mxh-drop--busy .mxh-drop__text, .mxh-drop--over .mxh-drop__text { color: #3cf29a; }
+.mxh-drop--busy .mxh-drop__text, .mxh-drop--over .mxh-drop__text { color: var(--mixer-accent-text); }
 .mxh-bones { flex-direction: row; align-items: center; overflow: hidden; flex-shrink: 0; }
 .mxh-row__line > .mxh-bones { margin-left: 8px; }
 .mxh-bone { height: 16px; min-height: 16px; margin: 0 3px 0 0; padding: 0 7px; border-width: 0; border-radius: 8px; background-color: rgba(255, 255, 255, 0.06); background-image: none; font-size: 9px; -unity-font-style: bold; color: #c8c8c8; scale: 1 1; transition-property: background-color, scale; transition-duration: 0.12s, 0.16s; transition-timing-function: ease-out, ease-out-back; }
 .mxh-bone:hover { background-color: rgba(255, 255, 255, 0.12); color: #ffffff; }
-.mxh-bone.mx-pressed { scale: 0.92 0.92; background-color: rgba(0, 218, 109, 0.22); color: #3cf29a; }
+.mxh-bone.mx-pressed { scale: 0.92 0.92; background-color: var(--mixer-accent-a22); color: var(--mixer-accent-text); }
 .mxh-bone:disabled { opacity: 0.35; }
 .mxh-refit { height: 18px; min-height: 18px; margin: 0 4px 0 0; padding: 0 9px; font-size: 10px; }
 /* Update: a newer version of an item (beside ReFit) or of the avatar's custom base (beside its name, as small). */

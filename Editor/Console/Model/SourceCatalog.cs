@@ -9,15 +9,20 @@ namespace Orbiters.Logger.Editor
         public readonly int Id;
         public readonly string Key;
         public readonly string Name;
-        public readonly Color Color;
+        /// <summary>One of Orbiters' own tools: its chip wears Mixer's accent, whichever it is now.</summary>
+        public readonly bool Accent;
+        private readonly Color color;
 
-        public LogSource(int id, string key, string name, Color color)
+        public LogSource(int id, string key, string name, Color color, bool accent = false)
         {
             Id = id;
             Key = key;
             Name = name;
-            Color = color;
+            this.color = color;
+            Accent = accent;
         }
+
+        public Color Color => Accent ? Orbiters.Mixer.Editor.MixerAccent.Text : color;
     }
 
     /// <summary>
@@ -122,15 +127,13 @@ namespace Orbiters.Logger.Editor
             { "udonsharp", Hex("#67e8f9") },
             { "gesture manager", Hex("#f0a35e") },
             { "mcp for unity", Hex("#2ea3ff") },
-            { "mcb", Hex("#3cf29a") },
-            { "my avatar", Hex("#3cf29a") },
             { "orbiters toolkit", Hex("#35d08a") },
-            { "mixer git", Hex("#3cf29a") },
-            { "refit", Hex("#3cf29a") },
-            { "mixer", Hex("#3cf29a") },
-            { "mixer console", Hex("#3cf29a") },
             { "timings", Hex("#f2c46d") },
         };
+
+        // Orbiters' own tools, in Mixer's accent.
+        private static readonly HashSet<string> AccentKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { "mcb", "my avatar", "mixer git", "refit", "mixer", "mixer console" };
 
         private static Dictionary<string, string> registeredPackages;
 
@@ -168,7 +171,7 @@ namespace Orbiters.Logger.Editor
             }
 
             id = sources.Count;
-            sources.Add(new LogSource(id, key, name.Trim(), ColorFor(key)));
+            sources.Add(new LogSource(id, key, name.Trim(), ColorFor(key), AccentKeys.Contains(key)));
             byKey[key] = id;
             return id;
         }
@@ -182,7 +185,7 @@ namespace Orbiters.Logger.Editor
             }
 
             int id = sources.Count;
-            sources.Add(new LogSource(id, key, name, ColorFor(key)));
+            sources.Add(new LogSource(id, key, name, ColorFor(key), AccentKeys.Contains(key)));
             byKey[key] = id;
         }
 
@@ -434,6 +437,11 @@ namespace Orbiters.Logger.Editor
 
         internal static Color ColorFor(string key)
         {
+            if (AccentKeys.Contains(key))
+            {
+                return Orbiters.Mixer.Editor.MixerAccent.Text;
+            }
+
             if (KnownColors.TryGetValue(key, out var known))
             {
                 return known;

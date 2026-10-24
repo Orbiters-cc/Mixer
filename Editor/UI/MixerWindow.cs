@@ -87,6 +87,7 @@ namespace Orbiters.Mixer.Editor
             root.AddToClassList("mx-root");
             var sheet = AssetDatabase.LoadAssetAtPath<StyleSheet>(StyleSheetPath);
             if (sheet != null) root.styleSheets.Add(sheet);
+            Orbiters.Mixer.Editor.MixerAccent.Apply(root);
             root.focusable = true;
 
             BuildTopBar();

@@ -41,7 +41,7 @@
 .rp-orbit .lg-icon {
     width: 26px;
     height: 26px;
-    --icon-color: #3cf29a;
+    --icon-color: var(--mixer-accent-text);
     --icon-width: 2;
     transition-property: opacity, scale;
     transition-duration: 0.25s, 0.35s;
@@ -107,7 +107,7 @@
     height: 7px;
     margin-left: 8px;
     border-radius: 4px;
-    background-color: var(--lg-accent);
+    background-color: var(--mixer-accent);
 }
 
 .rp-account--off .rp-account__dot {
@@ -196,7 +196,7 @@
 }
 
 .rp-note--focus {
-    border-color: rgba(0, 218, 109, 0.45);
+    border-color: var(--mixer-accent-a45);
     background-color: #242424;
 }
 
@@ -210,7 +210,7 @@
     width: 15px;
     height: 15px;
     margin-right: 8px;
-    --icon-color: #3cf29a;
+    --icon-color: var(--mixer-accent-text);
 }
 
 .rp-note__title {
@@ -733,7 +733,7 @@
     flex-shrink: 0;
     border-width: 0;
     border-radius: 20px;
-    background-color: var(--lg-accent);
+    background-color: var(--mixer-accent);
     background-image: none;
     overflow: hidden;
     scale: 1 1;
@@ -743,7 +743,7 @@
 }
 
 .rp-go:hover {
-    background-color: var(--lg-accent-hover);
+    background-color: var(--mixer-accent-hover);
 }
 
 .rp-go.lg-pressed {
@@ -758,12 +758,12 @@
     width: 17px;
     height: 17px;
     margin-right: 9px;
-    --icon-color: #06140c;
+    --icon-color: var(--mixer-accent-on);
     --icon-width: 2.3;
 }
 
 .rp-go__label {
-    color: #06140c;
+    color: var(--mixer-accent-on);
     font-size: 14px;
     -unity-font-style: bold;
 }
@@ -820,7 +820,7 @@
 }
 
 .rp-work__percent {
-    color: #3cf29a;
+    color: var(--mixer-accent-text);
     font-size: 22px;
     -unity-font-style: bold;
 }
@@ -837,7 +837,7 @@
     height: 100%;
     width: 0;
     border-radius: 4px;
-    background-color: var(--lg-accent);
+    background-color: var(--mixer-accent);
     overflow: hidden;
     transition-property: width;
     transition-duration: 0.45s;
@@ -878,7 +878,7 @@
 }
 
 .rp-step--running {
-    background-color: rgba(0, 218, 109, 0.07);
+    background-color: var(--mixer-accent-a07);
 }
 
 .rp-step__tile {
@@ -899,12 +899,12 @@
 
 .rp-step--running .rp-step__tile .lg-icon,
 .rp-step--done .rp-step__tile .lg-icon {
-    --icon-color: #3cf29a;
+    --icon-color: var(--mixer-accent-text);
 }
 
 .rp-step--running .rp-step__tile,
 .rp-step--done .rp-step__tile {
-    background-color: rgba(0, 218, 109, 0.13);
+    background-color: var(--mixer-accent-a13);
 }
 
 .rp-step--failed .rp-step__tile {
@@ -970,7 +970,7 @@
     border-radius: 11px;
     align-items: center;
     justify-content: center;
-    background-color: var(--lg-accent);
+    background-color: var(--mixer-accent);
     scale: 1 1;
     transition-property: scale;
     transition-duration: 0.38s;
@@ -984,7 +984,7 @@
 .rp-step__check .lg-icon {
     width: 13px;
     height: 13px;
-    --icon-color: #06140c;
+    --icon-color: var(--mixer-accent-on);
     --icon-width: 3;
 }
 
@@ -1274,7 +1274,7 @@
 }
 
 .rp-stat--done .lg-icon {
-    --icon-color: #3cf29a;
+    --icon-color: var(--mixer-accent-text);
 }
 
 /* Unity centres a button's text; a cause title reads from the left. */

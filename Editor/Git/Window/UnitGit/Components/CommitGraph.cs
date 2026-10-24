@@ -150,7 +150,12 @@ namespace Orbiters.UnitGit.Editor
             generateVisualContent += Draw;
         }
 
-        internal static Color ColorOf(int index) => Palette[((index % Palette.Length) + Palette.Length) % Palette.Length];
+        // The first lane (the checked-out branch's) is Mixer's accent.
+        internal static Color ColorOf(int index)
+        {
+            int lane = ((index % Palette.Length) + Palette.Length) % Palette.Length;
+            return lane == 0 ? (Color)Orbiters.Mixer.Editor.MixerAccent.Color : Palette[lane];
+        }
 
         public void Bind(UnitGitCommitGraph.Row value, bool isSelected)
         {

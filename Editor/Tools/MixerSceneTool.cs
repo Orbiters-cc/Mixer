@@ -30,7 +30,7 @@ namespace Orbiters.Mixer.Editor
         private const string WeightValuePref = "Orbiters.Mixer.Weights.Value";
         private const string NormalizePref = "Orbiters.Mixer.Weights.Normalize";
         private static readonly int ControlHint = "Orbiters.Mixer.SceneTool".GetHashCode();
-        private static readonly Color Accent = new Color(0f, 0.855f, 0.427f, 1f);
+        private static Color Accent => MixerAccent.Color;
 
         private static MixerMode mode;
         private static Brush brush;

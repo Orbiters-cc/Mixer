@@ -273,11 +273,12 @@ namespace Orbiters.Logger.Editor
 
             // What is done, like the played part of a video.
             float done = XOf(cursor);
-            batch.Rect(0f, 0f, Math.Max(0f, done), height, new Color(0f, 0.85f, 0.43f, 0.09f));
+            batch.Rect(0f, 0f, Math.Max(0f, done), height, Orbiters.Mixer.Editor.MixerAccent.With(0.09f));
 
             float slot = rect.width / (count + 1);
             float tick = slot >= 3f ? Math.Min(2f, slot - 1f) : Math.Max(0.6f, slot);
-            var doneColor = new Color(0.24f, 0.95f, 0.6f, 0.9f);
+            var doneColor = Orbiters.Mixer.Editor.MixerAccent.Text;
+            doneColor.a = 0.9f;
             var redoColor = new Color(1f, 1f, 1f, 0.22f);
             for (int i = 0; i < count; i++)
             {
@@ -308,7 +309,7 @@ namespace Orbiters.Logger.Editor
             if (UndoHistory.Traveling)
             {
                 float target = XOf(UndoHistory.Target);
-                batch.Rect(target - 1f, 0f, 2f, height, new Color(0f, 0.85f, 0.43f, 0.55f));
+                batch.Rect(target - 1f, 0f, 2f, height, Orbiters.Mixer.Editor.MixerAccent.With(0.55f));
             }
 
             batch.Flush(context);

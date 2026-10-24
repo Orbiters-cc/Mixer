@@ -201,6 +201,7 @@ namespace Orbiters.Mixer.Editor
             root.AddToClassList("mx-popup");
             var sheet = AssetDatabase.LoadAssetAtPath<StyleSheet>(MixerInfo.BasePath + "/Editor/UI/mixer.uss");
             if (sheet != null) root.styleSheets.Add(sheet);
+            Orbiters.Mixer.Editor.MixerAccent.Apply(root);
             root.Add(MixerUi.Text(title, "mx-popup__title"));
             var field = new TextField { value = initial };
             field.AddToClassList("mx-field");
@@ -245,6 +246,7 @@ namespace Orbiters.Mixer.Editor
             root.AddToClassList("mx-popup");
             var sheet = AssetDatabase.LoadAssetAtPath<StyleSheet>(MixerInfo.BasePath + "/Editor/UI/mixer.uss");
             if (sheet != null) root.styleSheets.Add(sheet);
+            Orbiters.Mixer.Editor.MixerAccent.Apply(root);
             var field = new TextField();
             field.AddToClassList("mx-field");
             field.tooltip = "Search shapes";

@@ -10,7 +10,7 @@
 .mx-capture-stage { height: 260px; }
 .mx-root--short .mx-capture-stage { height: 190px; }
 .mx-capture-progress { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background-color: rgba(255, 255, 255, 0.06); }
-.mx-capture-progress__fill { height: 3px; width: 0; background-color: var(--mx-accent); }
+.mx-capture-progress__fill { height: 3px; width: 0; background-color: var(--mixer-accent); }
 .mx-capture-under { margin-top: 8px; }
 .mx-capture-summary { flex-shrink: 1; margin: 0 8px 0 4px; }
 .mx-capture-summary--problem { color: var(--mx-warning); }

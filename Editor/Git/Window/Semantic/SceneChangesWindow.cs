@@ -27,6 +27,7 @@ namespace Orbiters.UnitGit.Editor
             if (string.IsNullOrEmpty(root) || string.IsNullOrEmpty(path)) return;
             var sheet = AssetDatabase.LoadAssetAtPath<StyleSheet>("Packages/orbiters.mixer/Editor/Git/Styles/unitgit-semantic.uss");
             if (sheet != null) rootVisualElement.styleSheets.Add(sheet);
+            Orbiters.Mixer.Editor.MixerAccent.Apply(rootVisualElement);
             rootVisualElement.AddToClassList("ugs-window");
 
             var top = new VisualElement();

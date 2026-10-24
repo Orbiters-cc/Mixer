@@ -123,6 +123,7 @@ namespace Orbiters.Mixer.Editor
             if (className != null) element.AddToClassList(className);
             if (!EditorGUIUtility.isProSkin) element.AddToClassList("mx-skin-light");
             if (Style != null) element.styleSheets.Add(Style);
+            Orbiters.Mixer.Editor.MixerAccent.Apply(element);
         }
 
         /// <summary>A vector picture in the place and size of a Unity toolbar icon (16 points, before the label).</summary>

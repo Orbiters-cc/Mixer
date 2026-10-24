@@ -22,11 +22,6 @@
     --lg-text: #e6e6e6;
     --lg-text-2: #a8a8a8;
     --lg-text-3: #7c7c7c;
-    --lg-accent: #00da6d;
-    --lg-accent-hover: #1ee57f;
-    --lg-on-accent: #06140c;
-    --lg-select: rgba(0, 218, 109, 0.13);
-    --lg-select-strong: rgba(0, 218, 109, 0.22);
     --lg-error: #ff6b6b;
     --lg-error-text: #ff8a8a;
     --lg-warning: #f5b74f;
@@ -139,19 +134,19 @@
 }
 
 .lg-button--primary {
-    background-color: var(--lg-accent);
+    background-color: var(--mixer-accent);
 }
 
 .lg-button--primary:hover {
-    background-color: var(--lg-accent-hover);
+    background-color: var(--mixer-accent-hover);
 }
 
 .lg-button--primary .lg-button__label {
-    color: var(--lg-on-accent);
+    color: var(--mixer-accent-on);
 }
 
 .lg-button--primary .lg-icon {
-    --icon-color: #06140c;
+    --icon-color: var(--mixer-accent-on);
 }
 
 .lg-button--ghost {
@@ -187,8 +182,8 @@
     padding: 0 5px;
     margin-left: 6px;
     border-radius: 8px;
-    background-color: rgba(0, 218, 109, 0.2);
-    color: #3cf29a;
+    background-color: var(--mixer-accent-a20);
+    color: var(--mixer-accent-text);
     font-size: 10px;
     -unity-font-style: bold;
     -unity-text-align: middle-center;
@@ -208,10 +203,10 @@
     bottom: 0;
     border-width: 2px;
     border-radius: 7px;
-    border-top-color: var(--lg-accent);
-    border-right-color: rgba(0, 218, 109, 0.35);
-    border-bottom-color: rgba(0, 218, 109, 0.1);
-    border-left-color: rgba(0, 218, 109, 0.1);
+    border-top-color: var(--mixer-accent);
+    border-right-color: var(--mixer-accent-a35);
+    border-bottom-color: var(--mixer-accent-a10);
+    border-left-color: var(--mixer-accent-a10);
 }
 
 .lg-check {
@@ -231,13 +226,13 @@
     width: 11px;
     height: 11px;
     opacity: 0;
-    --icon-color: #06140c;
+    --icon-color: var(--mixer-accent-on);
     --icon-width: 3.2;
 }
 
 .lg-check--on {
-    border-color: var(--lg-accent);
-    background-color: var(--lg-accent);
+    border-color: var(--mixer-accent);
+    background-color: var(--mixer-accent);
 }
 
 .lg-check--on .lg-icon {
@@ -404,13 +399,13 @@
 
 .lg-search .unity-base-text-field__input:focus,
 .lg-search .unity-text-field__input:focus {
-    border-color: rgba(0, 218, 109, 0.55);
+    border-color: var(--mixer-accent-a55);
     background-color: #242424;
 }
 
 .lg-search--active .unity-base-text-field__input,
 .lg-search--active .unity-text-field__input {
-    border-color: rgba(0, 218, 109, 0.32);
+    border-color: var(--mixer-accent-a32);
 }
 
 .lg-search--error .unity-base-text-field__input,
@@ -512,17 +507,17 @@
 }
 
 .lg-search__toggle--on {
-    background-color: var(--lg-select-strong);
-    color: #3cf29a;
+    background-color: var(--mixer-accent-a22);
+    color: var(--mixer-accent-text);
 }
 
 .lg-search__toggle--on .lg-icon {
-    --icon-color: #3cf29a;
+    --icon-color: var(--mixer-accent-text);
 }
 
 .lg-search__toggle--on:hover {
-    background-color: rgba(0, 218, 109, 0.3);
-    color: #5cf7aa;
+    background-color: var(--mixer-accent-a30);
+    color: var(--mixer-accent-text-hover);
 }
 
 .lg-search__clear {
@@ -580,11 +575,11 @@
 }
 
 .lg-tool-button--on {
-    background-color: var(--lg-select);
+    background-color: var(--mixer-accent-a13);
 }
 
 .lg-tool-button--on .lg-icon {
-    --icon-color: #3cf29a;
+    --icon-color: var(--mixer-accent-text);
 }
 
 .lg-segmented {
@@ -653,7 +648,7 @@
 }
 
 .lg-segmented__option--on .lg-icon {
-    --icon-color: #3cf29a;
+    --icon-color: var(--mixer-accent-text);
 }
 
 .lg-status {
@@ -747,16 +742,16 @@
     flex-direction: row;
     align-items: center;
     border-radius: 11px;
-    background-color: rgba(0, 218, 109, 0.12);
+    background-color: var(--mixer-accent-a12);
     border-width: 1px;
-    border-color: rgba(0, 218, 109, 0.35);
+    border-color: var(--mixer-accent-a35);
 }
 
 .lg-range .lg-icon {
     width: 12px;
     height: 12px;
     margin-right: 6px;
-    --icon-color: #3cf29a;
+    --icon-color: var(--mixer-accent-text);
 }
 
 .lg-range__label {
@@ -777,7 +772,7 @@
     width: 10px;
     height: 10px;
     margin: 0;
-    --icon-color: #9adbb8;
+    --icon-color: var(--mixer-accent-muted);
 }
 
 /* Hover read-outs live in the window's root (FloatingTip), above every pane. */
@@ -824,7 +819,7 @@
 .lg-split-handle:hover .lg-split-handle__line,
 .lg-split-handle--active .lg-split-handle__line {
     height: 2px;
-    background-color: rgba(0, 218, 109, 0.65);
+    background-color: var(--mixer-accent-a65);
 }
 
 .lg-body--side .lg-split-handle {
@@ -1033,11 +1028,11 @@
 
 .lg-row--selected,
 .lg-row--selected:hover {
-    background-color: var(--lg-select);
+    background-color: var(--mixer-accent-a13);
 }
 
 .lg-row--cursor.lg-row--selected {
-    background-color: rgba(0, 218, 109, 0.17);
+    background-color: var(--mixer-accent-a17);
 }
 
 .lg-row__edge {
@@ -1060,7 +1055,7 @@
 }
 
 .lg-row--error.lg-row--selected {
-    background-color: var(--lg-select);
+    background-color: var(--mixer-accent-a13);
 }
 
 .lg-row__icon {
@@ -1227,7 +1222,7 @@
     align-items: center;
     border-width: 0;
     border-radius: 14px;
-    background-color: var(--lg-accent);
+    background-color: var(--mixer-accent);
     background-image: none;
     scale: 1 1;
     transition-property: scale, background-color;
@@ -1236,7 +1231,7 @@
 }
 
 .lg-new-logs:hover {
-    background-color: var(--lg-accent-hover);
+    background-color: var(--mixer-accent-hover);
 }
 
 .lg-new-logs.lg-pressed {
@@ -1247,12 +1242,12 @@
     width: 14px;
     height: 14px;
     margin-right: 6px;
-    --icon-color: #06140c;
+    --icon-color: var(--mixer-accent-on);
     --icon-width: 2.4;
 }
 
 .lg-new-logs__label {
-    color: #06140c;
+    color: var(--mixer-accent-on);
     -unity-font-style: bold;
 }
 
@@ -1271,7 +1266,7 @@
     width: 46px;
     height: 46px;
     border-radius: 14px;
-    background-color: rgba(0, 218, 109, 0.1);
+    background-color: var(--mixer-accent-a10);
     align-items: center;
     justify-content: center;
     margin-bottom: 12px;
@@ -1280,7 +1275,7 @@
 .lg-empty__mark .lg-icon {
     width: 28px;
     height: 28px;
-    --icon-color: #3cf29a;
+    --icon-color: var(--mixer-accent-text);
 }
 
 .lg-empty__title {
@@ -1716,8 +1711,8 @@
     min-width: 17px;
     margin: 0 8px 0 0;
     border-radius: 9px;
-    background-color: rgba(0, 218, 109, 0.16);
-    color: #3cf29a;
+    background-color: var(--mixer-accent-a16);
+    color: var(--mixer-accent-text);
     font-size: 10px;
     -unity-font-style: bold;
     -unity-text-align: middle-center;
@@ -1843,7 +1838,7 @@
     height: 100%;
     width: 0;
     border-radius: 2px;
-    background-color: var(--lg-accent);
+    background-color: var(--mixer-accent);
 }
 
 /* ---- Toasts ----------------------------------------------------------------------------------------- */
@@ -1864,7 +1859,7 @@
     padding: 5px 5px 5px 12px;
     border-radius: 12px;
     border-width: 1px;
-    border-color: rgba(0, 218, 109, 0.4);
+    border-color: var(--mixer-accent-a40);
     background-color: #2f3d34;
     opacity: 1;
     translate: 0 0;
@@ -1892,7 +1887,7 @@
     width: 15px;
     height: 15px;
     margin-right: 9px;
-    --icon-color: #3cf29a;
+    --icon-color: var(--mixer-accent-text);
     --icon-width: 2.4;
 }
 
@@ -2045,8 +2040,8 @@
 }
 
 .lg-source-row__only:hover {
-    background-color: rgba(0, 218, 109, 0.2);
-    color: #3cf29a;
+    background-color: var(--mixer-accent-a20);
+    color: var(--mixer-accent-text);
 }
 
 .lg-muted-row {
@@ -2153,7 +2148,7 @@
 }
 
 .lg-switch--on {
-    background-color: var(--lg-accent);
+    background-color: var(--mixer-accent);
 }
 
 .lg-switch--on .lg-switch__knob {
@@ -2180,7 +2175,7 @@
 }
 
 .lg-switch--mini.lg-switch--on {
-    background-color: var(--lg-accent);
+    background-color: var(--mixer-accent);
 }
 
 .lg-switch--mini.lg-switch--on .lg-switch__knob {
@@ -2778,7 +2773,7 @@
     width: 14px;
     height: 14px;
     margin-right: 8px;
-    --icon-color: #3cf29a;
+    --icon-color: var(--mixer-accent-text);
     --icon-width: 2.1;
 }
 
@@ -2844,7 +2839,7 @@
 
 .lg-undo-card__hint {
     margin-top: 4px;
-    color: #6ff0ae;
+    color: var(--mixer-accent-light);
     font-size: 10px;
     -unity-font-style: bold;
 }
@@ -2855,5 +2850,5 @@
 
 /* The top bar's "Get help": opens the project report. */
 .lg-help-button .lg-icon {
-    --icon-color: #3cf29a;
+    --icon-color: var(--mixer-accent-text);
 }

@@ -242,6 +242,7 @@ namespace Orbiters.Logger.Editor
         private readonly SourceLogo logo = new SourceLogo();
         private readonly Label label = new Label { pickingMode = PickingMode.Ignore };
         private LogSource shown;
+        private Color shownColor;
 
         public SourceChip(string className)
         {
@@ -255,13 +256,14 @@ namespace Orbiters.Logger.Editor
 
         public void Set(LogSource source, float logoHeight = 9f)
         {
-            if (ReferenceEquals(source, shown))
+            var color = source?.Color ?? Color.white;
+            if (ReferenceEquals(source, shown) && color == shownColor)
             {
                 return;
             }
 
             shown = source;
-            var color = source?.Color ?? Color.white;
+            shownColor = color;
             label.text = source?.Name ?? string.Empty;
             label.style.color = color;
             style.backgroundColor = new Color(color.r, color.g, color.b, 0.13f);

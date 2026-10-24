@@ -143,6 +143,14 @@ namespace Orbiters.UnitGit.Editor
             requestedDiffPath = null;
             requestedSelection = null;
             busy = false;
+            busyLabel = null;
+            busySuccess = null;
+            // A visit or a Back under way lost its task with the reload (and Unity brings a null string back as ""): what
+            // Git reads next is what the banner shows.
+            pendingVisit = null;
+            pendingReturnBranch = null;
+            visitActionDone = 0;
+            visitReturning = false;
             refreshQueued = false;
             refreshingSnapshot = false;
             refreshAgainRequested = false;

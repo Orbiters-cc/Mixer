@@ -19,6 +19,7 @@ namespace Orbiters.UnitGit.Editor
             {
                 var sheet = AssetDatabase.LoadAssetAtPath<StyleSheet>(path);
                 if (sheet != null && !root.styleSheets.Contains(sheet)) root.styleSheets.Add(sheet);
+                Orbiters.Mixer.Editor.MixerAccent.Apply(root);
             }
             root.Add(UnitGitUi.Text(title, "ug-dialog__title"));
             if (!string.IsNullOrWhiteSpace(subtitle)) root.Add(UnitGitUi.Text(subtitle, "ug-dialog__subtitle"));

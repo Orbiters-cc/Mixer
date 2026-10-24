@@ -125,6 +125,7 @@ namespace Orbiters.Mixer.Editor
             {
                 var sheet = AssetDatabase.LoadAssetAtPath<StyleSheet>(path);
                 if (sheet != null) root.styleSheets.Add(sheet);
+                Orbiters.Mixer.Editor.MixerAccent.Apply(root);
             }
             root.focusable = true;
             treeOpenSet.Clear(); treeOpenSet.UnionWith(treeOpen ?? new List<string>());

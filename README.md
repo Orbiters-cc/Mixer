@@ -32,6 +32,13 @@ mesh asset when you commit.
 - In a short console window (under 520 points tall) the graph's commit and release labels sit in a row of their own
   under it, where they were cut off at its top, and the graph keeps its height while the timings lane shows.
 - Requires Orbiters Toolkit 0.4.3 (`WorkingMeshes`).
+- Mixer's accent colour can change: Orbiters settings › Mixer › Accent colour offers green (as before), cyan, blue,
+  violet, pink, orange, yellow and silver, for the Mixer window, the Mixer Hierarchy and Project, the Mixer console,
+  Mixer Git, captures and performances, their popups and dialogs, the Skinned Mesh Renderer panels, the brushes
+  overlay and the Scene view brush. Colours that tell a state (added, done, OK, faster) stay green (`MixerAccent`,
+  `Editor/Brand/accent.uss`).
+- Mixer Git no longer shows "Going back to ‘’…" after a script reload: Unity brought back an empty branch name where
+  there was none, and the banner, with its buttons off, stayed until the window was closed.
 
 ## 0.1.1 — 2026-10-23
 

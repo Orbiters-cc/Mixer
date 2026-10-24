@@ -96,6 +96,7 @@ namespace Orbiters.Mixer.Editor.Performance
             {
                 var sheet = AssetDatabase.LoadAssetAtPath<StyleSheet>(path);
                 if (sheet != null) root.styleSheets.Add(sheet);
+                Orbiters.Mixer.Editor.MixerAccent.Apply(root);
             }
             BuildTopBar();
             var scroll = new ScrollView(ScrollViewMode.Vertical);

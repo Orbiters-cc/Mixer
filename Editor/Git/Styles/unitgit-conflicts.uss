@@ -10,8 +10,8 @@
 .ugc .ugc-beta { height: 16px; margin-left: 8px; padding: 0 6px; border-radius: 8px; background-color: rgba(91, 141, 239, 0.2); color: #a9c4ff; font-size: 9px; -unity-font-style: bold; -unity-text-align: middle-center; flex-shrink: 0; }
 .ugc .ugc-banner__progress-text { margin-top: 3px; color: #b7c0cf; font-size: 11px; }
 .ugc .ugc-progress { height: 5px; margin-top: 6px; max-width: 360px; border-radius: 3px; background-color: #262626; overflow: hidden; }
-.ugc .ugc-progress__fill { height: 100%; border-radius: 3px; background-color: #00da6d; transition-property: width; transition-duration: 0.45s; transition-timing-function: ease-out-cubic; }
-.ugc .ugc-progress__sweep { position: absolute; top: 0; bottom: 0; left: -35%; width: 35%; border-radius: 3px; background-color: #00da6d; transition-property: left; transition-duration: 0.65s; transition-timing-function: ease-in-out; }
+.ugc .ugc-progress__fill { height: 100%; border-radius: 3px; background-color: var(--mixer-accent); transition-property: width; transition-duration: 0.45s; transition-timing-function: ease-out-cubic; }
+.ugc .ugc-progress__sweep { position: absolute; top: 0; bottom: 0; left: -35%; width: 35%; border-radius: 3px; background-color: var(--mixer-accent); transition-property: left; transition-duration: 0.65s; transition-timing-function: ease-in-out; }
 .ugc .ugc-progress__sweep--end { left: 100%; }
 .ugc .ugc-banner__actions { flex-direction: row; flex-shrink: 0; }
 
@@ -21,7 +21,7 @@
 .ugc .ugc-files { background-color: #3a3a3a; padding: 6px; }
 .ugc .ugc-file { flex-direction: row; align-items: center; min-height: 40px; margin-bottom: 4px; padding: 5px 8px; border-radius: 9px; background-color: #343434; border-width: 1px; border-color: rgba(0, 0, 0, 0); cursor: link; transition-property: background-color, border-color, opacity; transition-duration: 0.15s; }
 .ugc .ugc-file:hover { background-color: #3d3d3d; }
-.ugc .ugc-file--selected { background-color: rgba(0, 218, 109, 0.15); border-color: rgba(0, 218, 109, 0.5); }
+.ugc .ugc-file--selected { background-color: var(--mixer-accent-a15); border-color: var(--mixer-accent-a50); }
 .ugc .ugc-file--selected:hover { background-color: #3a4a64; }
 .ugc .ugc-file--resolved { opacity: 0.62; }
 .ugc .ugc-file__icon { width: 16px; height: 16px; margin-right: 8px; flex-shrink: 0; }
@@ -64,7 +64,7 @@
 .ugc .ugc-parts__legend { margin-left: 10px; color: #8992a2; font-size: 11px; }
 .ugc .ugc-part { margin-bottom: 10px; padding: 10px 12px 12px 12px; border-radius: 10px; background-color: #343434; border-width: 1px; border-color: rgba(255, 255, 255, 0.08); opacity: 1; translate: 0 0; transition-property: opacity, translate, border-color; transition-duration: 0.22s, 0.22s, 0.2s; transition-timing-function: ease-out; }
 .ugc .ugc-part--enter { opacity: 0; translate: 0 8px; }
-.ugc .ugc-part--chosen { border-color: rgba(0, 218, 109, 0.45); }
+.ugc .ugc-part--chosen { border-color: var(--mixer-accent-a45); }
 .ugc .ugc-part__head { flex-direction: row; align-items: center; margin-bottom: 8px; }
 .ugc .ugc-part__title { color: #eef4ff; font-size: 12px; -unity-font-style: bold; }
 .ugc .ugc-part__context { margin-left: 8px; color: #9aa4b5; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 1; }
@@ -101,8 +101,8 @@
 .ugc .ugc-button { height: 26px; min-height: 26px; margin: 0 0 0 6px; padding: 0 12px; border-width: 0; border-radius: 13px; background-color: #4a4a4a; color: #eef4ff; font-size: 11px; cursor: link; transition-property: scale, background-color; transition-duration: 0.1s; }
 .ugc .ugc-button:hover { background-color: #575757; }
 .ugc .ugc-button:disabled { opacity: 0.45; }
-.ugc .ugc-button--primary { background-color: #00da6d; color: #06140c; -unity-font-style: bold; }
-.ugc .ugc-button--primary:hover { background-color: #19e27d; }
+.ugc .ugc-button--primary { background-color: var(--mixer-accent); color: var(--mixer-accent-on); -unity-font-style: bold; }
+.ugc .ugc-button--primary:hover { background-color: var(--mixer-accent-hover); }
 .ugc .ugc-button--mine { background-color: rgba(91, 141, 239, 0.22); color: #c5d6ff; }
 .ugc .ugc-button--mine:hover { background-color: rgba(91, 141, 239, 0.36); }
 .ugc .ugc-button--theirs { background-color: rgba(255, 150, 60, 0.2); color: #ffd3ad; }

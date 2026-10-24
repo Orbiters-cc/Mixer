@@ -4,8 +4,8 @@
 .mx-perf-sessions { margin: 2px 0 6px 0; padding: 2px 0; border-radius: 9px; background-color: var(--mx-field); }
 .mx-perf-session { min-height: 44px; padding: 6px 8px 6px 12px; border-radius: 8px; margin: 1px 3px; align-items: center; }
 .mx-perf-session:hover { background-color: var(--mx-hover); }
-.mx-perf-session--selected { background-color: rgba(0, 218, 109, 0.10); }
-.mx-perf-session--selected:hover { background-color: rgba(0, 218, 109, 0.14); }
+.mx-perf-session--selected { background-color: var(--mixer-accent-a10); }
+.mx-perf-session--selected:hover { background-color: var(--mixer-accent-a14); }
 .mx-perf-session__texts { flex-grow: 1; flex-shrink: 1; overflow: hidden; }
 .mx-perf-session__name { margin: 0; padding: 0; font-size: 12px; color: #eaeaea; -unity-font-style: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mx-perf-session__detail { margin: 2px 0 0 0; padding: 0; font-size: 11px; color: var(--mx-text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

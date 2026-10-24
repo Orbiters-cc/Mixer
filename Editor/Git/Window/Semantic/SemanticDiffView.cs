@@ -39,6 +39,7 @@ namespace Orbiters.UnitGit.Editor
         {
             var sheet = AssetDatabase.LoadAssetAtPath<StyleSheet>(StyleSheetPath);
             if (sheet != null) styleSheets.Add(sheet);
+            Orbiters.Mixer.Editor.MixerAccent.Apply(this);
             AddToClassList("ugs");
 
             header = new VisualElement();

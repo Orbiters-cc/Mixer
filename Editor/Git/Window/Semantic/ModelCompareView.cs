@@ -88,6 +88,7 @@ namespace Orbiters.UnitGit.Editor
             this.rightTitle = rightTitle;
             var sheet = AssetDatabase.LoadAssetAtPath<StyleSheet>(StyleSheetPath);
             if (sheet != null) styleSheets.Add(sheet);
+            Orbiters.Mixer.Editor.MixerAccent.Apply(this);
             AddToClassList("ugm");
             status = new Label();
             status.AddToClassList("ugm-status");

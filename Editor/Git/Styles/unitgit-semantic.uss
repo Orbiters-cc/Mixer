@@ -52,7 +52,7 @@
 .ugs .ugs-pill--vrchat { background-color: rgba(0, 170, 255, 0.16); color: #7fd0ff; }
 .ugs .ugs-pill--vrcfury { background-color: rgba(190, 120, 255, 0.18); color: #d8b3ff; }
 .ugs .ugs-pill--ma { background-color: rgba(255, 176, 32, 0.16); color: #ffcf7a; }
-.ugs .ugs-pill--orbiters { background-color: rgba(0, 218, 109, 0.14); color: #7ff0b6; }
+.ugs .ugs-pill--orbiters { background-color: var(--mixer-accent-a14); color: var(--mixer-accent-light); }
 .ugs .ugs-pill--script { background-color: #2b2b2b; color: #9aa4b5; }
 .ugs .ugs-pill--prefab { background-color: rgba(91, 141, 239, 0.18); color: #a9c4ff; }
 .ugs .ugs-pill--added { background-color: rgba(0, 218, 109, 0.16); color: #7ff0b6; }
@@ -76,7 +76,7 @@
 .ugs-switch { flex-direction: row; height: 24px; margin-right: 8px; padding: 2px; border-radius: 12px; background-color: #2d2d2d; }
 .ugs-switch__option { height: 20px; min-height: 20px; margin: 0; padding: 0 10px; border-width: 0; border-radius: 10px; background-color: rgba(0, 0, 0, 0); color: #9aa4b5; font-size: 11px; cursor: link; transition-property: background-color, color, scale; transition-duration: 0.15s, 0.15s, 0.1s; }
 .ugs-switch__option:hover { color: #eef4ff; }
-.ugs-switch__option--on { background-color: #4a4a4a; color: #3cf29a; }
+.ugs-switch__option--on { background-color: #4a4a4a; color: var(--mixer-accent-text); }
 .ugs-switch__option--pressed { scale: 0.94 0.94; }
 
 .ugs-switch .unity-label { margin: 0; padding: 0; }
@@ -116,7 +116,7 @@
 .ugm .ugm-legend__dot { width: 9px; height: 9px; border-radius: 5px; margin: 0 4px 0 10px; }
 .ugm .ugm-legend__text { color: #b7c0cf; font-size: 10px; }
 .ugm .ugm-progress { height: 5px; margin: 14px; border-radius: 3px; background-color: #262626; overflow: hidden; }
-.ugm .ugm-progress__sweep { position: absolute; top: 0; bottom: 0; left: -35%; width: 35%; border-radius: 3px; background-color: #00da6d; transition-property: left; transition-duration: 0.65s; transition-timing-function: ease-in-out; }
+.ugm .ugm-progress__sweep { position: absolute; top: 0; bottom: 0; left: -35%; width: 35%; border-radius: 3px; background-color: var(--mixer-accent); transition-property: left; transition-duration: 0.65s; transition-timing-function: ease-in-out; }
 .ugm .ugm-progress__sweep--end { left: 100%; }
 .ugm .ugm-details { margin-top: 10px; }
 .ugm .ugm-table { border-radius: 10px; background-color: #303030; overflow: hidden; }

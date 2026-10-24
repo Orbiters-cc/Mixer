@@ -65,7 +65,7 @@ namespace Orbiters.Logger.Editor
         public static readonly Color Error = SourceCatalog.Hex("#ff6b6b");
         public static readonly Color Warning = SourceCatalog.Hex("#f5b74f");
         public static readonly Color Info = SourceCatalog.Hex("#7f93ad");
-        public static readonly Color Accent = SourceCatalog.Hex("#00da6d");
+        public static Color Accent => Orbiters.Mixer.Editor.MixerAccent.Color;
         public static readonly Color Grid = new Color(1f, 1f, 1f, 0.05f);
 
         public static Color Level(LogLevel level) => level == LogLevel.Error ? Error : level == LogLevel.Warning ? Warning : Info;
@@ -728,7 +728,7 @@ namespace Orbiters.Logger.Editor
 
                 if (ranged)
                 {
-                    batch.Rect(rangeA, 0, Math.Max(1f, rangeB - rangeA), height, new Color(0f, 0.85f, 0.43f, 0.10f));
+                    batch.Rect(rangeA, 0, Math.Max(1f, rangeB - rangeA), height, Orbiters.Mixer.Editor.MixerAccent.With(0.10f));
                     batch.Rect(rangeA, 0, 1.5f, height, ChartColors.Accent);
                     batch.Rect(rangeB - 1.5f, 0, 1.5f, height, ChartColors.Accent);
                 }
@@ -737,7 +737,7 @@ namespace Orbiters.Logger.Editor
                 {
                     float a = Mathf.Clamp(Mathf.Min(pressX, dragX), 0, rect.width);
                     float b = Mathf.Clamp(Mathf.Max(pressX, dragX), 0, rect.width);
-                    batch.Rect(a, 0, Math.Max(1f, b - a), height, new Color(0f, 0.85f, 0.43f, 0.16f));
+                    batch.Rect(a, 0, Math.Max(1f, b - a), height, Orbiters.Mixer.Editor.MixerAccent.With(0.16f));
                     batch.Rect(a, 0, 1.5f, height, ChartColors.Accent);
                     batch.Rect(b - 1.5f, 0, 1.5f, height, ChartColors.Accent);
                 }

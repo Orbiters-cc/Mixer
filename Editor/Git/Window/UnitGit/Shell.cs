@@ -37,6 +37,7 @@ namespace Orbiters.UnitGit.Editor
                 var sheet = AssetDatabase.LoadAssetAtPath<StyleSheet>(path);
                 if (sheet != null && !rootVisualElement.styleSheets.Contains(sheet))
                     rootVisualElement.styleSheets.Add(sheet);
+                    Orbiters.Mixer.Editor.MixerAccent.Apply(rootVisualElement);
             }
 
             rootVisualElement.Add(BuildTopBar());

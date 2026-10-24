@@ -25,6 +25,7 @@ namespace Orbiters.Logger.Editor
             if (sheet != null)
             {
                 root.styleSheets.Add(sheet);
+                Orbiters.Mixer.Editor.MixerAccent.Apply(root);
             }
 
             root.RegisterCallback<KeyDownEvent>(evt =>

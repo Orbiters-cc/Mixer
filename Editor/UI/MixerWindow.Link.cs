@@ -40,6 +40,7 @@ namespace Orbiters.Mixer.Editor
             root.AddToClassList("mx-popup");
             var sheet = AssetDatabase.LoadAssetAtPath<StyleSheet>(MixerInfo.BasePath + "/Editor/UI/mixer.uss");
             if (sheet != null) root.styleSheets.Add(sheet);
+            Orbiters.Mixer.Editor.MixerAccent.Apply(root);
             root.RegisterCallback<KeyDownEvent>(evt => { if (evt.keyCode == KeyCode.Escape) editorWindow.Close(); }, TrickleDown.TrickleDown);
             var header = MixerUi.Row();
             var icon = new VectorIcon(IconGlyph.Blender); icon.AddToClassList("mx-icon"); icon.style.marginRight = 8;
