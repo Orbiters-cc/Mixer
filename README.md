@@ -31,6 +31,7 @@ mesh asset when you commit.
   the Aa switch), and a narrow placeholder ends with an ellipsis.
 - In a short console window (under 520 points tall) the graph's commit and release labels sit in a row of their own
   under it, where they were cut off at its top, and the graph keeps its height while the timings lane shows.
+- Requires Orbiters Toolkit 0.4.3 (`WorkingMeshes`).
 
 ## 0.1.1 — 2026-10-23
 
