@@ -6,6 +6,17 @@ modern Hierarchy and Project windows, the Mixer console (a log hub in the Consol
 projects). Nothing re-imports while you edit: edits show live on a working copy of the mesh and are saved as a native
 mesh asset when you commit.
 
+## Unreleased
+
+- The capture kit is part of N4N0 now (Orbiters Toolkit; contracts 0.7.0, `Docs/rig-frames.md`, N4N0's capture kit):
+  the Performance window no longer installs an "Orbiters Capture Kit" on the avatar, with its own Action Menu toggles.
+  N4N0 from My Avatar's gallery carries the kit and a camera rig, made for the avatar as it is uploaded, and Orbiters -
+  N4N0 drives them; Mixer only takes in what they recorded (performances, skeleton bands, reconstructed captures). Take
+  an old "Orbiters Capture Kit" object off your avatar, update N4N0 and upload again.
+- The capture simulator can draw rig frames (`CaptureSettings.Rig`): about every other colour frame shows six square 90°
+  views around the camera (left, front, right, back, up, down) under the strip, as N4N0's camera rig draws them, each
+  stamped with its frame's time. Contracts 0.7.0.
+
 ## 0.2.0 — 2026-10-24
 
 - The Logger became the **Mixer console** and Unit Git **Mixer Git**, both part of Mixer now (from Logger 0.2.7 and

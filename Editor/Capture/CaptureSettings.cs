@@ -1,4 +1,5 @@
 using System;
+using Orbiters.Contracts;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -56,6 +57,11 @@ namespace Orbiters.Mixer.Editor.Capture
         public float Near = 0.05f;
         public float Far = 1000f;
         public CapturePost Post = CapturePost.None;
+        /// <summary>
+        /// N4N0's camera rig (contracts' Docs/rig-frames.md): about every other colour frame is a rig frame,
+        /// six square 90° views around the camera (level, its heading) under the strip instead of the camera's own view.
+        /// </summary>
+        public bool Rig;
         public CapturePathKind Path = CapturePathKind.Orbit;
         /// <summary>Folder that receives one sub-folder per capture; empty = Documents/Orbiters/Raw captures.</summary>
         public string OutputRoot = "";
@@ -63,6 +69,9 @@ namespace Orbiters.Mixer.Editor.Capture
         public CaptureSettings Clone() => (CaptureSettings)MemberwiseClone();
 
         public bool IsDepthFrame(int index) => DepthEvery > 0 && (index + 1) % DepthEvery == 0;
+
+        /// <summary>A rig frame: with the rig, a colour frame whose game time the rig's shader picks (RigFrames.IsRigTime).</summary>
+        public bool IsRigFrame(int index) => Rig && !IsDepthFrame(index) && RigFrames.IsRigTime(TimeOf(index), 0);
 
         /// <summary>Game time of a frame: frames are spaced evenly at the frame rate from 0.</summary>
         public float TimeOf(int index) => (float)(index / (double)Fps);

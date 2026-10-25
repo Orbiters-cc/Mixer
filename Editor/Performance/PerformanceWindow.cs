@@ -40,17 +40,14 @@ namespace Orbiters.Mixer.Editor.Performance
         [SerializeField] string selectedFolder;
         [SerializeField] VRCAvatarDescriptor avatar;
         [SerializeField] bool face = true, visemes = true, body = true, locomotion = true, audio = true, timeline = true;
-        [SerializeField] int viewer, rate = 1, kitReach;
+        [SerializeField] int viewer, rate = 1;
 
         static readonly float[] Rates = { 30f, 60f };
 
         VisualElement root, list, resultBox, resultBody;
-        Label avatarInfo, footerText, footerRight, empty, kitInfo;
+        Label avatarInfo, footerText, footerRight, empty;
         ObjectField avatarField;
-        Button bakeButton, kitInstall, kitRemove;
-        SegmentedControl kitReachControl;
-        // The avatar whose installed kit the Drawn switch was last set from.
-        [NonSerialized] VRCAvatarDescriptor kitReachOf;
+        Button bakeButton;
         MixerToasts toasts;
         readonly List<SessionInfo> sessions = new List<SessionInfo>();
         BakeResult last;
@@ -104,7 +101,6 @@ namespace Orbiters.Mixer.Editor.Performance
             root.Add(scroll);
             BuildSessions(scroll);
             BuildAvatar(scroll);
-            BuildKit(scroll);
             BuildOptions(scroll);
             BuildResult(scroll);
             BuildFooter();
@@ -164,30 +160,13 @@ namespace Orbiters.Mixer.Editor.Performance
             bodyBox.Add(avatarInfo);
         }
 
-        void BuildKit(VisualElement parent)
-        {
-            var card = MixerUi.Card("CAPTURE KIT", out var bodyBox);
-            parent.Add(card);
-            var buttons = MixerUi.Row("mx-perf-kit__buttons");
-            kitRemove = MixerUi.Pill("Remove", RemoveKit, "ghost", IconGlyph.Trash, "Take the capture kit off the avatar (its assets stay)", destructive: true);
-            kitInstall = MixerUi.Pill("Install", InstallKit, "primary", IconGlyph.Plus, "Add the capture kit to the avatar, then upload it");
-            buttons.Add(kitRemove);
-            buttons.Add(kitInstall);
-            bodyBox.Add(MixerUi.Setting("On this avatar", "Draws your pose and the camera's into the frames VRChat's camera streams, only while you record", buttons, first: true));
-            kitReachControl = new SegmentedControl(new[] { "Near you", "Everywhere" }, i => { kitReach = i; Refresh(); });
-            kitReachControl.SetIndex(kitReach);
-            bodyBox.Add(MixerUi.Setting("Drawn", "Near you: when the camera sees you or is within 2 m. Everywhere: always, but VRChat ranks the bounds Very Poor", kitReachControl));
-            kitInfo = MixerUi.Text("", "mx-caption mx-perf-info");
-            bodyBox.Add(kitInfo);
-        }
-
         void BuildOptions(VisualElement parent)
         {
             var card = MixerUi.Card("BAKE", out var bodyBox);
             parent.Add(card);
             bodyBox.Add(MixerUi.Setting("Face and toggles", "Everything the avatar's animators showed, with what VRCFury and Modular Avatar add at upload: face tracking, gestures, toggles", new ToggleSwitch(face, v => { face = v; Refresh(); }), first: true));
             bodyBox.Add(MixerUi.Setting("Lip sync", "The visemes VRChat showed from your voice", new ToggleSwitch(visemes, v => { visemes = v; Refresh(); })));
-            bodyBox.Add(MixerUi.Setting("Body", "VRChat's own pose with the capture kit; otherwise from the headset, controllers and trackers calibrated by your T-pose, or from VRChat's head and hand poses", new ToggleSwitch(body, v => { body = v; Refresh(); })));
+            bodyBox.Add(MixerUi.Setting("Body", "VRChat's own pose with N4N0's capture kit; otherwise from the headset, controllers and trackers calibrated by your T-pose, or from VRChat's head and hand poses", new ToggleSwitch(body, v => { body = v; Refresh(); })));
             bodyBox.Add(MixerUi.Setting("Joystick movement", "Where VRChat moved you, estimated from its velocity", new ToggleSwitch(locomotion, v => { locomotion = v; Refresh(); })));
             bodyBox.Add(MixerUi.Setting("Audio", "Voice and VRChat's sound, lined up with the clip", new ToggleSwitch(audio, v => { audio = v; Refresh(); })));
             bodyBox.Add(MixerUi.Setting("Timeline", "A Timeline with the clip and the audio, ready to play", new ToggleSwitch(timeline, v => { timeline = v; Refresh(); })));
@@ -322,70 +301,9 @@ namespace Orbiters.Mixer.Editor.Performance
                 };
                 avatarInfo.text = (human ? "Humanoid" : "Not humanoid (no body)") + " · lip sync: " + lip + " · eyes at " + MixerUi.Metres(avatar.ViewPosition.y * avatar.transform.lossyScale.y);
             }
-            RefreshKit();
             footerText.text = s == null ? "Pick a session" : s.Name + (s.Seconds > 0 ? " · " + Duration(s.Seconds) : "") + " · " + Rates[rate].ToString("0") + " fps";
             MixerUi.SetPillText(bakeButton, baking != null ? "Baking…" : "Bake");
             bakeButton.SetEnabled(s != null && avatar != null && baking == null);
-        }
-
-        void RefreshKit()
-        {
-            var animator = avatar != null ? avatar.GetComponent<Animator>() : null;
-            bool human = animator != null && animator.isHuman;
-            var kit = avatar != null ? CaptureKit.Inspect(avatar) : null;
-            // Picked up with a kit, the avatar's switch shows how that kit is drawn, so Install again keeps it.
-            if (avatar != kitReachOf)
-            {
-                kitReachOf = avatar;
-                if (kit != null && kit.Installed)
-                {
-                    kitReach = kit.Reach == CaptureKit.Reach.Everywhere ? 1 : 0;
-                    kitReachControl.SetIndex(kitReach);
-                }
-            }
-            MixerUi.SetPillText(kitInstall, kit != null && kit.Installed ? "Install again" : "Install");
-            kitInstall.SetEnabled(human && kit.VrcFury);
-            MixerUi.Show(kitRemove, kit != null && kit.Installed);
-            if (avatar == null) kitInfo.text = "Pick the avatar first.";
-            else if (!human) kitInfo.text = "The kit draws a humanoid's bones: this avatar is not humanoid.";
-            else if (!kit.VrcFury) kitInfo.text = "The kit's Action Menu toggles are merged by VRCFury: add VRCFury to the project.";
-            else if (!kit.Installed) kitInfo.text = "Not installed. With it, VRChat's own pose of your body goes into the recording, exactly as others saw it.";
-            else if (kit.Stale) kitInfo.text = "The armature or the avatar's name changed since the kit was made: install it again, then upload.";
-            else
-                kitInfo.text = "Installed · " + kit.Bones + " bones · drawn " + (kit.Reach == CaptureKit.Reach.Everywhere ? "everywhere" : "near you") +
-                               ". In VRChat, Action Menu › Orbiters › Record shows it and starts Orbiters - N4N0's recording.";
-        }
-
-        void InstallKit()
-        {
-            if (avatar == null) return;
-            try
-            {
-                CaptureKit.Install(avatar, kitReach == 1 ? CaptureKit.Reach.Everywhere : CaptureKit.Reach.NearYou);
-                toasts.Show("Capture kit installed on " + avatar.name + ". Upload the avatar to use it in VRChat.");
-            }
-            catch (Exception e)
-            {
-                Debug.LogException(e);
-                toasts.Show("The capture kit could not be installed: " + e.Message, true);
-            }
-            Refresh();
-        }
-
-        void RemoveKit()
-        {
-            if (avatar == null) return;
-            try
-            {
-                CaptureKit.Remove(avatar);
-                toasts.Show("Capture kit removed from " + avatar.name + ".");
-            }
-            catch (Exception e)
-            {
-                Debug.LogException(e);
-                toasts.Show("The capture kit could not be removed: " + e.Message, true);
-            }
-            Refresh();
         }
 
         BakeOptions Options() => new BakeOptions
@@ -451,7 +369,7 @@ namespace Orbiters.Mixer.Editor.Performance
             MixerUi.Show(resultBox, true);
             resultBody.Add(MixerUi.Setting("Clip", r.Frames + " frames · " + r.Curves + " curves · " + MixerUi.Count(r.Keys) + " keys · " + r.Elapsed.TotalSeconds.ToString("0.0") + " s",
                 MixerUi.Pill("Select", () => { Selection.activeObject = r.Clip; EditorGUIUtility.PingObject(r.Clip); }, "ghost"), first: true));
-            string bodyFrom = r.BodyFromSkeleton ? "Exactly as VRChat showed it (capture kit)"
+            string bodyFrom = r.BodyFromSkeleton ? "Exactly as VRChat showed it (N4N0's capture kit)"
                 : r.BodyFromTracking ? "From SteamVR tracking, calibrated by the T-pose"
                 : r.BodyFromVrChat ? "From VRChat's head and hand poses"
                 : "From the animation (no tracking or calibration)";

@@ -16,7 +16,6 @@
 .mx-perf-actions { margin: 2px 0 2px 0; }
 .mx-perf-info { margin: 2px 0 4px 2px; white-space: normal; }
 .mx-perf-warning { margin: 6px 0 0 2px; padding: 0; font-size: 11px; color: var(--mx-warning); white-space: normal; }
-.mx-perf-kit__buttons .mx-button { margin-left: 6px; }
 
 /* Object fields as in the Capture window (capture.uss): flat, dark, 8 px corners. */
 .mx-objectfield { width: 210px; flex-grow: 0; flex-shrink: 1; margin: 0 4px 0 0; }

@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -186,7 +187,7 @@ namespace Orbiters.Mixer.Editor.Capture
             {
                 int index = Rendered;
                 bool depthFrame = Settings.IsDepthFrame(index);
-                var frame = rig.Render(index, poses[index], Settings.TimeOf(index), depthFrame, writer.RentColour(), writer.RentDepth());
+                var frame = rig.Render(index, poses[index], Settings.TimeOf(index), depthFrame, writer.RentColour(), writer.RentDepth(), Settings.IsRigFrame(index));
                 words[index] = frame.Payload.ToWords();
                 posesOut.WriteLine(JsonConvert.SerializeObject(new GroundTruthPose
                 {
@@ -226,7 +227,8 @@ namespace Orbiters.Mixer.Editor.Capture
                 Finish(Phase.Cancelled);
                 return;
             }
-            var frames = CaptureSelfCheck.Sample(Rendered, Settings.IsDepthFrame);
+            // Rig frames' strips come from the GPU's normalised axes (the last bit may differ from the CPU's): not checked bit for bit.
+            var frames = CaptureSelfCheck.Sample(Rendered, Settings.IsDepthFrame).Where(i => !Settings.IsRigFrame(i)).ToArray();
             CheckTotal = frames.Length;
             var expectedDepth = writer;
             checking = Task.Run(() => CaptureSelfCheck.Run(Folder, frames, i => words[i], expectedDepth.ExpectedDepthCodes, threads, cancel.Token,

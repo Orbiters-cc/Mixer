@@ -240,7 +240,7 @@ namespace Orbiters.Mixer.Editor.Performance
                 IPoseSource devices = tracking;
                 SkeletonReplay skeleton = null;
                 if (options.Body && humanoid && session.HasSkeleton)
-                    skeleton = new SkeletonReplay(SkeletonFrames(session.Skeleton, CaptureKit.Identity(avatar), avatar.name, result.Warnings), animator);
+                    skeleton = new SkeletonReplay(SkeletonFrames(session.Skeleton, Identity(avatar), avatar.name, result.Warnings), animator);
                 result.BodyFromSkeleton = skeleton != null;
                 if (skeleton == null && options.Body && humanoid && rig.Valid)
                 {
@@ -646,7 +646,7 @@ namespace Orbiters.Mixer.Editor.Performance
         }
 
         /// <summary>
-        /// The skeleton frames to replay: the capture kit's on this avatar (<paramref name="identity"/>) when the session
+        /// The skeleton frames to replay: N4N0's capture kit's on this avatar (<paramref name="identity"/>) when the session
         /// has some, leaving out another avatar's; all of them, with a warning, when none are this avatar's.
         /// </summary>
         internal static List<SkeletonFrame> SkeletonFrames(List<SkeletonFrame> frames, ushort identity, string avatarName, List<string> warnings)
@@ -654,13 +654,17 @@ namespace Orbiters.Mixer.Editor.Performance
             bool ours = frames.Any(f => f.Pose.Avatar == identity), others = frames.Any(f => f.Pose.Avatar != identity);
             if (!ours)
             {
-                warnings.Add("The capture kit in this session was on another avatar than " + avatarName + ": its pose may not fit this armature.");
+                warnings.Add("N4N0's capture kit in this session was on another avatar than " + avatarName + ": its pose may not fit this armature.");
                 return frames;
             }
             if (!others) return frames;
-            warnings.Add("The capture kit was on another avatar for part of the session: those frames are left out, and the body holds its pose there.");
+            warnings.Add("N4N0's capture kit was on another avatar for part of the session: those frames are left out, and the body holds its pose there.");
             return frames.Where(f => f.Pose.Avatar == identity).ToList();
         }
+
+        /// <summary>The 16-bit identity N4N0's capture kit bakes for an avatar into the skeleton band's header: CRC-16 of
+        /// its name (Orbiters Toolkit's OrbInstaller.CaptureIdentity, the contracts' SkeletonBand.Crc16).</summary>
+        internal static ushort Identity(Component avatar) => SkeletonBand.Crc16(System.Text.Encoding.UTF8.GetBytes(avatar.gameObject.name));
 
         static string Clock(double seconds) => (int)(seconds / 60) + ":" + ((int)seconds % 60).ToString("00");
     }
