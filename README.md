@@ -6,8 +6,11 @@ modern Hierarchy and Project windows, the Mixer console (a log hub in the Consol
 projects). Nothing re-imports while you edit: edits show live on a working copy of the mesh and are saved as a native
 mesh asset when you commit.
 
-## Unreleased
+## 0.2.1 — 2026-10-26
 
+- Requires Orbiters Toolkit 0.4.6.
+- The Hierarchy's Update and ReFit pills are small pills on the item's second line (16 px, 10 px label), like the
+  prefab tag, instead of tall buttons beside the name.
 - The capture kit is part of N4N0 now (Orbiters Toolkit; contracts 0.7.0, `Docs/rig-frames.md`, N4N0's capture kit):
   the Performance window no longer installs an "Orbiters Capture Kit" on the avatar, with its own Action Menu toggles.
   N4N0 from My Avatar's gallery carries the kit and a camera rig, made for the avatar as it is uploaded, and Orbiters -
