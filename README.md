@@ -39,6 +39,15 @@ mesh asset when you commit.
   `Editor/Brand/accent.uss`).
 - Mixer Git no longer shows "Going back to ‘’…" after a script reload: Unity brought back an empty branch name where
   there was none, and the banner, with its buttons off, stayed until the window was closed.
+- Measuring script reloads by package lasts one reload: **Measure by package** on a reload's details and the console
+  settings' **Script reloads by package** turn Unity's `EnableDomainReloadTimings` diagnostic switch on for the next
+  reload only, and the request ends with the editor session. It was an editor preference that stayed on, and in Unity
+  2022.3 that switch leaks the editor's temporary memory at every reload: Unity then writes every leaked block to
+  Editor.log again and again (thousands of “Allocation of N bytes” lines at a time), which also fails tests that check
+  the log.
+- Script reload timings keep coming after a flood of messages: each reload's tree is looked for from where Editor.log
+  ended when that reload began. From where the last tree ended, a log grown by more than 32 MB since (as with that
+  leak) left every later reload of the session unmeasured, and the same 32 MB was read again for a minute after each.
 
 ## 0.1.1 — 2026-10-23
 
@@ -487,7 +496,8 @@ The sliders button opens the settings:
 - **Unity's console**: open it, or read it again from scratch.
 - **Explanations from Orbiters**: keep the explanations up to date from Orbiters between releases (on by default).
 - **Timings**: measure script reloads, entering Play Mode, and avatar builds and uploads (all on by default), and
-  script reloads by package (off by default: it leaks editor memory at every reload).
+  the next script reload by package (off by default, and off again after that reload: Unity leaks editor memory while
+  it measures).
 - **Beta**: the undo history timeline.
 
 **Clear** (Ctrl+L) empties the Mixer console and Unity's console. Compile errors that still stand stay, as in Unity.
@@ -504,8 +514,10 @@ as stacked columns: when a package suddenly costs more, it shows. The timeline h
 stacked by package; click a mark to show its log.
 
 - **Script reloads**: Unity writes a "Domain Reload Profiling" tree to Editor.log after each reload. With its
-  `EnableDomainReloadTimings` diagnostic switch on (the Mixer console turns it on only while “Script reloads by package” is on,
-  and back off when you turn it off; in Unity 2022.3 the switch leaks temporary memory at every reload) the tree lists every type and method that runs on load, every before/after-reload callback
+  `EnableDomainReloadTimings` diagnostic switch on (the Mixer console turns it on for the next reload when you turn on
+  “Script reloads by package” or press **Measure by package** on a reload's details, and back off once that reload is
+  read; in Unity 2022.3 the switch leaks temporary memory at every reload, which Unity reports in Editor.log until a
+  reload without it) the tree lists every type and method that runs on load, every before/after-reload callback
   and every window restored; the Mixer console reads it back on a worker thread and gives each entry to the package its code
   belongs to. Unity's console notice about the switch is hidden while it is the only one on.
 - **Avatar builds and uploads** (VRChat SDK, through the `Orbiters.Mixer.Console.Editor.VRChat` assembly): from

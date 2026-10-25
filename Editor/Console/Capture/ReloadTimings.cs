@@ -13,18 +13,21 @@ namespace Orbiters.Logger.Editor
 {
     /// <summary>
     /// Measures every script reload. Unity writes a "Domain Reload Profiling" tree to Editor.log after each reload;
-    /// with its <c>EnableDomainReloadTimings</c> diagnostic switch on (the Mixer console turns it on only when
-    /// <see cref="ByPackage"/> is) the tree lists each type and method that runs on load, each before/after-reload
+    /// with its <c>EnableDomainReloadTimings</c> diagnostic switch on (the Mixer console turns it on only for the reload
+    /// <see cref="ByPackage"/> asks for) the tree lists each type and method that runs on load, each before/after-reload
     /// callback and each window restored. The tree is read back after the reload, every entry is given to the package
     /// its code belongs to, and the result is logged as a timing log (or handed to the Play Mode timing when the reload
-    /// was part of entering Play Mode). That switch leaks a little of Unity's temporary memory at every reload (Unity
-    /// 2022.3 then reports the leak on every editor tick), so it is opt-in.
+    /// was part of entering Play Mode). In Unity 2022.3 that switch leaks Unity's temporary memory at every reload, and
+    /// Unity then writes every leaked block to Editor.log again and again, so it is on for one reload at a time.
     /// </summary>
     [InitializeOnLoad]
     internal static class ReloadTimings
     {
         internal const string EnabledPref = "Orbiters.Logger.MeasureReloads";
-        internal const string ByPackagePref = "Orbiters.Logger.MeasureReloadsByPackage";
+        // Session state, not a preference: a request left on would turn the leaking switch on again at every start.
+        private const string ByPackageKey = "Orbiters.Logger.MeasureNextReloadByPackage";
+        // Set when a reload starts with the switch on: that reload is the one measured by package.
+        private const string MeasuringKey = "Orbiters.Logger.ReloadTimings.MeasuringByPackage";
         private const string OwnedSwitchPref = "Orbiters.Logger.OwnsReloadTimingsSwitch";
         private const string SwitchName = "EnableDomainReloadTimings";
         private const string OffsetKey = "Orbiters.Logger.ReloadTimings.Offset";
@@ -55,18 +58,23 @@ namespace Orbiters.Logger.Editor
         static ReloadTimings()
         {
             AssemblyReloadEvents.beforeAssemblyReload += () =>
+            {
                 SessionState.SetString(StartKey, DateTime.UtcNow.Ticks.ToString(CultureInfo.InvariantCulture));
+                if (Enabled && ByPackage)
+                {
+                    SessionState.SetBool(MeasuringKey, true);
+                }
+            };
             if (!Enabled)
             {
                 return;
             }
 
             ApplySwitch();
-            // This reload's tree is written once it ends, so after the log's current end.
-            if (SessionState.GetString(OffsetKey, string.Empty).Length == 0)
-            {
-                SessionState.SetString(OffsetKey, LogLength().ToString(CultureInfo.InvariantCulture));
-            }
+            // This reload's tree is written once it ends, so after the log's current end. Never from where the last tree
+            // ended: a tree left unread would pass for this one, and after more than a scan of log (a flood of messages)
+            // every later reload went unmeasured while the same part of the log was read again and again.
+            SessionState.SetString(OffsetKey, LogLength().ToString(CultureInfo.InvariantCulture));
 
             deadline = EditorApplication.timeSinceStartup + WaitSeconds;
             EditorApplication.update += Poll;
@@ -163,20 +171,23 @@ namespace Orbiters.Logger.Editor
         }
 
         /// <summary>
-        /// Whether each package's part of a reload is read too, which needs Unity's diagnostic switch on. Off by default:
-        /// the switch leaks Unity's temporary memory at every reload.
+        /// Whether each package's part of the next reload is read too, which needs Unity's diagnostic switch on. Turns
+        /// itself off once that reload is read, and lasts this editor session at most: the switch leaks Unity's
+        /// temporary memory at every reload.
         /// </summary>
         internal static bool ByPackage
         {
-            get => EditorPrefs.GetBool(ByPackagePref, false);
+            get => SessionState.GetBool(ByPackageKey, false);
             set
             {
-                EditorPrefs.SetBool(ByPackagePref, value);
+                SessionState.SetBool(ByPackageKey, value);
+                // Asked again while a measured reload is still being read: that reading doesn't end the new request.
+                SessionState.EraseBool(MeasuringKey);
                 ApplySwitch();
             }
         }
 
-        // The switch is on exactly while reloads are measured by package; a switch the Mixer console turned on is turned back off.
+        // The switch is on exactly while a reload is to be measured by package; a switch the Mixer console turned on is turned back off.
         private static void ApplySwitch()
         {
             if (Enabled && ByPackage)
@@ -302,7 +313,15 @@ namespace Orbiters.Logger.Editor
             }
         }
 
-        private static void Stop() => EditorApplication.update -= Poll;
+        private static void Stop()
+        {
+            EditorApplication.update -= Poll;
+            if (SessionState.GetBool(MeasuringKey, false))
+            {
+                // The reload measured by package is read (or never came): Unity's switch goes back off.
+                ByPackage = false;
+            }
+        }
 
         private static void Run(Action work)
         {

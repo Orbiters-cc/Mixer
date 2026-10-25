@@ -83,15 +83,15 @@ namespace Orbiters.Logger.Editor
             {
                 var note = LoggerUi.Box("lg-timing__note");
                 note.Add(LoggerUi.Text(ReloadTimings.Enabled && ReloadTimings.ByPackage
-                    ? "Unity reports each package's part from the next reload on."
-                    : "Measure reloads by package to see what each package costs (it leaks a little editor memory per reload).", "lg-details__note"));
+                    ? "Unity reports each package's part at the next reload."
+                    : "Measure the next reload by package to see what each package costs (Unity leaks editor memory while it does).", "lg-details__note"));
                 if (!(ReloadTimings.Enabled && ReloadTimings.ByPackage))
                 {
                     note.Add(LoggerUi.Pill("Measure by package", () =>
                     {
                         ReloadTimings.Enabled = true;
                         ReloadTimings.ByPackage = true;
-                        ShowToast("Reloads are measured by package from the next one on");
+                        ShowToast("The next reload is measured by package");
                     }, "ghost", LoggerGlyph.Stopwatch));
                 }
 
