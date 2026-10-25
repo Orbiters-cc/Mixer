@@ -100,9 +100,11 @@
 .mxh-row__line { flex-direction: row; align-items: center; min-height: 20px; }
 .mxh-row__line2 { flex-direction: row; align-items: center; height: 18px; margin-top: 1px; padding-right: 4px; }
 .mxh-row__detail { margin: 0; padding: 0; font-size: 10px; color: #8c8c8c; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 1; }
-.mxh-row__detail--short { max-width: 45%; margin-right: 6px; }
+.mxh-row__detail--short { max-width: 45%; }
 .mxh-row--selected .mxh-row__detail { color: #a7c9b6; }
-.mxh-row__extras { flex-direction: row; align-items: center; flex-grow: 1; flex-shrink: 1; overflow: hidden; }
+.mxh-row__extras { flex-direction: row; align-items: center; flex-grow: 1; flex-shrink: 1; overflow: hidden; margin-left: 6px; }
+/* Only pills (ReFit, Update) beside the detail: they keep their width and the detail ellipsizes first. */
+.mxh-row__extras--pills { flex-shrink: 0; }
 .mxh-row__vrchat { margin: 0 5px 0 1px; }
 .mxh-drop { flex-direction: column; align-items: center; justify-content: center; flex-shrink: 0; width: 132px; height: 40px; margin: 0 2px 0 6px; padding: 0 8px; border-radius: 6px; border-width: 0; background-color: rgba(0, 0, 0, 0.12); transition-property: background-color; transition-duration: 0.12s; }
 .mxh-drop:hover { background-color: rgba(255, 255, 255, 0.04); }
@@ -117,9 +119,11 @@
 .mxh-bone:hover { background-color: rgba(255, 255, 255, 0.12); color: #ffffff; }
 .mxh-bone.mx-pressed { scale: 0.92 0.92; background-color: var(--mixer-accent-a22); color: var(--mixer-accent-text); }
 .mxh-bone:disabled { opacity: 0.35; }
-.mxh-refit { height: 18px; min-height: 18px; margin: 0 4px 0 0; padding: 0 9px; font-size: 10px; }
-/* Update: a newer version of an item (beside ReFit) or of the avatar's custom base (beside its name, as small). */
-.mxh-row__update { height: 18px; min-height: 18px; margin: 0; padding: 0 9px; font-size: 10px; }
+/* ReFit (an item that may not fit) and Update (a newer version of an item a tool added): small pills on the second
+   line, right after the detail. */
+.mxh-refit, .mxh-row__update { height: 16px; min-height: 16px; margin: 0 4px 0 0; padding: 0 8px; border-radius: 8px; }
+.mxh-refit .mx-button__label, .mxh-row__update .mx-button__label { font-size: 10px; }
+/* Update for the avatar's custom base: beside its name, smaller. */
 .mxh-avatar__update { height: 15px; min-height: 15px; margin: 0 0 0 4px; padding: 0 7px; border-radius: 7px; flex-shrink: 0; }
 .mxh-avatar__update .mx-button__label { font-size: 9px; }
 .mxh-root--compact .mxh-row__active { width: 11px; height: 11px; min-width: 11px; }

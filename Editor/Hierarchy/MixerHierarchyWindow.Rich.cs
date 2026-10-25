@@ -371,7 +371,9 @@ namespace Orbiters.Mixer.Editor
                 if (texture == null) thumbnailsPending = true;
             }
             detail.text = row.Light != null ? LightDetail(row.Light) : Detail(row);
-            detail.EnableInClassList("mxh-row__detail--short", bonesShown || row.RefitTool != null || row.Update != null);
+            // Bones share the line with the detail at most half and half; lone pills keep their width beside the whole detail.
+            detail.EnableInClassList("mxh-row__detail--short", bonesShown);
+            extras.EnableInClassList("mxh-row__extras--pills", !bonesShown);
         }
 
         /// <summary>The lines a row takes: three for a VRChat avatar, two for <see cref="Tall"/> rows, else one.</summary>
