@@ -95,9 +95,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3df4ab11eba7bda6032a0b82a6bb43b11571feac
         with:
-          # Contracts/ is the OrbitersContracts submodule; a CONTRACTS_TOKEN secret is only needed while that repo is private.
-          submodules: true
-          token: ${{ secrets.CONTRACTS_TOKEN || github.token }}
+          # The repo with the workflow's own token (the tag is pushed with it); Contracts/ comes next.
+          submodules: false
+
+      - name: Checkout Contracts
+        # Contracts/ is the private OrbitersContracts submodule: read with CONTRACTS_TOKEN for this one command only.
+        env:
+          CONTRACTS_TOKEN: ${{ secrets.CONTRACTS_TOKEN }}
+        run: git -c "url.https://x-access-token:${CONTRACTS_TOKEN}@github.com/.insteadOf=https://github.com/" submodule update --init --recursive
 
       - name: Get Version
         id: version
