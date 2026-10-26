@@ -1,7 +1,7 @@
 {
   "name": "orbiters.mixer",
   "displayName": "Mixer",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "license": "LicenseRef-Mixer-Proprietary",
   "unity": "2022.3",
   "description": "Blender inside the Unity editor: sculpt and create blendshapes, paint weights and manage vertex groups, edit armatures, join meshes and render with Blender's engine, with a live two-way link to the real Blender. Modern Hierarchy and Project windows, the Mixer console (a log hub that replaces the Console: regex search, grouped logs, explanations of known messages, timings of every reload and upload, a project report to get help) and Mixer Git (Git for VRChat projects: changes, commits, history graph, branches, shelves, backups, scene and 3D diffs, conflicts). Nothing re-imports while you edit.",

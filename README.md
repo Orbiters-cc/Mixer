@@ -6,6 +6,11 @@ modern Hierarchy and Project windows, the Mixer console (a log hub in the Consol
 projects). Nothing re-imports while you edit: edits show live on a working copy of the mesh and are saved as a native
 mesh asset when you commit.
 
+## 0.2.2 — 2026-10-26
+
+- The Hierarchy's avatar row says "Update base" for its custom base's update, and a pill pressed after the update was
+  done elsewhere starts nothing.
+
 ## 0.2.1 — 2026-10-26
 
 - Requires Orbiters Toolkit 0.4.6.
