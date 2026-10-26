@@ -380,6 +380,7 @@ namespace Orbiters.Mixer.Editor.Tests
             Assert.That(armatureRow.Bones.Head, Is.SameAs(head));
             Assert.That(armatureRow.Bones.Chest, Is.SameAs(chest));
 
+            var baseUpdate = new UpdateFor();
             var window = OpenHidden();
             try
             {
@@ -391,9 +392,23 @@ namespace Orbiters.Mixer.Editor.Tests
                 var headButton = row.Query<Button>(className: "mxh-bone").ToList().First(b => b.text == "Head");
                 Press(window, headButton);
                 Assert.That(Selection.activeGameObject, Is.SameAs(head.gameObject), "Head selects the head bone");
+
+                // A newer version of its custom base (MCB): the avatar's row says it is the base's, not its items' (each
+                // item has its own line).
+                Orbiters.Toolkit.Editor.AvatarObjectTools.RegisterUpdates(baseUpdate);
+                baseUpdate.Item = avatar;
+                window.RevealObject(avatar);
+                Repaint(window);
+                ScrollToTop(window, root);
+                Repaint(window);
+                var pill = RowNamed(window, "Fixture avatar").Q<Button>(className: "mxh-avatar__update");
+                Assert.That(pill.resolvedStyle.display, Is.EqualTo(DisplayStyle.Flex), "Update beside the custom base's name");
+                Assert.That(pill.Q<Label>().text, Is.EqualTo("Update base"));
+                StringAssert.Contains("the custom base Fixture avatar from 1.0.1 to 1.0.2", pill.tooltip);
             }
             finally
             {
+                Orbiters.Toolkit.Editor.AvatarObjectTools.UnregisterUpdates(baseUpdate);
                 window.Close();
             }
             // An open VRChat SDK panel keeps the descriptor in its avatar list and throws (MissingReferenceException in
@@ -601,6 +616,35 @@ namespace Orbiters.Mixer.Editor.Tests
                 Assert.That(pill.enabledSelf, Is.False, "and waits for the tool");
                 Click(window, pill.worldBound.center);
                 Assert.That(tool.Started, Is.EqualTo(1), "a second press while it runs starts nothing");
+            }
+            finally
+            {
+                Orbiters.Toolkit.Editor.AvatarObjectTools.UnregisterUpdates(tool);
+                window.Close();
+            }
+        }
+
+        // Updated elsewhere since the rows were made (its own Inspector, or the item's line in My Avatar): a press on the
+        // pill still shown starts nothing, and the pill goes.
+        [Test]
+        public void APressAfterTheUpdateWasDoneElsewhereStartsNothing()
+        {
+            var item = root.transform.GetChild(0).gameObject;
+            var tool = new UpdateFor { Item = item };
+            Orbiters.Toolkit.Editor.AvatarObjectTools.RegisterUpdates(tool);
+            var window = OpenHidden();
+            try
+            {
+                window.RevealObject(item);
+                Repaint(window);
+                ScrollToTop(window, root);
+                Repaint(window);
+                var pill = RowNamed(window, "Child 0").Q<Button>(className: "mxh-row__update");
+                Assert.That(pill.resolvedStyle.display, Is.EqualTo(DisplayStyle.Flex));
+                tool.Item = null;
+                Click(window, pill.worldBound.center);
+                Assert.That(tool.Started, Is.Zero, "nothing newer waits: no update runs");
+                Assert.That(pill.style.display.value, Is.EqualTo(DisplayStyle.None), "the pill goes at once");
             }
             finally
             {

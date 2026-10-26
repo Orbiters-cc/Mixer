@@ -116,14 +116,23 @@ namespace Orbiters.Mixer.Editor
         }
 
         // Update: the tool's own update starts at the press (with its questions and progress), the pill saying so at once;
-        // then the row follows what the tool reports.
+        // then the row follows what the tool reports. The tool is asked again at the press: an update done elsewhere since
+        // the rows were made (or one already under way) starts nothing, and the pill goes with the next rebuild.
         private Button MakeUpdatePill(VisualElement row, string className)
         {
             Button pill = null;
             pill = MixerUi.Pill("Update", () =>
             {
-                var update = RowOf(row)?.Update;
-                if (update?.Start == null || update.Running) return;
+                var r = RowOf(row);
+                var update = r?.Object != null ? AvatarObjectTools.UpdateOf(r.Object) : null;
+                if (r != null) r.Update = update;
+                if (update?.Start == null || update.Running)
+                {
+                    // Nothing newer any more: the pill goes now, the row with the next rebuild.
+                    if (update == null) MixerUi.Show(pill, false);
+                    MarkDirty();
+                    return;
+                }
                 MixerUi.SetPillText(pill, "Updating…");
                 pill.SetEnabled(false);
                 update.Start();
@@ -134,14 +143,17 @@ namespace Orbiters.Mixer.Editor
             return pill;
         }
 
-        private static void BindUpdate(Button pill, AvatarObjectUpdate update)
+        // On a VRChat avatar's row the update is its custom base's (MCB), never the items' below it (each has its own line):
+        // the pill says "Update base".
+        private static void BindUpdate(Button pill, AvatarObjectUpdate update, bool customBase = false)
         {
             if (pill == null) return;
             MixerUi.Show(pill, update != null);
             if (update == null) return;
-            MixerUi.SetPillText(pill, update.Running ? "Updating…" : update.Failed ? "Retry update" : "Update");
+            MixerUi.SetPillText(pill, update.Running ? "Updating…" : update.Failed ? "Retry update" : customBase ? "Update base" : "Update");
             pill.SetEnabled(!update.Running);
-            string what = string.IsNullOrEmpty(update.Name) ? "it" : update.Name;
+            string name = string.IsNullOrEmpty(update.Name) ? customBase ? "the custom base" : "it" : update.Name;
+            string what = customBase && !name.StartsWith("the custom base", System.StringComparison.Ordinal) ? "the custom base " + name : name;
             pill.tooltip = update.Running ? (string.IsNullOrEmpty(update.Status) ? "Updating " + what + " to " + update.To : update.Status)
                 : update.Failed ? "The update of " + what + " to " + update.To + " failed" + (string.IsNullOrEmpty(update.Status) ? "" : ": " + update.Status) + ". Click to try again."
                 : "Update " + what + " from " + update.From + " to " + update.To;
@@ -207,7 +219,7 @@ namespace Orbiters.Mixer.Editor
                 customBase.text = info.Name;
                 customBase.tooltip = "Custom base" + (string.IsNullOrEmpty(info.BaseName) ? "" : " of " + info.BaseName) + (info.Source == "MCB" ? " (My Custom Base)" : "");
             }
-            BindUpdate(lines.Q<Button>(className: "mxh-avatar__update"), row.Update);
+            BindUpdate(lines.Q<Button>(className: "mxh-avatar__update"), row.Update, customBase: true);
             var rank = lines.Q(className: "mxh-avatar__rank");
             MixerUi.Show(rank, facts != null);
             if (facts != null)
