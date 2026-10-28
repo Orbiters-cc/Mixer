@@ -14,7 +14,8 @@ namespace Orbiters.Mixer.Editor
 
         private static readonly DockedWindowReplacement Replacement = new DockedWindowReplacement(
             "UnityEditor.SceneHierarchyWindow", typeof(MixerHierarchyWindow), PrefKey, DefaultOn,
-            "Orbiters.Mixer.HierarchyReplacement", "Window/General/Hierarchy", "Hierarchy", "Mixer Hierarchy");
+            "Orbiters.Mixer.HierarchyReplacement", "Window/General/Hierarchy", "Hierarchy", "Mixer Hierarchy",
+            "Orbiters.Mixer.Editor.MixerProjectWindow", "UnityEditor.ProjectBrowser", "UnityEditor.InspectorWindow", "UnityEditor.SceneView");
 
         internal static bool Enabled => Replacement.Enabled;
         internal static bool CanDock => DockedWindowReplacement.CanDock;

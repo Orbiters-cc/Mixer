@@ -228,6 +228,8 @@ namespace Orbiters.Logger.Editor
                     {
                         Replace(console, console == focused);
                     }
+
+                    OpenIfLost();
                 }
 
                 return;
@@ -258,6 +260,54 @@ namespace Orbiters.Logger.Editor
 
             // Opened during the session: the user asked for the console, so the Mixer console gets the focus.
             Replace(current, true);
+        }
+
+        /// <summary>
+        /// The Mixer console for a tool's "see the console" link (<see cref="ConsoleLinks"/>): the open one comes to the
+        /// front where it is, else one opens beside the Project window; it takes the focus and shows the newest error.
+        /// </summary>
+        internal static void ShowLatestError()
+        {
+            try
+            {
+                var logger = FindLogger();
+                if (logger == null)
+                {
+                    logger = ScriptableObject.CreateInstance<LoggerWindow>();
+                    Orbiters.Mixer.Editor.MixerWindowPlacement.OpenBeside(logger, "Orbiters.Mixer.Editor.MixerProjectWindow", "UnityEditor.ProjectBrowser", "UnityEditor.GameView");
+                }
+                else if (CanDock && DockAreaOf(logger) is { } area)
+                {
+                    SelectedProperty.SetValue(area, IndexOf(area, logger));
+                }
+
+                logger.Focus();
+                logger.ShowLatestError();
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning("[Mixer console] Couldn't show the Mixer console (" + exception.Message + "): open it from Window › General › Console.");
+            }
+        }
+
+        // A layout from another project that has neither console (its Mixer console could not be put back, see
+        // ForeignLayoutRepair): the Mixer console opens beside the Project window, where Unity's default layout has it.
+        private static void OpenIfLost()
+        {
+            if (!Orbiters.Mixer.Editor.ForeignLayoutRepair.StartedFromAnotherProjectsLayout || OpenConsoles().Count > 0 || FindLogger() != null)
+            {
+                return;
+            }
+
+            try
+            {
+                Orbiters.Mixer.Editor.MixerWindowPlacement.OpenBeside(ScriptableObject.CreateInstance<LoggerWindow>(),
+                    "Orbiters.Mixer.Editor.MixerProjectWindow", "UnityEditor.ProjectBrowser", "UnityEditor.GameView", "UnityEditor.SceneView");
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning("[Mixer console] Couldn't open the Mixer console (" + exception.Message + "): open it from Window › General › Console.");
+            }
         }
 
         /// <summary>Puts the Mixer console in <paramref name="console"/>'s place and closes it. False when it fell back.</summary>

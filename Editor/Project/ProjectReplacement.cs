@@ -14,7 +14,8 @@ namespace Orbiters.Mixer.Editor
 
         private static readonly DockedWindowReplacement Replacement = new DockedWindowReplacement(
             "UnityEditor.ProjectBrowser", typeof(MixerProjectWindow), PrefKey, DefaultOn,
-            "Orbiters.Mixer.ProjectReplacement", "Window/General/Project", "Project window", "Mixer Project");
+            "Orbiters.Mixer.ProjectReplacement", "Window/General/Project", "Project window", "Mixer Project",
+            "Orbiters.Logger.Editor.LoggerWindow", "UnityEditor.ConsoleWindow", "UnityEditor.GameView", "UnityEditor.SceneView");
 
         internal static bool Enabled => Replacement.Enabled;
         internal static void SetEnabled(bool on) => Replacement.SetEnabled(on);

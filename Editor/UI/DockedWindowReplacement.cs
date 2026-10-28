@@ -14,7 +14,9 @@ namespace Orbiters.Mixer.Editor
     /// Console. Once the layout is loaded, every such Unity window docked somewhere gets a Mixer window of its own at its
     /// place (selected only if it was) and is closed, so two stay two; one opened later (the Window menu, a shortcut, a
     /// layout change) is swapped the same way half a second later, except one opened on purpose from the Mixer window's
-    /// menu. Turning the setting off puts Unity's window back in each Mixer window's place. Docking goes through Unity's
+    /// menu. When the editor started from a layout made in another project and neither window is there (its Mixer window
+    /// could not be put back, <see cref="ForeignLayoutRepair"/>), the Mixer window opens beside the windows it belongs
+    /// with. Turning the setting off puts Unity's window back in each Mixer window's place. Docking goes through Unity's
     /// internal <c>DockArea</c>; when a Unity version changes it the Mixer window opens on its own, Unity's stays, and one
     /// warning says so.
     /// </summary>
@@ -57,6 +59,7 @@ namespace Orbiters.Mixer.Editor
         private readonly Type mixerType;
         private readonly string prefKey, loadedKey, pendingKey, knownKey, keptKey, warnedKey;
         private readonly string unityMenu, unityName, mixerName;
+        private readonly string[] dockBeside;
         private bool enabled;
         private bool pending;
         private int readyTicks;
@@ -67,8 +70,11 @@ namespace Orbiters.Mixer.Editor
         /// <param name="prefKey">The EditorPrefs switch.</param>
         /// <param name="sessionPrefix">The SessionState keys' prefix.</param>
         /// <param name="unityMenu">The menu item that opens Unity's window.</param>
-        public DockedWindowReplacement(string unityTypeName, Type mixerType, string prefKey, bool defaultOn, string sessionPrefix, string unityMenu, string unityName, string mixerName)
+        /// <param name="dockBeside">Where the Mixer window opens when a layout from another project lost it: beside the first of these window types (full names).</param>
+        public DockedWindowReplacement(string unityTypeName, Type mixerType, string prefKey, bool defaultOn, string sessionPrefix, string unityMenu, string unityName, string mixerName,
+            params string[] dockBeside)
         {
+            this.dockBeside = dockBeside;
             unityType = typeof(EditorWindow).Assembly.GetType(unityTypeName);
             this.mixerType = mixerType;
             this.prefKey = prefKey;
@@ -160,6 +166,7 @@ namespace Orbiters.Mixer.Editor
                 {
                     var focused = EditorWindow.focusedWindow;
                     foreach (var window in OpenUnityWindows()) Replace(window, window == focused);
+                    OpenIfLost();
                 }
                 return;
             }
@@ -171,6 +178,22 @@ namespace Orbiters.Mixer.Editor
                 if (IsKnown(window) || IsKept(window)) continue;
                 Replace(window, window == EditorWindow.focusedWindow);
                 break;
+            }
+        }
+
+        // The layout came from another project and has neither window: the Mixer one opens where its kind belongs.
+        private void OpenIfLost()
+        {
+            if (!ForeignLayoutRepair.StartedFromAnotherProjectsLayout || OpenUnityWindows().Count > 0) return;
+            foreach (var found in Resources.FindObjectsOfTypeAll(mixerType))
+                if (found is EditorWindow window && window != null && !IsHidden(window)) return;
+            try
+            {
+                MixerWindowPlacement.OpenBeside((EditorWindow)ScriptableObject.CreateInstance(mixerType), dockBeside);
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning("[Mixer] Couldn't open the " + mixerName + " (" + exception.Message + "): open it from " + unityMenu.Replace("/", " › ") + ".");
             }
         }
 

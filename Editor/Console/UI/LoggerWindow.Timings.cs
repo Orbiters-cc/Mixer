@@ -298,11 +298,27 @@ namespace Orbiters.Logger.Editor
                 return;
             }
 
-            int occurrence = store.Message(messageId).Last;
+            ShowLog(store.Message(messageId).Last, "timing");
+        }
+
+        /// <summary>
+        /// Selects a log and scrolls to it, as a click on its row would. The filters that hide it are turned off, and a
+        /// group row showing a later log of the same text gives way to the list, so what shows is that log;
+        /// <paramref name="noun"/> names it in the toasts ("timing", "error").
+        /// </summary>
+        private void ShowLog(int occurrence, string noun)
+        {
+            var store = Store;
+            if (store == null || state == null || occurrence < 0 || occurrence >= store.Count)
+            {
+                return;
+            }
+
+            int messageId = store.MessageAt(occurrence);
             var hidden = BuildSpec().WhatHides(store, occurrence);
             if ((hidden & HiddenBy.Gone) != 0)
             {
-                ShowToast("That timing is no longer in the log", error: true);
+                ShowToast("That " + noun + " is no longer in the log", error: true);
                 return;
             }
 
@@ -324,7 +340,7 @@ namespace Orbiters.Logger.Editor
             int row = RowOf(key);
             if (row < 0)
             {
-                ShowToast("Couldn't show that timing", error: true);
+                ShowToast("Couldn't show that " + noun, error: true);
                 return;
             }
 
@@ -332,8 +348,76 @@ namespace Orbiters.Logger.Editor
             list.Center(row);
             if (changes.Count > 0)
             {
-                ShowToast("Showing that timing: " + string.Join(", ", changes));
+                ShowToast("Showing that " + noun + ": " + string.Join(", ", changes));
             }
+        }
+
+        /// <summary>The newest error in the log (an exception, an assert, a compile error still standing), or -1.</summary>
+        internal static int LatestError(LogStore store)
+        {
+            if (store == null)
+            {
+                return -1;
+            }
+
+            for (int occurrence = store.Count - 1, seen = 0; occurrence >= 0 && seen < 1_000_000; occurrence--, seen++)
+            {
+                var message = store.Message(store.MessageAt(occurrence));
+                if (message.Level == LogLevel.Error && !message.Resolved && (store.FlagsAt(occurrence) & LogStore.Superseded) == 0)
+                {
+                    return occurrence;
+                }
+            }
+
+            return -1;
+        }
+
+        /// <summary>
+        /// The error a tool's "Check Console for more details" means: where a VRChat upload failed
+        /// (<see cref="SdkUploadErrors"/>) when it was logged with the newest error (within a few minutes of it), else the
+        /// newest error.
+        /// </summary>
+        internal static int ErrorToShow(LogStore store)
+        {
+            int latest = LatestError(store);
+            if (latest < 0)
+            {
+                return -1;
+            }
+
+            long since = store.TimeAt(latest) - TimeSpan.TicksPerMinute * 5;
+            for (int occurrence = store.Count - 1, seen = 0; occurrence >= 0 && seen < 20_000 && store.TimeAt(occurrence) >= since; occurrence--, seen++)
+            {
+                var message = store.Message(store.MessageAt(occurrence));
+                if (message.Level == LogLevel.Error && store.Texts[message.Text].StartsWith(SdkUploadErrors.Prefix, StringComparison.Ordinal))
+                {
+                    return occurrence;
+                }
+            }
+
+            return latest;
+        }
+
+        /// <summary>
+        /// Shows <see cref="ErrorToShow"/>, selected (what a tool's "Check Console for more details" means). A window
+        /// whose list isn't built yet shows it once it is.
+        /// </summary>
+        internal void ShowLatestError()
+        {
+            int occurrence = ErrorToShow(Store);
+            if (occurrence < 0)
+            {
+                return;
+            }
+
+            if (!built || state == null || list == null)
+            {
+                errorToShow = occurrence;
+                return;
+            }
+
+            // After the list's first layout: a reveal before it scrolls to the wrong place.
+            rootVisualElement.schedule.Execute(() => ShowLog(occurrence, "error")).StartingIn(30);
         }
     }
 }

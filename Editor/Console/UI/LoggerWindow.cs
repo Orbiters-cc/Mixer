@@ -60,6 +60,8 @@ namespace Orbiters.Logger.Editor
         private int seenWindow = TimelineWindow.Version;
         private int seenTimings = -1;
         private UndoTimelineView undoView;
+        // An error to show once the list is built (asked for before the window's first layout).
+        private int errorToShow = -1;
 
         internal static bool IsOpen => openWindows > 0;
 
@@ -180,6 +182,12 @@ namespace Orbiters.Logger.Editor
             rootVisualElement.schedule.Execute(Tick).Every(TickMs);
             rootVisualElement.schedule.Execute(KeepFocusInside);
             UpdateChrome(force: true);
+            if (errorToShow >= 0)
+            {
+                int occurrence = errorToShow;
+                errorToShow = -1;
+                rootVisualElement.schedule.Execute(() => ShowLog(occurrence, "error")).StartingIn(30);
+            }
         }
 
         private void Bind(LogStore store)
