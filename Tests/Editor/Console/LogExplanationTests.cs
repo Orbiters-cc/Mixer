@@ -273,5 +273,28 @@ namespace Orbiters.Logger.Editor.Tests
             Assert.AreEqual("vrchat.build-aborted-by-thumbnail-check", IdOf("VRCSDK build was aborted at the request of the 'VrcSdkThumbnailCheck' VRCSDKBuildRequestedCallback"));
             Assert.AreEqual("myavatar.thumbnail-duplicate-stopped", IdOf("[My Avatar] Build & Publish stopped before the build: the thumbnail waiting in the VRChat SDK (a.png) is already the thumbnail of A (avtr_x) on VRChat", level: LogLevel.Warning));
         }
+
+        // A list downloaded for one server or account is not used for another, nor once the list is turned off.
+        [Test]
+        public void RemoteListsOnlyCountForTheServerAndAccountTheyWereAskedFor()
+        {
+            string production = RemoteExplanations.Context("https://api.orbiters.cc/logger/explanations", "orbit-token-a");
+            Assert.IsTrue(RemoteExplanations.Applies(production, RemoteExplanations.Context("https://api.orbiters.cc/logger/explanations", "orbit-token-a"), true));
+            Assert.IsFalse(RemoteExplanations.Applies(production, RemoteExplanations.Context("https://api.orbiters.cc/logger/explanations", null), true), "signed out meanwhile");
+            Assert.IsFalse(RemoteExplanations.Applies(production, RemoteExplanations.Context("https://api.orbiters.cc/logger/explanations", "orbit-token-b"), true), "another account");
+            Assert.IsFalse(RemoteExplanations.Applies(production, RemoteExplanations.Context("http://127.0.0.1:4100/logger/explanations", "orbit-token-a"), true), "another server");
+            Assert.IsFalse(RemoteExplanations.Applies(production, production, false), "turned off meanwhile");
+            Assert.IsFalse(RemoteExplanations.Context("https://x/l", "orbit-token-a").Contains("orbit-token-a"), "the token itself is never kept");
+        }
+
+        // A running editor looks again every few minutes, and waits longer after each failure, at most the refresh period.
+        [Test]
+        public void RemoteListsAreAskedForAgainWithBackoff()
+        {
+            Assert.AreEqual(600d, RemoteExplanations.WaitAfter(0));
+            Assert.AreEqual(1200d, RemoteExplanations.WaitAfter(1));
+            Assert.AreEqual(2400d, RemoteExplanations.WaitAfter(2));
+            Assert.AreEqual(6d * 3600d, RemoteExplanations.WaitAfter(30));
+        }
     }
 }

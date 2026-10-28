@@ -650,9 +650,83 @@ namespace Orbiters.Logger.Editor
             long first = count > 0 ? times[0] : 0L;
             events.RemoveAll(e => e.Time < first);
             RecountAll();
+            bool compacted = CompactIfMostlyDead();
             Epoch++;
             Version++;
             Shifted?.Invoke(-drop);
+            if (compacted)
+            {
+                Regrouped?.Invoke();
+            }
+        }
+
+        /// <summary>
+        /// Messages none of whose logs are left (trimmed), and the texts only they used, go once they are many: a stream
+        /// of logs that never repeat (ids, times in their text) would otherwise keep every text ever seen. Message, group
+        /// and text ids change (new arrays and a new <see cref="Texts"/>, so a filter pass still reading the old ones is
+        /// unaffected); occurrence ids stay. True when it compacted.
+        /// </summary>
+        private bool CompactIfMostlyDead()
+        {
+            int dead = 0;
+            for (int i = 0; i < messageCount; i++)
+            {
+                if (messages[i].Count == 0)
+                {
+                    dead++;
+                }
+            }
+
+            if (dead < 1024 || dead * 4 < messageCount)
+            {
+                return false;
+            }
+
+            var texts = new TextTable(Math.Max(1024, Texts.Count - dead));
+            var map = new int[messageCount];
+            var kept = new LogMessage[Math.Max(256, messageCount - dead)];
+            int live = 0;
+            for (int i = 0; i < messageCount; i++)
+            {
+                var message = messages[i];
+                if (message.Count == 0)
+                {
+                    map[i] = -1;
+                    continue;
+                }
+
+                message.Text = texts.Intern(Texts[message.Text]);
+                message.Stack = texts.Intern(Texts[message.Stack]);
+                message.Callsite = texts.Intern(Texts[message.Callsite]);
+                message.File = texts.Intern(Texts[message.File]);
+                message.Assembly = texts.Intern(Texts[message.Assembly]);
+                map[i] = live;
+                kept[live++] = message;
+            }
+
+            for (int i = 0; i < count; i++)
+            {
+                owners[i] = map[owners[i]];
+            }
+
+            Texts = texts;
+            messages = kept;
+            messageCount = live;
+            messageIndex.Clear();
+            groups = new LogGroup[Math.Max(256, Math.Min(groupCount, live))];
+            groupCount = 0;
+            groupIndex.Clear();
+            for (int i = 0; i < messageCount; i++)
+            {
+                ref var message = ref messages[i];
+                messageIndex[new MessageKey(message.Text, message.Stack, message.Variant)] = i;
+                message.Group = GroupFor(message.Text, message.Level);
+                groups[message.Group].Variants++;
+            }
+
+            RecountAll();
+            MessagesVersion++;
+            return true;
         }
 
         /// <summary>

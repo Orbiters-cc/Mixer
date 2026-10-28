@@ -24,7 +24,10 @@ namespace Orbiters.Mixer.Editor.Splats.Tests
 
         /// <summary>Writes splats the way Orbiters - N4N0's ply::write does (Z mirrored), with `extra` float
         /// properties after the colour that a reader must skip.</summary>
-        static byte[] Ply(IList<Gaussian> splats, params string[] extra)
+        static byte[] Ply(IList<Gaussian> splats, params string[] extra) => Ply(splats, (splat, property) => 123.0f, extra);
+
+        /// <summary>Same, with each extra property's value for each splat (by its index) from <paramref name="value"/>.</summary>
+        static byte[] Ply(IList<Gaussian> splats, Func<int, string, float> value, params string[] extra)
         {
             var props = new List<string> { "x", "y", "z", "nx", "ny", "nz", "f_dc_0", "f_dc_1", "f_dc_2" };
             props.AddRange(extra);
@@ -34,13 +37,14 @@ namespace Orbiters.Mixer.Editor.Splats.Tests
                 header.Append("property float ").Append(p).Append('\n');
             header.Append("end_header\n");
             var bytes = new List<byte>(Encoding.ASCII.GetBytes(header.ToString()));
-            foreach (Gaussian g in splats)
+            for (int index = 0; index < splats.Count; index++)
             {
+                Gaussian g = splats[index];
                 var v = new List<float> { g.position.x, g.position.y, -g.position.z, 0, 0, 0 };
                 for (int c = 0; c < 3; c++)
                     v.Add((g.color[c] - 0.5f) / PlyReader.ShC0);
-                foreach (string _ in extra)
-                    v.Add(123.0f);
+                foreach (string property in extra)
+                    v.Add(value(index, property));
                 v.Add(g.opacityLogit);
                 v.AddRange(new[] { g.logScale.x, g.logScale.y, g.logScale.z });
                 v.AddRange(new[] { g.rotation.w, -g.rotation.x, -g.rotation.y, g.rotation.z });
@@ -220,6 +224,49 @@ namespace Orbiters.Mixer.Editor.Splats.Tests
             finally
             {
                 UnityEngine.Object.DestroyImmediate(cloud);
+            }
+        }
+
+        /// <summary>A rotation that is not a number (infinite, NaN) is a diverged splat: left out, never uploaded as NaN.</summary>
+        [Test]
+        public void LeavesOutSplatsWhoseRotationIsNotANumber()
+        {
+            var infinite = B;
+            infinite.rotation = new Quaternion(float.PositiveInfinity, 0f, 0f, 1f);
+            var nan = B;
+            nan.rotation = new Quaternion(0f, float.NaN, 0f, 1f);
+            var none = B;
+            none.rotation = new Quaternion(0f, 0f, 0f, 0f);
+            SplatCloud cloud = PlyReader.Read(Ply(new[] { A, infinite, nan, none }));
+            try
+            {
+                Assert.That(cloud.Count, Is.EqualTo(2));
+                AreClose(A.rotation, cloud.rotations[0]);
+                Assert.That(cloud.rotations[1], Is.EqualTo(Quaternion.identity), "a rotation of length zero is none");
+                foreach (var packed in SplatRenderer.Pack(cloud))
+                    Assert.That(float.IsNaN(packed.cov0.x + packed.cov0.y + packed.cov0.z + packed.cov1.x + packed.cov1.y + packed.cov1.z), Is.False);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(cloud);
+            }
+        }
+
+        /// <summary>The sky flag goes to the GPU too: a reimport that only changes which splats are sky uploads again.</summary>
+        [Test]
+        public void TheContentHashFollowsTheSkyFlags()
+        {
+            SplatCloud ground = PlyReader.Read(Ply(new[] { A, B }, (splat, property) => property == "sky" ? 0f : 0.5f, PlyReader.Seen));
+            SplatCloud sky = PlyReader.Read(Ply(new[] { A, B }, (splat, property) => property == "sky" ? (splat == 1 ? 1f : 0f) : 0.5f, PlyReader.Seen));
+            try
+            {
+                Assert.That(sky.sky, Is.EqualTo(new[] { false, true }));
+                Assert.That(sky.contentHash, Is.Not.EqualTo(ground.contentHash));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(ground);
+                UnityEngine.Object.DestroyImmediate(sky);
             }
         }
 

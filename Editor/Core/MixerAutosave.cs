@@ -20,7 +20,7 @@ namespace Orbiters.Mixer.Editor
     internal static class MixerAutosave
     {
         private const string Magic = "MIXA";
-        private const int Version = 4;
+        private const int Version = 5;
 
         public static string Folder => Path.GetFullPath(Path.Combine(Application.dataPath, "..", "Library", "Orbiters", "Mixer", "autosave"));
 
@@ -113,7 +113,11 @@ namespace Orbiters.Mixer.Editor
             }
         }
 
-        /// <summary>Applies the autosave of the target to its document; false when there is none or it does not fit.</summary>
+        /// <summary>
+        /// Applies the autosave of the target to its document; false when there is none or it does not fit. The whole file
+        /// is read and checked before anything of it is applied: a cut or damaged one leaves the document as it was, and is
+        /// kept beside as <c>.corrupt</c> (the next autosave writes a good one in its place).
+        /// </summary>
         /// <param name="extendBones">The renderer lost the leaf bones the session added (a scene reopened from its file): give them back.</param>
         public static bool Restore(EditTarget target, bool extendBones = false)
         {
@@ -125,14 +129,21 @@ namespace Orbiters.Mixer.Editor
             }
             catch (Exception e)
             {
-                Debug.LogWarning("[Mixer] The autosave of '" + target.Name + "' could not be read: " + e.Message);
+                Debug.LogWarning("[Mixer] The autosave of '" + target.Name + "' could not be read (" + e.Message + "): nothing of it was applied. It is kept as " + Path.GetFileName(path) + ".corrupt.");
+                try
+                {
+                    string corrupt = path + ".corrupt";
+                    if (File.Exists(corrupt)) File.Delete(corrupt);
+                    File.Move(path, corrupt);
+                }
+                catch (Exception) { }
                 return false;
             }
         }
 
         /// <summary>
         /// Whether the autosave of <paramref name="targetId"/> is one this version of Mixer reads, made for the mesh with
-        /// <paramref name="fingerprint"/> (<see cref="FingerprintOf"/> of its positions); false when there is none.
+        /// <paramref name="fingerprint"/> (<see cref="FingerprintOf(Mesh)"/>); false when there is none.
         /// </summary>
         public static bool Fits(string targetId, int vertexCount, long fingerprint)
         {
@@ -159,6 +170,7 @@ namespace Orbiters.Mixer.Editor
                 {
                     var age = now - File.GetLastWriteTimeUtc(file);
                     bool stale = file.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase) ? age > TimeSpan.FromMinutes(5)
+                        : file.EndsWith(".corrupt", StringComparison.OrdinalIgnoreCase) ? age > olderThan
                         : file.EndsWith(".bin", StringComparison.OrdinalIgnoreCase) && !keep.Contains(file) && age > olderThan;
                     if (stale) { try { File.Delete(file); } catch (Exception) { } }
                 }
@@ -269,23 +281,167 @@ namespace Orbiters.Mixer.Editor
                 writer.Write(Masked.Count);
                 foreach (var (vertex, value) in Masked) { writer.Write(vertex); writer.Write(value); }
             }
+
+            /// <summary>
+            /// What <see cref="WriteTo"/> wrote after the header (magic, version, vertex count, fingerprint), read whole:
+            /// a file cut short or with counts it cannot hold throws before anything is applied.
+            /// </summary>
+            public static Snapshot ReadFrom(BinaryReader reader, int vertexCount, long fingerprint)
+            {
+                var s = new Snapshot { VertexCount = vertexCount, Fingerprint = fingerprint, Layer = reader.ReadString() };
+                int orderCount = Count(reader, 1);
+                s.Order = new List<string>(orderCount);
+                for (int i = 0; i < orderCount; i++) s.Order.Add(reader.ReadString());
+                int moved = Count(reader, 16);
+                s.Moved = new int[moved];
+                s.MovedPositions = new Vector3[moved];
+                for (int i = 0; i < moved; i++) { s.Moved[i] = reader.ReadInt32(); s.MovedPositions[i] = ReadVector(reader); }
+                int shapes = Count(reader, 8);
+                for (int k = 0; k < shapes; k++)
+                {
+                    string name = reader.ReadString();
+                    bool isNew = reader.ReadBoolean();
+                    bool edited = reader.ReadBoolean();
+                    string source = reader.ReadString();
+                    int n = Count(reader, 16);
+                    var idx = new int[n];
+                    var d = new Vector3[n];
+                    for (int i = 0; i < n; i++) { idx[i] = reader.ReadInt32(); d[i] = ReadVector(reader); }
+                    s.Shapes.Add((name, isNew, edited, source, idx, d));
+                }
+                int deleted = Count(reader, 1);
+                s.Deleted = new List<string>(deleted);
+                for (int i = 0; i < deleted; i++) s.Deleted.Add(reader.ReadString());
+                int groups = Count(reader, 5);
+                for (int g = 0; g < groups; g++)
+                {
+                    string name = reader.ReadString();
+                    int n = Count(reader, 8);
+                    var idx = new int[n];
+                    var w = new float[n];
+                    for (int i = 0; i < n; i++) { idx[i] = reader.ReadInt32(); w[i] = reader.ReadSingle(); }
+                    s.Groups.Add((name, idx, w));
+                }
+                int influenced = Count(reader, 8);
+                for (int k = 0; k < influenced; k++)
+                {
+                    int v = reader.ReadInt32();
+                    int n = Count(reader, 8);
+                    var list = new MeshDocument.Influence[n];
+                    for (int i = 0; i < n; i++) { int bone = reader.ReadInt32(); float w = reader.ReadSingle(); list[i] = new MeshDocument.Influence(bone, w); }
+                    s.Influences.Add((v, list));
+                }
+                int poses = Count(reader, 64);
+                s.BindPoses = new Matrix4x4[poses];
+                for (int p = 0; p < poses; p++) for (int i = 0; i < 16; i++) s.BindPoses[p][i] = reader.ReadSingle();
+                int addedCount = Count(reader, 1);
+                s.AddedBones = new string[addedCount];
+                for (int i = 0; i < addedCount; i++) s.AddedBones[i] = reader.ReadString();
+                int masked = Count(reader, 8);
+                for (int i = 0; i < masked; i++) { int v = reader.ReadInt32(); float m = reader.ReadSingle(); s.Masked.Add((v, m)); }
+                return s;
+            }
+
+            // A count of items at least bytesEach long each: one the rest of the file cannot hold is damage, not a size to allocate.
+            private static int Count(BinaryReader reader, int bytesEach)
+            {
+                int n = reader.ReadInt32();
+                long left = reader.BaseStream.CanSeek ? reader.BaseStream.Length - reader.BaseStream.Position : long.MaxValue;
+                if (n < 0 || (long)n * bytesEach > left) throw new InvalidDataException("the autosave is cut short or damaged (a count of " + n + ")");
+                return n;
+            }
         }
 
-        /// <summary>A hash of the original's vertex positions: an autosave made for another version of the mesh is not applied.</summary>
+        /// <summary>A hash of vertex positions alone: whether a mesh asset holds the positions it was given.</summary>
         internal static long FingerprintOf(Vector3[] positions)
         {
-            unchecked
+            var hash = new Fnv();
+            hash.Add(positions);
+            return hash.Value;
+        }
+
+        /// <summary>
+        /// Which version of a mesh this is, by everything a session reads from it and an autosave or a kept working mesh
+        /// relies on: positions, triangles and their submeshes, UVs, bind poses, bone weights and the blendshapes' names and
+        /// frames. A mesh reimported with any of them changed is another one: its autosave and working mesh are not used.
+        /// </summary>
+        internal static long FingerprintOf(Mesh mesh)
+        {
+            if (mesh == null) return 0;
+            bool skinned = mesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.BlendWeight);
+            var bindposes = skinned ? mesh.bindposes : new Matrix4x4[0];
+            byte[] perVertex = null;
+            BoneWeight1[] weights = null;
+            if (skinned && bindposes.Length > 0)
             {
-                ulong hash = 14695981039346656037UL;
-                var bits = new FloatBits();
-                for (int v = 0; v < positions.Length; v++)
+                perVertex = mesh.GetBonesPerVertex().ToArray();
+                weights = mesh.GetAllBoneWeights().ToArray();
+            }
+            return FingerprintOf(mesh, mesh.vertices, mesh.triangles, bindposes, perVertex, weights);
+        }
+
+        /// <summary><see cref="FingerprintOf(Mesh)"/> with the arrays a document already read from the mesh.</summary>
+        internal static long FingerprintOf(Mesh mesh, Vector3[] positions, int[] triangles, Matrix4x4[] bindposes, byte[] perVertex, BoneWeight1[] weights)
+        {
+            var hash = new Fnv();
+            hash.Add(positions);
+            hash.Add(triangles?.Length ?? 0);
+            if (triangles != null) foreach (int index in triangles) hash.Add(index);
+            hash.Add(mesh.subMeshCount);
+            for (int i = 0; i < mesh.subMeshCount; i++) hash.Add(mesh.GetSubMesh(i).indexCount);
+            var uv = mesh.uv;
+            hash.Add(uv.Length);
+            foreach (var t in uv) { hash.Add(t.x); hash.Add(t.y); }
+            hash.Add(bindposes?.Length ?? 0);
+            if (bindposes != null) foreach (var pose in bindposes) for (int i = 0; i < 16; i++) hash.Add(pose[i]);
+            hash.Add(perVertex?.Length ?? 0);
+            if (perVertex != null) foreach (byte b in perVertex) hash.Add(b);
+            hash.Add(weights?.Length ?? 0);
+            if (weights != null) foreach (var w in weights) { hash.Add(w.boneIndex); hash.Add(w.weight); }
+            hash.Add(mesh.blendShapeCount);
+            for (int s = 0; s < mesh.blendShapeCount; s++)
+            {
+                hash.Add(mesh.GetBlendShapeName(s));
+                int frames = mesh.GetBlendShapeFrameCount(s);
+                hash.Add(frames);
+                for (int f = 0; f < frames; f++) hash.Add(mesh.GetBlendShapeFrameWeight(s, f));
+            }
+            return hash.Value;
+        }
+
+        // FNV-1a over 32-bit words.
+        private struct Fnv
+        {
+            private ulong hash;
+            private bool started;
+
+            public long Value => (long)(started ? hash : 14695981039346656037UL);
+
+            public void Add(int value)
+            {
+                unchecked
                 {
-                    var p = positions[v];
-                    bits.Float = p.x; hash = (hash ^ bits.Bits) * 1099511628211UL;
-                    bits.Float = p.y; hash = (hash ^ bits.Bits) * 1099511628211UL;
-                    bits.Float = p.z; hash = (hash ^ bits.Bits) * 1099511628211UL;
+                    if (!started) { hash = 14695981039346656037UL; started = true; }
+                    hash = (hash ^ (uint)value) * 1099511628211UL;
                 }
-                return (long)hash;
+            }
+
+            public void Add(float value)
+            {
+                var bits = new FloatBits { Float = value };
+                Add((int)bits.Bits);
+            }
+
+            public void Add(string value)
+            {
+                Add(value?.Length ?? -1);
+                if (value != null) foreach (char c in value) Add(c);
+            }
+
+            public void Add(Vector3[] values)
+            {
+                if (values == null) return;
+                foreach (var p in values) { Add(p.x); Add(p.y); Add(p.z); }
             }
         }
 
@@ -303,31 +459,30 @@ namespace Orbiters.Mixer.Editor
             if (reader.ReadInt32() != Version) return false;
             int vertexCount = reader.ReadInt32();
             if (vertexCount != doc.VertexCount) return false;
-            if (reader.ReadInt64() != doc.OriginalFingerprint)
+            long fingerprint = reader.ReadInt64();
+            if (fingerprint != doc.OriginalFingerprint)
             {
                 Debug.LogWarning("[Mixer] '" + target.Name + "' changed since its edits were autosaved (reimported?): they were made on the mesh before, and are not applied.");
                 return false;
             }
-            string layer = reader.ReadString();
-            int orderCount = reader.ReadInt32();
-            var order = new List<string>(orderCount);
-            for (int i = 0; i < orderCount; i++) order.Add(reader.ReadString());
-            int moved = reader.ReadInt32();
-            for (int i = 0; i < moved; i++)
+            // All of it first: a file cut short throws here, with the document untouched.
+            var snapshot = Snapshot.ReadFrom(reader, vertexCount, fingerprint);
+            Apply(target, snapshot, extendBones);
+            return true;
+        }
+
+        private static void Apply(EditTarget target, Snapshot s, bool extendBones)
+        {
+            var doc = target.Document;
+            int vertexCount = doc.VertexCount;
+            for (int i = 0; i < s.Moved.Length; i++)
             {
-                int v = reader.ReadInt32();
-                var p = ReadVector(reader);
-                if (v >= 0 && v < vertexCount) { doc.Positions[v] = p; doc.MovedBase.Add(v); doc.Dirty.Add(v); }
+                int v = s.Moved[i];
+                if (v >= 0 && v < vertexCount) { doc.Positions[v] = s.MovedPositions[i]; doc.MovedBase.Add(v); doc.Dirty.Add(v); }
             }
-            int shapes = reader.ReadInt32();
-            for (int s = 0; s < shapes; s++)
+            foreach (var (name, isNew, edited, rawSource, indices, deltas) in s.Shapes)
             {
-                string name = reader.ReadString();
-                bool isNew = reader.ReadBoolean();
-                bool edited = reader.ReadBoolean();
-                string source = reader.ReadString();
-                if (source.Length == 0) source = null;
-                int n = reader.ReadInt32();
+                string source = rawSource.Length == 0 ? null : rawSource;
                 ShapeLayer layerData;
                 if (isNew)
                 {
@@ -341,17 +496,15 @@ namespace Orbiters.Mixer.Editor
                     layerData = doc.Shape(name);
                     if (layerData != null) layerData.Edited = edited;
                 }
-                for (int i = 0; i < n; i++)
+                if (layerData == null) continue;
+                for (int i = 0; i < indices.Length; i++)
                 {
-                    int v = reader.ReadInt32();
-                    var d = ReadVector(reader);
-                    if (layerData != null && v >= 0 && v < vertexCount) layerData.Deltas[v] = d;
+                    int v = indices[i];
+                    if (v >= 0 && v < vertexCount) layerData.Deltas[v] = deltas[i];
                 }
             }
-            int deleted = reader.ReadInt32();
-            for (int i = 0; i < deleted; i++)
+            foreach (string name in s.Deleted)
             {
-                string name = reader.ReadString();
                 if (!doc.InSource(name)) continue;
                 doc.ShapeEdits.Remove(name);
                 doc.DeletedShapes.Add(name);
@@ -359,44 +512,27 @@ namespace Orbiters.Mixer.Editor
             // The order as it was (renames keep their place); a name it lacks goes at the end.
             var known = new HashSet<string>();
             doc.ShapeOrder.Clear();
-            foreach (string name in order)
+            foreach (string name in s.Order)
                 if ((doc.InSource(name) || doc.ShapeEdits.ContainsKey(name)) && known.Add(name)) doc.ShapeOrder.Add(name);
             for (int i = 0; i < doc.ShapeSource.blendShapeCount; i++) { string name = doc.ShapeSource.GetBlendShapeName(i); if (known.Add(name)) doc.ShapeOrder.Add(name); }
             foreach (string name in doc.ShapeEdits.Keys) if (known.Add(name)) doc.ShapeOrder.Add(name);
-            int groups = reader.ReadInt32();
             doc.Groups.Clear();
-            for (int g = 0; g < groups; g++)
+            foreach (var (name, indices, weights) in s.Groups)
             {
-                var group = new VertexGroup { Name = reader.ReadString() };
-                int n = reader.ReadInt32();
-                for (int i = 0; i < n; i++) { int v = reader.ReadInt32(); float w = reader.ReadSingle(); if (v >= 0 && v < vertexCount) group.Weights[v] = w; }
+                var group = new VertexGroup { Name = name };
+                for (int i = 0; i < indices.Length; i++) { int v = indices[i]; if (v >= 0 && v < vertexCount) group.Weights[v] = weights[i]; }
                 doc.Groups.Add(group);
             }
-            int influenced = reader.ReadInt32();
-            for (int k = 0; k < influenced; k++)
-            {
-                int v = reader.ReadInt32();
-                int n = reader.ReadInt32();
-                var list = new MeshDocument.Influence[n];
-                for (int i = 0; i < n; i++) { int bone = reader.ReadInt32(); float w = reader.ReadSingle(); list[i] = new MeshDocument.Influence(bone, w); }
+            foreach (var (v, list) in s.Influences)
                 if (v >= 0 && v < vertexCount && doc.HasSkin) doc.SetInfluences(v, list);
-            }
-            int poses = reader.ReadInt32();
-            var bindPoses = new Matrix4x4[poses];
-            for (int p = 0; p < poses; p++) for (int i = 0; i < 16; i++) bindPoses[p][i] = reader.ReadSingle();
-            int addedCount = reader.ReadInt32();
-            var added = new string[addedCount];
-            for (int i = 0; i < addedCount; i++) added[i] = reader.ReadString();
-            if (poses > 0) ApplyBindPoses(target, bindPoses, added, extendBones);
-            int masked = reader.ReadInt32();
-            if (masked > 0)
+            if (s.BindPoses.Length > 0) ApplyBindPoses(target, s.BindPoses, s.AddedBones, extendBones);
+            if (s.Masked.Count > 0)
             {
                 var mask = doc.EnsureMask();
-                for (int i = 0; i < masked; i++) { int v = reader.ReadInt32(); float m = reader.ReadSingle(); if (v >= 0 && v < vertexCount) mask[v] = m; }
+                foreach (var (v, m) in s.Masked) if (v >= 0 && v < vertexCount) mask[v] = m;
             }
-            doc.Layer = layer.Length > 0 && doc.HasShape(layer) ? layer : null;
+            doc.Layer = s.Layer.Length > 0 && doc.HasShape(s.Layer) ? s.Layer : null;
             doc.Revision++;
-            return true;
         }
 
         // Only when the renderer has that many bones (an undone added bone leaves the original's), or, from a scene file

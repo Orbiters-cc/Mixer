@@ -179,9 +179,11 @@ namespace Orbiters.Mixer.Editor
             for (var t = renderer.transform; t != null; t = t.parent) paths.Add(AnimationUtility.CalculateTransformPath(renderer.transform, t));
             var clips = new List<string>();
             var animating = AssetContentIndex.WithFact("attribute", property, ".anim");
+            // Clips saved as binary hold facts the index can't read: Unity's curves say whether they animate the shape.
+            animating.AddRange(AssetContentIndex.Unread(".anim"));
             // Read after the lookup, which starts the reading when the index was out of date (after a reload, an import).
             complete = AssetContentIndex.UpToDate;
-            foreach (string clipPath in animating)
+            foreach (string clipPath in animating.Distinct(StringComparer.Ordinal))
             {
                 var clip = AssetDatabase.LoadAssetAtPath<AnimationClip>(clipPath);
                 if (clip == null) continue;

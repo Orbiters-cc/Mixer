@@ -378,7 +378,7 @@ namespace Orbiters.Mixer.Editor
                     HoldAt(view, e.mousePosition);
                     lastDrag = EditorApplication.timeSinceStartup;
                     Hover(e.mousePosition, false);
-                    if (stroke != null) stroke.Step(HandleUtility.GUIPointToWorldRay(e.mousePosition), hovering ? hoverPoint : (Vector3?)null, hovering ? hoverNormal : (Vector3?)null, e.control, e.shift);
+                    if (stroke != null) stroke.Step(HandleUtility.GUIPointToWorldRay(e.mousePosition), hovering ? hoverPoint : (Vector3?)null, hovering ? hoverNormal : (Vector3?)null, e.control);
                     else weightStroke.Step(hovering ? hoverPoint : (Vector3?)null, hovering ? hoverNormal : (Vector3?)null, e.control);
                     e.Use();
                     view.Repaint();
@@ -480,6 +480,7 @@ namespace Orbiters.Mixer.Editor
                 return true;
             }
             var pressed = hoverTarget;
+            // Shift at the press smooths the whole stroke, as in Blender: letting it go or pressing it mid-stroke keeps the brush.
             var effective = e.shift && !(brush is SmoothBrush) ? Brushes.Named("Smooth") : brush;
             stroke = new SculptStroke(pressed, effective, Radius, Strength, Falloff, Symmetry, view.camera != null ? view.camera.transform.forward : Vector3.forward);
             stroke.Begin(hoverPoint, hoverNormal, HandleUtility.GUIPointToWorldRay(e.mousePosition), e.control);
@@ -577,7 +578,7 @@ namespace Orbiters.Mixer.Editor
             {
                 var p = Vector3.Lerp(from, to, i / (float)steps);
                 var h = target.Bvh.ClosestPoint(p, radius * 4f);
-                s.Step(new Ray(p - viewDirection, viewDirection), h.Found ? h.Position : (Vector3?)null, h.Found ? target.Bvh.FaceNormal(h.Triangle) : (Vector3?)null, invert, false);
+                s.Step(new Ray(p - viewDirection, viewDirection), h.Found ? h.Position : (Vector3?)null, h.Found ? target.Bvh.FaceNormal(h.Triangle) : (Vector3?)null, invert);
             }
             return s.End(false);
         }

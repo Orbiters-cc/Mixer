@@ -83,6 +83,77 @@ namespace Orbiters.UnitGit.Editor.Tests
             }
         }
 
+        // Every shelf is in the backup (Git keeps only the newest in refs/stash) and comes back as a shelf, in its order and
+        // with its message; the project's own repository gets no ref of the backup's.
+        [Test]
+        public void BackupKeepsEveryShelfAndRestoresThem()
+        {
+            using (var repo = UnitGitTestRepo.Create())
+            {
+                string scratch = UnitGitTestRepo.TempFolder();
+                string folder = Path.Combine(scratch, "backups");
+                string restored = Path.Combine(scratch, "restored");
+                try
+                {
+                    repo.Write("Assets/Avatar.prefab", "v1");
+                    repo.Commit("first");
+                    repo.Write("Assets/Avatar.prefab", "older shelf");
+                    repo.Run("stash", "push", "-m", "Older idea");
+                    repo.Write("Assets/Avatar.prefab", "newer shelf");
+                    repo.Run("stash", "push", "-m", "Newer idea");
+                    string shelvesBefore = repo.Run("stash", "list", "--format=%H %gs");
+
+                    var result = UnitGitBackups.Create(repo.Git, folder, 10);
+                    Assert.That(result.Success, Is.True, result.Message);
+                    Assert.That(repo.Run("for-each-ref", "--format=%(refname)", "refs/shelves").Trim(), Is.Empty, "the project's repository is not written to");
+                    var backup = UnitGitBackups.List(folder).Single();
+                    Assert.That(backup.Healthy, Is.True, backup.Problem);
+                    Assert.That(UnitGitBackups.IsDue(repo.Git, folder), Is.False);
+
+                    var restore = UnitGitBackups.RestoreCopy(repo.Git, backup.Path, restored);
+                    Assert.That(restore.Success, Is.True, restore.Message);
+                    StringAssert.Contains("2 shelves", restore.Message);
+                    var copy = new UnitGitService(restored);
+                    Assert.That(copy.RunGit(30000, "stash", "list", "--format=%H %gs").StandardOutput, Is.EqualTo(shelvesBefore));
+                    Assert.That(copy.RunGit(30000, "for-each-ref", "--format=%(refname)", "refs/shelves").StandardOutput.Trim(), Is.Empty, "only the shelves are left of the backup's refs");
+                    Assert.That(copy.RunGit(30000, "stash", "apply", "stash@{1}").Success, Is.True, "an older shelf applies");
+                    Assert.That(File.ReadAllText(Path.Combine(restored, "Assets", "Avatar.prefab")), Is.EqualTo("older shelf"));
+                }
+                finally
+                {
+                    UnitGitTestRepo.DeleteTempFolder(scratch);
+                }
+            }
+        }
+
+        // A commit on a detached HEAD, with every branch and tag unchanged, makes a day-old backup due.
+        [Test]
+        public void ADetachedCommitMakesAnOldBackupDue()
+        {
+            using (var repo = UnitGitTestRepo.Create())
+            {
+                string scratch = UnitGitTestRepo.TempFolder();
+                string folder = Path.Combine(scratch, "backups");
+                try
+                {
+                    repo.Write("Assets/a.txt", "a");
+                    repo.Commit("a");
+                    repo.Run("checkout", "-q", "--detach");
+                    Assert.That(UnitGitBackups.Create(repo.Git, folder, 10).Success, Is.True);
+                    var backup = UnitGitBackups.List(folder).Single();
+                    File.SetLastWriteTime(backup.Path, DateTime.Now.AddDays(-2));
+                    Assert.That(UnitGitBackups.IsDue(repo.Git, folder), Is.False, "nothing changed since");
+                    repo.Write("Assets/a.txt", "b");
+                    repo.Commit("on a detached HEAD");
+                    Assert.That(UnitGitBackups.IsDue(repo.Git, folder), Is.True);
+                }
+                finally
+                {
+                    UnitGitTestRepo.DeleteTempFolder(scratch);
+                }
+            }
+        }
+
         [Test]
         public void FolderInsideTheProjectIsDetected()
         {

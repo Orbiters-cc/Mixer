@@ -46,6 +46,8 @@ namespace Orbiters.Logger.Editor
         // up to the next \" that is not itself an escaped quote (\\\").
         private const string PlainJsonValue = @"(?:[^""\\]|\\.)*";
         private const string EscapedJsonValue = @"(?:\\\\\\""|\\\\\\\\|\\[^""\\]|[^""\\])*";
+        // What follows an opening quote captured as group 2, on its line: escaped characters, up to the same quote unescaped.
+        private const string QuotedValue = @"(?:\\.|(?!\2)[^\\\r\n])*\2?";
 
         // ---- Always masked ------------------------------------------------------------------------------------------
 
@@ -55,8 +57,14 @@ namespace Orbiters.Logger.Editor
         // followed by a host wins.
         private static readonly Regex UrlCredentials = new Regex(
             @"(\b[a-z][a-z0-9+.\-]*:(?:\\?/){2})(?!git@)(?:[^\s/@\\""'<>:]+:[^\s\\""'<>]*?|[^\s/@\\""'<>]+?)@(?=[^\s@/\\""'<>]+(?:[:/\\""'\s?#]|$))", Options);
+        // The whole value of a sign-in header (a Digest one holds the user name and its response as parameters), its scheme
+        // kept: up to the quote that closes it in JSON (\"…\" inside a string too) or in a quoted command-line argument,
+        // else to the end of the line.
         private static readonly Regex AuthorizationHeader = new Regex(
-            @"(\b(?:Proxy-)?Authorization\\?[""']?\s*[:=]\s*\\?[""']?\s*(?:(?:Bearer|Basic|Token|Digest|Bot|Negotiate|NTLM)\s+)?)(?!\[masked\])[^\s""'\\,;]+", Options);
+            @"(?<lead>(?:(?<oqd>(?<!\\)"")|(?<oqs>'))?[ \t]*\b(?:Proxy-)?Authorization\\?[""']?\s*[:=]\s*)(?:(?<esc>\\"")|(?<dq>"")|(?<sq>'))?[ \t]*" +
+            @"(?<scheme>(?:Bearer|Basic|Token|Digest|Bot|Negotiate|NTLM|HOBA|Mutual|AWS4-HMAC-SHA256)\s+)?(?!\[masked\])" +
+            @"(?<value>(?(esc)" + EscapedJsonValue + @"|(?(dq)(?:\\.|[^""\\\r\n])*|(?(sq)(?:\\.|[^'\\\r\n])*|(?(oqd)(?:\\.|[^""\\\r\n])+|(?(oqs)[^'\r\n]+|[^\r\n&]+))))))",
+            Options | RegexOptions.ExplicitCapture);
         private static readonly Regex Bearer = new Regex(@"(\bBearer\s+)[A-Za-z0-9\-._~+/]{12,}=*", Options);
         private static readonly Regex SchemeToken = new Regex(@"(\b(?:token|Basic)\s+)[A-Za-z0-9\-._~+/]{16,}=*", Options);
         private static readonly Regex KnownTokens = new Regex(
@@ -70,12 +78,15 @@ namespace Orbiters.Logger.Editor
             @"((?<!\\)""[\w.\-]{0,40}?(?:" + SecretNames + "|" + WordNames + @"|cookie|authorization)""\s*:\s*"")" + PlainJsonValue, Options);
         private static readonly Regex EscapedJsonSecret = new Regex(
             @"(\\""[\w.\-]{0,40}?(?:" + SecretNames + "|" + WordNames + @"|cookie|authorization)\\""\s*:\s*\\"")" + EscapedJsonValue, Options);
-        // password: my secret phrase · password = "correct horse battery" · api-key: abc
+        // password: my secret phrase · password = "correct horse battery" · api-key: abc. A quoted value runs to its closing
+        // quote, past escaped ones ("one\"two").
         private static readonly Regex KeyValueSecret = new Regex(
-            @"((?:" + SecretNames + @")[ \t]*[:=][ \t]*)(?:([""'])(?:(?!\2)[^\r\n])*\2?|(?![""'\s])(?!\[masked\])[^\r\n]+)", Options);
+            @"((?:" + SecretNames + @")[ \t]*[:=][ \t]*)(?:([""'])" + QuotedValue + @"|(?![""'\s])(?!\[masked\])[^\r\n]+)", Options);
         private static readonly Regex WordAssignment = new Regex(@"((?:" + WordNames + @")[ \t]*=[ \t]*[""']?)(?!\[masked\])[^\s""',;&<>\\]{3,}", Options);
         private static readonly Regex WordKey = new Regex(@"((?:" + WordNames + @")[ \t]*:[ \t]*[""']?)(?!\[masked\])[A-Za-z0-9\-._~+/]{16,}=*", Options);
-        private static readonly Regex CommandLineSecret = new Regex(@"((?<![\w\-])--?(?:" + SecretFlags + @")\s+)(?!-)\S+", Options);
+        // --password secret · --password "correct horse battery staple" (a quoted argument is one value, spaces included).
+        private static readonly Regex CommandLineSecret = new Regex(
+            @"((?<![\w\-])--?(?:" + SecretFlags + @")\s+)(?:([""'])" + QuotedValue + @"|(?!-)(?!\[masked\])\S+)", Options);
         // A flag alone on its line, its value on the next (Editor.log's "COMMAND LINE ARGUMENTS:").
         private static readonly Regex SecretFlagLine = new Regex(@"^[ \t]*--?(?:" + SecretFlags + @")[ \t]*$", Options);
         private static readonly Regex IdentityFlagLine = new Regex(@"^[ \t]*-(?:" + IdentityFlags + @")[ \t]*$", Options);
@@ -243,7 +254,7 @@ namespace Orbiters.Logger.Editor
             text = Has(text, "orbit-") ? OrbitersToken.Replace(text, Masked) : text;
             text = Has(text, "webhooks") ? DiscordWebhook.Replace(text, "$1" + Masked) : text;
             text = at && address ? UrlCredentials.Replace(text, "$1" + Masked + "@") : text;
-            text = Has(text, "uthorization") ? AuthorizationHeader.Replace(text, "$1" + Masked) : text;
+            text = Has(text, "uthorization") ? AuthorizationHeader.Replace(text, AuthorizationMasked) : text;
             text = Has(text, "bearer") ? Bearer.Replace(text, "$1" + Masked) : text;
             text = Has(text, "token ") || Has(text, "basic ") ? SchemeToken.Replace(text, "$1" + Masked) : text;
             text = KnownTokens.Replace(text, Masked);
@@ -258,7 +269,7 @@ namespace Orbiters.Logger.Editor
             text = colon || assigns ? KeyValueSecret.Replace(text, QuoteMasked) : text;
             text = assigns ? WordAssignment.Replace(text, "$1" + Masked) : text;
             text = colon ? WordKey.Replace(text, "$1" + Masked) : text;
-            text = dash ? CommandLineSecret.Replace(text, "$1" + Masked) : text;
+            text = dash ? CommandLineSecret.Replace(text, QuoteMasked) : text;
             text = Has(text, "cookie:") ? CookieHeader.Replace(text, "$1" + Masked) : text;
             text = Has(text, "authcookie_") ? AuthCookie.Replace(text, "authcookie_" + Masked) : text;
             text = dash ? LicenseKey.Replace(text, Masked) : text;
@@ -277,6 +288,10 @@ namespace Orbiters.Logger.Editor
             string quote = match.Groups[2].Value;
             return match.Groups[1].Value + quote + Masked + quote;
         }
+
+        // A sign-in header keeps its name, opening quote and scheme ("Authorization: Digest [masked]").
+        private static string AuthorizationMasked(Match match) =>
+            match.Groups["lead"].Value + match.Groups["esc"].Value + match.Groups["dq"].Value + match.Groups["sq"].Value + match.Groups["scheme"].Value + Masked;
 
         private string AnonymizeText(string text)
         {

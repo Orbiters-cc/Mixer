@@ -28,13 +28,19 @@ namespace Orbiters.UnitGit.Editor
     }
 
     /// <summary>
-    /// Backups of a project's whole Git history: one <c>git bundle</c> file per backup, with every branch and tag, kept in a
-    /// folder the user picks (another drive or a synced folder). Mixer Git never uploads anything; a backup is the copy
-    /// that survives a broken disk or a deleted project. Uncommitted changes and ignored files are not part of it.
+    /// Backups of a project's whole Git history: one <c>git bundle</c> file per backup, with every branch, tag and other
+    /// ref, the checked-out commit and every shelf, kept in a folder the user picks (another drive or a synced folder).
+    /// Mixer Git never uploads anything; a backup is the copy that survives a broken disk or a deleted project.
+    /// Uncommitted changes that are not shelved and ignored files are not part of it.
     /// </summary>
     internal static class UnitGitBackups
     {
         public const string Extension = ".bundle";
+        /// <summary>
+        /// Where a backup keeps the shelves: Git holds only the newest in refs/stash (the others are in its log, which a
+        /// bundle does not carry), so each one is a ref of its own, 000 the newest.
+        /// </summary>
+        internal const string ShelfRefs = "refs/shelves/";
         private const string AutomaticSessionKey = "Orbiters.UnitGit.Backups.AutomaticChecked";
         private static readonly Dictionary<string, UnitGitBackup> Checked = new Dictionary<string, UnitGitBackup>(StringComparer.OrdinalIgnoreCase);
         // What follows a project's own prefix in its backup names: the time it was made, and a number when two share it.
@@ -123,7 +129,7 @@ namespace Orbiters.UnitGit.Editor
             string final = System.IO.Path.Combine(folder, name + Extension);
             for (int n = 2; File.Exists(final); n++) final = System.IO.Path.Combine(folder, name + "_" + n + Extension);
             string temporary = final + ".partial";
-            var result = git.RunGit(UnitGitService.LongTimeoutMilliseconds, "bundle", "create", temporary, "--all");
+            var result = Bundle(git, temporary);
             if (!result.Success)
             {
                 TryDelete(temporary);
@@ -142,6 +148,66 @@ namespace Orbiters.UnitGit.Editor
                 foreach (var old in Own(List(folder), git.ProjectRoot).Where(b => !string.Equals(b.Path, check.Path, StringComparison.OrdinalIgnoreCase)).Skip(keep - 1))
                     Delete(old.Path);
             return new GitCommandResult { StandardOutput = "Backed up " + check.Branches + " branch" + (check.Branches == 1 ? "" : "es") + " to " + System.IO.Path.GetFileName(final) + "." };
+        }
+
+        /// <summary>
+        /// What a backup holds, as "&lt;commit&gt; &lt;name&gt;" lines: every ref but refs/stash, HEAD, and each shelf under
+        /// <see cref="ShelfRefs"/>. Null when Git could not say.
+        /// </summary>
+        internal static List<string> RefsToBackUp(UnitGitService git)
+        {
+            var refs = git.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "for-each-ref", "--format=%(objectname) %(refname)");
+            var shelves = git.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "stash", "list", "--format=%H");
+            if (!refs.Success || !shelves.Success) return null;
+            var lines = UnitGitService.SplitLines(refs.StandardOutput).Select(line => line.Trim())
+                .Where(line => line.Length > 0 && !line.EndsWith(" refs/stash", StringComparison.Ordinal) && line.IndexOf(" " + ShelfRefs, StringComparison.Ordinal) < 0)
+                .ToList();
+            var head = git.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "rev-parse", "--verify", "--quiet", "HEAD");
+            if (head.Success && head.StandardOutput.Trim().Length > 0) lines.Add(head.StandardOutput.Trim() + " HEAD");
+            int n = 0;
+            foreach (string shelf in UnitGitService.SplitLines(shelves.StandardOutput).Select(line => line.Trim()).Where(line => line.Length > 0))
+                lines.Add(shelf + " " + ShelfRefs + (n++).ToString("D3", CultureInfo.InvariantCulture));
+            return lines;
+        }
+
+        // The bundle is made in a scratch repository that borrows the project's objects (Git's alternates) and has exactly
+        // the refs to back up: the project's own repository is never written to.
+        private static GitCommandResult Bundle(UnitGitService git, string file)
+        {
+            var refs = RefsToBackUp(git);
+            if (refs == null) return Failure("Git could not list the project's branches and shelves.");
+            var common = git.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "rev-parse", "--git-common-dir");
+            if (!common.Success) return common;
+            string objects = System.IO.Path.Combine(System.IO.Path.GetFullPath(System.IO.Path.Combine(git.ProjectRoot, common.StandardOutput.Trim())), "objects");
+            string staging = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "mixer-git-backup-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                Directory.CreateDirectory(staging);
+                var scratch = new UnitGitService(staging);
+                var init = scratch.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "init", "--bare", "--quiet");
+                if (!init.Success) return init;
+                File.WriteAllText(System.IO.Path.Combine(staging, "objects", "info", "alternates"), objects.Replace('\\', '/') + "\n");
+                var packed = new StringBuilder();
+                string head = null;
+                foreach (string line in refs)
+                {
+                    int space = line.IndexOf(' ');
+                    if (space <= 0) continue;
+                    if (line.Substring(space + 1) == "HEAD") head = line.Substring(0, space);
+                    else packed.Append(line).Append('\n');
+                }
+                File.WriteAllText(System.IO.Path.Combine(staging, "packed-refs"), packed.ToString());
+                if (head != null) File.WriteAllText(System.IO.Path.Combine(staging, "HEAD"), head + "\n");
+                return scratch.RunGit(UnitGitService.LongTimeoutMilliseconds, "bundle", "create", file, "--all");
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            {
+                return Failure("The backup could not be prepared: " + ex.Message);
+            }
+            finally
+            {
+                DeleteFolder(staging);
+            }
         }
 
         // This project's backups among everything in the folder, in the same order.
@@ -202,7 +268,8 @@ namespace Orbiters.UnitGit.Editor
             var copy = new UnitGitService(destination);
             var result = copy.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "init", "--quiet");
             if (result.Success)
-                result = copy.RunGit(UnitGitService.LongTimeoutMilliseconds, "fetch", "--quiet", "--update-head-ok", bundle, "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*", "HEAD");
+                result = copy.RunGit(UnitGitService.LongTimeoutMilliseconds, "fetch", "--quiet", "--update-head-ok", bundle, "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*",
+                    "+" + ShelfRefs + "*:" + ShelfRefs + "*", "HEAD");
             if (result.Success)
                 result = branches.Count == 1
                     ? copy.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "symbolic-ref", "HEAD", "refs/heads/" + branches[0])
@@ -210,15 +277,32 @@ namespace Orbiters.UnitGit.Editor
             if (result.Success)
                 result = copy.RunGit(UnitGitService.LongTimeoutMilliseconds, "reset", "--hard", "--quiet");
             if (!result.Success) return result;
+            // The shelves come back as shelves, oldest first so the newest is on top again.
+            var shelves = refs.Where(parts => parts[1].StartsWith(ShelfRefs, StringComparison.Ordinal)).OrderByDescending(parts => parts[1], StringComparer.Ordinal).ToList();
+            foreach (var shelf in shelves)
+            {
+                var subject = copy.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "log", "-1", "--format=%s", shelf[0]);
+                var stored = subject.Success
+                    ? copy.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "stash", "store", "-m", subject.StandardOutput.Trim(), shelf[0])
+                    : subject;
+                if (!stored.Success) return Failure("The copy in " + destination + " has the project, but its shelf " + shelf[1].Substring(ShelfRefs.Length) + " could not be restored: " + stored.Message);
+            }
+            if (shelves.Count > 0)
+            {
+                var drop = copy.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "for-each-ref", "--format=delete %(refname)", ShelfRefs);
+                foreach (string line in UnitGitService.SplitLines(drop.StandardOutput).Where(l => l.StartsWith("delete ", StringComparison.Ordinal)))
+                    copy.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "update-ref", "-d", line.Substring("delete ".Length).Trim());
+            }
             string shortCommit = commit.Substring(0, Math.Min(7, commit.Length));
             var restored = copy.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "rev-parse", "--verify", "--quiet", "HEAD^{commit}");
             if (!restored.Success || restored.StandardOutput.Trim() != commit)
                 return Failure("The copy in " + destination + " is not at the backed-up commit " + shortCommit + ": do not use it.");
 
+            string shelved = shelves.Count == 0 ? string.Empty : shelves.Count == 1 ? " Its shelf is back too." : " Its " + shelves.Count + " shelves are back too.";
             string where = branches.Count == 1 ? "on branch " + branches[0]
                 : branches.Count == 0 ? "at commit " + shortCommit + " with no branch checked out, as when the backup was made"
                 : "at commit " + shortCommit + " with no branch checked out: " + string.Join(", ", branches) + " point there, check out the one you were on";
-            return new GitCommandResult { StandardOutput = "Restored the project to " + destination + ", " + where + ". Open it with Unity Hub (Add project from disk)." };
+            return new GitCommandResult { StandardOutput = "Restored the project to " + destination + ", " + where + "." + shelved + " Open it with Unity Hub (Add project from disk)." };
         }
 
         public static bool Delete(string path)
@@ -261,10 +345,11 @@ namespace Orbiters.UnitGit.Editor
             var last = Own(List(folder), git.ProjectRoot).FirstOrDefault();
             if (last == null) return HasHistory(git);
             if ((DateTime.Now - last.Created).TotalHours < 24) return false;
-            var current = git.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "for-each-ref", "--format=%(objectname) %(refname)", "refs/heads", "refs/tags");
+            // Everything a backup holds counts: a new commit on a detached HEAD, a new shelf, a remote's ref.
+            var current = RefsToBackUp(git);
             var saved = git.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "bundle", "list-heads", last.Path);
-            if (!current.Success || !saved.Success) return true;
-            return !SameLines(current.StandardOutput, saved.StandardOutput.Split('\n').Select(line => line.Trim()).Where(line => !line.EndsWith(" HEAD", StringComparison.Ordinal)));
+            if (current == null || !saved.Success) return true;
+            return !SameLines(string.Join("\n", current), saved.StandardOutput.Split('\n'));
         }
 
         private static bool HasHistory(UnitGitService git)

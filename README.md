@@ -6,6 +6,49 @@ modern Hierarchy and Project windows, the Mixer console (a log hub in the Consol
 projects). Nothing re-imports while you edit: edits show live on a working copy of the mesh and are saved as a native
 mesh asset when you commit.
 
+## Unreleased
+
+- **Mixer's windows on a project's first start**: a new project (or one whose UserSettings were deleted) opens with the
+  layout last used in another project, which names the Mixer Hierarchy, Project and console by that project's script
+  GUIDs (Orbiters packages ship without `.meta` files, so each project has its own); Unity dropped them, Unity's own
+  windows were already gone from it, and the Hierarchy, Project and Console were missing. Before Unity loads the layout,
+  Mixer now puts those windows' scripts right and saves the layout as the project's own, so they open where they were
+  (the same happens after an update that re-imported Mixer with new GUIDs). When one still can't be put back, the Mixer
+  window opens beside the windows it belongs with.
+- **"Check Console for more details"**: the VRChat SDK's Console buttons (an upload or build error's notification, "Show
+  Console") open the Mixer console where it is, focused, with the newest error selected, instead of flashing Unity's
+  Console, which the Mixer console then replaced.
+- **Where a VRChat upload failed**: the SDK's avatar and world builders show only the message of what went wrong
+  ("Upload Failed: Object reference not set to an instance of an object") and lose its stack. The Mixer console now
+  logs the whole exception once as an error ("VRChat's SDK only shows the message; where it happened: …"), through a
+  Harmony prefix on the builders' `HandleUploadError` (Harmony comes with the VRChat SDK; nothing is hooked without it),
+  and that is the log "Check Console for more details" shows.
+- Project reports mask the whole value of quoted command-line secrets (`--password "correct horse"`), quoted values
+  past escaped quotes (`password: "one\"two"`) and the whole value of sign-in headers (a Digest header's user name and
+  response too).
+- An autosave is applied only to the version of the mesh it was made on: its triangles, UVs, bind poses, bone weights
+  and blendshape names count, not only its positions (an FBX reimported with other faces no longer takes old edits). A
+  cut or damaged autosave is read whole before anything of it is applied, so it leaves the document as it was; it is
+  kept beside as `.corrupt`. Commit or revert what you are editing before updating to this version: its autosaves are
+  of a new kind, and the edits of an older one are not brought back.
+- Weight painting with symmetry paints a vertex once per dab when both it and its mirror are under the brush (a vertex
+  group, a bone on the middle line): the middle line no longer got the stroke twice.
+- Shift picks Smooth at the press for the whole stroke, as in Blender (unchanged; the unused mid-stroke switch is gone).
+- The Mixer console lets go of messages and texts no log uses any more once its oldest logs are trimmed: logs that
+  never repeat no longer grow its memory without end.
+- Shape key uses: a failed lookup says so, with **Retry**, instead of "nothing uses it"; animation clips saved as binary
+  are checked through Unity's curves, not taken as animating nothing.
+- Remote explanations: an answer only counts for the server and account it was asked for (signing out, another server
+  or turning the list off while it downloads drops it), and a running editor asks again once the list is six hours
+  old, waiting longer after failures.
+- Splats: a reimport that only changes which splats are sky uploads them again (the sky flags are part of the content
+  hash), and a splat whose rotation is not a number is left out like other diverged splats; what the keyframes saw is
+  0 where the PLY has no number.
+- Mixer Git backups hold every shelf (Git's refs/stash only has the newest) and the checked-out commit, and a restored
+  copy has its shelves back, in order; a commit on a detached HEAD, a new shelf or a remote's ref makes a day-old backup
+  due. The project's repository is never written to: the bundle is made in a scratch repository that borrows its
+  objects.
+
 ## 0.2.2 — 2026-10-26
 
 - The Hierarchy's avatar row says "Update base" for its custom base's update, and a pill pressed after the update was
@@ -752,13 +795,14 @@ anything that would lose local changes.
 
 #### Backups
 
-The **Backups** tab saves the whole history (every commit of every branch, as one `git bundle` file) to a folder of
+The **Backups** tab saves the whole history (every commit of every branch and every shelf, as one `git bundle` file) to a folder of
 your choice, by default `Documents/Mixer Git Backups/<project>`. Put it on another drive or in a synced folder
 (OneDrive, Google Drive, Dropbox) to survive a broken disk or a deleted project. Each backup is read back in full to
 check it; **Check** does it again later, **Restore…** recreates the project in a new, empty folder (this project is not
 touched), and older backups beyond **Keep the last** are deleted. **Back up automatically once a day** makes a backup in
-the background when Unity opens the project and the history changed since the last one. Uncommitted changes and
-ignored files (Library, downloads) are not part of a backup; Git LFS files are kept as pointers.
+the background when Unity opens the project and the history changed since the last one. A restored copy has its
+shelves back. Uncommitted changes that are not shelved and ignored files (Library, downloads) are not part of a backup;
+Git LFS files are kept as pointers.
 
 #### Scene view and 3D (beta)
 

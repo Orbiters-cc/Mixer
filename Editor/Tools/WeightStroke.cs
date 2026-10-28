@@ -36,6 +36,16 @@ namespace Orbiters.Mixer.Editor
         private readonly WeightRecorder recorder;
         private readonly List<int> scratch = new List<int>();
         private readonly HashSet<int> touchedAll = new HashSet<int>();
+        // A dab's work lists, kept for the stroke (a dab allocates nothing of its own).
+        private readonly HashSet<int> seen = new HashSet<int>();
+        private readonly List<int> welded = new List<int>();
+        private readonly List<float> weights = new List<float>();
+        private readonly Dictionary<int, float> blurTargets = new Dictionary<int, float>();
+        // Each welded vertex and channel a dab paints, once: the strongest falloff that reaches it (straight or through its
+        // mirror) and whose blur target it takes. A mirror pair both under the brush on the same channel (a vertex group, a
+        // bone on the middle line) is painted once, not once for each.
+        private readonly List<(int w, bool mirror, float f, int blurFrom)> plan = new List<(int, bool, float, int)>();
+        private readonly Dictionary<long, int> planned = new Dictionary<long, int>();
         private Vector3 lastSample;
         private bool begun;
         private double lastFlush;
@@ -197,9 +207,12 @@ namespace Orbiters.Mixer.Editor
             target.Bvh.VerticesInSphere(Center, radius, scratch);
             if (scratch.Count == 0) return;
             var world = target.World;
-            var seen = new HashSet<int>();
-            var welded = new List<int>();
-            var weights = new List<float>();
+            seen.Clear();
+            welded.Clear();
+            weights.Clear();
+            blurTargets.Clear();
+            plan.Clear();
+            planned.Clear();
             foreach (int v in scratch)
             {
                 int w = n.Weld[v];
@@ -212,7 +225,6 @@ namespace Orbiters.Mixer.Editor
                 weights.Add(f);
             }
             // Blur reads the neighbours' current weights before anything changes.
-            var blurTargets = new Dictionary<int, float>();
             if (kind == WeightBrushKind.Blur)
             {
                 foreach (int w in welded)
@@ -225,22 +237,35 @@ namespace Orbiters.Mixer.Editor
                 }
             }
             float goal = invert ? 0f : value;
+            bool sameChannel = mirrorChannel.Bone == channel.Bone && mirrorChannel.Group == channel.Group;
             for (int i = 0; i < welded.Count; i++)
             {
                 int w = welded[i];
-                float f = weights[i];
-                PaintWelded(w, f, goal, blurTargets, channel);
+                Plan(w, false, weights[i], -1);
                 if (!paintMirror) continue;
                 int other = target.Mirror.Of[w];
                 if (other < 0 || other == w) continue;
-                PaintWelded(other, f, goal, blurTargets, mirrorChannel, w);
+                Plan(other, !sameChannel, weights[i], w);
             }
+            foreach (var (w, mirror, f, blurFrom) in plan) PaintWelded(w, f, goal, blurTargets, mirror ? mirrorChannel : channel, blurFrom);
             if (channel.IsGroup) target.GroupsChanged();
             else if (EditorTime() - lastFlush > 0.08) { lastFlush = EditorTime(); target.FlushWeights(force: false); }
             doc.Revision++;
         }
 
         private static double EditorTime() => UnityEditor.EditorApplication.timeSinceStartup;
+
+        private void Plan(int w, bool mirror, float f, int blurFrom)
+        {
+            long key = ((long)w << 1) | (mirror ? 1L : 0L);
+            if (planned.TryGetValue(key, out int at))
+            {
+                if (f > plan[at].f) plan[at] = (w, mirror, f, blurFrom);
+                return;
+            }
+            planned[key] = plan.Count;
+            plan.Add((w, mirror, f, blurFrom));
+        }
 
         private void PaintWelded(int w, float f, float goal, Dictionary<int, float> blurTargets, WeightChannel on, int blurFrom = -1)
         {

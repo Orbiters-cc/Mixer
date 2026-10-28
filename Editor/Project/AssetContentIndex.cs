@@ -16,7 +16,8 @@ namespace Orbiters.Mixer.Editor
     /// paths, properties such as <c>blendShape.Smile</c>, events), override controllers, avatar masks, ScriptableObjects
     /// (VRChat's expression parameters and menus), prefabs and scenes (object names and the fields of their components:
     /// VRChat's, VRCFury's, any tool's). Names say what they name (a parameter, a layer, a state, an object). Built on a
-    /// worker thread from the YAML Unity writes (binary assets are remembered as holding nothing), in Assets and every
+    /// worker thread from the YAML Unity writes (binary assets are remembered as unread: <see cref="Unread"/> lists them for
+    /// a lookup that must not miss them), in Assets and every
     /// package where it really is (embedded, cached or local), kept in <c>Library/Orbiters/Mixer/content-index.bin</c> by
     /// file date and size, and brought up to date after imports. Values are kept as Unity means them: its YAML escapes
     /// (<c>\u307E</c> for a Japanese letter, <c>''</c> in single quotes) are read back.
@@ -36,9 +37,11 @@ namespace Orbiters.Mixer.Editor
         {
             public long Ticks, Size;
             public string[] Keys, Values;
+            /// <summary>Not YAML (binary serialization): nothing of it is known, which is not "it holds nothing".</summary>
+            public bool Binary;
         }
 
-        private const int Version = 4;
+        private const int Version = 5;
         // A line longer than this is read no further (a mesh's vertex data on one line): values past 200 characters are
         // never kept anyway.
         private const int LineLimit = 1024;
@@ -194,6 +197,22 @@ namespace Orbiters.Mixer.Editor
             return result;
         }
 
+        /// <summary>
+        /// The indexed assets that could not be read as text (binary serialization), with <paramref name="extension"/> when
+        /// given: what a search of the facts cannot see, for a lookup to check with Unity's own API.
+        /// </summary>
+        public static List<string> Unread(string extension = null)
+        {
+            Refresh();
+            var result = new List<string>();
+            lock (Gate)
+            {
+                foreach (var pair in files)
+                    if (pair.Value.Binary && (extension == null || pair.Key.EndsWith(extension, StringComparison.OrdinalIgnoreCase))) result.Add(pair.Key);
+            }
+            return result;
+        }
+
         // ---- Labels ---------------------------------------------------------------------------------------------------
 
         private static string Label(string key, string value)
@@ -291,7 +310,7 @@ namespace Orbiters.Mixer.Editor
                 {
                     string first = reader.ReadLine();
                     if (first == null || !first.StartsWith("%YAML", StringComparison.Ordinal))
-                        return new FileEntry { Ticks = ticks, Size = size, Keys = Array.Empty<string>(), Values = Array.Empty<string>() };
+                        return new FileEntry { Ticks = ticks, Size = size, Keys = Array.Empty<string>(), Values = Array.Empty<string>(), Binary = first != null };
                     var seen = new HashSet<string>(StringComparer.Ordinal);
                     var keys = new List<string>();
                     var values = new List<string>();
@@ -488,7 +507,7 @@ namespace Orbiters.Mixer.Editor
                     for (int i = 0; i < count; i++)
                     {
                         string asset = reader.ReadString();
-                        var entry = new FileEntry { Ticks = reader.ReadInt64(), Size = reader.ReadInt64() };
+                        var entry = new FileEntry { Ticks = reader.ReadInt64(), Size = reader.ReadInt64(), Binary = reader.ReadBoolean() };
                         int facts = reader.ReadInt32();
                         entry.Keys = new string[facts];
                         entry.Values = new string[facts];
@@ -519,6 +538,7 @@ namespace Orbiters.Mixer.Editor
                         writer.Write(pair.Key);
                         writer.Write(pair.Value.Ticks);
                         writer.Write(pair.Value.Size);
+                        writer.Write(pair.Value.Binary);
                         writer.Write(pair.Value.Keys.Length);
                         for (int f = 0; f < pair.Value.Keys.Length; f++) { writer.Write(pair.Value.Keys[f]); writer.Write(pair.Value.Values[f]); }
                     }

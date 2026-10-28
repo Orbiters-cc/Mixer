@@ -101,11 +101,14 @@ namespace Orbiters.Mixer.Editor.Splats
                     // Mirroring Z back: positions negate z, a quaternion (w, x, y, z) becomes (w, −x, −y, z).
                     var position = new Vector3(P(0), P(1), -P(2));
                     var scale = new Vector3(Mathf.Exp(P(7)), Mathf.Exp(P(8)), Mathf.Exp(P(9)));
-                    // A diverged splat (no position, or a size whose covariance overflows) would draw over the whole view.
+                    // A diverged splat (no position, a size whose covariance overflows, a rotation that is not a number)
+                    // would draw over the whole view or nowhere: it is left out. A rotation of length zero is none.
                     if (!Finite(position) || !Finite(Vector3.Scale(scale, scale)))
                         continue;
                     Quaternion q = new Quaternion(-P(11), -P(12), P(13), P(10));
                     float norm = Mathf.Sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+                    if (float.IsNaN(norm) || float.IsInfinity(norm))
+                        continue;
                     positions[kept] = position;
                     rotations[kept] = norm > 1e-12f ? new Quaternion(q.x / norm, q.y / norm, q.z / norm, q.w / norm) : Quaternion.identity;
                     scales[kept] = scale;
@@ -115,9 +118,11 @@ namespace Orbiters.Mixer.Editor.Splats
                     if (hasSeen)
                     {
                         float S(int k) => readSeen[k](buffer, o + atSeen[k]);
+                        // What the keyframes saw is a number or nothing known (0).
+                        float F(int k) { float x = S(k); return float.IsNaN(x) || float.IsInfinity(x) ? 0f : x; }
                         sky[kept] = S(0) > 0.5f;
-                        seen[kept] = new Vector4(S(1), S(2), S(3), S(4));
-                        beyond[kept] = S(5);
+                        seen[kept] = new Vector4(F(1), F(2), F(3), F(4));
+                        beyond[kept] = F(5);
                     }
                     kept++;
                 }
@@ -151,6 +156,11 @@ namespace Orbiters.Mixer.Editor.Splats
             hash.Append(scales);
             hash.Append(colors);
             hash.Append(seen);
+            // Hash128 takes blittable arrays only (bool is not): the sky flags as bytes.
+            var skyBytes = new byte[sky.Length];
+            for (int i = 0; i < sky.Length; i++)
+                skyBytes[i] = sky[i] ? (byte)1 : (byte)0;
+            hash.Append(skyBytes);
             hash.Append(beyond);
             cloud.contentHash = hash.ToString();
             return cloud;

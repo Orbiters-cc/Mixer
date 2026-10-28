@@ -439,7 +439,7 @@ namespace Orbiters.Mixer.Editor
         {
             var original = target.Original;
             if (original == null || original.vertexCount != target.Document.VertexCount) return false;
-            return MixerAutosave.FingerprintOf(original.vertices) == target.Document.OriginalFingerprint;
+            return MixerAutosave.FingerprintOf(original) == target.Document.OriginalFingerprint;
         }
 
         /// <summary>

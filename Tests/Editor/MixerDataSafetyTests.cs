@@ -458,6 +458,58 @@ namespace Orbiters.Mixer.Editor.Tests
             Assert.That(fresh.Document.Shape("Wide").Deltas[top], Is.EqualTo(Vector3.zero), "the original's delta does not come back");
         }
 
+        // A file cut short (a crash while it was written by an older Mixer, a full disk) is read whole before anything of it
+        // is applied: the document stays as it was, and the file is kept aside.
+        [Test]
+        public void ATruncatedAutosaveChangesNothing()
+        {
+            var target = MixerSession.Edit(renderer);
+            Inflate(target, new Vector3(0.3f, 0.5f, 0f));
+            var belt = MixerSession.AddGroup(target, "Belt");
+            belt.Weights[3] = 0.5f;
+            target.Document.Revision++;
+            MixerSession.FlushAutosavesNow();
+            string path = MixerAutosave.PathFor(target.Id);
+            var whole = System.IO.File.ReadAllBytes(path);
+            // Cut after the moved vertices, inside what follows.
+            System.IO.File.WriteAllBytes(path, whole.Take(whole.Length - 24).ToArray());
+            var fresh = new EditTarget(renderer, target.Original, target.Working);
+            UnityEngine.TestTools.LogAssert.Expect(LogType.Warning, new System.Text.RegularExpressions.Regex("could not be read"));
+            Assert.That(MixerAutosave.Restore(fresh), Is.False);
+            Assert.That(fresh.Document.HasDifferences(), Is.False, "nothing of the cut file was applied");
+            Assert.That(fresh.Document.MovedBase.Count, Is.EqualTo(0));
+            Assert.That(System.IO.File.Exists(path), Is.False);
+            Assert.That(System.IO.File.Exists(path + ".corrupt"), Is.True, "kept for a look");
+            System.IO.File.Delete(path + ".corrupt");
+        }
+
+        // The same positions with other triangles (an FBX reimported with its faces changed) are another mesh: an autosave
+        // made on the first is not applied to it.
+        [Test]
+        public void AnAutosaveIsNotAppliedToAMeshReimportedWithOtherTriangles()
+        {
+            var target = MixerSession.Edit(renderer);
+            Inflate(target, new Vector3(0.3f, 0.5f, 0f));
+            MixerSession.FlushAutosavesNow();
+            var other = Object.Instantiate(mesh);
+            try
+            {
+                var triangles = other.triangles;
+                (triangles[1], triangles[2]) = (triangles[2], triangles[1]);
+                other.triangles = triangles;
+                Assert.That(other.vertices, Is.EqualTo(mesh.vertices), "the same positions");
+                Assert.That(MixerAutosave.FingerprintOf(other), Is.Not.EqualTo(MixerAutosave.FingerprintOf(mesh)));
+                var fresh = new EditTarget(renderer, other, target.Working);
+                UnityEngine.TestTools.LogAssert.Expect(LogType.Warning, new System.Text.RegularExpressions.Regex("changed since its edits were autosaved"));
+                Assert.That(MixerAutosave.Restore(fresh), Is.False);
+                Assert.That(MixerAutosave.FingerprintOf(mesh), Is.EqualTo(target.Document.OriginalFingerprint), "the document's fingerprint is the mesh's");
+            }
+            finally
+            {
+                Object.DestroyImmediate(other);
+            }
+        }
+
         [Test]
         public void RestoredSessionsKeepTheVertexGroupsBesideTheMesh()
         {

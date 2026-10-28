@@ -42,6 +42,8 @@ namespace Orbiters.Mixer.Editor
         private string usesShape;
         private VisualElement usesPanel;
         private bool usesComplete;
+        // The lookup threw: nothing it says is known, and index updates do not repeat it (Retry does).
+        private bool usesFailed;
         private UnityEngine.Object lastUsePressed;
         private double lastUsePressTime;
 
@@ -501,6 +503,7 @@ namespace Orbiters.Mixer.Editor
             if (usesShape == shape) { CloseUses(); return; }
             usesShape = shape;
             usesComplete = false;
+            usesFailed = false;
             if (usesPanel == null) usesPanel = MixerUi.Box("mx-shape-uses");
             usesPanel.Clear();
             usesPanel.Add(MixerUi.Text("Looking\u2026", "mx-shape-uses__note"));
@@ -536,15 +539,31 @@ namespace Orbiters.Mixer.Editor
 
         private void OnContentIndexUpdated()
         {
-            if (usesShape != null && !usesComplete && root?.panel != null) FillUses();
+            if (usesShape != null && !usesComplete && !usesFailed && root?.panel != null) FillUses();
         }
 
         private void FillUses()
         {
             if (usesShape == null || usesPanel == null || Renderer == null) return;
             List<AssetUsages.Use> uses;
-            try { uses = AssetUsages.OfBlendshape(Renderer, usesShape, out usesComplete); }
-            catch (Exception e) { uses = new List<AssetUsages.Use>(); usesComplete = true; Debug.LogException(e); }
+            try
+            {
+                uses = AssetUsages.OfBlendshape(Renderer, usesShape, out usesComplete);
+                usesFailed = false;
+            }
+            catch (Exception e)
+            {
+                // A failed lookup is no answer: never "nothing uses it" (that reads as safe to delete).
+                Debug.LogException(e);
+                usesFailed = true;
+                usesComplete = false;
+                usesPanel.Clear();
+                usesPanel.Add(MixerUi.Text("Couldn't look for what uses it (" + e.GetBaseException().Message + "): this says nothing about whether it is used. The Mixer console has the details.", "mx-shape-uses__note"));
+                var retry = MixerUi.Row("mx-shape-uses__actions");
+                retry.Add(MixerUi.Pill("Retry", FillUses));
+                usesPanel.Add(retry);
+                return;
+            }
             usesPanel.Clear();
             if (uses.Count == 0)
                 usesPanel.Add(MixerUi.Text(usesComplete ? "No animation, animator controller, MCB corrective shape or VRCFury BlendShape Link uses it."

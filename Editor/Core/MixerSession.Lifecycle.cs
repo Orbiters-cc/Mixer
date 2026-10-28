@@ -327,7 +327,7 @@ namespace Orbiters.Mixer.Editor
         }
 
         // What a script reload restores a session from: its id, working mesh, original, layer, held weights, which version
-        // of the original it started from (its positions' fingerprint), and the renderer's instance id (instance ids hold
+        // of the original it started from (its fingerprint), and the renderer's instance id (instance ids hold
         // across reloads; an object of an unsaved scene may have no id of its own).
         private static string StateLine(EditTarget t) =>
             t.Id + "\t" + t.Working.GetInstanceID() + "\t" + t.OriginalId + "\t" + (t.Document.Layer ?? "") + "\t" + HeldText(t.HeldWeights)
@@ -491,7 +491,7 @@ namespace Orbiters.Mixer.Editor
             // new import's), and only with an autosave it can take (or none): it shows what that autosave brings back.
             if (working != null)
             {
-                long fingerprint = MixerAutosave.FingerprintOf(original.vertices);
+                long fingerprint = MixerAutosave.FingerprintOf(original);
                 bool sameVersion = parts.Length > 5 && long.TryParse(parts[5], NumberStyles.Integer, CultureInfo.InvariantCulture, out long started) && started == fingerprint
                     && working.vertexCount == original.vertexCount && working.blendShapeCount == original.blendShapeCount;
                 if (!sameVersion || (MixerAutosave.Exists(parts[0]) && !MixerAutosave.Fits(parts[0], original.vertexCount, fingerprint)))

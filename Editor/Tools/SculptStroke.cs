@@ -88,8 +88,11 @@ namespace Orbiters.Mixer.Editor
         private static readonly ProfilerMarker GatherMarker = new ProfilerMarker("Mixer.Stroke.Gather");
         private static readonly ProfilerMarker BrushMarker = new ProfilerMarker("Mixer.Stroke.Brush");
 
-        /// <summary>A pointer move during the stroke; <paramref name="surface"/> is where the ray hits the mesh, null off it.</summary>
-        public void Step(Ray ray, Vector3? surface, Vector3? surfaceNormal, bool invert, bool shiftSmooth)
+        /// <summary>
+        /// A pointer move during the stroke; <paramref name="surface"/> is where the ray hits the mesh, null off it. The
+        /// brush stays what the press chose (Shift held at the press smooths the whole stroke, as in Blender).
+        /// </summary>
+        public void Step(Ray ray, Vector3? surface, Vector3? surfaceNormal, bool invert)
         {
             using (StepMarker.Auto()) StepNow(ray, surface, surfaceNormal, invert);
         }

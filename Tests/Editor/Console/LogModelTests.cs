@@ -220,6 +220,39 @@ namespace Orbiters.Logger.Editor.Tests
             Assert.AreEqual(4_000, store.Group(store.Message(store.MessageAt(0)).Group).Count);
         }
 
+        // Logs that never repeat (an id in each) used to keep every text ever seen after their occurrences were trimmed.
+        [Test]
+        public void TrimLetsGoOfTextsNoLogUsesAnyMore()
+        {
+            var store = new LogStore { MaxOccurrences = 10_000 };
+            int regrouped = 0;
+            store.Regrouped += () => regrouped++;
+            store.Add(0, "first and only", "at Somewhere ()", LogVariant.Warning);
+            for (int i = 1; i <= 50_000; i++)
+            {
+                store.Add(i, "Downloaded item " + i.ToString("D6") + " of the gallery", "at Gallery.Fetch () [0x" + i.ToString("x6") + "]", LogVariant.Log);
+            }
+
+            Assert.LessOrEqual(store.MessageCount, 15_000, "messages without logs are gone (50,001 without compaction)");
+            Assert.LessOrEqual(store.Texts.Count, 3 * 15_000, "and so are their texts");
+            Assert.Greater(regrouped, 0);
+            for (int occurrence = 0; occurrence < store.Count; occurrence++)
+            {
+                var message = store.Message(store.MessageAt(occurrence));
+                Assert.AreEqual(1, message.Count);
+                Assert.AreEqual(occurrence, message.Last);
+                StringAssert.EndsWith(" of the gallery", store.Texts[message.Text]);
+                Assert.AreEqual(1, store.Group(message.Group).Count, "groups recounted");
+            }
+
+            string last = "Downloaded item 050000 of the gallery";
+            Assert.AreEqual(last, store.Texts[store.Message(store.MessageAt(store.Count - 1)).Text]);
+            // A message logged again after the compaction is the same message, found by its text.
+            int again = store.Add(60_000, last, "at Gallery.Fetch () [0x" + 50_000.ToString("x6") + "]", LogVariant.Log);
+            Assert.AreEqual(store.MessageAt(again), store.MessageAt(again - 1));
+            Assert.AreEqual(2, store.Message(store.MessageAt(again)).Count);
+        }
+
         [Test]
         public void PrependPutsHistoryFirst()
         {

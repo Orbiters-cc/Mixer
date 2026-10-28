@@ -150,6 +150,36 @@ namespace Orbiters.Mixer.Editor.Tests
             }
         }
 
+        // With symmetry, a dab on the middle line reaches each vertex straight and through its mirror: it is painted once,
+        // with the stronger of the two, not twice (two lerps by a give 1 - (1 - a)^2).
+        [Test]
+        public void ASymmetricDabOnTheMiddleLinePaintsEachVertexOnce()
+        {
+            var target = MixerSession.Edit(renderer);
+            MixerSession.AddGroup(target, "Belt");
+            MixerSceneTool.Symmetry = true;
+            try
+            {
+                var front = new Vector3(0f, 1f, 0.3f);
+                // Draw moves toward the value by strength x falloff x 0.5: one dab is at most 0.5 at strength 1.
+                MixerSceneTool.WeightStrokeBetween(target, WeightBrushKind.Draw, WeightChannel.OfGroup("Belt"), front, front, 0, 0.25f, 1f, 1f, normalize: false);
+            }
+            finally
+            {
+                MixerSceneTool.Symmetry = false;
+            }
+            var group = target.Document.Group("Belt");
+            var positions = target.Document.Positions;
+            Assert.That(group.Weights.Keys.Any(v => positions[v].x > 0.02f) && group.Weights.Keys.Any(v => positions[v].x < -0.02f), Is.True, "the dab straddles the middle line");
+            Assert.That(group.Weights.Values.Max(), Is.LessThanOrEqualTo(0.5f + 1e-4f), "no vertex painted twice");
+            foreach (var pair in group.Weights)
+            {
+                var p = positions[pair.Key];
+                int mirror = Enumerable.Range(0, positions.Length).First(v => (positions[v] - new Vector3(-p.x, p.y, p.z)).sqrMagnitude < 1e-8f);
+                Assert.That(group.Weights.TryGetValue(mirror, out float other) ? other : 0f, Is.EqualTo(pair.Value).Within(1e-5f), "both sides alike");
+            }
+        }
+
         [Test]
         public void GroupsArePaintedSavedBesideTheMeshAndLoadedBack()
         {

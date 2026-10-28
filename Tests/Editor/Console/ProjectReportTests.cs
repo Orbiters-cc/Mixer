@@ -94,6 +94,30 @@ namespace Orbiters.Logger.Editor.Tests
             Assert.AreEqual("Unexpected token: '}' and maxTokens: 500", privacy.Mask("Unexpected token: '}' and maxTokens: 500"));
         }
 
+        // The audit's probes (reports/audit-2026-10-28-probes.json): a quoted argument, an escaped quote and a Digest
+        // header gave the end of their secret away.
+        [Test]
+        public void MasksQuotedArgumentsEscapedQuotesAndWholeSignInHeaders()
+        {
+            var privacy = Privacy();
+            Assert.AreEqual("--password \"[masked]\"", privacy.Mask("--password \"correct horse battery staple\""));
+            Assert.AreEqual("--api-key \"[masked]\"", privacy.Mask("--api-key \"first second third\""));
+            Assert.AreEqual("run --password \"[masked]\" --verbose", privacy.Mask("run --password \"a\\\"b c\" --verbose"), "an escaped quote inside the argument");
+            Assert.AreEqual("--secret '[masked]' x", privacy.Mask("--secret 'one two' x"));
+            Assert.AreEqual("--token [masked] next", privacy.Mask("--token abc123 next"));
+            Assert.AreEqual("--token\n[masked]\n--x", privacy.Mask("--token\n\"a b c\"\n--x"), "the value on the next line");
+            Assert.AreEqual("password: \"[masked]\"", privacy.Mask("password: \"one\\\"two-three\""));
+            Assert.AreEqual("password = '[masked]' ok", privacy.Mask("password = 'it\\'s mine' ok"));
+            Assert.AreEqual("Authorization: Digest [masked]",
+                privacy.Mask("Authorization: Digest username=\"user\", response=\"0123456789abcdef0123456789abcdef\""));
+            Assert.AreEqual("Proxy-Authorization: Digest [masked]", privacy.Mask("Proxy-Authorization: Digest username=\"user\", nonce=\"abc\""));
+            Assert.AreEqual("curl -H \"Authorization: Bearer [masked]\" https://api.example.test/v1",
+                privacy.Mask("curl -H \"Authorization: Bearer abcdefghijklmnop\" https://api.example.test/v1"), "a header inside a quoted argument");
+            Assert.AreEqual("{\"Authorization\":\"[masked]\",\"n\":1}", privacy.Mask("{\"Authorization\":\"Digest username=\\\"user\\\", response=\\\"abc\\\"\",\"n\":1}"));
+            Assert.AreEqual("x {\\\"Authorization\\\":\\\"[masked]\\\",\\\"n\\\":1}", privacy.Mask("x {\\\"Authorization\\\":\\\"Bearer abc def\\\",\\\"n\\\":1}"), "JSON inside a string");
+            Assert.AreEqual("https://example.test/?token=[masked]", privacy.Mask("https://example.test/?token=example-secret"));
+        }
+
         [Test]
         public void MasksShortAndEncodedUserFolders()
         {

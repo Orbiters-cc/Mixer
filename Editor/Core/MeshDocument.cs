@@ -59,9 +59,11 @@ namespace Orbiters.Mixer.Editor
         /// <summary>The original's positions, normals and bind poses as the session began.</summary>
         public readonly Vector3[] OriginalPositions, OriginalNormals;
         public readonly Matrix4x4[] OriginalBindPoses;
-        /// <summary>The hash of <see cref="OriginalPositions"/> (<see cref="MixerAutosave.FingerprintOf"/>): which version of the mesh the session started from.</summary>
-        public long OriginalFingerprint => originalFingerprint ?? (originalFingerprint = MixerAutosave.FingerprintOf(OriginalPositions)).Value;
-        private long? originalFingerprint;
+        /// <summary>
+        /// Which version of the mesh the session started from (<see cref="MixerAutosave.FingerprintOf(Mesh)"/>: positions,
+        /// triangles, UVs, bind poses, weights and blendshape names), taken when the document is made.
+        /// </summary>
+        public readonly long OriginalFingerprint;
         /// <summary>Whether the original has normals of its own (else <see cref="OriginalNormals"/> are computed).</summary>
         public readonly bool HasNormals;
         /// <summary>Every submesh's triangles in one array (the mesh's <c>triangles</c>).</summary>
@@ -412,6 +414,7 @@ namespace Orbiters.Mixer.Editor
                 originalStart = new int[VertexCount + 1];
                 for (int i = 0; i < VertexCount; i++) originalStart[i + 1] = originalStart[i] + (i < originalPerVertex.Length ? originalPerVertex[i] : 0);
             }
+            OriginalFingerprint = MixerAutosave.FingerprintOf(original, OriginalPositions, Triangles, OriginalBindPoses, originalPerVertex, originalWeights);
             weldTolerance = WeldTolerance(original);
             if (!HasNormals) { var computed = MeshBuilder.WeldedNormals(OriginalPositions, this); Array.Copy(computed, OriginalNormals, VertexCount); Array.Copy(computed, Normals, VertexCount); }
         }
