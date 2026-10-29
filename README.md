@@ -6,7 +6,7 @@ modern Hierarchy and Project windows, the Mixer console (a log hub in the Consol
 projects). Nothing re-imports while you edit: edits show live on a working copy of the mesh and are saved as a native
 mesh asset when you commit.
 
-## Unreleased
+## 0.2.3 — 2026-10-29
 
 - **Mixer's windows on a project's first start**: a new project (or one whose UserSettings were deleted) opens with the
   layout last used in another project, which names the Mixer Hierarchy, Project and console by that project's script
