@@ -65,6 +65,11 @@ namespace Orbiters.Mixer.Editor.Capture
         public CapturePathKind Path = CapturePathKind.Orbit;
         /// <summary>Folder that receives one sub-folder per capture; empty = Documents/Orbiters/Raw captures.</summary>
         public string OutputRoot = "";
+        /// <summary>
+        /// The VRChat world the frames show, written to <c>capture.json</c> (My World gives its blueprint id, so Orbiters -
+        /// N4N0 imports the capture as a session of that world); null: the scene's name only.
+        /// </summary>
+        [NonSerialized] public WorldInfo World;
 
         public CaptureSettings Clone() => (CaptureSettings)MemberwiseClone();
 

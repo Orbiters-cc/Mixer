@@ -256,7 +256,7 @@ namespace Orbiters.Mixer.Editor.Capture
             {
                 CreatedUtc = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture),
                 Scene = ScenePath,
-                World = new WorldInfo { Name = SceneName },
+                World = Settings.World ?? new WorldInfo { Name = SceneName },
                 Width = Settings.Width,
                 Height = Settings.Height,
                 Fps = Settings.Fps,
