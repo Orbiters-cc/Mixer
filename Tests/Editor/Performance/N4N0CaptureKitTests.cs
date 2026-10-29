@@ -5,8 +5,11 @@ using NUnit.Framework;
 using Orbiters.Contracts;
 using Orbiters.Toolkit.Editor.VRChat;
 using UnityEditor;
+using UnityEditor.Animations;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.Animations;
+using UnityEngine.Playables;
 using UnityEngine.SceneManagement;
 using VRC.SDK3.Dynamics.Constraint.Components;
 using Object = UnityEngine.Object;
@@ -150,6 +153,50 @@ namespace Orbiters.Mixer.Editor.Performance.Tests
             {
                 Assert.IsTrue(RigFrames.TryReadStamp(image, RigFrames.Tile(side, x0, y0, t), strip.Value.Flipped, out uint stamp), "tile " + t + ": a stamp");
                 Assert.AreEqual(bits, stamp, "tile " + t + " (face " + RigFrames.TileFaces[t] + ") rendered in this frame");
+            }
+        }
+
+        /// <summary>
+        /// VRChat's camera 30 m from the avatar, looking away from it. With its bounds at rest (4 m around the rig at the
+        /// hips) Unity culls the kit and the frame has no strip: what recordings did whenever the camera did not see the
+        /// avatar. Recording, N4N0's animator gives the kit bounds the camera is inside of, and the frame carries the strip
+        /// and the skeleton band.
+        /// </summary>
+        [Test]
+        public void WhileRecordingTheKitDrawsWhereverTheCameraLooks()
+        {
+            var avatar = TestAvatar.Build(scene);
+            avatar.name = "Kit test avatar";
+            var (orb, smr) = N4N0(avatar);
+            var hips = avatar.GetComponent<Animator>().GetBoneTransform(HumanBodyBones.Hips);
+            // The camera stands 30 m to the side and 2.5 m behind this point, looking at it: the avatar is 85° off its axis.
+            var away = hips.position + new Vector3(30f, 0f, 0f);
+            smr.enabled = true;
+            smr.sharedMaterial.SetFloat("_OrbitersLocal", 1f);
+            Render(away, 2f, out var culled, out _);
+            Assert.IsNull(culled, "at rest the kit is culled out of a view without the avatar");
+
+            var graph = PlayableGraph.Create("N4N0 capture kit test");
+            try
+            {
+                var playable = AnimatorControllerPlayable.Create(graph, AssetDatabase.LoadAssetAtPath<AnimatorController>(Folder + "/N4N0/N4N0.controller"));
+                AnimationPlayableOutput.Create(graph, "N4N0", orb.gameObject.AddComponent<Animator>()).SetSourcePlayable(playable);
+                graph.SetTimeUpdateMode(DirectorUpdateMode.Manual);
+                graph.Play();
+                playable.SetBool("IsLocal", true);
+                playable.SetBool(OrbInstaller.CaptureRecord, true);
+                for (int i = 0; i < 3; i++) graph.Evaluate(.02f);
+                Assert.IsTrue(smr.enabled, "recording");
+                var image = Render(away, 2f, out var strip, out string error);
+                Assert.IsNotNull(strip, "no strip while recording: " + error);
+                Assert.IsFalse(strip.Value.Payload.IsDepthFrame || strip.Value.Payload.IsRigFrame);
+                var pose = SkeletonBand.Decode(image, strip.Value.Flipped);
+                Assert.IsNotNull(pose, "skeleton band");
+                Assert.Less(Vector3.Distance(hips.position, new Vector3(pose.HipsX, pose.HipsY, pose.HipsZ)), 1e-4f, "the hips, out of view");
+            }
+            finally
+            {
+                graph.Destroy();
             }
         }
 
