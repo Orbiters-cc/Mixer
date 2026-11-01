@@ -6,6 +6,22 @@ modern Hierarchy and Project windows, the Mixer console (a log hub in the Consol
 projects). Nothing re-imports while you edit: edits show live on a working copy of the mesh and are saved as a native
 mesh asset when you commit.
 
+## 0.2.4 — 2026-11-01
+
+- **Lost windows come back where they were.** A project opening with a layout that had lost the Hierarchy, Project and
+  Console (saved where they could not load) used to get all three Mixer windows piled into one dock. Mixer remembers the
+  last layout in which each had a place of its own (Unity's preferences folder, `Orbiters/Mixer last layout 2022.dwlt`,
+  saved on quit and script reload) and loads it instead, its script GUIDs put right for this project; with none
+  remembered yet, Unity's default layout with the Mixer windows in its windows' places. A pile left in such a session by
+  an older Mixer is put right once (`MixerLayoutMemory`).
+- **The Project window's Filter keeps the search.** The Filter's count is a label inside the search field, and its new
+  text ("1", or nothing) was taken as the field's own: choosing Scenes searched for "1" while the field still showed the
+  previous search. Same fix in the Hierarchy.
+- Compiles with VRChat SDK 3.7.x: Mixer Git's upload hook reads the SDK panel's avatar the 3.7 way, Prevent Repeats is
+  used from SDK 3.10.2. The Hierarchy says when its VRChat part is missing because scripts did not compile.
+- Contracts: N4N0's documents and vectors are `Docs/n4n0*.md`, `n4n0_*.json` (Orbiters contracts 9bd615c).
+- Requires Orbiters Toolkit 0.4.11.
+
 ## 0.2.3 — 2026-10-29
 
 - **Mixer's windows on a project's first start**: a new project (or one whose UserSettings were deleted) opens with the
