@@ -34,15 +34,15 @@ namespace Orbiters.Mixer.Editor
         private static VisualElement AccentChoice()
         {
             var row = new VisualElement();
-            row.AddToClassList("orb-settings__feature");
+            row.AddToClassList("orbiters-settings__feature");
             var texts = new VisualElement();
-            texts.AddToClassList("orb-settings__feature-texts");
+            texts.AddToClassList("orbiters-settings__feature-texts");
             row.Add(texts);
             var label = new Label("Accent colour");
-            label.AddToClassList("orb-settings__feature-label");
+            label.AddToClassList("orbiters-settings__feature-label");
             texts.Add(label);
             var detail = new Label("The colour of buttons, switches, selections and highlights in every Mixer window: Mixer, the Mixer Hierarchy and Project, the Mixer console and Mixer Git. Colours that tell a state (added, done, OK) stay green.");
-            detail.AddToClassList("orb-settings__feature-description");
+            detail.AddToClassList("orbiters-settings__feature-description");
             texts.Add(detail);
             var swatches = new VisualElement();
             swatches.style.flexDirection = FlexDirection.Row;
@@ -90,19 +90,19 @@ namespace Orbiters.Mixer.Editor
         private static VisualElement Feature(string title, string description, bool value, System.Action<bool> changed, bool first)
         {
             var row = new VisualElement();
-            row.AddToClassList("orb-settings__feature");
-            if (first) { row.AddToClassList("orb-settings__feature--first"); row.style.paddingTop = 0; }
+            row.AddToClassList("orbiters-settings__feature");
+            if (first) { row.AddToClassList("orbiters-settings__feature--first"); row.style.paddingTop = 0; }
             var texts = new VisualElement();
-            texts.AddToClassList("orb-settings__feature-texts");
+            texts.AddToClassList("orbiters-settings__feature-texts");
             row.Add(texts);
             var label = new Label(title);
-            label.AddToClassList("orb-settings__feature-label");
+            label.AddToClassList("orbiters-settings__feature-label");
             texts.Add(label);
             var detail = new Label(description);
-            detail.AddToClassList("orb-settings__feature-description");
+            detail.AddToClassList("orbiters-settings__feature-description");
             texts.Add(detail);
             var toggle = new ToggleSwitch(value, changed);
-            toggle.AddToClassList("orb-settings__feature-toggle");
+            toggle.AddToClassList("orbiters-settings__feature-toggle");
             row.Add(toggle);
             return row;
         }

@@ -94,8 +94,8 @@
 .mxh-row--selected .mxh-row__glyph { --icon-color: var(--mixer-accent-text); }
 .mxh-row__thumbnail--waiting { opacity: 0.55; }
 .mxh-row__sphere { margin: 0 2px 0 6px; }
-.mxh-row__sphere .orb-sphere__ball { width: 38px; height: 38px; border-radius: 19px; }
-.mxh-row__sphere .orb-sphere__readout { display: none; }
+.mxh-row__sphere .orbiters-sphere__ball { width: 38px; height: 38px; border-radius: 19px; }
+.mxh-row__sphere .orbiters-sphere__readout { display: none; }
 .mxh-row__body { flex-grow: 1; flex-shrink: 1; flex-direction: column; justify-content: center; overflow: hidden; }
 .mxh-row__line { flex-direction: row; align-items: center; min-height: 20px; }
 .mxh-row__line2 { flex-direction: row; align-items: center; height: 18px; margin-top: 1px; padding-right: 4px; }

@@ -3,8 +3,8 @@
 
 .mx-capture-modes { width: 330px; flex-shrink: 0; }
 .mx-root--s .mx-capture-modes { width: 150px; }
-.mx-root--s .mx-capture-modes .orb-segmented__label { display: none; }
-.mx-root--s .mx-capture-modes .orb-segmented__icon { margin-right: 0; }
+.mx-root--s .mx-capture-modes .orbiters-segmented__label { display: none; }
+.mx-root--s .mx-capture-modes .orbiters-segmented__icon { margin-right: 0; }
 
 /* Stage: the last frame, its status and a thin progress line along the bottom. */
 .mx-capture-stage { height: 260px; }

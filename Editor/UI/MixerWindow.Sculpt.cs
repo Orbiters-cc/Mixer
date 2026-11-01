@@ -54,7 +54,7 @@ namespace Orbiters.Mixer.Editor
             strengthSlider.RegisterValueChangedCallback(evt => { MixerSceneTool.Strength = evt.newValue; strengthValue.text = MixerUi.Percent(evt.newValue); });
             sculptSettings.Add(MixerUi.Setting("Strength", "How much each step moves", Pair(strengthSlider, strengthValue)));
             falloffControl = new SegmentedControl(MixerBrushTiles.FalloffNames, index => MixerSceneTool.Falloff = (Falloff)index);
-            falloffControl.AddToClassList("orb-segmented--compact");
+            falloffControl.AddToClassList("orbiters-segmented--compact");
             falloffControl.SetIndex((int)MixerSceneTool.Falloff);
             sculptSettings.Add(MixerUi.Setting("Falloff", "How the effect fades toward the edge", falloffControl));
             symmetrySwitch = new ToggleSwitch(MixerSceneTool.Symmetry, on => MixerSceneTool.Symmetry = on);

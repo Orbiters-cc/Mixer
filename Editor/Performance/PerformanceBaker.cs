@@ -663,7 +663,7 @@ namespace Orbiters.Mixer.Editor.Performance
         }
 
         /// <summary>The 16-bit identity N4N0's capture kit bakes for an avatar into the skeleton band's header: CRC-16 of
-        /// its name (Orbiters Toolkit's OrbInstaller.CaptureIdentity, the contracts' SkeletonBand.Crc16).</summary>
+        /// its name (Orbiters Toolkit's N4N0Installer.CaptureIdentity, the contracts' SkeletonBand.Crc16).</summary>
         internal static ushort Identity(Component avatar) => SkeletonBand.Crc16(System.Text.Encoding.UTF8.GetBytes(avatar.gameObject.name));
 
         static string Clock(double seconds) => (int)(seconds / 60) + ":" + ((int)seconds % 60).ToString("00");

@@ -101,7 +101,7 @@ namespace Orbiters.Mixer.Editor.Capture
             heightSlider = Slider(-10f, 20f, orbit.Height, v => { orbit.Height = v; MarkPathDirty(); }, out heightValue);
             page.Add(MixerUi.Setting("Height", "Above the target's centre", Pair(heightSlider, heightValue)));
             lapsControl = new SegmentedControl(new[] { "½", "1", "2" }, i => { orbit.Laps = LapChoices[i]; MarkPathDirty(); });
-            lapsControl.AddToClassList("orb-segmented--compact");
+            lapsControl.AddToClassList("orbiters-segmented--compact");
             page.Add(MixerUi.Setting("Laps", "Turns around the target over the length", lapsControl));
         }
 
@@ -247,10 +247,10 @@ namespace Orbiters.Mixer.Editor.Capture
             var card = MixerUi.Card("FRAMES", out var body);
             parent.Add(card);
             sizeControl = new SegmentedControl(Sizes.Select(s => s.label), i => { settings.Width = Sizes[i].w; settings.Height = Sizes[i].h; MarkPathDirty(); });
-            sizeControl.AddToClassList("orb-segmented--compact");
+            sizeControl.AddToClassList("orbiters-segmented--compact");
             body.Add(MixerUi.Setting("Size", "Pixels of each frame, as VRChat's Stream camera sends them", sizeControl, first: true));
             rateControl = new SegmentedControl(Rates.Select(r => r + " fps"), i => { settings.Fps = Rates[i]; MarkPathDirty(); });
-            rateControl.AddToClassList("orb-segmented--compact");
+            rateControl.AddToClassList("orbiters-segmented--compact");
             body.Add(MixerUi.Setting("Frame rate", "Frames per second of game time", rateControl));
             lengthSlider = Slider(1f, 60f, settings.Duration, v => { settings.Duration = Mathf.Round(v * 2f) / 2f; MarkPathDirty(); }, out lengthValue);
             lengthRow = MixerUi.Setting("Length", "Seconds of camera path (a recorded flight keeps its own)", Pair(lengthSlider, lengthValue));
@@ -258,7 +258,7 @@ namespace Orbiters.Mixer.Editor.Capture
             fovSlider = Slider(20f, 110f, settings.FieldOfView, v => { settings.FieldOfView = Mathf.Round(v); MarkPathDirty(); }, out fovValue);
             body.Add(MixerUi.Setting("Field of view", "Vertical, in degrees", Pair(fovSlider, fovValue)));
             depthControl = new SegmentedControl(DepthChoices.Select(d => d == 0 ? "Off" : "1 in " + d), i => { settings.DepthEvery = DepthChoices[i]; MarkPathDirty(); });
-            depthControl.AddToClassList("orb-segmented--compact");
+            depthControl.AddToClassList("orbiters-segmented--compact");
             body.Add(MixerUi.Setting("Depth frames", "Every Nth frame carries exact depth as grey symbols instead of the picture", depthControl));
         }
 
@@ -279,7 +279,7 @@ namespace Orbiters.Mixer.Editor.Capture
             var card = MixerUi.Card("POST-PROCESSING", out var body);
             parent.Add(card);
             postControl = new SegmentedControl(Posts.Select(CaptureSettings.PostLabel), i => { settings.Post = Posts[i]; dirty = true; });
-            postControl.AddToClassList("orb-segmented--compact");
+            postControl.AddToClassList("orbiters-segmented--compact");
             postControl.AddToClassList("mx-capture-post");
             body.Add(postControl);
             postCaption = MixerUi.Text("", "mx-caption");

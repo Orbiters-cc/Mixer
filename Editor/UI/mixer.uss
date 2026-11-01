@@ -94,7 +94,7 @@
 .mx-root--s .mx-modes { width: 230px; }
 .mx-root--xs .mx-modes { width: 170px; }
 .mx-root--xs .mx-brand__name { display: none; }
-.mx-root--s .mx-modes .orb-segmented__label { display: none; }
+.mx-root--s .mx-modes .orbiters-segmented__label { display: none; }
 .mx-link-pill { margin-right: 6px; }
 .mx-link-pill--on, .mx-link-pill--on:hover { background-color: rgba(138, 125, 255, 0.2); }
 .mx-link-pill--on .mx-button__label { color: var(--mx-violet-text); }
@@ -144,9 +144,9 @@
 .mx-setting__title { margin: 0; padding: 0; color: #ececf0; font-size: 12px; }
 .mx-setting__detail { margin: 2px 0 0 0; padding: 0; color: #8f8f96; font-size: 11px; white-space: normal; }
 .mx-setting__control { flex-shrink: 0; flex-direction: row; align-items: center; }
-.mx-setting__control.orb-segmented { width: 300px; }
-.mx-root--s .mx-setting__control.orb-segmented { width: 284px; }
-.mx-setting__control.orb-segmented .orb-segmented__tab { flex-basis: auto; }
+.mx-setting__control.orbiters-segmented { width: 300px; }
+.mx-root--s .mx-setting__control.orbiters-segmented { width: 284px; }
+.mx-setting__control.orbiters-segmented .orbiters-segmented__tab { flex-basis: auto; }
 .mx-pair { flex-shrink: 0; }
 .mx-slider { width: 170px; min-width: 100px; flex-grow: 0; flex-shrink: 1; margin: 0 8px 0 0; }
 .mx-root--s .mx-slider { width: 120px; }

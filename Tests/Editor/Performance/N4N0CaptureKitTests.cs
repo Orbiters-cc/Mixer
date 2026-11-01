@@ -53,14 +53,14 @@ namespace Orbiters.Mixer.Editor.Performance.Tests
         }
 
         /// <summary>N4N0 on <paramref name="avatar"/> with its kit made as an upload makes it; its kit's renderer.</summary>
-        (Transform orb, SkinnedMeshRenderer kit) N4N0(GameObject avatar)
+        (Transform n4n0, SkinnedMeshRenderer kit) N4N0(GameObject avatar)
         {
             if (!AssetDatabase.IsValidFolder(Folder)) AssetDatabase.CreateFolder("Assets", Folder.Substring("Assets/".Length));
-            var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(OrbInstaller.CreatePrefab(Folder + "/N4N0"));
-            var orb = ((GameObject)PrefabUtility.InstantiatePrefab(prefab, avatar.transform)).transform;
-            var kit = OrbInstaller.BuildCaptureKit(orb, avatar.GetComponent<Animator>(), avatar.name, Folder + "/Kits");
+            var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(N4N0Installer.CreatePrefab(Folder + "/N4N0"));
+            var n4n0 = ((GameObject)PrefabUtility.InstantiatePrefab(prefab, avatar.transform)).transform;
+            var kit = N4N0Installer.BuildCaptureKit(n4n0, avatar.GetComponent<Animator>(), avatar.name, Folder + "/Kits");
             Assert.IsNotNull(kit, "N4N0's capture kit");
-            return (orb, kit);
+            return (n4n0, kit);
         }
 
         [Test]
@@ -115,12 +115,12 @@ namespace Orbiters.Mixer.Editor.Performance.Tests
         {
             var avatar = TestAvatar.Build(scene);
             avatar.transform.position = new Vector3(12.5f, 0.25f, -30.75f);
-            var (orb, _) = N4N0(avatar);
-            var rig = orb.Find(OrbInstaller.CaptureRigPath);
+            var (n4n0, _) = N4N0(avatar);
+            var rig = n4n0.Find(N4N0Installer.CaptureRigPath);
             // Where following would put it, without VRChat's constraint solver: beside the avatar, turned 30°.
             rig.GetComponent<VRCParentConstraint>().IsActive = false;
             rig.SetPositionAndRotation(avatar.transform.position + new Vector3(0.5f, 1.5f, 2f), Quaternion.Euler(0f, 30f, 0f));
-            var renderer = orb.Find(OrbInstaller.RigRendererPath).GetComponent<MeshRenderer>();
+            var renderer = n4n0.Find(N4N0Installer.RigRendererPath).GetComponent<MeshRenderer>();
             renderer.enabled = true;
             var material = renderer.sharedMaterial;
             material.SetFloat("_OrbitersLocal", 1f);
@@ -129,7 +129,7 @@ namespace Orbiters.Mixer.Editor.Performance.Tests
             material.SetFloat("_OrbitersTimeOverride", time);
             for (int face = 1; face <= RigFrames.Faces; face++)
             {
-                var camera = orb.Find(OrbInstaller.RigFacePath(face)).GetComponent<Camera>();
+                var camera = n4n0.Find(N4N0Installer.RigFacePath(face)).GetComponent<Camera>();
                 camera.scene = scene;
                 camera.Render();
             }
@@ -167,7 +167,7 @@ namespace Orbiters.Mixer.Editor.Performance.Tests
         {
             var avatar = TestAvatar.Build(scene);
             avatar.name = "Kit test avatar";
-            var (orb, smr) = N4N0(avatar);
+            var (n4n0, smr) = N4N0(avatar);
             var hips = avatar.GetComponent<Animator>().GetBoneTransform(HumanBodyBones.Hips);
             // The camera stands 30 m to the side and 2.5 m behind this point, looking at it: the avatar is 85° off its axis.
             var away = hips.position + new Vector3(30f, 0f, 0f);
@@ -180,11 +180,11 @@ namespace Orbiters.Mixer.Editor.Performance.Tests
             try
             {
                 var playable = AnimatorControllerPlayable.Create(graph, AssetDatabase.LoadAssetAtPath<AnimatorController>(Folder + "/N4N0/N4N0.controller"));
-                AnimationPlayableOutput.Create(graph, "N4N0", orb.gameObject.AddComponent<Animator>()).SetSourcePlayable(playable);
+                AnimationPlayableOutput.Create(graph, "N4N0", n4n0.gameObject.AddComponent<Animator>()).SetSourcePlayable(playable);
                 graph.SetTimeUpdateMode(DirectorUpdateMode.Manual);
                 graph.Play();
                 playable.SetBool("IsLocal", true);
-                playable.SetBool(OrbInstaller.CaptureRecord, true);
+                playable.SetBool(N4N0Installer.CaptureRecord, true);
                 for (int i = 0; i < 3; i++) graph.Evaluate(.02f);
                 Assert.IsTrue(smr.enabled, "recording");
                 var image = Render(away, 2f, out var strip, out string error);
@@ -229,7 +229,7 @@ namespace Orbiters.Mixer.Editor.Performance.Tests
         public void TheKitsIdentityIsTheContracts()
         {
             foreach (string name in new[] { "", "MasculineCanine", "Kit test avatar", "Ünïcödé アバター", "a/b\\c" })
-                Assert.AreEqual(SkeletonBand.Crc16(Encoding.UTF8.GetBytes(name)), OrbInstaller.CaptureIdentity(name), name);
+                Assert.AreEqual(SkeletonBand.Crc16(Encoding.UTF8.GetBytes(name)), N4N0Installer.CaptureIdentity(name), name);
         }
 
         /// <summary>

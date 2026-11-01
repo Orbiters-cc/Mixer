@@ -620,7 +620,7 @@
 }
 
 /* The Toolkit's sign-in inside the AI card: flat, on the card's own surface. */
-.rp-card .orb-signin {
+.rp-card .orbiters-signin {
     margin: 0;
     padding: 0;
     border-width: 0;

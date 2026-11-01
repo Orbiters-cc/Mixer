@@ -49,11 +49,11 @@ namespace Orbiters.Mixer.Editor
             renderCaption = MixerUi.Text("", "mx-caption");
             body.Add(renderCaption);
             engineControl = new SegmentedControl(new[] { "Eevee", "Cycles" }, i => renderSettings.Engine = i == 1 ? "cycles" : "eevee");
-            engineControl.AddToClassList("orb-segmented--compact");
+            engineControl.AddToClassList("orbiters-segmented--compact");
             engineControl.SetIndex(0);
             body.Add(MixerUi.Setting("Engine", "Eevee is quick; Cycles traces light", engineControl, first: true));
             sizeControl = new SegmentedControl(Sizes.Select(s => s.label), i => { renderSettings.Width = Sizes[i].w; renderSettings.Height = Sizes[i].h; });
-            sizeControl.AddToClassList("orb-segmented--compact");
+            sizeControl.AddToClassList("orbiters-segmented--compact");
             sizeControl.SetIndex(0);
             body.Add(MixerUi.Setting("Size", "Pixels of the image", sizeControl));
             samplesSlider = new Slider(8f, 512f) { value = renderSettings.Samples };
