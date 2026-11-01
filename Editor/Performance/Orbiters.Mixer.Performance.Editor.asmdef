@@ -30,6 +30,11 @@
       "name": "com.unity.timeline",
       "expression": "1.0.0",
       "define": "MIXER_PERFORMANCE_TIMELINE"
+    },
+    {
+      "name": "com.vrchat.base",
+      "expression": "3.10.2",
+      "define": "MIXER_VRCSDK_3_10_2_OR_NEWER"
     }
   ]
 }

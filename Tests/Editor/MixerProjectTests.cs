@@ -379,6 +379,30 @@ namespace Orbiters.Mixer.Editor.Tests
         }
 
         [Test]
+        public void TheFilterKeepsTheSearchAsTyped()
+        {
+            // The Filter's count is a Label inside the search field: its new text ("1", then nothing) used to bubble up as
+            // the field's own change and replace the search, the field still showing "t:Material".
+            var window = OpenHidden();
+            try
+            {
+                window.SetSearch("t:Material");
+                window.SetKinds(ProjectKinds.Scenes);
+                Assert.That(window.Search, Is.EqualTo("t:Material"));
+                Assert.That(window.SearchFieldText, Is.EqualTo("t:Material"));
+                window.SetKinds(ProjectKinds.Scenes | ProjectKinds.Materials);
+                window.SetKinds(ProjectKinds.None);
+                Assert.That(window.Search, Is.EqualTo("t:Material"), "clearing the filter keeps the search");
+                window.SetSearch(string.Empty);
+                window.SetKinds(ProjectKinds.Scenes);
+                Assert.That(window.Search, Is.Empty, "a filter alone is no search");
+                Assert.That(window.Rows.Any(r => r.IsHeading && r.Name.StartsWith("Names", StringComparison.Ordinal)), Is.False);
+                window.SetKinds(ProjectKinds.None);
+            }
+            finally { window.Close(); }
+        }
+
+        [Test]
         public void SearchFindsNamesThenWhatAssetsHold()
         {
             var clip = AssetDatabase.LoadAssetAtPath<AnimationClip>(Root + "/Walk.anim");

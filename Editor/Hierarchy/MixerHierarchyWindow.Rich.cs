@@ -206,7 +206,11 @@ namespace Orbiters.Mixer.Editor
             var lines = element.Q(className: "mxh-avatar");
             var facts = HierarchyVrchat.Describe?.Invoke(row.Object);
             var uploaded = lines.Q<Label>(className: "mxh-avatar__name");
-            if (facts == null) uploaded.text = "Mixer's VRChat part is not loaded (VRChat SDK 3.7 or later)";
+            // Its assembly compiles only with the VRChat Avatars SDK 3.7 or later, and loads only when every script it
+            // depends on compiled: say which of the two it is.
+            if (facts == null) uploaded.text = EditorUtility.scriptCompilationFailed
+                ? "Mixer's VRChat part is not loaded: scripts have compile errors (see the Console)"
+                : "Mixer's VRChat part is not loaded (VRChat SDK 3.7 or later)";
             else if (facts.UploadedName != null) uploaded.text = facts.UploadedName;
             else uploaded.text = facts.Note ?? string.Empty;
             uploaded.EnableInClassList("mxh-avatar__name--note", facts?.UploadedName == null);

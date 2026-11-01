@@ -350,6 +350,14 @@ namespace Orbiters.Mixer.Editor.Performance
         /// driver's chance and off otherwise, an int is a whole number from min to max (both included; with Prevent
         /// Repeats never the current one), a float anything between min and max.
         /// </summary>
+        // Prevent Repeats came with VRChat SDK 3.10.2: before, a random int may repeat.
+        private static bool PreventsRepeats(VRC_AvatarParameterDriver.Parameter p) =>
+#if MIXER_VRCSDK_3_10_2_OR_NEWER
+            p.preventRepeats;
+#else
+            false;
+#endif
+
         internal float RandomValue(VRC_AvatarParameterDriver.Parameter p)
         {
             switch (TypeOf(p.name))
@@ -361,7 +369,7 @@ namespace Orbiters.Mixer.Editor.Performance
                     int min = (int)p.valueMin, max = (int)p.valueMax;
                     if (max < min) (min, max) = (max, min);
                     int current = Mathf.RoundToInt(Get(p.name));
-                    if (p.preventRepeats && max > min && current >= min && current <= max)
+                    if (PreventsRepeats(p) && max > min && current >= min && current <= max)
                     {
                         // One of the others, all equally likely.
                         int other = random.Next(min, max);

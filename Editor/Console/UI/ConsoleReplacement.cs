@@ -299,6 +299,12 @@ namespace Orbiters.Logger.Editor
                 return;
             }
 
+            // Its place is gone with the layout: the last layout that had it comes back (MixerLayoutMemory).
+            if (Orbiters.Mixer.Editor.MixerLayoutMemory.Restore())
+            {
+                return;
+            }
+
             try
             {
                 Orbiters.Mixer.Editor.MixerWindowPlacement.OpenBeside(ScriptableObject.CreateInstance<LoggerWindow>(),

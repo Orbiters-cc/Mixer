@@ -85,6 +85,13 @@ namespace Orbiters.Mixer.Editor
                       " " + (remapped.Count == 1 ? "is" : "are") + " put back where " + (remapped.Count == 1 ? "it was" : "they were") + ".");
         }
 
+        /// <summary><see cref="Remap"/> with this project's scripts: a layout from another project made fit for this one.</summary>
+        public static string RemapForThisProject(string layout, out List<string> remapped)
+        {
+            List<WindowScript> scripts = null;
+            return Remap(layout, IsKnown, () => scripts ?? (scripts = OrbitersWindowScripts()), out remapped);
+        }
+
         private static bool IsKnown(string guid)
         {
             try

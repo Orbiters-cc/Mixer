@@ -167,5 +167,37 @@ namespace Orbiters.Mixer.Editor.Tests
             Assert.That(ForeignLayoutRepair.FieldsOf(TypeNamed("Orbiters.Logger.Editor.LoggerWindow")), Is.SupersetOf(new[] { "levelMask", "useRegex", "grouped", "hiddenSources", "detailsPaneHeight" }));
             Assert.That(typeof(EditorWindow).IsAssignableFrom(TypeNamed("Orbiters.UnitGit.Editor.UnitGitWindow")), Is.True);
         }
+        private const string H = "Orbiters.Mixer.Editor.MixerHierarchyWindow", P = "Orbiters.Mixer.Editor.MixerProjectWindow", C = "Orbiters.Logger.Editor.LoggerWindow";
+
+        [Test]
+        public void ALayoutWithTheMixerWindowsInTheirOwnDocksIsRemembered()
+        {
+            object left = new object(), bottom = new object(), scene = new object();
+            Assert.That(MixerLayoutMemory.IsWorthRemembering(new[] { (H, left), (P, bottom), (C, bottom), ("UnityEditor.SceneView", scene) }), Is.True);
+            Assert.That(MixerLayoutMemory.IsStacked(new[] { (H, left), (P, bottom), (C, bottom) }), Is.False);
+        }
+
+        [Test]
+        public void ALayoutMissingAMixerWindowOrPilingThemIsNotRemembered()
+        {
+            object area = new object(), other = new object();
+            // The Project window lost (the layout this project opened with had dropped it).
+            Assert.That(MixerLayoutMemory.IsWorthRemembering(new[] { (H, area), (C, other) }), Is.False);
+            // One floating on its own: no dock to put it back into.
+            Assert.That(MixerLayoutMemory.IsWorthRemembering(new[] { (H, area), (P, (object)null), (C, other) }), Is.False);
+            // All three opened beside each other in one dock: the pile a lost layout used to give.
+            var piled = new[] { (H, area), (P, area), (C, area), ("UnityEditor.GameView", area) };
+            Assert.That(MixerLayoutMemory.IsStacked(piled), Is.True);
+            Assert.That(MixerLayoutMemory.IsWorthRemembering(piled), Is.False);
+        }
+
+        [Test]
+        public void TheRememberedLayoutIsSharedByEveryProjectOfThisUnity()
+        {
+            StringAssert.StartsWith(UnityEditorInternal.InternalEditorUtility.unityPreferencesFolder, MixerLayoutMemory.SnapshotPath);
+            StringAssert.EndsWith(".dwlt", MixerLayoutMemory.SnapshotPath);
+            foreach (var name in MixerLayoutMemory.MixerWindowTypes) Assert.That(typeof(EditorWindow).IsAssignableFrom(TypeNamed(name)), Is.True, name);
+        }
+
     }
 }

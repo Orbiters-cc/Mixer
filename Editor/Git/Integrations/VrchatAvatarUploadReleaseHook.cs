@@ -174,7 +174,14 @@ namespace Orbiters.UnitGit.Editor
 
             try
             {
+#if UNITGIT_VRCSDK_3_8_1_OR_NEWER
                 return attachedBuilder.SelectedAvatar;
+#else
+                // VRChat SDK 3.7.x has no SelectedAvatar on the builder API: the panel keeps it in a protected static.
+                var field = typeof(VRCSdkControlPanelAvatarBuilder).GetField("_selectedAvatar", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+                var descriptor = field?.GetValue(null) as Component;
+                return descriptor != null ? descriptor.gameObject : null;
+#endif
             }
             catch (MissingReferenceException)
             {

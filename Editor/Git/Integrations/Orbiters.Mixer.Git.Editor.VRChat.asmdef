@@ -23,6 +23,11 @@
       "name": "com.vrchat.avatars",
       "expression": "0.0.0",
       "define": "UNITGIT_VRCHAT_AVATARS"
+    },
+    {
+      "name": "com.vrchat.avatars",
+      "expression": "3.8.1",
+      "define": "UNITGIT_VRCSDK_3_8_1_OR_NEWER"
     }
   ],
   "noEngineReferences": false

@@ -192,7 +192,8 @@ namespace Orbiters.Mixer.Editor
             searchField.AddToClassList("mx-field");
             searchField.AddToClassList("mxh-search");
             searchField.tooltip = "Search by name; t:Light or c:Rigidbody by type";
-            searchField.RegisterValueChangedCallback(evt => { search = evt.newValue; LeaveUnitySearch(); filter.Pattern = searchOptions.For(search); MarkDirty(); });
+            // Only the field's own text: a Label inside it (the Filter's count) sends ChangeEvent<string> too.
+            searchField.RegisterValueChangedCallback(evt => { if (evt.target != searchField) return; search = evt.newValue; LeaveUnitySearch(); filter.Pattern = searchOptions.For(search); MarkDirty(); });
             searchField.RegisterCallback<KeyDownEvent>(evt => { if (evt.keyCode == KeyCode.Escape) { searchField.value = string.Empty; root.Focus(); evt.StopPropagation(); } else if (evt.keyCode == KeyCode.DownArrow) { root.Focus(); evt.StopPropagation(); } });
             var searchIcon = new VectorIcon(IconGlyph.Search); searchIcon.AddToClassList("mxh-search__icon");
             searchField.Add(searchIcon);

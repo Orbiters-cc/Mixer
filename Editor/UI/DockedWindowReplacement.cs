@@ -187,6 +187,8 @@ namespace Orbiters.Mixer.Editor
             if (!ForeignLayoutRepair.StartedFromAnotherProjectsLayout || OpenUnityWindows().Count > 0) return;
             foreach (var found in Resources.FindObjectsOfTypeAll(mixerType))
                 if (found is EditorWindow window && window != null && !IsHidden(window)) return;
+            // Their places are gone with the layout: the last layout that had them comes back (MixerLayoutMemory).
+            if (MixerLayoutMemory.Restore()) return;
             try
             {
                 MixerWindowPlacement.OpenBeside((EditorWindow)ScriptableObject.CreateInstance(mixerType), dockBeside);

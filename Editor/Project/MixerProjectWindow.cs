@@ -183,7 +183,9 @@ namespace Orbiters.Mixer.Editor
             searchField.AddToClassList("mx-field");
             searchField.AddToClassList("mxp-search");
             searchField.tooltip = "Search names and what assets hold inside: parameters, states, layers, animated properties and blendshapes, VRChat components' fields. t:Material and other Unity filters work too (not in a regular expression, which is matched against file names and contents).";
-            searchField.RegisterValueChangedCallback(evt => { search = evt.newValue; MarkDirty(); });
+            // Only the field's own text: the Filter's count is a Label inside the field, and a Label's new text is a
+            // ChangeEvent<string> too, bubbling up here (it used to replace the search with "1" or nothing).
+            searchField.RegisterValueChangedCallback(evt => { if (evt.target != searchField) return; search = evt.newValue; MarkDirty(); });
             searchField.RegisterCallback<KeyDownEvent>(evt =>
             {
                 if (evt.keyCode == KeyCode.Escape) { searchField.value = string.Empty; root.Focus(); evt.StopPropagation(); }
@@ -365,6 +367,18 @@ namespace Orbiters.Mixer.Editor
         {
             search = text ?? string.Empty;
             searchField?.SetValueWithoutNotify(search);
+            RebuildNow();
+        }
+
+        /// <summary>What the search looks for, and what its field shows (tests).</summary>
+        internal string Search => search;
+        internal string SearchFieldText => searchField?.value;
+
+        /// <summary>Keeps only these kinds, as the Filter menu does (tests).</summary>
+        internal void SetKinds(ProjectKinds value)
+        {
+            kinds = value;
+            SyncTopBar();
             RebuildNow();
         }
 
