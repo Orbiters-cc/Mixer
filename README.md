@@ -6,6 +6,18 @@ modern Hierarchy and Project windows, the Mixer console (a log hub in the Consol
 projects). Nothing re-imports while you edit: edits show live on a working copy of the mesh and are saved as a native
 mesh asset when you commit.
 
+## 0.2.5 — 2026-11-02
+
+- **Long logs never break the console.** A message or its output is shown in pieces of at most 4,000 characters (cut at
+  a line end, else a space, never inside an emoji): the first 12,000 at once, then **Show all** (up to 400,000; Copy
+  always gets everything). One FBX import warning of 24,489 characters made Unity log "Generated text will be truncated
+  because it exceeds 49152 vertices" and "A VisualElement must not allocate more than 65535 vertices". Tooltips are cut
+  at 1,000 characters, stack frames and Mixer Git's conflict sides at 4,000, text quoted in an explanation at 240.
+- **Explanations for a freshly opened project's logs** (353 in all): the Library rebuild, FBX blendshape normals without
+  smoothing groups, unweighted vertices, a self-intersecting polygon, broken PPtr references in assets, a missing Scene
+  view toolbar element, a layout that could not be fully loaded, Burst's unresolved assembly (a consequence of compile
+  errors: fix those first), CS0414 and any other compiler warning, and the two vertex-limit warnings.
+
 ## 0.2.4 — 2026-11-01
 
 - **Lost windows come back where they were.** A project opening with a layout that had lost the Hierarchy, Project and
