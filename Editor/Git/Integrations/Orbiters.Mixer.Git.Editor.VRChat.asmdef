@@ -3,6 +3,7 @@
   "rootNamespace": "Orbiters.UnitGit.Editor",
   "references": [
     "Orbiters.Mixer.Git.Editor",
+    "Orbiters.Toolkit.Editor.VRChat",
     "VRC.SDKBase",
     "VRC.SDKBase.Editor",
     "VRC.SDK3A.Editor"

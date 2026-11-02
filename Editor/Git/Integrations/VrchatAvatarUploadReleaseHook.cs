@@ -14,6 +14,7 @@ using VRC.Core;
 using VRC.SDK3A.Editor;
 using VRC.SDKBase;
 using VRC.SDKBase.Editor;
+using VrcSdkBuilds = Orbiters.Toolkit.Editor.VRChat.VrcSdkBuilds;
 
 namespace Orbiters.UnitGit.Editor
 {
@@ -42,6 +43,9 @@ namespace Orbiters.UnitGit.Editor
             AssemblyReloadEvents.beforeAssemblyReload += DetachBuilder;
             EditorApplication.update -= DrainMainThreadActions;
             EditorApplication.update += DrainMainThreadActions;
+            // The bundle each build makes, from the listener the Orbiters tools share.
+            VrcSdkBuilds.Succeeded -= OnBuildSucceeded;
+            VrcSdkBuilds.Succeeded += OnBuildSucceeded;
         }
 
         private static void OnSdkPanelEnable(object sender, EventArgs args)
@@ -75,7 +79,6 @@ namespace Orbiters.UnitGit.Editor
             DetachBuilder();
             attachedBuilder = builder;
             attachedBuilder.OnSdkBuildStart += OnSdkBuildStart;
-            attachedBuilder.OnSdkBuildSuccess += OnSdkBuildSuccess;
             attachedBuilder.OnSdkBuildError += OnSdkBuildError;
             attachedBuilder.OnSdkUploadStart += OnSdkUploadStart;
             attachedBuilder.OnSdkUploadSuccess += OnSdkUploadSuccess;
@@ -91,7 +94,6 @@ namespace Orbiters.UnitGit.Editor
             }
 
             attachedBuilder.OnSdkBuildStart -= OnSdkBuildStart;
-            attachedBuilder.OnSdkBuildSuccess -= OnSdkBuildSuccess;
             attachedBuilder.OnSdkBuildError -= OnSdkBuildError;
             attachedBuilder.OnSdkUploadStart -= OnSdkUploadStart;
             attachedBuilder.OnSdkUploadSuccess -= OnSdkUploadSuccess;
@@ -105,10 +107,10 @@ namespace Orbiters.UnitGit.Editor
             currentContext = CaptureContext(target as GameObject);
         }
 
-        private static void OnSdkBuildSuccess(object sender, string bundlePath)
+        private static void OnBuildSucceeded(VrcSdkBuilds.Build build)
         {
             AvatarUploadContext context = EnsureContext();
-            context.BundlePath = NormalizePath(bundlePath);
+            context.BundlePath = NormalizePath(build.BundlePath);
         }
 
         private static void OnSdkBuildError(object sender, string message)

@@ -6,6 +6,11 @@ modern Hierarchy and Project windows, the Mixer console (a log hub in the Consol
 projects). Nothing re-imports while you edit: edits show live on a working copy of the mesh and are saved as a native
 mesh asset when you commit.
 
+## Unreleased
+
+- **Mixer Git takes each build's bundle from Orbiters Toolkit's shared listener** (`VrcSdkBuilds`) instead of a
+  subscription of its own to the SDK's build success. The console keeps its own timing hooks: it depends on no package.
+
 ## 0.2.5 — 2026-11-02
 
 - **Long logs never break the console.** A message or its output is shown in pieces of at most 4,000 characters (cut at
