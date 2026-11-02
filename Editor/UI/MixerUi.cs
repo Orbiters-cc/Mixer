@@ -297,6 +297,40 @@ namespace Orbiters.Mixer.Editor
             toast.userData = new Shown { Text = text, Error = error, Dismissal = dismissal };
         }
 
+        /// <summary>
+        /// A question that stays until answered (two buttons acting on press, the toast leaving at once) or closed (the close
+        /// button answers <paramref name="no"/>). The answers run on the next editor frame, after the toast has gone.
+        /// </summary>
+        public VisualElement Ask(string text, string yes, Action onYes, string no, Action onNo)
+        {
+            var toast = new VisualElement();
+            toast.AddToClassList("mx-toast");
+            toast.AddToClassList("mx-toast--ask");
+            var icon = new VectorIcon(IconGlyph.Link);
+            icon.AddToClassList("mx-toast__icon");
+            toast.Add(icon);
+            var column = new VisualElement();
+            column.AddToClassList("mx-toast__body");
+            column.Add(MixerUi.Text(text, "mx-toast__text"));
+            var actions = new VisualElement();
+            actions.AddToClassList("mx-toast__actions");
+            void Answer(Action action)
+            {
+                if (toast.ClassListContains("mx-toast--leave")) return;
+                Dismiss(toast);
+                if (action != null) UnityEditor.EditorApplication.delayCall += () => action();
+            }
+            actions.Add(MixerUi.Pill(yes, () => Answer(onYes), "primary"));
+            actions.Add(MixerUi.Pill(no, () => Answer(onNo), "ghost"));
+            column.Add(actions);
+            toast.Add(column);
+            toast.Add(MixerUi.Icon(IconGlyph.Close, no, () => Answer(onNo), "mx-toast__close"));
+            while (childCount >= 3) RemoveAt(0);
+            Add(toast);
+            MixerUi.Enter(toast, "mx-toast--enter", 20);
+            return toast;
+        }
+
         private sealed class Shown { public string Text; public bool Error; public IVisualElementScheduledItem Dismissal; }
 
         private static void Dismiss(VisualElement toast)

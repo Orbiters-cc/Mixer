@@ -363,6 +363,12 @@
 .mx-toast__text { flex-shrink: 1; white-space: normal; font-size: 12px; color: #eaeaea; }
 .mx-toast__close { width: 24px; height: 24px; min-width: 24px; margin-left: 6px; }
 .mx-toast__close .mx-icon { width: 12px; height: 12px; }
+/* A question (Update / Leave): text over its two pills, the close button at the top right. */
+.mx-toast--ask { align-items: flex-start; padding: 10px 5px 10px 12px; }
+.mx-toast--ask .mx-toast__icon { margin-top: 1px; }
+.mx-toast__body { flex-shrink: 1; flex-grow: 1; }
+.mx-toast__actions { flex-direction: row; margin-top: 8px; }
+.mx-toast__actions .mx-button { margin: 0 6px 0 0; }
 
 /* ---- Popups and lists ---------------------------------------------------------------------------- */
 

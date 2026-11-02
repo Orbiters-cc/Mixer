@@ -137,6 +137,8 @@ namespace Orbiters.Mixer.Editor
             var locked = roots.FirstOrDefault(IsLockedInPrefab);
             if (locked != null) { toasts.Show(locked.name + " is part of a prefab instance: open the prefab, or unpack the instance, to move it.", true); return; }
             if (target.IsDontDestroyOnLoad) { toasts.Show("Objects go to DontDestroyOnLoad from their scripts in Play mode.", true); return; }
+            // Their paths in their avatars before the move: the animations bound to them are offered to follow.
+            var captured = AnimationRepath.Capture(roots);
             Undo.IncrementCurrentGroup();
             Undo.SetCurrentGroupName("Move " + (roots.Count == 1 ? roots[0].name : roots.Count + " objects"));
             if (target.IsScene)
@@ -153,6 +155,7 @@ namespace Orbiters.Mixer.Editor
                 {
                     foreach (var go in roots) { ToScene(go, target.Scene); if (go.transform.parent != null) Undo.SetTransformParent(go.transform, null, "Move to scene"); }
                 }
+                AskRepath(captured);
                 RebuildNow();
                 return;
             }
@@ -181,6 +184,7 @@ namespace Orbiters.Mixer.Editor
                     Undo.SetSiblingIndex(go.transform, index++, "Move " + go.name);
                 }
             }
+            AskRepath(captured);
             RebuildNow();
         }
 

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Orbiters.Toolkit.Editor;
+using Orbiters.Toolkit.Editor.Animations;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.UIElements;
@@ -119,11 +120,33 @@ namespace Orbiters.Mixer.Editor
         {
             var candidates = JoinCandidates();
             if (candidates.Count < 2) { toasts.Show("Select at least two meshes.", true); return; }
+            // One joined mesh shows and hides as one: sources toggled by different animations can't all keep theirs.
+            List<string> differ;
+            try { differ = AnimationRepath.DifferentToggles(candidates); }
+            catch (Exception e) { Debug.LogException(e); differ = new List<string>(); }
+            if (differ.Count > 0)
+            {
+                string names = differ.Count == 2 ? "“" + differ[0] + "” and “" + differ[1] + "”" : "“" + differ[0] + "” and " + (differ.Count - 1) + " other meshes";
+                toasts.Ask(names + " are shown and hidden by different animations: joined, they show and hide together. Join anyway?",
+                    "Join anyway", () => Join(candidates), "Cancel", null);
+                return;
+            }
+            Join(candidates);
+        }
+
+        private void Join(List<Renderer> candidates)
+        {
+            if (candidates.Count(r => r != null) < 2) { toasts.Show("The meshes to join are gone.", true); return; }
             try
             {
                 var result = MeshJoin.Join(candidates, new MeshJoin.Options { MergeSameMaterials = joinMergeMaterials, HideSources = joinHideSources });
+                var step = UndoStep.Last();
                 toasts.Show("Joined into " + result.Renderer.name + ": " + MixerUi.Count(result.Vertices) + " vertices, " + result.Bones + " bones, " + result.Slots + " slots" + (result.Shapes > 0 ? ", " + result.Shapes + " shapes" : "") + ".");
                 WakeGlow();
+                // The hidden sources' animations (shapes, switches, toggles) can follow the result.
+                if (joinHideSources)
+                    try { AnimationRepath.AskJoin(toasts, candidates, result.Renderer, step); }
+                    catch (Exception e) { Debug.LogException(e); }
             }
             catch (Exception e)
             {

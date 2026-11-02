@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Orbiters.Toolkit.Editor;
+using Orbiters.Toolkit.Editor.Animations;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
@@ -88,6 +89,7 @@ namespace Orbiters.Mixer.Editor
             HierarchyVrchat.Changed += MarkDirty;
             BoneSubSelection.Changed += OnSubSelectionChanged;
             Undo.undoRedoPerformed += MarkDirty;
+            AnimationPathWatch.Changed += OnAnimationPaths;
             HookUnity();
         }
 
@@ -109,6 +111,7 @@ namespace Orbiters.Mixer.Editor
             HierarchyVrchat.Changed -= MarkDirty;
             BoneSubSelection.Changed -= OnSubSelectionChanged;
             Undo.undoRedoPerformed -= MarkDirty;
+            AnimationPathWatch.Changed -= OnAnimationPaths;
             UnhookUnity();
             PersistExpanded(force: true);
         }
@@ -123,6 +126,21 @@ namespace Orbiters.Mixer.Editor
         // A custom base applied or reset: its name and update on the avatar's row.
         private void OnCustomBaseChanged(Transform _) => MarkDirty();
         private void OnPlayModeChanged(PlayModeStateChange _) => MarkDirty();
+
+        // A rename or move elsewhere (Unity's Hierarchy, another tool) broke animations: asked here too, once. Later: a change
+        // made here is asked about by the change itself.
+        private void OnAnimationPaths() => EditorApplication.delayCall += AskUnasked;
+        private void AskUnasked()
+        {
+            if (toasts == null || !visible) return;
+            foreach (var notice in AnimationRepath.Unasked()) AnimationRepath.Ask(toasts, notice);
+        }
+
+        // After a rename or move made here: Update / Leave for the animations it would break.
+        private void AskRepath(List<AnimationRepath.Captured> captured)
+        {
+            foreach (var notice in AnimationRepath.After(captured)) AnimationRepath.Ask(toasts, notice);
+        }
 
         public void AddItemsToMenu(GenericMenu menu)
         {
@@ -757,9 +775,11 @@ namespace Orbiters.Mixer.Editor
             field.userData = null;
             if (apply && ours && go != null && !string.IsNullOrWhiteSpace(field.value) && field.value.Trim() != go.name)
             {
+                var captured = AnimationRepath.Capture(new[] { go });
                 Undo.RecordObject(go, "Rename " + go.name);
                 go.name = field.value.Trim();
                 EditorUtility.SetDirty(go);
+                AskRepath(captured);
             }
             MarkDirty();
             root.Focus();

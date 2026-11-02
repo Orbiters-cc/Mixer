@@ -8,6 +8,12 @@ mesh asset when you commit.
 
 ## Unreleased
 
+- **Renames, moves and joins keep the avatar's animations.** After a rename, a drag or a Cut/Paste in the Hierarchy
+  that would break an avatar's animations, a compact question ("3 animations point at “Jacket”. Update them?") offers
+  Update or Leave; Update rewrites them (Toolkit's `AnimationPaths`) and joins the move's Undo step when nothing was done
+  since. Renames made in Unity's Hierarchy are asked about there too. Join meshes warns first when the sources are shown
+  and hidden by different animations (one joined mesh can follow only one), and afterwards offers to point the hidden
+  sources' blendshape, switch and visibility curves at the joined mesh. Tests: MixerAnimationRepathTests.
 - **Mixer Git takes each build's bundle from Orbiters Toolkit's shared listener** (`VrcSdkBuilds`) instead of a
   subscription of its own to the SDK's build success. The console keeps its own timing hooks: it depends on no package.
 
