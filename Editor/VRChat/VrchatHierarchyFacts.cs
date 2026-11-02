@@ -5,8 +5,10 @@ using System.Text.RegularExpressions;
 using Orbiters.Toolkit.Editor.Meshes;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.UIElements;
 using VRC.Core;
 using VRC.Dynamics;
+using VRC.SDKBase.Editor;
 using VRC.SDKBase.Editor.Api;
 using VRC.SDKBase.Validation.Performance;
 using VRC.SDKBase.Validation.Performance.Stats;
@@ -37,6 +39,8 @@ namespace Orbiters.Mixer.Editor.VRChat
             public TimeSpan Wait;
             public int Failures;
             public bool Pending;
+            // Asked past the SDK's own cache: the avatar just changed in the SDK panel.
+            public bool Force;
         }
 
         private sealed class Rank
@@ -65,6 +69,7 @@ namespace Orbiters.Mixer.Editor.VRChat
             Undo.undoRedoPerformed += () => everywhere++;
             ObjectChangeEvents.changesPublished += OnChanges;
             EditorApplication.update += RankNext;
+            EditorApplication.update += WatchSdkPanel;
         }
 
         private static int ChangesOf(int root) => everywhere + (avatarChanges.TryGetValue(root, out int count) ? count : 0);
@@ -165,7 +170,9 @@ namespace Orbiters.Mixer.Editor.VRChat
         {
             try
             {
-                upload.Avatar = await VRCApi.GetAvatar(blueprintId);
+                bool force = upload.Force;
+                upload.Force = false;
+                upload.Avatar = await VRCApi.GetAvatar(blueprintId, forceRefresh: force);
                 upload.Note = null;
                 upload.Failures = 0;
                 upload.Wait = Fresh;
@@ -186,6 +193,73 @@ namespace Orbiters.Mixer.Editor.VRChat
             }
             upload.Pending = false;
             upload.Asked = DateTime.UtcNow;
+            HierarchyVrchat.NotifyChanged();
+        }
+
+        // ---- Changes made in the SDK panel ---------------------------------------------------------------------------
+
+        // Saving the avatar's details (its visibility, name, description) in the SDK panel and uploading it change what
+        // VRChat says about it: the rows ask again a moment after, past the SDK's cache, instead of keeping the old answer
+        // ten minutes. The SDK has no event for a save, so its Save Changes button is followed.
+        private static Button hookedSave;
+        private static IVRCSdkBuilderApi hookedBuilder;
+        private static double nextPanelCheck;
+        private static readonly List<double> refreshAt = new List<double>();
+
+        private static void WatchSdkPanel()
+        {
+            double now = EditorApplication.timeSinceStartup;
+            for (int i = refreshAt.Count - 1; i >= 0; i--)
+            {
+                if (now < refreshAt[i]) continue;
+                refreshAt.RemoveAt(i);
+                RefreshUploads();
+            }
+            if (now < nextPanelCheck) return;
+            nextPanelCheck = now + 1;
+            try
+            {
+                var window = VRCSdkControlPanel.window;
+                if (window == null) { hookedSave = null; return; }
+                var root = window.rootVisualElement;
+                var save = root?.panel?.visualTree?.Q<Button>("save-changes-button") ?? root?.Q<Button>("save-changes-button");
+                if (save != null && !ReferenceEquals(save, hookedSave))
+                {
+                    hookedSave = save;
+                    save.clicked += AfterSdkChange;
+                }
+                if (VRCSdkControlPanel.TryGetBuilder<IVRCSdkBuilderApi>(out var builder) && !ReferenceEquals(builder, hookedBuilder))
+                {
+                    if (hookedBuilder != null) hookedBuilder.OnSdkUploadSuccess -= OnUploaded;
+                    hookedBuilder = builder;
+                    builder.OnSdkUploadSuccess += OnUploaded;
+                }
+            }
+            catch (Exception)
+            {
+                // A panel built differently by another SDK version: the rows keep asking on their own schedule.
+            }
+        }
+
+        private static void OnUploaded(object sender, string id) => AfterSdkChange();
+
+        // The SDK sends the save after the click: asked again 2 s later, and once more at 8 s in case VRChat was slow.
+        private static void AfterSdkChange()
+        {
+            double now = EditorApplication.timeSinceStartup;
+            refreshAt.Add(now + 2);
+            refreshAt.Add(now + 8);
+        }
+
+        /// <summary>Every upload the rows show is asked again, past the SDK's own cache.</summary>
+        internal static void RefreshUploads()
+        {
+            foreach (var upload in uploads.Values)
+            {
+                if (upload.Pending) continue;
+                upload.Wait = TimeSpan.Zero;
+                upload.Force = true;
+            }
             HierarchyVrchat.NotifyChanged();
         }
 
