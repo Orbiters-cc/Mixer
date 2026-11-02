@@ -1491,6 +1491,30 @@
     white-space: normal;
 }
 
+/* A long message in several labels (LongText): they read as one text. */
+.lg-longtext {
+    padding-top: 1px;
+    padding-bottom: 2px;
+}
+
+.lg-longtext__part {
+    margin-top: 0;
+    margin-bottom: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+}
+
+.lg-longtext__more {
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-top: 8px;
+}
+
+.lg-longtext__more .lg-details__note {
+    margin: 0 10px 0 0;
+}
+
 .lg-context {
     flex-direction: row;
     align-items: center;

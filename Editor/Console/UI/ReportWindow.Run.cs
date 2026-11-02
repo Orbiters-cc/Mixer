@@ -567,7 +567,7 @@ namespace Orbiters.Logger.Editor
                         log.AddToClassList("rp-cause__log--warning");
                     }
 
-                    log.tooltip = RichText.Strip(group.Text) + "\n\n×" + group.Count + " · " + RichText.Strip(group.Source);
+                    log.tooltip = LongText.Tooltip(RichText.Strip(group.Text)) +"\n\n×" + group.Count + " · " + RichText.Strip(group.Source);
                     logs.Add(log);
                 }
 

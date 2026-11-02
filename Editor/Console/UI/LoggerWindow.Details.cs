@@ -8,7 +8,6 @@ namespace Orbiters.Logger.Editor
 {
     internal sealed partial class LoggerWindow
     {
-        private const int MaxDetailChars = 24_000;
         private const int MaxFrames = 120;
 
         private VisualElement detailsPane;
@@ -238,15 +237,7 @@ namespace Orbiters.Logger.Editor
 
             // Message
             var messageCard = Card(main, null);
-            bool cut = text.Length > MaxDetailChars;
-            var messageLabel = new Label(RichText.Literal(cut ? text.Substring(0, MaxDetailChars) : text));
-            messageLabel.AddToClassList("lg-details__message");
-            messageLabel.selection.isSelectable = true;
-            messageCard.Add(messageLabel);
-            if (cut)
-            {
-                messageCard.Add(LoggerUi.Text("Message shortened here: " + LoggerUi.Count(text.Length) + " characters. Copy it to get everything.", "lg-details__note"));
-            }
+            messageCard.Add(LongText.Build(text, "lg-details__message"));
 
             if (hasContext)
             {
@@ -270,15 +261,7 @@ namespace Orbiters.Logger.Editor
             else if (message.Stack > 0 && StackTraces.IsOutput(store.Texts[message.Stack]))
             {
                 string output = store.Texts[message.Stack].Substring(StackTraces.OutputPrefix.Length).TrimEnd();
-                var outputLabel = new Label(RichText.Literal(output.Length > MaxDetailChars ? output.Substring(0, MaxDetailChars) : output));
-                outputLabel.AddToClassList("lg-details__output");
-                outputLabel.selection.isSelectable = true;
-                if (MonoFont != null)
-                {
-                    outputLabel.style.unityFont = MonoFont;
-                }
-
-                Card(main, "Output").Add(outputLabel);
+                Card(main, "Output").Add(LongText.Build(output, "lg-details__output", MonoFont));
             }
             else if (message.Stack > 0)
             {
@@ -406,7 +389,7 @@ namespace Orbiters.Logger.Editor
             if (hidden > 0)
             {
                 var more = LoggerUi.Text(LoggerUi.Plural(hidden, "logging frame") + " hidden (UnityEngine.Debug…)", "lg-frames__hidden");
-                more.tooltip = string.Join("\n", hiddenFrames.ConvertAll(f => f.Text));
+                more.tooltip = LongText.Tooltip(string.Join("\n", hiddenFrames.ConvertAll(f => f.Text)));
                 card.Add(more);
             }
 
@@ -422,6 +405,12 @@ namespace Orbiters.Logger.Editor
             row.EnableInClassList("lg-frame--internal", frame.Kind == StackFrameKind.Internal);
             row.EnableInClassList("lg-frame--note", frame.Kind == StackFrameKind.Note);
             string method = string.IsNullOrEmpty(frame.Method) ? string.Empty : frame.Method;
+            if (method.Length > LongText.ChunkChars)
+            {
+                // A "frame" can be a whole line of a tool's output: one label stays within what Unity can draw.
+                method = method.Substring(0, LongText.ChunkChars) + "…";
+            }
+
             var methodLabel = new Label(RichText.Literal(method));
             methodLabel.AddToClassList("lg-frame__method");
             methodLabel.selection.isSelectable = true;

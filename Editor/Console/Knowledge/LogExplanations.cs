@@ -178,6 +178,8 @@ namespace Orbiters.Logger.Editor
         private static readonly object gate = new object();
         // {name} in a text; names that start with a digit are numbered groups, left alone.
         private static readonly Regex Placeholder = new Regex(@"\{([^{}\d\s][^{}\s]*)\}", RegexOptions.CultureInvariant);
+        /// <summary>The longest text a placeholder takes from the log.</summary>
+        internal const int MaxPlaceholderChars = 240;
 
         /// <summary>Bumps when explanations change: cached matches are looked up again.</summary>
         internal static int Version { get; private set; }
@@ -317,7 +319,13 @@ namespace Orbiters.Logger.Editor
                     }
 
                     var group = match.Success ? match.Groups[name] : null;
-                    return group != null && group.Success && group.Value.Length > 0 ? group.Value : "…";
+                    if (group == null || !group.Success || group.Value.Length == 0)
+                    {
+                        return "…";
+                    }
+
+                    // A greedy group can take a whole line of a long log: the card stays readable (and drawable).
+                    return group.Value.Length <= MaxPlaceholderChars ? group.Value : group.Value.Substring(0, MaxPlaceholderChars) + "…";
                 });
             }
 

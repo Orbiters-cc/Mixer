@@ -525,6 +525,8 @@ namespace Orbiters.UnitGit.Editor
             string shown = string.IsNullOrEmpty(text) ? "(nothing)" : text.TrimEnd('\n');
             var lines = shown.Split('\n');
             if (lines.Length > 40) shown = string.Join("\n", lines.Take(40)) + "\n… " + (lines.Length - 40) + " more lines";
+            // One label: within what Unity draws in one piece, even for 40 very long lines (a minified file).
+            if (shown.Length > 4000) shown = shown.Substring(0, 4000) + "\n… (shortened)";
             var code = new Label(shown);
             code.AddToClassList("ugc-side__code");
             code.selection.isSelectable = true;

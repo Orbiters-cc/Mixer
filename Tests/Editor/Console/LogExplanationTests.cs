@@ -287,6 +287,89 @@ namespace Orbiters.Logger.Editor.Tests
             Assert.IsFalse(RemoteExplanations.Context("https://x/l", "orbit-token-a").Contains("orbit-token-a"), "the token itself is never kept");
         }
 
+        // The console of a freshly opened avatar project (Library rebuilt, FBX imports, an optimized FX controller, a
+        // layout from another project, Burst after compile errors, warnings of packages, a window over the vertex budget).
+        private static readonly (string id, string condition, LogLevel level)[] FreshProject =
+        {
+            ("unity.library-rebuild", "Rebuilding Library because the metadata folder could not be found!", LogLevel.Info),
+            ("unity.fbx-blendshape-normals", "ImportFBX Warnings:\nCan't generate normals for blendshape 'Female' on mesh 'Body', mesh has no smoothing groups.Can't generate normals for blendshape 'Female' on mesh 'Pants', mesh has no smoothing groups.", LogLevel.Warning),
+            ("unity.fbx-unweighted-vertices", "ImportFBX Warnings:\nMesh 'Body' has 12 (out of 7910) vertices with no weight and bone assigned (they will be assigned to bone #0 with weight 1). The list of vertices: 65, 68, 90 and so on...", LogLevel.Warning),
+            ("unity.mesh-self-intersecting-polygon", "A polygon of Mesh 'Body' in Assets/Rexouium/Fallback/FBX/RexouiumFallback_v1.6_custom2.fbx is self-intersecting and has been discarded.", LogLevel.Warning),
+            ("asset.broken-pptr", "Broken text PPtr in file(Assets/-ULTIREX/menu-parameters/optimized/FX_lowpoly_ultirex.controller). Local file identifier (-229334458087363946) doesn't exist!", LogLevel.Error),
+            ("unity.editor-toolbar-missing", "Failed to load EditorToolbar ID 'Orbiters/XRayGizmos/Clothing' for window ' (UnityEditor.SceneView)'. No element with that ID and target toolbar was registered using the EditorToolbarElement attribute.", LogLevel.Warning),
+            ("unity.layout-not-fully-loaded", "The layout \"C:/Users/Enzo/AppData/Roaming/Unity/Editor-5.x/Preferences\\Layouts\\current\\default-2022.dwlt\" could not be fully loaded, this can happen when the layout contains EditorWindows not available in this project.", LogLevel.Warning),
+            ("unity.burst-unresolved-assembly", "Failed to find entry-points:\nMono.Cecil.AssemblyResolutionException: Failed to resolve assembly: 'Orbiters.Mixer.Editor.VRChat, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null' ---> System.Exception: Failed to resolve assembly 'Orbiters.Mixer.Editor.VRChat, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null' in directories: C:\\Program Files\\Unity\\Hub\\Editor\\2022.3.22f1\\Editor\\Data\\Managed", LogLevel.Error),
+            ("unity.burst-entry-points", "Failed to find entry-points:\nSystem.IO.IOException: Sharing violation", LogLevel.Error),
+            ("compiler.cs0414", "Packages\\orbiters.myavatar\\Editor\\VrcSdkThumbnail.cs(35,34): warning CS0414: The field 'VrcSdkThumbnail.offeredImage' is assigned but its value is never used", LogLevel.Warning),
+            ("compiler.cs0108", "Packages\\orbiters.myavatar\\Editor\\Gallery\\GallerySheet.cs(142,76): warning CS0108: 'GalleryScrim.Clear' hides inherited member 'VisualElement.Clear()'. Use the new keyword if hiding was intended.", LogLevel.Warning),
+            ("compiler.obsolete", "Packages\\orbiters.myavatar\\Editor\\Gallery\\GalleryCache.cs(30,13): warning CS0618: 'EditorUserBuildSettings.activeBuildTargetChanged' is obsolete", LogLevel.Warning),
+            ("compiler.unused", "Assets/A.cs(3,7): warning CS0168: The variable 'e' is declared but never used", LogLevel.Warning),
+            ("compiler.warning", "Packages\\com.example\\Editor\\A.cs(3,7): warning CS0162: Unreachable code detected", LogLevel.Warning),
+            ("unity.text-vertex-limit", "Generated text will be truncated because it exceeds 49152 vertices.", LogLevel.Warning),
+            ("unity.visualelement-vertex-limit", "A VisualElement must not allocate more than 65535 vertices.", LogLevel.Error),
+        };
+
+        [Test]
+        public void AFreshlyOpenedProjectsLogsAreExplained()
+        {
+            foreach (var (id, condition, level) in FreshProject)
+            {
+                Assert.AreEqual(id, IdOf(condition, level: level), condition);
+            }
+
+            ExplainedLog Explained(string condition, LogLevel level) => LogExplanations.Explain(LogExplanations.Match(condition, "", level), condition);
+            var burst = Explained(FreshProject.First(c => c.id == "unity.burst-unresolved-assembly").condition, LogLevel.Error);
+            Assert.AreEqual("Burst couldn't find 'Orbiters.Mixer.Editor.VRChat': it did not compile", burst.Title);
+            StringAssert.Contains("consequence of those compile errors", burst.Summary);
+            StringAssert.Contains("compile errors first", burst.Fixes[0]);
+            var pptr = Explained(FreshProject.First(c => c.id == "asset.broken-pptr").condition, LogLevel.Error);
+            StringAssert.Contains("-229334458087363946", pptr.Fixes[0]);
+            StringAssert.Contains("Assets/-ULTIREX/menu-parameters/optimized/FX_lowpoly_ultirex.controller", pptr.Fixes[0]);
+            Assert.AreEqual("12 vertices of 'Body' have no skin weights", Explained(FreshProject.First(c => c.id == "unity.fbx-unweighted-vertices").condition, LogLevel.Warning).Title);
+        }
+
+        // The server is given a release's new entries after the release: until then its older list must not hide them.
+        [Test]
+        public void NewEntriesShowWhileTheServerStillHasTheOlderList()
+        {
+            var added = new[]
+            {
+                "unity.library-rebuild", "unity.fbx-blendshape-normals", "unity.fbx-unweighted-vertices", "unity.mesh-self-intersecting-polygon", "asset.broken-pptr",
+                "unity.editor-toolbar-missing", "unity.layout-not-fully-loaded", "unity.burst-unresolved-assembly", "compiler.cs0414", "compiler.warning",
+                "unity.text-vertex-limit", "unity.visualelement-vertex-limit"
+            };
+            var server = KnownLogs.Load().Where(e => !added.Contains(e.Id) && e.Id != "unity.burst-entry-points").ToList();
+            foreach (var entry in server)
+            {
+                entry.Updated = string.Empty;
+            }
+
+            // The server's copy of the Burst entry as it was before.
+            server.Add(new LogExplanation("unity.burst-entry-points", "Failed to find entry-points", "Burst couldn't compile a package's jobs")
+            {
+                Severity = LogExplanationSeverity.Harmless,
+                Source = "Unity",
+                Summary = "Burst failed to compile some jobs and falls back to slower code in the editor. Avatar uploads are not affected.",
+                Fixes = new[] { "Restart Unity; update the package named in the message." }
+            });
+            try
+            {
+                LogExplanations.SetRemote(server);
+                foreach (var (id, condition, level) in FreshProject)
+                {
+                    Assert.AreEqual(id, IdOf(condition, level: level), condition);
+                }
+
+                Assert.AreEqual("Burst couldn't read the project's scripts",
+                    LogExplanations.Get(LogExplanations.Match("Failed to find entry-points:\nSystem.IO.IOException: x", "", LogLevel.Error)).Title,
+                    "the Mixer console's dated entry is newer than the server's undated copy");
+            }
+            finally
+            {
+                LogExplanations.SetRemote(null);
+            }
+        }
+
         // A running editor looks again every few minutes, and waits longer after each failure, at most the refresh period.
         [Test]
         public void RemoteListsAreAskedForAgainWithBackoff()

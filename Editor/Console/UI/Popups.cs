@@ -201,7 +201,7 @@ namespace Orbiters.Logger.Editor
             {
                 var row = LoggerUi.Box("lg-muted-row");
                 var label = LoggerUi.Text(RichText.Literal(RichText.FirstLine(RichText.Strip(key), 140)), "lg-muted-row__text");
-                label.tooltip = RichText.Strip(key);
+                label.tooltip = LongText.Tooltip(RichText.Strip(key));
                 row.Add(label);
                 string captured = key;
                 row.Add(LoggerUi.Pill("Show", () =>

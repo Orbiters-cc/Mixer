@@ -3248,6 +3248,21 @@
       ]
     },
     {
+      "id": "compiler.cs0414",
+      "updated": "2026-11-02",
+      "needle": "warning CS0414",
+      "pattern": "^(?<file>[^\\r\\n(]+)\\(\\d+,\\d+\\): warning CS0414: The field '(?<field>[^']+)' is assigned but its value is never used",
+      "priority": 10,
+      "severity": "harmless",
+      "source": "C# compiler",
+      "title": "'{field}' is set but never read",
+      "summary": "The code stores a value in the field '{field}' and never reads it back ({file}). It is leftover or unfinished code: the script compiles and works exactly the same, the compiler only points it out.",
+      "fixes": [
+        "Nothing to do on your side. When the file is in a package (Packages/… or Library/PackageCache/…), it is for that package's author: you can tell them, the next version can drop the field.",
+        "If you wrote this code, remove the field, or use its value where it was meant to be used."
+      ]
+    },
+    {
       "id": "compiler.unused",
       "needle": "warning CS0",
       "pattern": "warning CS0(168|169|219|414|649|67)\\b",
@@ -3274,6 +3289,23 @@
       ],
       "link": "https://vcc.docs.vrchat.com/",
       "linkLabel": "VRChat Creator Companion"
+    },
+    {
+      "id": "compiler.warning",
+      "updated": "2026-11-02",
+      "needle": "): warning CS",
+      "pattern": "\\): warning (?<code>CS\\d{4}):",
+      "priority": -20,
+      "severity": "harmless",
+      "source": "C# compiler",
+      "title": "C# compiler warning {code}",
+      "summary": "The compiler points out something in a script that may be a mistake or is outdated ({code}), but the script compiles and runs. Warnings never stop Play Mode, builds or uploads. Those in packages (Packages/… or Library/PackageCache/…) are for their authors and change nothing in your project.",
+      "fixes": [
+        "Nothing to do on your side. To read what {code} means, open the link below.",
+        "If the file is in a package, you can tell its author; if you wrote it, double-click the warning to open the file at the line."
+      ],
+      "link": "https://learn.microsoft.com/dotnet/csharp/language-reference/compiler-messages/",
+      "linkLabel": "C# compiler messages"
     },
     {
       "id": "compiler.error",
@@ -3675,14 +3707,33 @@
       "fixes": []
     },
     {
-      "id": "unity.burst-entry-points",
+      "id": "unity.burst-unresolved-assembly",
+      "updated": "2026-11-02",
       "needle": "Failed to find entry-points",
-      "severity": "harmless",
+      "pattern": "Failed to resolve assembly:? '(?<assembly>[^',]+)",
+      "priority": 10,
+      "severity": "info",
       "source": "Unity",
-      "title": "Burst couldn't compile a package's jobs",
-      "summary": "Burst failed to compile some jobs and falls back to slower code in the editor. Avatar uploads are not affected.",
+      "title": "Burst couldn't find '{assembly}': it did not compile",
+      "summary": "After a script reload, Burst reads every script assembly of the project to find jobs to compile. '{assembly}' is in the list Unity gave it, but its DLL is in none of the folders listed in the message (Library/ScriptAssemblies is where it should be): it did not compile, because of a compile error in it or in an assembly it depends on. This error is a consequence of those compile errors. Burst stops searching and jobs run as slower code in the editor until a reload where everything compiles. The long list of folders only says where Burst looked.",
       "fixes": [
-        "Restart Unity; update the package named in the message."
+        "Fix the compile errors first (show errors only in the console): once every script compiles, this message does not come back.",
+        "If no compile error is left, a later reload already compiled '{assembly}' and this message is left over: clear it.",
+        "If '{assembly}' belongs to a package that keeps failing to compile, update that package and the packages its compile errors name (often the VRChat SDK)."
+      ]
+    },
+    {
+      "id": "unity.burst-entry-points",
+      "updated": "2026-11-02",
+      "needle": "Failed to find entry-points",
+      "priority": -10,
+      "severity": "info",
+      "source": "Unity",
+      "title": "Burst couldn't read the project's scripts",
+      "summary": "Burst, which compiles jobs to fast native code, failed to read the project's script assemblies after a reload. When the message says 'Failed to resolve assembly', a script assembly is missing because it did not compile: the message is a consequence of compile errors, not a problem of its own. Burst stops there and jobs fall back to slower code in the editor until the next reload. It does not affect avatar uploads by itself.",
+      "fixes": [
+        "If the console shows compile errors, fix those first: this message stops once every script compiles.",
+        "With no compile error left, it is left over from an earlier reload and can be cleared. If it comes back at every reload, restart Unity, then update the package named in the message (or Burst, in the Package Manager)."
       ]
     },
     {
@@ -4454,6 +4505,138 @@
       "summary": "Unity's test framework notes when a test sets LogAssert.ignoreFailingMessages: while it is true, errors logged during that test don't fail it. It comes from a test that expects errors from outside its own code.",
       "fixes": [
         "Nothing to do."
+      ]
+    },
+    {
+      "id": "unity.library-rebuild",
+      "updated": "2026-11-02",
+      "needle": "Rebuilding Library because the metadata folder could not be found",
+      "severity": "harmless",
+      "source": "Unity",
+      "title": "Unity rebuilds the Library folder",
+      "summary": "The project's Library folder (Unity's cache of imported assets and compiled scripts) is missing or empty: the project is opened for the first time on this computer, it was copied or cloned without it, or Library was deleted. Unity imports every asset and compiles every script again, which takes from a few minutes to much longer for a big avatar project. Nothing of your project is lost: Library is rebuilt from Assets, Packages and ProjectSettings.",
+      "fixes": [
+        "Nothing to do: let the import finish. Messages logged during this first import (FBX warnings, shaders, compile errors of packages that resolve themselves) often come only once.",
+        "If it happens at every opening, something removes the Library folder (a sync or backup tool, a cleanup script): leave Library out of that tool instead."
+      ]
+    },
+    {
+      "id": "unity.fbx-blendshape-normals",
+      "updated": "2026-11-02",
+      "needle": "Can't generate normals for blendshape '",
+      "pattern": "Can't generate normals for blendshape '(?<shape>[^']*)' on mesh '(?<mesh>[^']*)', mesh has no smoothing groups",
+      "severity": "info",
+      "source": "Unity",
+      "title": "No normals for the blendshapes of '{mesh}'",
+      "summary": "The model's import settings ask Unity to calculate the normals of its blendshapes (Model tab → Blend Shape Normals: Calculate), which needs smoothing groups in the FBX. '{mesh}' has none, so '{shape}' and the other blendshapes listed get no normals of their own: while one is on, the surface it moves keeps the lighting of the unchanged mesh. On small shapes (visemes, blinks) it rarely shows; on big ones (body shapes) the shading can look flat or off. The mesh and its blendshapes import and work.",
+      "fixes": [
+        "Nothing to do if the blendshapes you use look right.",
+        "From Blender: export the FBX again with Geometry → Smoothing set to Face (the default, Normals Only, writes no smoothing groups).",
+        "Or in Unity: select the model, Model tab, set Blend Shape Normals to Import (the FBX's own normals), or keep Calculate and set Smoothing Source to From Angle, then Apply.",
+        "To only silence it, set Blend Shape Normals to None and Apply: the blendshapes keep the lighting they have now."
+      ]
+    },
+    {
+      "id": "unity.fbx-unweighted-vertices",
+      "updated": "2026-11-02",
+      "needle": "vertices with no weight and bone assigned",
+      "pattern": "Mesh '(?<mesh>[^']*)' has (?<count>\\d+) \\(out of (?<total>\\d+)\\) vertices with no weight and bone assigned",
+      "severity": "warning",
+      "source": "Unity",
+      "title": "{count} vertices of '{mesh}' have no skin weights",
+      "summary": "In the FBX, {count} of the {total} vertices of '{mesh}' are weighted to no bone. Unity binds them to the mesh's first bone (bone #0, often the Hips or the armature's root) at full weight, so they follow that bone instead of the body part around them: when the avatar moves, they can stay behind, stretch into spikes or float. The message lists the first vertex numbers. Unity can't fix it: the weights come from the model's source file.",
+      "fixes": [
+        "Pose the avatar (Play Mode with a pose or emote, or a posing tool) and look at '{mesh}' for stretched or floating faces. A few vertices hidden inside the body may never show.",
+        "In Blender: select the mesh, Edit Mode → Select → Select All by Trait → Ungrouped Verts (vertices in no vertex group; also check groups with weight 0), weight them (Weight Paint, or a Data Transfer of weights from the body) and export the FBX again.",
+        "Leftover pieces nobody sees can be deleted instead (Mesh → Clean Up → Delete Loose).",
+        "For a model you didn't make, tell its author: only the source file can fix the weights."
+      ]
+    },
+    {
+      "id": "unity.mesh-self-intersecting-polygon",
+      "updated": "2026-11-02",
+      "needle": "is self-intersecting and has been discarded",
+      "pattern": "A polygon of Mesh '(?<mesh>[^']*)' in (?<file>.+?) is self-intersecting and has been discarded",
+      "severity": "warning",
+      "source": "Unity",
+      "title": "A face of '{mesh}' was dropped at import",
+      "summary": "When it imports {file}, Unity cuts polygons of more than three corners into triangles. One polygon of '{mesh}' crosses itself (its corners twisted or folded over), so it can't be cut and Unity left it out: the imported mesh has a hole where that face was. It is often a single n-gon in a small or hidden spot. The FBX itself is unchanged.",
+      "fixes": [
+        "Look over '{mesh}' for a missing face or a see-through spot; if nothing shows, it can stay as it is.",
+        "In Blender: Edit Mode → Select → Select All by Trait → Faces by Sides (Greater Than 4) to find n-gons, fix the twisted one (dissolve it and fill again), then triangulate (Face → Triangulate Faces, or tick Triangulate Faces in the FBX export's Geometry options) and export again.",
+        "For a model you didn't make, tell its author which mesh it is."
+      ]
+    },
+    {
+      "id": "asset.broken-pptr",
+      "updated": "2026-11-02",
+      "needle": "Broken text PPtr in file(",
+      "pattern": "Broken text PPtr in file\\((?<file>.+?)\\)\\. Local file identifier \\((?<id>-?\\d+)\\) doesn't exist",
+      "severity": "warning",
+      "source": "Unity",
+      "title": "{file} points to a part of itself that is gone",
+      "summary": "The file refers to an object inside itself (local file identifier {id}) that it no longer contains: a state, transition, state machine behaviour (a VRChat parameter driver, for example), blend tree or other piece was deleted, but something still points to it. In an animator controller that is usually a state's transition list, its behaviours or a motion slot. Unity loads the file with that reference empty: the controller opens, but what it pointed to is gone (a transition to a deleted state no longer exists, a parameter driver no longer runs), and an upload uses it as it is. One message per missing object; they come back each time the file is loaded until it is fixed. Tools that generate, copy or merge controllers (optimizers, Git merges, a copy from another project) are the usual cause.",
+      "fixes": [
+        "Find what pointed there: open {file} in a text editor and search for {id}. The line holding 'fileID: {id}' says what refers to it (m_Transitions, m_StateMachineBehaviours, m_Motion, m_ChildStates…) and the block it is in names the state or layer.",
+        "If the project is in Git (Mixer Git), look at the file's history: the version where '&{id}' still exists shows what the object was. Bring that version back, or recreate the object.",
+        "If a tool generated this file (a menu or optimizer copy), make it again with that tool from its source.",
+        "Otherwise fix it in the Animator window: recreate the missing transition, behaviour or motion on that state, then save (File → Save Project) so Unity writes the file again.",
+        "Don't just replace these IDs with 0 or delete the lines to silence it: the message goes away, but the transition or behaviour stays lost without any warning."
+      ]
+    },
+    {
+      "id": "unity.editor-toolbar-missing",
+      "updated": "2026-11-02",
+      "needle": "Failed to load EditorToolbar ID '",
+      "pattern": "Failed to load EditorToolbar ID '(?<toolbar>[^']+)'",
+      "severity": "harmless",
+      "source": "Unity",
+      "title": "A tool's Scene view button isn't loaded: '{toolbar}'",
+      "summary": "The saved window layout puts the toolbar element '{toolbar}' in the Scene view, but no loaded script provides it: the tool it belongs to isn't in this project, or its scripts had not compiled yet when Unity loaded the layout (the first opening of a project, a Library rebuild, compile errors). Unity leaves that button out; nothing else is affected. Elements named Orbiters/… come from Orbiters Toolkit.",
+      "fixes": [
+        "If the console shows compile errors, fix those first: the button comes back once the tool's scripts compile.",
+        "If the tool is installed and compiles, nothing to do: the button is back after the next reload. Otherwise turn its toolbar on again from the Scene view's Overlays menu (press ` with the pointer over the Scene view).",
+        "If you removed that tool, nothing to do: Unity forgets the button the next time it saves the layout."
+      ]
+    },
+    {
+      "id": "unity.layout-not-fully-loaded",
+      "updated": "2026-11-02",
+      "needle": "could not be fully loaded, this can happen when the layout contains EditorWindows not available in this project",
+      "severity": "harmless",
+      "source": "Unity",
+      "title": "Some windows of the saved layout weren't opened",
+      "summary": "Unity shares the last window layout between all projects of the same Unity version. It held windows of tools this project doesn't have, or whose scripts had not compiled yet when the layout was loaded (the first opening of a project, a Library rebuild, compile errors). Unity opened the others and left those tabs out; nothing in the project is affected. Mixer remembers the last layout in which its Hierarchy, Project and console had their places, and puts them back there.",
+      "fixes": [
+        "Nothing to do. If a window you use is missing once every script compiles, open it again from its menu.",
+        "If the console shows compile errors, fix those first: windows of scripts that don't compile can't open.",
+        "If the layout looks wrong, pick Window → Layouts → Default, or one of your saved layouts."
+      ]
+    },
+    {
+      "id": "unity.text-vertex-limit",
+      "updated": "2026-11-02",
+      "needle": "Generated text will be truncated because it exceeds",
+      "severity": "harmless",
+      "source": "Unity",
+      "title": "A window had too much text to draw in one piece",
+      "summary": "An editor window gave one label or tooltip more text than Unity draws in one piece (about 12,000 characters: 49,152 vertices, four per letter), so the end of that text is cut off on screen. Nothing in the project changes. It happens when a window shows a whole very long log or file in one place. The Mixer console shows long logs in pieces, with a Show all button, so it doesn't cause this.",
+      "fixes": [
+        "Nothing to do: only what is on screen is cut. To read the whole text, copy it (in the Mixer console, select the log and press Ctrl+C).",
+        "If it comes back every time a tool's window is open, tell its author: the stack trace only shows Unity's drawing code, so close windows one at a time to find which one it is."
+      ]
+    },
+    {
+      "id": "unity.visualelement-vertex-limit",
+      "updated": "2026-11-02",
+      "needle": "A VisualElement must not allocate more than 65535 vertices",
+      "severity": "harmless",
+      "source": "Unity",
+      "title": "A window element had too much to draw",
+      "summary": "One element of an editor window (usually a label holding a very long text, sometimes a large chart or list drawn as one piece) needs more than the 65,535 vertices Unity allows for one element, so Unity doesn't draw all of it. Nothing in the project changes; only that window shows less. It often follows 'Generated text will be truncated' for the same text.",
+      "fixes": [
+        "Nothing to do: to read a long text that doesn't show, copy it (in the Mixer console, select the log and press Ctrl+C).",
+        "If it comes back every time a tool's window is open, tell its author: close windows one at a time to find which one it is."
       ]
     }
   ]

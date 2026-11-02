@@ -97,7 +97,8 @@ namespace Orbiters.UnitGit.Editor
             ((Label)row[1]).text = label;
             var text = (Label)row[2];
             text.text = message.Length > 600 ? message.Substring(0, 600) + " …" : message;
-            row.tooltip = message.Length > 120 ? message : null;
+            // Tooltips are drawn in one piece: Unity cuts (and warns about) text past about 12,000 characters.
+            row.tooltip = message.Length <= 120 ? null : message.Length > 1000 ? message.Substring(0, 1000) + " …" : message;
             bool command = message.StartsWith(">", StringComparison.Ordinal);
             bool failure = message.StartsWith("error", StringComparison.OrdinalIgnoreCase) || message.StartsWith("timed out", StringComparison.Ordinal) ||
                            (message.StartsWith("exit:", StringComparison.Ordinal) && message.Trim() != "exit: 0");
