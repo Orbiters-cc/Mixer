@@ -6,8 +6,10 @@ modern Hierarchy and Project windows, the Mixer console (a log hub in the Consol
 projects). Nothing re-imports while you edit: edits show live on a working copy of the mesh and are saved as a native
 mesh asset when you commit.
 
-## Unreleased
+## 0.2.6 — 2026-11-02
 
+- **The Hierarchy's Public/Private follows the SDK panel.** Saving an avatar's details (Save Changes) or uploading it
+  asks VRChat again 2 s and 8 s later, past the SDK's cache, instead of keeping the old answer ten minutes.
 - **Renames, moves and joins keep the avatar's animations.** After a rename, a drag or a Cut/Paste in the Hierarchy
   that would break an avatar's animations, a compact question ("3 animations point at “Jacket”. Update them?") offers
   Update or Leave; Update rewrites them (Toolkit's `AnimationPaths`) and joins the move's Undo step when nothing was done
