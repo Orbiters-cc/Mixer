@@ -112,6 +112,23 @@ namespace Orbiters.Mixer.Editor.Tests
         }
 
         [Test]
+        public void TheHierarchyMenuSwitchesTheWatcher()
+        {
+            bool before = AnimationPathWatch.Enabled;
+            try
+            {
+                var menu = new GenericMenu();
+                AnimationRepath.AddWatchItem(menu);
+                Assert.AreEqual(1, menu.GetItemCount());
+                AnimationRepath.ToggleWatching();
+                Assert.AreEqual(!before, AnimationPathWatch.Enabled);
+                AnimationRepath.ToggleWatching();
+                Assert.AreEqual(before, AnimationPathWatch.Enabled);
+            }
+            finally { AnimationPathWatch.Enabled = before; }
+        }
+
+        [Test]
         public void AJoinPointsTheSourcesAnimationsAtItsResult()
         {
             Toggle("Jacket");

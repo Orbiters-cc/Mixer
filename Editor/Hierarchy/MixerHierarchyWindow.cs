@@ -150,6 +150,7 @@ namespace Orbiters.Mixer.Editor
             menu.AddItem(new GUIContent("Compact rows"), Compact, () => { EditorPrefs.SetBool(CompactPref, !Compact); ApplyDensity(); });
             menu.AddItem(new GUIContent("Component icons"), ShowComponents, () => { EditorPrefs.SetBool(ComponentsPref, !ShowComponents); list.RefreshRows(); });
             menu.AddItem(new GUIContent("Blender dots"), ShowDots, () => { EditorPrefs.SetBool(DotsPref, !ShowDots); list.RefreshRows(); });
+            AnimationRepath.AddWatchItem(menu);
             menu.AddSeparator("");
             menu.AddItem(new GUIContent("Expand all"), false, () => { foreach (var row in model.Rows.ToList()) if (row.Object != null && row.HasChildren) model.SetExpanded(row.InstanceId, true, true); RebuildNow(); });
             menu.AddItem(new GUIContent("Collapse all"), false, () => { model.CollapseAll(); RebuildNow(); });

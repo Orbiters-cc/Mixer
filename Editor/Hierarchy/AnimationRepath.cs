@@ -114,6 +114,14 @@ namespace Orbiters.Mixer.Editor
             return AnimationPathWatch.Notices.Where(n => !Asked.Contains(n)).ToList();
         }
 
+        /// <summary>The watcher's switch in Mixer's Hierarchy menu (also in Orbiters settings, Features, Toolkit).</summary>
+        internal const string WatchItem = "Notice renames that break animations";
+
+        internal static void AddWatchItem(GenericMenu menu) =>
+            menu.AddItem(new GUIContent(WatchItem), AnimationPathWatch.Enabled, ToggleWatching);
+
+        internal static void ToggleWatching() => AnimationPathWatch.Enabled = !AnimationPathWatch.Enabled;
+
         // ---- Joins ----
 
         /// <summary>The bindings that follow a mesh join: shapes, switches and visibility of each source go to the result.</summary>
