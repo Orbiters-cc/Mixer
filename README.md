@@ -6,7 +6,7 @@ modern Hierarchy and Project windows, the Mixer console (a log hub in the Consol
 projects). Nothing re-imports while you edit: edits show live on a working copy of the mesh and are saved as a native
 mesh asset when you commit.
 
-## Unreleased
+## 0.2.7 — 2026-11-02
 
 - **The Hierarchy's menu has "Notice renames that break animations"**: the same switch as in Orbiters settings. Off,
   renames made in Unity's Hierarchy aren't asked about; the Mixer Hierarchy's own renames, moves and joins still ask.
