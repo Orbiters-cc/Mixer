@@ -106,8 +106,23 @@ namespace Orbiters.Logger.Editor.Tests
             LongText.ShowAll(box);
             var parts = Parts(box);
             Assert.Greater(parts.Length, 1);
-            Assert.IsTrue(parts.All(part => !part.EndsWith("\n")), "the break between two labels is the line break");
+            Assert.IsTrue(parts.Take(parts.Length - 1).All(part => !part.EndsWith("\n")), "the break between two labels is the line break");
             Assert.AreEqual(text, string.Join("\n", parts));
+        }
+
+        // The text's own last line break is not a gap between two labels: it stays, as one label would show it.
+        [Test]
+        public void TheLastLineBreakOfTheTextStays()
+        {
+            string body = BurstError();
+            foreach (string text in new[] { body.TrimEnd('\n') + "\n", body.TrimEnd('\n'), "one line\n", "one line" })
+            {
+                var box = LongText.Build(text, "lg-details__output");
+                LongText.ShowAll(box);
+                var parts = Parts(box);
+                Assert.AreEqual(text, string.Join("\n", parts), text.Length + " characters, ending with a line break: " + text.EndsWith("\n"));
+                Assert.AreEqual(text.EndsWith("\n"), parts.Last().EndsWith("\n"));
+            }
         }
 
         [Test]

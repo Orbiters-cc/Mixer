@@ -111,7 +111,7 @@ namespace Orbiters.Logger.Editor
             while (index < parts.Count && (index == 0 || shown + parts[index].Length <= InitialChars))
             {
                 shown += parts[index].Length;
-                box.Add(Part(parts[index++], className, font));
+                box.Add(Part(parts, index++, className, font));
             }
 
             if (index < parts.Count)
@@ -123,7 +123,7 @@ namespace Orbiters.Logger.Editor
                     more.RemoveFromHierarchy();
                     for (int next = index; next < parts.Count; next++)
                     {
-                        box.Add(Part(parts[next], className, font));
+                        box.Add(Part(parts, next, className, font));
                     }
 
                     if (text.Length > MaxChars)
@@ -151,11 +151,13 @@ namespace Orbiters.Logger.Editor
             return false;
         }
 
-        private static Label Part(string part, string className, Font font)
+        private static Label Part(List<string> parts, int index, string className, Font font)
         {
-            // The line break that ends a piece is the gap between two labels already.
+            // The line break between two pieces is the gap between their labels already; the text's own last line break
+            // (a piece with none after it) stays, as one label would show it.
+            string part = parts[index];
             int length = part.Length;
-            if (length > 0 && part[length - 1] == '\n')
+            if (index < parts.Count - 1 && length > 0 && part[length - 1] == '\n')
             {
                 length--;
                 if (length > 0 && part[length - 1] == '\r')
