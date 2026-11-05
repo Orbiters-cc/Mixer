@@ -44,7 +44,7 @@ namespace Orbiters.Mixer.Editor.Capture
         internal const string GroundTruthShaderName = "Hidden/Orbiters/Mixer/CaptureGroundTruth";
         internal const string RigShaderName = "Hidden/Orbiters/CaptureRig";
         /// <summary>The rig's faces' render textures, as the capture kit makes them.</summary>
-        internal const int RigFaceSize = 512;
+        internal const int RigFaceWidth = RigFrames.FaceRenderWidth, RigFaceHeight = RigFrames.FaceRenderHeight;
         /// <summary><c>_VRChatCameraMode</c> during the render: 2, VRChat's desktop handheld camera (which feeds the Stream camera).</summary>
         internal const uint CameraMode = 2;
 
@@ -181,7 +181,7 @@ namespace Orbiters.Mixer.Editor.Capture
                     faceTargets = new RenderTexture[RigFrames.Faces];
                     for (int face = 1; face <= RigFrames.Faces; face++)
                     {
-                        var target = new RenderTexture(RigFaceSize, RigFaceSize, 24, RenderTextureFormat.ARGBHalf)
+                        var target = new RenderTexture(RigFaceWidth, RigFaceHeight, 24, RenderTextureFormat.ARGBHalf)
                         {
                             name = CaptureScene.ObjectPrefix + " rig face " + face, hideFlags = HideFlags.HideAndDontSave, antiAliasing = 1, useMipMap = false,
                             wrapMode = TextureWrapMode.Clamp, filterMode = FilterMode.Bilinear,
@@ -200,7 +200,12 @@ namespace Orbiters.Mixer.Editor.Capture
                         faceCamera.renderingPath = RenderingPath.Forward;
                         faceCamera.allowHDR = true;
                         faceCamera.allowMSAA = false;
-                        faceCamera.fieldOfView = 90f;
+                        // The contracts' projection: the sensor stretched onto the target (gate fit None), as the capture kit makes them.
+                        faceCamera.usePhysicalProperties = true;
+                        faceCamera.gateFit = Camera.GateFitMode.None;
+                        faceCamera.lensShift = Vector2.zero;
+                        faceCamera.focalLength = 18f;
+                        faceCamera.sensorSize = new Vector2(36f / RigFrames.Projection[0], 36f / RigFrames.Projection[1]);
                         faceCamera.nearClipPlane = RigFrames.Near;
                         faceCamera.farClipPlane = RigFrames.Far;
                         faceCamera.useOcclusionCulling = false;

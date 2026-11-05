@@ -147,11 +147,11 @@ namespace Orbiters.Mixer.Editor.Performance.Tests
                 for (int col = 0; col < 3; col++) Assert.AreEqual(axes[col][row], p.CameraToWorld[4 * row + col], 1e-5f, "the rig's axes");
                 Assert.AreEqual(rig.position[row], p.CameraToWorld[4 * row + 3], 1e-4f, "the rig's position");
             }
-            Assert.IsTrue(RigFrames.TryLayout(image.Width, image.Height, out int side, out int x0, out int y0));
+            Assert.IsTrue(RigFrames.TryLayout(image.Width, image.Height, out int tileWidth, out int tileHeight, out int x0, out int y0));
             uint bits = System.BitConverter.ToUInt32(System.BitConverter.GetBytes(time), 0);
             for (int t = 0; t < RigFrames.Faces; t++)
             {
-                Assert.IsTrue(RigFrames.TryReadStamp(image, RigFrames.Tile(side, x0, y0, t), strip.Value.Flipped, out uint stamp), "tile " + t + ": a stamp");
+                Assert.IsTrue(RigFrames.TryReadStamp(image, RigFrames.Tile(tileWidth, tileHeight, x0, y0, t), strip.Value.Flipped, out uint stamp), "tile " + t + ": a stamp");
                 Assert.AreEqual(bits, stamp, "tile " + t + " (face " + RigFrames.TileFaces[t] + ") rendered in this frame");
             }
         }
