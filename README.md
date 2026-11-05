@@ -6,6 +6,10 @@ modern Hierarchy and Project windows, the Mixer console (a log hub in the Consol
 projects). Nothing re-imports while you edit: edits show live on a working copy of the mesh and are saved as a native
 mesh asset when you commit.
 
+## 0.2.8 — 2026-11-05
+
+- **The capture simulator's rig matches N4N0's rig frames that fill the frame**: it makes the same 640 x 420 cameras as Orbiters Toolkit 0.4.19 (Orbiters contracts' `Docs/rig-frames.md`).
+
 ## 0.2.7 — 2026-11-02
 
 - **The Hierarchy's menu has "Notice renames that break animations"**: the same switch as in Orbiters settings. Off,
