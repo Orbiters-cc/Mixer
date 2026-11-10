@@ -436,6 +436,10 @@ namespace Orbiters.Mixer.Editor
             if (endEdits) foreach (string mesh in blenderMeshes.Keys.ToList()) ReleaseFromBlender(mesh);
             blenderMeshes.Clear();
             blenderClaims.Clear();
+            // Before a domain reload too (the host is disposed then): no list of named vertices outlives it.
+            positionsDue.Clear();
+            dueVertices.Clear();
+            spareDue.Clear();
             var server = Server;
             Server = null;
             connection = -1;
@@ -518,6 +522,8 @@ namespace Orbiters.Mixer.Editor
             inFlightBefore = null;
             assembler.Reset();
             positionsDue.Clear();
+            dueVertices.Clear();
+            spareDue.Clear();
             sentLayers.Clear();
             unityEditing = unityEditingNode = null;
         }
@@ -928,7 +934,7 @@ namespace Orbiters.Mixer.Editor
             if (targetId == null || positionsDue.Count == 0) return;
             leavingKeys.Clear();
             foreach (var key in positionsDue.Keys) if (key.target == targetId) leavingKeys.Add(key);
-            foreach (var key in leavingKeys) positionsDue.Remove(key);
+            foreach (var key in leavingKeys) { positionsDue.Remove(key); DropDue(key); }
             leavingKeys.Clear();
         }
 
@@ -1260,9 +1266,18 @@ namespace Orbiters.Mixer.Editor
             var key = (target.Id, layer ?? "");
             bool waiting = positionsDue.TryGetValue(key, out double due);
             positionsDue[key] = Math.Min(waiting ? due : double.MaxValue, EditorApplication.timeSinceStartup + 0.1);
-            if (!dueVertices.TryGetValue(key, out var named)) dueVertices[key] = named = new DueVertices();
+            // A key has its list exactly while its frame is due (positionsDue): made, or taken from the spares, by the first
+            // note, given back when the frame leaves or the key is forgotten.
+            if (!dueVertices.TryGetValue(key, out var named))
+            {
+                if (spareDue.Count > 0) { named = spareDue[spareDue.Count - 1]; spareDue.RemoveAt(spareDue.Count - 1); }
+                else named = new DueVertices();
+                dueVertices[key] = named;
+                named.Reset();
+            }
             // A note on a key that waited without its own list (a frame not yet due) keeps comparing everything.
-            if (!waiting) named.Reset(); else if (named.All) return;
+            else if (!waiting) named.Reset();
+            if (named.All) return;
             if (vertices == null) { named.All = true; return; }
             named.Add(vertices, target.Document.LinkWeld);
         }
@@ -1300,6 +1315,22 @@ namespace Orbiters.Mixer.Editor
         }
 
         private readonly Dictionary<(string target, string layer), DueVertices> dueVertices = new Dictionary<(string, string), DueVertices>();
+        // Lists given back, for the next notes to reuse (a stroke's note then allocates nothing): at most this many, each
+        // with its marks only while they fit one mesh (Add makes them again for another), so nothing grows with the
+        // number of layers or sessions ever edited.
+        private const int MaxSpareDue = 2;
+        private readonly List<DueVertices> spareDue = new List<DueVertices>();
+
+        private void DropDue((string target, string layer) key)
+        {
+            if (!dueVertices.TryGetValue(key, out var named)) return;
+            dueVertices.Remove(key);
+            if (spareDue.Count < MaxSpareDue) { named.Reset(); spareDue.Add(named); }
+        }
+
+        /// <summary>For tests: the (session, layer) lists of named vertices held now, and the spare ones kept for reuse.</summary>
+        internal int DueVertexLists => dueVertices.Count;
+        internal int SpareDueLists => spareDue.Count;
 
         /// <summary>
         /// A Mixer stroke changed weights: Blender gets the sparse change now. For a bone, every bone the vertices have
@@ -1430,9 +1461,13 @@ namespace Orbiters.Mixer.Editor
                 positionsDue.Remove((targetId, layer));
                 EditTarget target = null;
                 foreach (var t in MixerSession.Targets) if (t.Id == targetId) { target = t; break; }
-                if (target == null || !target.Alive || IsBlenderOwned(target) || queuedMeshes.Contains(target.Id)) continue;
-                dueVertices.TryGetValue((targetId, layer), out var named);
-                SendLayer(target, layer.Length == 0 ? null : layer, named != null && !named.All ? named.Welded : null);
+                if (target != null && target.Alive && !IsBlenderOwned(target) && !queuedMeshes.Contains(target.Id))
+                {
+                    dueVertices.TryGetValue((targetId, layer), out var named);
+                    SendLayer(target, layer.Length == 0 ? null : layer, named != null && !named.All ? named.Welded : null);
+                }
+                // The frame left (or its session or layer is gone): its list goes too.
+                DropDue((targetId, layer));
             }
         }
     }

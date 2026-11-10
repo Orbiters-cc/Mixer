@@ -904,6 +904,47 @@ namespace Orbiters.Mixer.Editor.Tests
             }
         }
 
+        // The lists of named vertices live only while their frame is due: once the frames of several layers left, or their
+        // session ended before they did, nothing is held but a bounded number of spares.
+        [Test]
+        public void NamedVertexListsGoWithTheirFramesAndTheirSessions()
+        {
+            using (var host = MixerLinkHost.OpenPrivate(scene))
+            using (var blender = new FakeBlender(host))
+            {
+                blender.Hello();
+                blender.Pump(5, MixerLinkProtocol.FrameType.MeshData);
+                var target = MixerSession.Edit(renderer);
+                blender.Pump(0.5);
+                var doc = target.Document;
+                var n = doc.LinkWeld;
+                var named = n.MembersOf(2).ToArray();
+                var layers = new string[] { null, "A", "B", "C", "D" };
+                foreach (string layer in layers) if (layer != null) doc.Shape(layer, create: true);
+                foreach (string layer in layers)
+                {
+                    foreach (int v in named) doc.SetLayerPosition(layer, v, doc.GetLayerPosition(layer, v) + Vector3.up);
+                    MixerSession.NoteEdited(target, SessionChange.Geometry, layer, named);
+                }
+                Assert.That(host.DueVertexLists, Is.EqualTo(layers.Length), "a list per layer while its frame is due");
+                var frames = PositionsOf(blender.Pump(1.0, MixerLinkProtocol.FrameType.Positions)).ToList();
+                Assert.That(frames.Count, Is.GreaterThanOrEqualTo(layers.Length), "every layer's frame left");
+                Assert.That(frames[0].Shape, Is.Null, "the base first");
+                Assert.That(host.DueVertexLists, Is.EqualTo(0), "the lists went with their frames");
+                Assert.That(host.SpareDueLists, Is.LessThanOrEqualTo(2), "and only a few are kept for reuse");
+
+                // Notes whose session ends before their frames leave: the lists go with the session.
+                foreach (string layer in layers) MixerSession.NoteEdited(target, SessionChange.Geometry, layer, named);
+                Assert.That(host.DueVertexLists, Is.EqualTo(layers.Length));
+                MixerSession.Revert(target);
+                Assert.That(host.DueVertexLists, Is.EqualTo(0), "a reverted session keeps no list");
+                blender.Pump(0.5);
+                Assert.That(host.DueVertexLists, Is.EqualTo(0));
+                Assert.That(host.SpareDueLists, Is.LessThanOrEqualTo(2));
+            }
+            Assert.That(MixerSession.TargetOf(renderer), Is.Null);
+        }
+
         // Blender's sparse frames: each holds only what moved since its last one, so every one must land, in order.
         [Test]
         public void SparseFramesFromBlenderAllLand()
