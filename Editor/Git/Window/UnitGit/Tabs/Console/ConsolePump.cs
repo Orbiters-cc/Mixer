@@ -28,9 +28,9 @@ namespace Orbiters.UnitGit.Editor
 
         private void QueueConsoleLine(string label, string message)
         {
-            pendingConsoleLines.Enqueue(FormatConsoleLine(label, SanitizeConsoleMessage(message)));
-            while (pendingConsoleLines.Count > MaxConsoleLines * 2)
-                pendingConsoleLines.TryDequeue(out _);
+            consoleTab.pendingConsoleLines.Enqueue(FormatConsoleLine(label, SanitizeConsoleMessage(message)));
+            while (consoleTab.pendingConsoleLines.Count > MaxConsoleLines * 2)
+                consoleTab.pendingConsoleLines.TryDequeue(out _);
         }
 
         private void QueueMainThreadAction(Action action)
@@ -67,7 +67,7 @@ namespace Orbiters.UnitGit.Editor
             }
 
             bool changed = false;
-            while (pendingConsoleLines.TryDequeue(out string line))
+            while (consoleTab.pendingConsoleLines.TryDequeue(out string line))
             {
                 AddConsoleLine(line);
                 changed = true;
@@ -75,7 +75,7 @@ namespace Orbiters.UnitGit.Editor
                     break;
             }
 
-            if (!busy && !changesTab.includeRunning && changesTab.includeQueue.Count == 0 && changesTab.commitWhenIncluded == null && !refreshingSnapshot && !changesTab.diffRead.IsBusy && !logTab.detailsRead.IsBusy && !promptRead.IsBusy && !gitStorageMeasuring && pendingConsoleLines.IsEmpty && pendingMainThreadActions.IsEmpty)
+            if (!busy && !changesTab.includeRunning && changesTab.includeQueue.Count == 0 && changesTab.commitWhenIncluded == null && !refreshingSnapshot && !changesTab.diffRead.IsBusy && !logTab.detailsRead.IsBusy && !promptRead.IsBusy && !gitStorageMeasuring && consoleTab.pendingConsoleLines.IsEmpty && pendingMainThreadActions.IsEmpty)
             {
                 editorUpdatePumpActive = false;
                 EditorApplication.update -= DrainEditorQueues;
@@ -87,10 +87,10 @@ namespace Orbiters.UnitGit.Editor
 
         private void AddConsoleLine(string line)
         {
-            consoleLines.Insert(0, line);
-            while (consoleLines.Count > MaxConsoleLines)
+            consoleTab.consoleLines.Insert(0, line);
+            while (consoleTab.consoleLines.Count > MaxConsoleLines)
             {
-                consoleLines.RemoveAt(consoleLines.Count - 1);
+                consoleTab.consoleLines.RemoveAt(consoleTab.consoleLines.Count - 1);
             }
         }
 

@@ -11,9 +11,6 @@ namespace Orbiters.UnitGit.Editor
     // failures in red, the rest quiet. New lines arrive in place, following the end unless the user scrolled up.
     internal sealed partial class UnitGitWindow
     {
-        private readonly List<string> consoleView = new List<string>();
-        private ListView consoleList;
-        private string consoleFilter = string.Empty;
 
         private VisualElement BuildConsoleBody()
         {
@@ -22,55 +19,55 @@ namespace Orbiters.UnitGit.Editor
 
             var toolbar = new VisualElement();
             toolbar.AddToClassList("ug-toolbar");
-            toolbar.Add(UnitGitUi.Search(consoleFilter, "Filter output", value =>
+            toolbar.Add(UnitGitUi.Search(consoleTab.consoleFilter, "Filter output", value =>
             {
-                consoleFilter = value ?? string.Empty;
+                consoleTab.consoleFilter = value ?? string.Empty;
                 RefreshConsole(scrollToEnd: true);
             }, "ug-toolbar__search"));
             toolbar.Add(UnitGitUi.Spacer());
             toolbar.Add(UnitGitUi.Text(snapshot.ProjectRoot, "ug-console-root"));
             toolbar.Add(UnitGitUi.Icon(UnitGitIconKind.Copy, "Copy the output", () =>
             {
-                EditorGUIUtility.systemCopyBuffer = string.Join("\n", Enumerable.Reverse(consoleLines));
-                ShowToast("Copied " + consoleLines.Count + " lines");
+                EditorGUIUtility.systemCopyBuffer = string.Join("\n", Enumerable.Reverse(consoleTab.consoleLines));
+                ShowToast("Copied " + consoleTab.consoleLines.Count + " lines");
             }));
             toolbar.Add(UnitGitUi.Icon(UnitGitIconKind.Delete, "Clear", () =>
             {
-                consoleLines.Clear();
+                consoleTab.consoleLines.Clear();
                 RefreshConsole(scrollToEnd: true);
             }));
             workspace.Add(toolbar);
 
-            consoleList = new ListView
+            consoleTab.consoleList = new ListView
             {
-                itemsSource = consoleView,
+                itemsSource = consoleTab.consoleView,
                 fixedItemHeight = 20,
                 virtualizationMethod = CollectionVirtualizationMethod.FixedHeight,
                 selectionType = SelectionType.None,
                 makeItem = MakeConsoleRow,
-                bindItem = (row, index) => BindConsoleRow(row, consoleView[index]),
+                bindItem = (row, index) => BindConsoleRow(row, consoleTab.consoleView[index]),
             };
-            consoleList.AddToClassList("ug-console");
-            consoleList.style.flexGrow = 1;
-            consoleList.Q<ScrollView>().name = "unitgit-console-scroll";
-            workspace.Add(consoleList);
+            consoleTab.consoleList.AddToClassList("ug-console");
+            consoleTab.consoleList.style.flexGrow = 1;
+            consoleTab.consoleList.Q<ScrollView>().name = "unitgit-console-scroll";
+            workspace.Add(consoleTab.consoleList);
             RefreshConsole(scrollToEnd: true);
             return workspace;
         }
 
         private void RefreshConsole(bool scrollToEnd)
         {
-            if (consoleList == null) return;
-            var scroll = consoleList.Q<ScrollView>();
+            if (consoleTab.consoleList == null) return;
+            var scroll = consoleTab.consoleList.Q<ScrollView>();
             bool atEnd = scrollToEnd || scroll == null || scroll.verticalScroller.value >= scroll.verticalScroller.highValue - 4;
-            consoleView.Clear();
-            string term = consoleFilter.Trim();
-            for (int i = consoleLines.Count - 1; i >= 0; i--)
-                if (term.Length == 0 || consoleLines[i].IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0)
-                    consoleView.Add(consoleLines[i]);
-            consoleList.itemsSource = consoleView;
-            consoleList.RefreshItems();
-            if (atEnd && consoleView.Count > 0) consoleList.schedule.Execute(() => consoleList.ScrollToItem(consoleView.Count - 1));
+            consoleTab.consoleView.Clear();
+            string term = consoleTab.consoleFilter.Trim();
+            for (int i = consoleTab.consoleLines.Count - 1; i >= 0; i--)
+                if (term.Length == 0 || consoleTab.consoleLines[i].IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0)
+                    consoleTab.consoleView.Add(consoleTab.consoleLines[i]);
+            consoleTab.consoleList.itemsSource = consoleTab.consoleView;
+            consoleTab.consoleList.RefreshItems();
+            if (atEnd && consoleTab.consoleView.Count > 0) consoleTab.consoleList.schedule.Execute(() => consoleTab.consoleList.ScrollToItem(consoleTab.consoleView.Count - 1));
         }
 
         private static VisualElement MakeConsoleRow()

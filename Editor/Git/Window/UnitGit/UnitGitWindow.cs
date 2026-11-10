@@ -38,8 +38,6 @@ namespace Orbiters.UnitGit.Editor
             new Color(0.34f, 0.75f, 0.80f, 1f)
         };
 
-        private readonly List<string> consoleLines = new List<string>();
-        private readonly ConcurrentQueue<string> pendingConsoleLines = new ConcurrentQueue<string>();
         private readonly ConcurrentQueue<Action> pendingMainThreadActions = new ConcurrentQueue<Action>();
         private readonly Dictionary<string, Vector2> scrollOffsets = new Dictionary<string, Vector2>(StringComparer.Ordinal);
         private readonly Dictionary<string, float> splitSizes = new Dictionary<string, float>(StringComparer.Ordinal);
@@ -77,6 +75,9 @@ namespace Orbiters.UnitGit.Editor
 
         // The Conflicts tab: the conflict selected and what was resolved.
         private readonly UnitGitConflictsState conflictsState = new UnitGitConflictsState();
+
+        // The Console tab: Git's output lines, those waiting for the main thread, and the list showing them.
+        private readonly UnitGitConsoleState consoleTab = new UnitGitConsoleState();
 
         [MenuItem("Tools/Orbiters/Mixer Git", priority = 2003)]
         internal static void OpenWindow()
@@ -153,7 +154,7 @@ namespace Orbiters.UnitGit.Editor
             editorUpdatePumpActive = false;
             logTab.logSearchRefreshQueued = false;
             gitStorageMeasuring = false;
-            while (pendingConsoleLines.TryDequeue(out _))
+            while (consoleTab.pendingConsoleLines.TryDequeue(out _))
             {
             }
 
