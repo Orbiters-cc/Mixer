@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Net;
 using System.Text.RegularExpressions;
+using Orbiters.Toolkit.Editor;
 using Orbiters.Toolkit.Editor.Meshes;
 using UnityEditor;
 using UnityEngine;
@@ -65,41 +66,44 @@ namespace Orbiters.Mixer.Editor.VRChat
 
         static VrchatHierarchyFacts()
         {
+            // Nothing else runs until a row asks (Start): an editor without a VRChat avatar row pays nothing.
             HierarchyVrchat.Describe = Describe;
-            Undo.undoRedoPerformed += () => everywhere++;
-            ObjectChangeEvents.changesPublished += OnChanges;
-            EditorApplication.update += RankNext;
-            EditorApplication.update += WatchSdkPanel;
+        }
+
+        private static bool started;
+
+        // The ranks follow the editor's changes through the Toolkit's change bus, and their work runs on the editor host:
+        // timed, and the rank not while the editor compiles, imports, builds or plays (Play mode's emulators change objects
+        // all the time). A script reload stops both; the next row starts them again.
+        private static void Start()
+        {
+            if (started) return;
+            started = true;
+            EditorChangeBus.Changed += OnChanges;
+            OrbitersEditorHost.Every("Mixer.VrchatRanks", 0.05, RankNext);
+            OrbitersEditorHost.Every("Mixer.VrchatSdkPanel", 0.25, WatchSdkPanel, HostWhen.Always);
+            OrbitersEditorHost.BeforeReload += () => { EditorChangeBus.Changed -= OnChanges; started = false; };
         }
 
         private static int ChangesOf(int root) => everywhere + (avatarChanges.TryGetValue(root, out int count) ? count : 0);
 
-        // Only what changed under a ranked avatar ranks it again (moving a cube elsewhere does not).
-        private static void OnChanges(ref ObjectChangeEventStream stream)
+        // Only what changed under a ranked avatar ranks it again (moving a cube elsewhere does not). An Undo or Redo, or a
+        // scene changed as a whole, may have changed any.
+        private static void OnChanges(EditorChanges changes)
         {
-            for (int i = 0; i < stream.length; i++)
-            {
-                switch (stream.GetEventType(i))
-                {
-                    case ObjectChangeKind.ChangeGameObjectOrComponentProperties: stream.GetChangeGameObjectOrComponentPropertiesEvent(i, out var properties); Touch(properties.instanceId); break;
-                    case ObjectChangeKind.CreateGameObjectHierarchy: stream.GetCreateGameObjectHierarchyEvent(i, out var created); Touch(created.instanceId); break;
-                    case ObjectChangeKind.ChangeGameObjectStructureHierarchy: stream.GetChangeGameObjectStructureHierarchyEvent(i, out var hierarchy); Touch(hierarchy.instanceId); break;
-                    case ObjectChangeKind.ChangeGameObjectStructure: stream.GetChangeGameObjectStructureEvent(i, out var structure); Touch(structure.instanceId); break;
-                    case ObjectChangeKind.ChangeGameObjectParent: stream.GetChangeGameObjectParentEvent(i, out var parent); Touch(parent.instanceId); Touch(parent.previousParentInstanceId); break;
-                    case ObjectChangeKind.DestroyGameObjectHierarchy: stream.GetDestroyGameObjectHierarchyEvent(i, out var destroyed); Touch(destroyed.parentInstanceId); break;
-                    case ObjectChangeKind.UpdatePrefabInstances: stream.GetUpdatePrefabInstancesEvent(i, out var prefabs); foreach (int id in prefabs.instanceIds) Touch(id); break;
-                    case ObjectChangeKind.ChangeScene: everywhere++; break;
-                }
-            }
+            if (changes.Everything || changes.UndoRedo) { everywhere++; return; }
+            if (ranks.Count == 0 && toRank.Count == 0) return;
+            foreach (int id in changes.Properties) Touch(changes, id);
+            foreach (int id in changes.Structure) Touch(changes, id);
+            // Created, moved (old and new parents too), reordered, destroyed (their parents), prefab instances updated.
+            foreach (int id in changes.Subtrees) Touch(changes, id);
         }
 
-        private static void Touch(int instanceId)
+        private static void Touch(EditorChanges changes, int instanceId)
         {
-            if (instanceId == 0 || ranks.Count == 0 && toRank.Count == 0) return;
-            var changed = EditorUtility.InstanceIDToObject(instanceId);
-            var go = changed as GameObject ?? (changed as Component)?.gameObject;
-            if (go == null) return;
-            for (var t = go.transform; t != null; t = t.parent)
+            var transform = changes.TransformOf(instanceId);
+            if (transform == null) return;
+            for (var t = transform; t != null; t = t.parent)
             {
                 int id = t.gameObject.GetInstanceID();
                 if (!ranks.ContainsKey(id) && !toRank.Contains(id)) continue;
@@ -109,7 +113,9 @@ namespace Orbiters.Mixer.Editor.VRChat
 
         private static VrchatAvatarFacts Describe(GameObject root)
         {
+            Start();
             var facts = new VrchatAvatarFacts();
+
             if (root == null) return facts;
             var pipeline = root.GetComponent<PipelineManager>();
             facts.BlueprintId = pipeline != null && !string.IsNullOrWhiteSpace(pipeline.blueprintId) ? pipeline.blueprintId.Trim() : null;

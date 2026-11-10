@@ -96,7 +96,7 @@ namespace Orbiters.Mixer.Editor
         // Only the pictures of what changed are made again.
         private void OnAssetsChanged(IEnumerable<string> paths)
         {
-            foreach (string path in paths) previewCache.Remove(path);
+            foreach (string path in paths) { previewCache.Remove(path); noPreview.Remove(path); }
         }
         private void OnRecentChanged()
         {

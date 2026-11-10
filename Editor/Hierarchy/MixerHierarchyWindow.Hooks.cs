@@ -71,7 +71,7 @@ namespace Orbiters.Mixer.Editor
             bool decorations = EditorApplication.hierarchyWindowItemOnGUI != null;
             if (decorated == decorations) return;
             decorated = decorations;
-            list.RefreshRows();
+            RefreshRows();
         }
 
         // ---- Find References In Scene ------------------------------------------------------------------------------------
@@ -128,16 +128,17 @@ namespace Orbiters.Mixer.Editor
             var row = callback != null ? RowOf(element) : null;
             if (row == null) return;
             float right = container.layout.width;
-            if (components.childCount > 0 && components.resolvedStyle.display != DisplayStyle.None) right = Mathf.Min(right, components.layout.xMin);
+            // The component icons are made once per row and hidden when unused: only shown ones count.
+            if ((ViewOf(element)?.ComponentsShown ?? components.childCount) > 0 && components.resolvedStyle.display != DisplayStyle.None) right = Mathf.Min(right, components.layout.xMin);
             if (switches.layout.width > 0 && switches.resolvedStyle.display != DisplayStyle.None) right = Mathf.Min(right, switches.layout.xMin);
             float top = Mathf.Max(0f, (container.layout.height - DecorationHeight) / 2f);
             callback(row.InstanceId, new Rect(0f, top, Mathf.Max(0f, right), DecorationHeight));
         }
 
-        private void BindDecorations(VisualElement element)
+        private void BindDecorations(RowView view)
         {
             decorated = EditorApplication.hierarchyWindowItemOnGUI != null;
-            var container = element.Q<IMGUIContainer>(className: "mxh-row__decorations");
+            var container = view.Decorations;
             if (container == null) return;
             MixerUi.Show(container, decorated);
             if (decorated) container.MarkDirtyRepaint();
@@ -148,7 +149,8 @@ namespace Orbiters.Mixer.Editor
         {
             if (!built || !decorated) return;
             foreach (var element in list.Rows)
-                if (element.resolvedStyle.display != DisplayStyle.None) element.Q<IMGUIContainer>(className: "mxh-row__decorations")?.MarkDirtyRepaint();
+                if (element.resolvedStyle.display != DisplayStyle.None) ViewOf(element)?.Decorations?.MarkDirtyRepaint();
+
         }
     }
 }

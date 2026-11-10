@@ -16,12 +16,21 @@ namespace Orbiters.Mixer.Editor
     {
         private bool thumbnailsPending;
         private double lastThumbnailPoll;
-        // Picture keys of the rows, worked out once per rebuild; the last key each row showed, whose picture is freed
-        // when the row's key changes (a commit, a material swap, a part switched off).
-        private readonly Dictionary<int, string> thumbnailKeys = new Dictionary<int, string>();
-        private readonly Dictionary<int, string> shownPictureKeys = new Dictionary<int, string>();
+        // The picture key of each row (by instance ID), worked out again only when something below the object changed
+        // (HierarchyRow.PictureRevision); the picture of a key no longer used is freed.
+        private sealed class Picture
+        {
+            public string Key;
+            public bool OnDisk;
+            public int Revision;
+            public long Used;
+        }
+        private readonly Dictionary<int, Picture> pictures = new Dictionary<int, Picture>();
+        private long pictureClock;
         // Rows holding more renderers than this (a world's folders) show their icon: a picture renders them all.
         private const int PictureRenderers = 128;
+        // Pictures kept by this window at most (about 147 KB each): the least recently shown go first, never one on screen.
+        internal const int PicturesKept = 160;
 
         // ---- Making the parts (once per pooled row) ---------------------------------------------------------------
 
@@ -42,7 +51,7 @@ namespace Orbiters.Mixer.Editor
                 Undo.RecordObject(go, (on ? "Activate " : "Deactivate ") + go.name);
                 go.SetActive(on);
                 EditorUtility.SetDirty(go);
-                MarkDirty();
+                MarkEdited();
             });
             return box;
         }
@@ -130,7 +139,7 @@ namespace Orbiters.Mixer.Editor
                 {
                     // Nothing newer any more: the pill goes now, the row with the next rebuild.
                     if (update == null) MixerUi.Show(pill, false);
-                    MarkDirty();
+                    model.ToolsChanged(); MarkDirty();
                     return;
                 }
                 MixerUi.SetPillText(pill, "Updating…");
@@ -201,11 +210,10 @@ namespace Orbiters.Mixer.Editor
             return lines;
         }
 
-        private void BindAvatarLines(VisualElement element, HierarchyRow row)
+        private void BindAvatarLines(RowView view, HierarchyRow row)
         {
-            var lines = element.Q(className: "mxh-avatar");
             var facts = HierarchyVrchat.Describe?.Invoke(row.Object);
-            var uploaded = lines.Q<Label>(className: "mxh-avatar__name");
+            var uploaded = view.Uploaded;
             // Its assembly compiles only with the VRChat Avatars SDK 3.7 or later, and loads only when every script it
             // depends on compiled: say which of the two it is.
             if (facts == null) uploaded.text = EditorUtility.scriptCompilationFailed
@@ -215,35 +223,52 @@ namespace Orbiters.Mixer.Editor
             else uploaded.text = facts.Note ?? string.Empty;
             uploaded.EnableInClassList("mxh-avatar__name--note", facts?.UploadedName == null);
             uploaded.tooltip = facts?.UploadedName != null ? "Its name on VRChat (" + facts.BlueprintId + ")" : facts?.BlueprintId;
-            var info = CustomBases.Describe(row.Object.transform);
-            var customBase = lines.Q<Label>(className: "mxh-avatar__base");
+            var info = CustomBaseOf(row);
+            var customBase = view.CustomBase;
             MixerUi.Show(customBase, info != null && !string.IsNullOrEmpty(info.Name));
             if (info != null)
             {
                 customBase.text = info.Name;
                 customBase.tooltip = "Custom base" + (string.IsNullOrEmpty(info.BaseName) ? "" : " of " + info.BaseName) + (info.Source == "MCB" ? " (My Custom Base)" : "");
             }
-            BindUpdate(lines.Q<Button>(className: "mxh-avatar__update"), row.Update, customBase: true);
-            var rank = lines.Q(className: "mxh-avatar__rank");
+            BindUpdate(view.AvatarUpdate, row.Update, customBase: true);
+            var rank = view.Rank;
             MixerUi.Show(rank, facts != null);
             if (facts != null)
             {
-                rank.Q<Image>().image = facts.RankIcon;
-                MixerUi.Show(rank.Q<Image>(), facts.RankIcon != null);
-                rank.Q<Label>().text = facts.Rank ?? "Ranking\u2026";
+                view.RankIcon.image = facts.RankIcon;
+                MixerUi.Show(view.RankIcon, facts.RankIcon != null);
+                view.RankText.text = facts.Rank ?? "Ranking\u2026";
                 rank.tooltip = "Its performance rank on " + facts.RankPlatform + " as it is in the scene, worked out by the VRChat SDK (the build target's platform)";
             }
-            var visibility = lines.Q(className: "mxh-avatar__visibility");
+            var visibility = view.Visibility;
             MixerUi.Show(visibility, facts?.Visibility != null);
             if (facts?.Visibility != null)
             {
                 bool shared = facts.Visibility == "Public";
-                visibility.Q<VectorIcon>().Glyph = shared ? IconGlyph.People : IconGlyph.Lock;
-                visibility.Q<Label>().text = facts.Visibility;
+                view.VisibilityIcon.Glyph = shared ? IconGlyph.People : IconGlyph.Lock;
+                view.VisibilityText.text = facts.Visibility;
                 visibility.tooltip = shared ? "Public on VRChat: anyone can find and wear it" : "Private on VRChat: only its owner can wear it";
             }
-            MixerUi.Show(lines.Q(className: "mxh-avatar__link"), facts?.Link != null);
+            MixerUi.Show(view.Link, facts?.Link != null);
         }
+
+        // A custom base's description per avatar root, kept until a custom base is applied or reset (CustomBases.Changed)
+        // or the avatar's row is read again: a provider reads the whole body for it, and avatar rows bind on every click.
+        private readonly Dictionary<int, CustomBaseInfo> customBases = new Dictionary<int, CustomBaseInfo>();
+        private readonly Dictionary<int, int> customBaseRevisions = new Dictionary<int, int>();
+
+        private CustomBaseInfo CustomBaseOf(HierarchyRow row)
+        {
+            // Inputs: the avatar root (its instance ID) and everything below it, which PictureRevision counts.
+            if (customBases.TryGetValue(row.InstanceId, out var known) && customBaseRevisions.TryGetValue(row.InstanceId, out int at) && at == row.PictureRevision)
+                return known;
+            var info = CustomBases.Describe(row.Object.transform);
+            customBases[row.InstanceId] = info;
+            customBaseRevisions[row.InstanceId] = row.PictureRevision;
+            return info;
+        }
+
 
         // My Avatar's drop field on the avatar root: what is dropped on it goes to the avatar as on My Avatar's own.
         private VisualElement MakeDropField(VisualElement row)
@@ -306,20 +331,128 @@ namespace Orbiters.Mixer.Editor
 
         // ---- Binding ---------------------------------------------------------------------------------------------
 
-        private void BindRich(VisualElement element, HierarchyRow row, bool tall)
+        /// <summary>
+        /// The parts of one pooled row, found once when it is made (a bind runs for every row on screen at each refresh),
+        /// with the badges and component icons it may show made once too and only shown or hidden at a bind.
+        /// </summary>
+        private sealed class RowView
         {
-            var active = element.Q(className: "mxh-row__active");
-            var icon = element.Q<Image>(className: "mxh-row__icon");
-            var glyph = element.Q<VectorIcon>(className: "mxh-row__glyph");
-            var thumbnail = element.Q<Image>(className: "mxh-row__thumbnail");
-            var sphere = element.Q<OrbitSphere>(className: "mxh-row__sphere");
-            var line = element.Q(className: "mxh-row__line");
-            var line2 = element.Q(className: "mxh-row__line2");
-            var extras = element.Q(className: "mxh-row__extras");
-            var detail = element.Q<Label>(className: "mxh-row__detail");
-            var drop = element.Q(className: "mxh-drop");
-            var bones = element.Q(className: "mxh-bones");
-            var refit = element.Q(className: "mxh-refit");
+            public const int ComponentIcons = 4;
+            public MixerIndent Indent;
+            public VisualElement Chevron, Dot, Badges, Components, Pick, Eye, Active, Line, Line2, Extras, Drop, Bones, Refit, Switches, Avatar, VrchatMark;
+            public Image Icon, Thumbnail;
+            public VectorIcon Glyph, PickIcon, EyeIcon;
+            public Label Name, Detail, DropText;
+            public TextField Rename;
+            public OrbitSphere Sphere;
+            public IMGUIContainer Decorations;
+            public Button Update, AvatarUpdate;
+            public Label Uploaded, CustomBase, RankText, VisibilityText;
+            public VisualElement Rank, Visibility, Link;
+            public Image RankIcon;
+            public VectorIcon VisibilityIcon;
+            // The badges in the order they show: VRChat's logo, prefab, missing script, painting or posing.
+            public VisualElement Logo;
+            public Label PrefabBadge, MissingBadge, PaintingBadge, PosingBadge;
+            public readonly Image[] ComponentIcon = new Image[ComponentIcons];
+            public Label More;
+            public int ComponentsShown;
+            // What the row was last bound to, in which refresh: a second bind of the same pass is skipped.
+            public int Generation = -1, Index = -1;
+            public HierarchyRow Row;
+
+            public static RowView Of(VisualElement row)
+            {
+                var view = new RowView
+                {
+                    Indent = row.Q<MixerIndent>(className: "mxh-row__indent"),
+                    Chevron = row.Q(className: "mxh-row__chevron"),
+                    Dot = row.Q(className: "mxh-row__dot"),
+                    Icon = row.Q<Image>(className: "mxh-row__icon"),
+                    Glyph = row.Q<VectorIcon>(className: "mxh-row__glyph"),
+                    Thumbnail = row.Q<Image>(className: "mxh-row__thumbnail"),
+                    VrchatMark = row.Q(className: "mxh-row__vrchat-mark"),
+                    Name = row.Q<Label>(className: "mxh-row__name"),
+                    Rename = row.Q<TextField>(className: "mxh-row__rename"),
+                    Badges = row.Q(className: "mxh-row__badges"),
+                    Components = row.Q(className: "mxh-row__components"),
+                    Pick = row.Q(className: "mxh-row__pick"),
+                    Eye = row.Q(className: "mxh-row__eye"),
+                    Active = row.Q(className: "mxh-row__active"),
+                    Sphere = row.Q<OrbitSphere>(className: "mxh-row__sphere"),
+                    Line = row.Q(className: "mxh-row__line"),
+                    Line2 = row.Q(className: "mxh-row__line2"),
+                    Extras = row.Q(className: "mxh-row__extras"),
+                    Detail = row.Q<Label>(className: "mxh-row__detail"),
+                    Drop = row.Q(className: "mxh-drop"),
+                    Bones = row.Q(className: "mxh-bones"),
+                    Refit = row.Q(className: "mxh-refit"),
+                    Switches = row.Q(className: "mxh-row__switches"),
+                    Avatar = row.Q(className: "mxh-avatar"),
+                    Decorations = row.Q<IMGUIContainer>(className: "mxh-row__decorations"),
+                    Update = row.Q<Button>(className: "mxh-row__update"),
+                };
+                view.PickIcon = view.Pick.Q<VectorIcon>();
+                view.EyeIcon = view.Eye.Q<VectorIcon>();
+                view.DropText = view.Drop.Q<Label>();
+                var lines = view.Avatar;
+                view.Uploaded = lines.Q<Label>(className: "mxh-avatar__name");
+                view.CustomBase = lines.Q<Label>(className: "mxh-avatar__base");
+                view.AvatarUpdate = lines.Q<Button>(className: "mxh-avatar__update");
+                view.Rank = lines.Q(className: "mxh-avatar__rank");
+                view.RankIcon = view.Rank.Q<Image>();
+                view.RankText = view.Rank.Q<Label>();
+                view.Visibility = lines.Q(className: "mxh-avatar__visibility");
+                view.VisibilityIcon = view.Visibility.Q<VectorIcon>();
+                view.VisibilityText = view.Visibility.Q<Label>();
+                view.Link = lines.Q(className: "mxh-avatar__link");
+                // Made once, hidden until a bind shows them (hidden elements take no room: the line looks as before).
+                view.Logo = VRChatLogo.Create();
+                if (view.Logo != null)
+                {
+                    view.Logo.tooltip = "A VRChat avatar (it has an avatar descriptor)";
+                    view.Logo.pickingMode = PickingMode.Position;
+                    view.Logo.AddToClassList("mxh-row__vrchat");
+                    view.Badges.Add(view.Logo);
+                }
+                view.PrefabBadge = (Label)Badge("prefab", "A prefab instance", "mxh-badge--prefab");
+                view.MissingBadge = (Label)Badge("missing script", "A component's script is missing", "mxh-badge--missing");
+                view.PaintingBadge = (Label)Badge("painting", "The bone Weight Paint paints and poses; the mesh stays selected", "mxh-badge--mixer");
+                view.PosingBadge = (Label)Badge("posing", "Posed in Weight Paint; the painted mesh is not skinned to it", "mxh-badge--mixer");
+                foreach (var badge in new VisualElement[] { view.PrefabBadge, view.MissingBadge, view.PaintingBadge, view.PosingBadge }) view.Badges.Add(badge);
+                foreach (var badge in view.Badges.Children()) MixerUi.Show(badge, false);
+                for (int i = 0; i < ComponentIcons; i++)
+                {
+                    var image = new Image { scaleMode = ScaleMode.ScaleToFit, pickingMode = PickingMode.Position };
+                    image.AddToClassList("mxh-row__component");
+                    MixerUi.Show(image, false);
+                    view.Components.Add(image);
+                    view.ComponentIcon[i] = image;
+                }
+                view.More = MixerUi.Text("+", "mxh-row__more");
+                MixerUi.Show(view.More, false);
+                view.Components.Add(view.More);
+                row.userData = view;
+                return view;
+            }
+        }
+
+        private static RowView ViewOf(VisualElement element) => element.userData as RowView;
+
+        private void BindRich(RowView view, VisualElement element, HierarchyRow row, bool tall)
+        {
+            var active = view.Active;
+            var icon = view.Icon;
+            var glyph = view.Glyph;
+            var thumbnail = view.Thumbnail;
+            var sphere = view.Sphere;
+            var line = view.Line;
+            var line2 = view.Line2;
+            var extras = view.Extras;
+            var detail = view.Detail;
+            var drop = view.Drop;
+            var bones = view.Bones;
+            var refit = view.Refit;
             bool isObject = !row.IsScene && row.Object != null;
             MixerUi.Show(active, isObject);
             if (isObject) active.EnableInClassList("mxh-row__active--on", row.Object.activeSelf);
@@ -329,7 +462,7 @@ namespace Orbiters.Mixer.Editor
             bool vector = isObject && (row.Bones != null || row.IsBone);
             element.EnableInClassList("mxh-row--picture", picture);
             MixerUi.Show(thumbnail, picture);
-            var vrchatMark = element.Q(className: "mxh-row__vrchat-mark");
+            var vrchatMark = view.VrchatMark;
             if (vrchatMark != null) MixerUi.Show(vrchatMark, picture && row.VrchatAvatar);
             MixerUi.Show(glyph, !picture && vector);
             MixerUi.Show(icon, !picture && !vector);
@@ -337,7 +470,7 @@ namespace Orbiters.Mixer.Editor
             bool avatar = tall && row.VrchatAvatar;
             element.EnableInClassList("mxh-row--avatar", avatar);
             MixerUi.Show(line2, tall && !avatar);
-            MixerUi.Show(element.Q(className: "mxh-avatar"), avatar);
+            MixerUi.Show(view.Avatar, avatar);
             bool light = isObject && row.Light != null && !Compact;
             MixerUi.Show(sphere, light);
             bool dropShown = isObject && row.DropTool != null && !Compact;
@@ -350,16 +483,16 @@ namespace Orbiters.Mixer.Editor
                 var into = tall ? extras : line;
                 if (bones.parent != into)
                 {
-                    if (into == line) line.Insert(line.IndexOf(line.Q(className: "mxh-row__badges")) + 1, bones);
+                    if (into == line) line.Insert(line.IndexOf(view.Badges) + 1, bones);
                     else extras.Insert(0, bones);
                 }
                 foreach (var button in bones.Children())
                     if (button.userData is System.Func<QuickBones, Transform> bone) button.SetEnabled(bone(row.Bones) != null);
             }
             MixerUi.Show(refit, tall && row.RefitTool != null);
-            BindUpdate(element.Q<Button>(className: "mxh-row__update"), tall && !avatar ? row.Update : null);
+            BindUpdate(view.Update, tall && !avatar ? row.Update : null);
             // The visibility and picking switches go to the row's right end beside a light's ball or a drop field.
-            var switches = element.Q(className: "mxh-row__switches");
+            var switches = view.Switches;
             var switchesInto = light || dropShown ? element : line;
             if (switches.parent != switchesInto) switchesInto.Add(switches);
             else if (switchesInto == element && element.IndexOf(switches) != element.childCount - 1) switches.BringToFront();
@@ -373,15 +506,15 @@ namespace Orbiters.Mixer.Editor
             {
                 bool busy = row.DropTool.Busy(row.Object);
                 drop.EnableInClassList("mxh-drop--busy", busy);
-                drop.Q<Label>().text = busy ? "Adding…" : "Drop anything";
+                view.DropText.text = busy ? "Adding…" : "Drop anything";
                 drop.MarkDirtyRepaint();
             }
             if (!tall) return;
-            if (avatar) BindAvatarLines(element, row);
+            if (avatar) BindAvatarLines(view, row);
 
             if (picture)
             {
-                var texture = ModelThumbnails.Get(row.Object, pictureKey, transparent: true, keepOnDisk: false);
+                var texture = ModelThumbnails.Get(row.Object, pictureKey, transparent: true, keepOnDisk: PictureOnDisk(row));
                 thumbnail.image = texture;
                 thumbnail.EnableInClassList("mxh-row__thumbnail--waiting", texture == null);
                 if (texture == null) thumbnailsPending = true;
@@ -422,7 +555,7 @@ namespace Orbiters.Mixer.Editor
             float before = laidOutWidth;
             laidOutWidth = width;
             bool Fits(HierarchyRow r, float at) => at >= Mathf.Max(0, r.Depth - 1) * 14f + 470f;
-            if (model.Rows.Any(r => r.Bones != null && (before < 0f || Fits(r, before) != Fits(r, width)))) list.RefreshRows();
+            if (model.Rows.Any(r => r.Bones != null && (before < 0f || Fits(r, before) != Fits(r, width)))) RefreshRows();
         }
 
         // Unity's icon of the object, with Mixer's own for what Unity draws as a plain cube: a light, a folder (open or
@@ -448,11 +581,11 @@ namespace Orbiters.Mixer.Editor
             {
                 if (element.resolvedStyle.display == DisplayStyle.None || !element.ClassListContains("mxh-row--picture")) continue;
                 var row = RowOf(element);
-                var thumbnail = element.Q<Image>(className: "mxh-row__thumbnail");
+                var thumbnail = ViewOf(element)?.Thumbnail;
                 if (row?.Object == null || !row.HasMeshes || thumbnail == null || thumbnail.image != null) continue;
                 string key = ThumbnailKey(row);
                 if (key == null) continue;
-                var texture = ModelThumbnails.Get(row.Object, key, transparent: true, keepOnDisk: false);
+                var texture = ModelThumbnails.Get(row.Object, key, transparent: true, keepOnDisk: PictureOnDisk(row));
                 if (texture == null)
                 {
                     // Failed for good: the row shows its icon instead.
@@ -463,33 +596,172 @@ namespace Orbiters.Mixer.Editor
                 thumbnail.image = texture;
                 thumbnail.RemoveFromClassList("mxh-row__thumbnail--waiting");
             }
-            if (failed) list.RefreshRows();
+            if (failed) RefreshRows();
         }
 
         // What the picture shows: the meshes and materials below the object and whether they show, so a commit (a new
-        // mesh), a material swap or a switched-off part makes a new one. Kept until the next rebuild; null for a row
-        // with too many renderers to picture. Made of instance ids, so the pictures are kept for the session only.
+        // mesh), a material swap or a switched-off part makes a new one. Null for a row with too many renderers to
+        // picture. Worked out again only when the row's PictureRevision moved (a change at or below the object).
+        //
+        // Key inputs, for every renderer below the object holding a mesh: the mesh, whether the renderer is enabled and
+        // its object active, and each material slot's material; plus the row's object. When every mesh and material is an
+        // asset and the object is in a saved scene, they are named by GUID, local file id and the asset's dependency hash
+        // (its content), and the object by its GlobalObjectId: the key holds across editor starts and the picture is kept
+        // on disk. Otherwise (a working mesh, a baked or generated one, an unsaved scene) by instance IDs, for the session.
         private string ThumbnailKey(HierarchyRow row)
         {
-            if (thumbnailKeys.TryGetValue(row.InstanceId, out var cached)) return cached;
+            if (pictures.TryGetValue(row.InstanceId, out var known) && known.Revision == row.PictureRevision)
+            {
+                known.Used = ++pictureClock;
+                return known.Key;
+            }
             var renderers = row.Object.GetComponentsInChildren<Renderer>(true);
             string made = null;
+            bool onDisk = false;
             if (renderers.Length <= PictureRenderers)
             {
-                var key = new StringBuilder("mixer-hierarchy|").Append(row.InstanceId);
-                foreach (var renderer in renderers)
-                {
-                    var mesh = renderer is SkinnedMeshRenderer skinned ? skinned.sharedMesh : renderer.TryGetComponent<MeshFilter>(out var filter) ? filter.sharedMesh : null;
-                    if (mesh == null) continue;
-                    key.Append('|').Append(mesh.GetInstanceID()).Append(renderer.enabled && renderer.gameObject.activeInHierarchy ? '+' : '-');
-                    foreach (var material in renderer.sharedMaterials) key.Append(',').Append(material != null ? material.GetInstanceID() : 0);
-                }
-                made = key.ToString();
+                made = SessionKey(row, renderers);
+                string lasting = LastingKey(row, renderers);
+                if (lasting != null) { made = lasting; onDisk = true; }
             }
-            if (shownPictureKeys.TryGetValue(row.InstanceId, out var before) && before != made) ModelThumbnails.Release(before, transparent: true);
-            if (made != null) shownPictureKeys[row.InstanceId] = made; else shownPictureKeys.Remove(row.InstanceId);
-            return thumbnailKeys[row.InstanceId] = made;
+            if (known != null && known.Key != made) ModelThumbnails.Release(known.Key, transparent: true);
+            if (made == null) { pictures.Remove(row.InstanceId); return null; }
+            if (known == null) pictures[row.InstanceId] = known = new Picture();
+            known.Key = made;
+            known.OnDisk = onDisk;
+            known.Revision = row.PictureRevision;
+            known.Used = ++pictureClock;
+            return made;
         }
+
+        private bool PictureOnDisk(HierarchyRow row) => pictures.TryGetValue(row.InstanceId, out var known) && known.OnDisk;
+
+        private static string SessionKey(HierarchyRow row, Renderer[] renderers)
+        {
+            var key = new StringBuilder("mixer-hierarchy|").Append(row.InstanceId);
+            foreach (var renderer in renderers)
+            {
+                var mesh = MeshOf(renderer);
+                if (mesh == null) continue;
+                key.Append('|').Append(mesh.GetInstanceID()).Append(renderer.enabled && renderer.gameObject.activeInHierarchy ? '+' : '-');
+                foreach (var material in renderer.sharedMaterials) key.Append(',').Append(material != null ? material.GetInstanceID() : 0);
+            }
+            return key.ToString();
+        }
+
+        // The same inputs named so they hold across editor starts, or null when one of them cannot be.
+        private static string LastingKey(HierarchyRow row, Renderer[] renderers)
+        {
+            var scene = row.Object.scene;
+            if (!scene.IsValid() || string.IsNullOrEmpty(scene.path) || EditorApplication.isPlayingOrWillChangePlaymode) return null;
+            var id = GlobalObjectId.GetGlobalObjectIdSlow(row.Object);
+            if (id.identifierType == 0) return null;
+            var key = new StringBuilder("mixer-hierarchy-asset|3|").Append(id.ToString());
+            var hashes = new Dictionary<string, string>(System.StringComparer.Ordinal);
+            bool Append(Object asset)
+            {
+                if (asset == null) { key.Append(",-"); return true; }
+                if (!AssetDatabase.TryGetGUIDAndLocalFileIdentifier(asset, out string guid, out long local) || string.IsNullOrEmpty(guid)) return false;
+                if (!hashes.TryGetValue(guid, out string hash))
+                {
+                    string path = AssetDatabase.GUIDToAssetPath(guid);
+                    if (string.IsNullOrEmpty(path)) return false;
+                    hashes[guid] = hash = AssetDatabase.GetAssetDependencyHash(path).ToString();
+                }
+                key.Append(',').Append(guid).Append(':').Append(local).Append(':').Append(hash);
+                return true;
+            }
+            foreach (var renderer in renderers)
+            {
+                var mesh = MeshOf(renderer);
+                if (mesh == null) continue;
+                key.Append('|');
+                if (!Append(mesh)) return null;
+                key.Append(renderer.enabled && renderer.gameObject.activeInHierarchy ? '+' : '-');
+                foreach (var material in renderer.sharedMaterials) if (!Append(material)) return null;
+            }
+            // What the picture is rendered from beyond the assets: where each part is, the bones' pose, the shapes' weights.
+            key.Append("|state:").Append(RenderedState(row.Object.transform, renderers).ToString("x16"));
+            return key.ToString();
+        }
+
+        /// <summary>
+        /// A hash of the scene state ModelThumbnails renders a row's renderers with: each renderer's matrix relative to the
+        /// row's object, a skinned mesh's bones relative to it (its pose, which BakeMesh reads) and its blendshape weights.
+        /// Values are rounded (1e-4) so float noise does not change the key. Fixed order: renderers, then bones and shapes
+        /// in index order.
+        /// </summary>
+        internal static ulong RenderedState(Transform root, Renderer[] renderers)
+        {
+            ulong hash = 14695981039346656037UL;
+            void Add(float value)
+            {
+                long q = float.IsNaN(value) || float.IsInfinity(value) ? long.MinValue : (long)System.Math.Round(value * 10000.0);
+                for (int b = 0; b < 8; b++) { hash ^= (byte)(q >> (b * 8)); hash *= 1099511628211UL; }
+            }
+            void AddMatrix(Matrix4x4 m) { for (int i = 0; i < 16; i++) Add(m[i]); }
+            var toRoot = root.worldToLocalMatrix;
+            foreach (var renderer in renderers)
+            {
+                if (renderer == null || MeshOf(renderer) == null) continue;
+                AddMatrix(toRoot * renderer.transform.localToWorldMatrix);
+                if (!(renderer is SkinnedMeshRenderer skinned)) continue;
+                foreach (var bone in skinned.bones) { if (bone != null) AddMatrix(toRoot * bone.localToWorldMatrix); else Add(float.NaN); }
+                int shapes = skinned.sharedMesh.blendShapeCount;
+                for (int i = 0; i < shapes; i++) Add(skinned.GetBlendShapeWeight(i));
+            }
+            return hash;
+        }
+
+        private static Mesh MeshOf(Renderer renderer) =>
+            renderer is SkinnedMeshRenderer skinned ? skinned.sharedMesh : renderer.TryGetComponent<MeshFilter>(out var filter) ? filter.sharedMesh : null;
+
+        // Pictures of rows gone for good are freed.
+        private void OnRowForgotten(int instanceId)
+        {
+            customBases.Remove(instanceId);
+            customBaseRevisions.Remove(instanceId);
+            if (!pictures.TryGetValue(instanceId, out var known)) return;
+            pictures.Remove(instanceId);
+            ModelThumbnails.Release(known.Key, transparent: true);
+        }
+
+        // Past PicturesKept, the pictures shown longest ago are freed (never one on screen): scrolling a world's thousands
+        // of rows keeps a bounded number of textures.
+        // Called after rebuilds and from the window's tick (scrolling binds rows and makes pictures without a rebuild).
+        internal void ReleaseUnusedPictures()
+        {
+            if (pictures.Count <= PicturesKept || list == null) return;
+            var shown = new HashSet<int>();
+            // The list shows and hides its rows by their inline display (read now, not after the next layout).
+            foreach (var element in list.Rows)
+                if (element.style.display.value != DisplayStyle.None && ViewOf(element)?.Row is HierarchyRow row) shown.Add(row.InstanceId);
+            var oldest = new List<KeyValuePair<int, Picture>>(pictures);
+            oldest.Sort((a, b) => a.Value.Used.CompareTo(b.Value.Used));
+            foreach (var pair in oldest)
+            {
+                if (pictures.Count <= PicturesKept) break;
+                if (shown.Contains(pair.Key)) continue;
+                pictures.Remove(pair.Key);
+                ModelThumbnails.Release(pair.Value.Key, transparent: true);
+            }
+        }
+
+        /// <summary>How many pictures this window holds (tests).</summary>
+        internal int PicturesHeld => pictures.Count;
+
+        /// <summary>Holds a picture key for a row as a bind would (tests): the eviction's input without rendering.</summary>
+        internal void HoldPicture(int instanceId, string key) => pictures[instanceId] = new Picture { Key = key, Used = ++pictureClock, Revision = int.MinValue };
+
+        /// <summary>Whether this window holds a picture for the row (tests).</summary>
+        internal bool HoldsPicture(int instanceId) => pictures.ContainsKey(instanceId);
+
+        private void ReleasePictures()
+        {
+            foreach (var known in pictures.Values) ModelThumbnails.Release(known.Key, transparent: true);
+            pictures.Clear();
+        }
+
 
         private static string Detail(HierarchyRow row)
         {

@@ -89,17 +89,47 @@ namespace Orbiters.Mixer.Editor
         public static string Progress => Building ? done.ToString("N0") + " / " + total.ToString("N0") + " files" : string.Empty;
         public static int FileCount { get { lock (Gate) return files.Count; } }
         /// <summary>True once the index was read and nothing changed since: an answer that finds nothing is final.</summary>
-        public static bool UpToDate => loaded && !dirty && !Building;
+        public static bool UpToDate => loaded && !dirty && !Building && !HasPending;
+
+        // Paths the asset postprocessor named since the index was read (asset paths, files or folders): read again, or
+        // left out, by the next Refresh alone, without walking the project. Main thread only.
+        private static readonly HashSet<string> changedPaths = new HashSet<string>(StringComparer.Ordinal);
+        private static readonly HashSet<string> gonePaths = new HashSet<string>(StringComparer.Ordinal);
+        private static bool HasPending => changedPaths.Count > 0 || gonePaths.Count > 0;
 
         /// <summary>Starts building or updating the index when it is not up to date; never waits.</summary>
         public static void Refresh()
         {
-            if (Building || !dirty) return;
-            dirty = false;
-            stopping = false;
-            string root = projectRoot;
-            var tops = Tops(root);
-            running = Task.Run(() => Build(root, tops));
+            if (Building) return;
+            if (dirty || !loaded)
+            {
+                // The whole project is walked: what the postprocessor named is read with it.
+                dirty = false;
+                stopping = false;
+                changedPaths.Clear();
+                gonePaths.Clear();
+                string root = projectRoot;
+                var tops = Tops(root);
+                running = Task.Run(() => Build(root, tops));
+            }
+            else if (HasPending)
+            {
+                stopping = false;
+                // Where each named path is on the disk (packages live elsewhere), asked on the main thread.
+                var changed = new List<(string asset, string full)>();
+                foreach (string path in changedPaths)
+                {
+                    string full;
+                    try { full = Path.GetFullPath(FileUtil.GetPhysicalPath(path)); } catch (Exception) { continue; }
+                    changed.Add((path, full));
+                }
+                var gone = gonePaths.ToList();
+                changedPaths.Clear();
+                gonePaths.Clear();
+                string root = projectRoot;
+                running = Task.Run(() => Update(root, changed, gone));
+            }
+            else return;
             EditorApplication.update -= WatchBuild;
             EditorApplication.update += WatchBuild;
         }
@@ -142,13 +172,80 @@ namespace Orbiters.Mixer.Editor
         /// <summary>Assets changed: the next <see cref="Refresh"/> reads what changed again.</summary>
         internal static void MarkDirty() => dirty = true;
 
+        // Only the paths named are read again (MXC-50): a folder named (moved in, or gone) is read or dropped whole.
         private sealed class Watcher : AssetPostprocessor
         {
             private static void OnPostprocessAllAssets(string[] imported, string[] deleted, string[] moved, string[] movedFrom)
             {
-                if (imported.Concat(deleted).Concat(moved).Any(p => Extensions.Any(e => p.EndsWith(e, StringComparison.OrdinalIgnoreCase)))) MarkDirty();
+                foreach (string path in imported.Concat(moved))
+                    if (Indexed(path) || AssetDatabase.IsValidFolder(path)) changedPaths.Add(path);
+                foreach (string path in deleted.Concat(movedFrom)) gonePaths.Add(path);
             }
         }
+
+        private static bool Indexed(string path)
+        {
+            foreach (string e in Extensions) if (path.EndsWith(e, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
+        /// <summary>Reads what the postprocessor named since and waits for it (tests); false when it took longer than
+        /// <paramref name="seconds"/>.</summary>
+        internal static bool UpdateNow(double seconds = 60)
+        {
+            var limit = TimeSpan.FromSeconds(seconds);
+            if (running != null && !running.Wait(limit)) return false;
+            Refresh();
+            if (running != null && !running.Wait(limit)) return false;
+            WatchBuild();
+            return true;
+        }
+
+        // The paths named since the index was read (worker thread): gone ones (and what was below them) left out, the others
+        // read again (a folder walked), then the cache saved once.
+        private static void Update(string root, List<(string asset, string full)> changed, List<string> gone)
+        {
+            bool any = false;
+            lock (Gate)
+            {
+                foreach (string path in gone)
+                {
+                    string below = path.TrimEnd('/') + "/";
+                    if (files.Remove(path)) any = true;
+                    List<string> under = null;
+                    foreach (string key in files.Keys) if (key.StartsWith(below, StringComparison.Ordinal)) (under ??= new List<string>()).Add(key);
+                    if (under != null) { foreach (string key in under) files.Remove(key); any = true; }
+                }
+            }
+            var found = new List<(string asset, string full)>();
+            foreach (var (asset, full) in changed)
+            {
+                if (stopping) { dirty = true; return; }
+                if (Directory.Exists(full)) Walk(full, asset, found);
+                else if (Indexed(asset)) found.Add((asset, full));
+            }
+            total = found.Count;
+            done = 0;
+            foreach (var (asset, full) in found)
+            {
+                if (stopping) { if (any) Save(root); dirty = true; return; }
+                done++;
+                long ticks, size;
+                try { var info = new FileInfo(full); ticks = info.LastWriteTimeUtc.Ticks; size = info.Length; }
+                catch (Exception) { lock (Gate) any |= files.Remove(asset); continue; }
+                FileEntry known;
+                lock (Gate) files.TryGetValue(asset, out known);
+                if (known != null && known.Ticks == ticks && known.Size == size) continue;
+                var entry = Parse(full, ticks, size);
+                if (stopping) { if (any) Save(root); dirty = true; return; }
+                // Not readable now: the next walk of the whole project tries it again.
+                if (entry == null) { dirty = true; continue; }
+                lock (Gate) files[asset] = entry;
+                any = true;
+            }
+            if (any) Save(root);
+        }
+
 
         /// <summary>
         /// The assets whose content matches <paramref name="pattern"/> (text or a regular expression), with what matched;
