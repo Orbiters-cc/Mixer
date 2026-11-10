@@ -436,6 +436,27 @@ namespace Orbiters.Mixer.Editor.Tests
             finally { Object.DestroyImmediate(mesh); }
         }
 
+        // ---- Session records -------------------------------------------------------------------------------------
+
+        [Test]
+        public void ASessionKeptForAReloadIsParsedOnce()
+        {
+            var full = MixerSession.PendingSession.Parse("GlobalObjectId_V1-2-abc\t1234\tGlobalObjectId_V1-1-def\tSmile\t3:25\t-987654321\t5678");
+            Assert.That(full.Id, Is.EqualTo("GlobalObjectId_V1-2-abc"));
+            Assert.That(full.Working, Is.EqualTo(1234));
+            Assert.That(full.Original, Is.EqualTo("GlobalObjectId_V1-1-def"));
+            Assert.That(full.Layer, Is.EqualTo("Smile"));
+            Assert.That(full.Held, Is.EqualTo("3:25"));
+            Assert.That(full.HasFingerprint, Is.True);
+            Assert.That(full.Fingerprint, Is.EqualTo(-987654321L));
+            Assert.That(full.Renderer, Is.EqualTo(5678));
+            var shortLine = MixerSession.PendingSession.Parse("a\t0\tb\t\t");
+            Assert.That(shortLine.Layer, Is.Null, "an empty layer is the base");
+            Assert.That(shortLine.HasFingerprint, Is.False);
+            Assert.That(shortLine.Renderer, Is.EqualTo(0));
+            Assert.That(MixerSession.PendingSession.Parse("a\t1"), Is.Null, "too short to restore anything");
+        }
+
         // ---- The history's budget ---------------------------------------------------------------------------------
 
         private sealed class SizedEntry : HistoryEntry

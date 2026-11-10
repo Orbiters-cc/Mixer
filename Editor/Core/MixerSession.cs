@@ -446,11 +446,7 @@ namespace Orbiters.Mixer.Editor
             foreach (var kept in parkedTargets.Values) if (kept != target && kept.Original == mesh) return true;
             string id = target.OriginalId;
             foreach (var r in waiting) if (r.Id != target.Id && r.Original == id) return true;
-            foreach (string line in pendingRestore)
-            {
-                var parts = line.Split('\t');
-                if (parts.Length > 2 && parts[0] != target.Id && parts[2] == id) return true;
-            }
+            foreach (var pending in pendingRestore) if (pending.Id != target.Id && pending.Original == id) return true;
             bool Uses(SkinnedMeshRenderer r) => r != null && r != target.Renderer && r.sharedMesh == mesh;
             bool UsesFilter(MeshFilter f) => f != null && f != target.Filter && f.sharedMesh == mesh;
             foreach (var r in Object.FindObjectsOfType<SkinnedMeshRenderer>(true)) if (Uses(r)) return true;
