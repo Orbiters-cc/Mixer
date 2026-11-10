@@ -788,7 +788,7 @@ namespace Orbiters.Mixer.Editor.Tests
             made.transform.SetSiblingIndex(0);
             model.Refresh(filter);
             var matches = model.Rows.Where(r => r.Object != null && r.Match).Select(r => r.Object).ToList();
-            Assert.That(matches, Does.Contain(cube).And.Contain(made));
+            Assert.That(matches, Has.Member(cube).And.Member(made));
             Assert.That(model.Verify(filter), Is.Empty);
         }
 
