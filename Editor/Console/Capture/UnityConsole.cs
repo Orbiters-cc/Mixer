@@ -94,6 +94,7 @@ namespace Orbiters.Logger.Editor
         private static readonly Func<object, int> entryMode;
         private static readonly Func<object, int> entryInstanceId;
         private static readonly Func<object, int> entryCallstackStart;
+        private static readonly FieldInfo consoleWindowField;
 
         static UnityConsole()
         {
@@ -149,6 +150,7 @@ namespace Orbiters.Logger.Editor
                 entryCallstackStart = entryType.GetField("callstackTextStartUTF16", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance) != null
                     ? Field<int>(entryType, "callstackTextStartUTF16")
                     : null;
+                consoleWindowField = assembly.GetType("UnityEditor.ConsoleWindow")?.GetField("ms_ConsoleWindow", BindingFlags.NonPublic | BindingFlags.Static);
                 Available = true;
             }
             catch (Exception)
@@ -230,78 +232,204 @@ namespace Orbiters.Logger.Editor
         }
 
         /// <summary>
-        /// While alive, Unity's console lists every entry in order with timestamps (collapse, level filters and search
-        /// off), then its settings come back. Nothing repaints in between, so the Console window doesn't flicker.
+        /// True when a Unity Console window may be showing (or this Unity doesn't tell): settings borrowed by
+        /// <see cref="ShowAll"/> are then given back after each slice, so the user never sees them changed.
         /// </summary>
-        public sealed class ShowAllScope : IDisposable
+        public static bool ConsoleWindowMayShow
         {
-            private readonly int savedFlags;
-            private readonly string savedFilter;
-            private readonly bool changedFlags;
-            private readonly bool changedFilter;
+            get
+            {
+                if (consoleWindowField == null)
+                {
+                    return true;
+                }
 
-            public ShowAllScope(bool timestamps)
+                try
+                {
+                    // Unity sets it while a Console window exists (open, even in a hidden tab) and clears it when it closes.
+                    return consoleWindowField.GetValue(null) as UnityEngine.Object != null;
+                }
+                catch (Exception)
+                {
+                    return true;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Unity's console borrowed to list every entry in order (collapse, level filters and search off, timestamps on
+        /// when asked), held for a whole history import and then given back. Each change of those settings costs Unity a
+        /// pass over all its entries, so they change once per import instead of once per slice.
+        /// <para>
+        /// Only the settings this changed are given back, and only those still as this set them (the user may have
+        /// changed one since). What was borrowed is also kept in EditorPrefs, so an editor that crashed mid-import gets
+        /// its console settings back at the next start (<see cref="Recover"/>). Main thread only.
+        /// </para>
+        /// </summary>
+        public static class ShowAll
+        {
+            private const string RecoveryPref = "Orbiters.Logger.BorrowedConsole";
+            private static readonly int[] Borrowable = { FlagCollapse, FlagLogLevelLog, FlagLogLevelWarning, FlagLogLevelError, FlagShowTimestamp };
+            private static int changedBits;
+            private static int savedFlags;
+            private static bool changedFilter;
+            private static string savedFilter = string.Empty;
+
+            /// <summary>Some of Unity's console settings are borrowed right now.</summary>
+            public static bool Held => changedBits != 0 || changedFilter;
+
+            /// <summary>
+            /// Makes Unity's console list every entry in order. True when a setting had to change now (Unity re-filtered
+            /// its entries); false when it already did, or this Unity's console can't be changed.
+            /// </summary>
+            public static bool Take(bool timestamps)
             {
                 if (!Available)
+                {
+                    return false;
+                }
+
+                try
+                {
+                    int flags = getFlags();
+                    int wanted = (flags & ~FlagCollapse) | AllLevels | (timestamps ? FlagShowTimestamp : 0);
+                    int change = flags ^ wanted;
+                    string filter = getFilteringText() ?? string.Empty;
+                    if (change == 0 && filter.Length == 0)
+                    {
+                        return false;
+                    }
+
+                    // Remember the user's value of each setting the first time it is borrowed.
+                    int fresh = change & ~changedBits;
+                    savedFlags = (savedFlags & ~fresh) | (flags & fresh);
+                    changedBits |= change;
+                    if (filter.Length > 0 && !changedFilter)
+                    {
+                        savedFilter = filter;
+                        changedFilter = true;
+                    }
+
+                    SaveRecovery();
+                    foreach (int flag in Borrowable)
+                    {
+                        if ((change & flag) != 0)
+                        {
+                            setFlag(flag, (wanted & flag) != 0);
+                        }
+                    }
+
+                    if (filter.Length > 0)
+                    {
+                        setFilteringText(string.Empty);
+                    }
+
+                    return true;
+                }
+                catch (Exception)
+                {
+                    return false;
+                }
+            }
+
+            /// <summary>Gives Unity's console its settings back. Nothing happens when none are borrowed.</summary>
+            public static void Release()
+            {
+                if (!Held)
                 {
                     return;
                 }
 
                 try
                 {
-                    savedFlags = getFlags();
-                    savedFilter = getFilteringText() ?? string.Empty;
-                    int wanted = (savedFlags & ~FlagCollapse) | AllLevels | (timestamps ? FlagShowTimestamp : 0);
-                    if (wanted != savedFlags)
-                    {
-                        changedFlags = true;
-                        Apply(savedFlags, wanted);
-                    }
-
-                    if (savedFilter.Length > 0)
-                    {
-                        changedFilter = true;
-                        setFilteringText(string.Empty);
-                    }
-                }
-                catch (Exception)
-                {
-                    changedFlags = false;
-                    changedFilter = false;
-                }
-            }
-
-            /// <summary>True when the scope had to change Unity's console settings (each change re-filters its entries).</summary>
-            public bool Changed => changedFlags || changedFilter;
-
-            public void Dispose()
-            {
-                try
-                {
-                    if (changedFilter)
+                    if (changedFilter && string.IsNullOrEmpty(getFilteringText()))
                     {
                         setFilteringText(savedFilter);
                     }
 
-                    if (changedFlags)
+                    int flags = getFlags();
+                    foreach (int flag in Borrowable)
                     {
-                        Apply(getFlags(), savedFlags);
+                        if ((changedBits & flag) == 0)
+                        {
+                            continue;
+                        }
+
+                        bool saved = (savedFlags & flag) != 0;
+                        // Still what this set (the opposite of the user's value): give the user's value back.
+                        if (((flags & flag) != 0) != saved)
+                        {
+                            setFlag(flag, saved);
+                        }
                     }
                 }
                 catch (Exception)
                 {
-                    // Leave the console as it is.
+                    // Unity changed the API: leave its console as it is.
+                }
+                finally
+                {
+                    changedBits = 0;
+                    savedFlags = 0;
+                    changedFilter = false;
+                    savedFilter = string.Empty;
+                    ClearRecovery();
                 }
             }
 
-            private static void Apply(int from, int to)
+            /// <summary>Gives back settings an earlier editor borrowed and never returned (it crashed mid-import).</summary>
+            public static void Recover()
             {
-                foreach (int flag in new[] { FlagCollapse, FlagLogLevelLog, FlagLogLevelWarning, FlagLogLevelError, FlagShowTimestamp })
+                try
                 {
-                    if ((from & flag) != (to & flag))
+                    string saved = EditorPrefs.GetString(RecoveryPref, string.Empty);
+                    if (string.IsNullOrEmpty(saved))
                     {
-                        setFlag(flag, (to & flag) != 0);
+                        return;
                     }
+
+                    var parts = saved.Split(new[] { ';' }, 4);
+                    if (Available && parts.Length == 4 && int.TryParse(parts[0], out int bits) && int.TryParse(parts[1], out int values))
+                    {
+                        changedBits = bits;
+                        savedFlags = values;
+                        changedFilter = parts[2] == "1";
+                        savedFilter = parts[3];
+                        Release();
+                    }
+
+                    ClearRecovery();
+                }
+                catch (Exception)
+                {
+                    // Nothing to give back with.
+                }
+            }
+
+            private static void SaveRecovery()
+            {
+                try
+                {
+                    EditorPrefs.SetString(RecoveryPref, changedBits + ";" + savedFlags + ";" + (changedFilter ? "1" : "0") + ";" + savedFilter);
+                }
+                catch (Exception)
+                {
+                    // Only the crash recovery is lost.
+                }
+            }
+
+            private static void ClearRecovery()
+            {
+                try
+                {
+                    if (EditorPrefs.HasKey(RecoveryPref))
+                    {
+                        EditorPrefs.DeleteKey(RecoveryPref);
+                    }
+                }
+                catch (Exception)
+                {
+                    // Only the crash recovery is affected.
                 }
             }
         }

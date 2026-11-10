@@ -86,15 +86,18 @@ namespace Orbiters.Logger.Editor
         public bool Failed { get; private set; }
         public float Progress => Total > 0 ? (float)Done / Total : 1f;
 
-        /// <summary>The first two lines of a row without its timestamp: checks the console still holds the same entries.</summary>
+        /// <summary>
+        /// The first two lines of a row without its timestamp: checks the console still holds the same entries. Empty
+        /// (no check) when Unity's console doesn't list every entry right now: changing its settings just for this would
+        /// cost it two passes over all its entries.
+        /// </summary>
         public static string Anchor(int row)
         {
-            if (row < 0 || !UnityConsole.Available)
+            if (row < 0 || !UnityConsole.RowsAreComplete)
             {
                 return string.Empty;
             }
 
-            using (new UnityConsole.ShowAllScope(timestamps: false))
             using (var reader = UnityConsole.Reader.Open())
             {
                 if (reader == null || row >= reader.Count)
@@ -121,13 +124,37 @@ namespace Orbiters.Logger.Editor
             }
 
             var clock = Stopwatch.StartNew();
-            using (var scope = new UnityConsole.ShowAllScope(timestamps: true))
+            // Held until the import ends (Finish), unless a Unity Console window may show the borrowed settings.
+            bool changed = UnityConsole.ShowAll.Take(timestamps: true);
+            try
+            {
+                if (ReadSlice(store, budgetMs, changed, clock, out bool failed))
+                {
+                    return Finish(store, failed);
+                }
+            }
+            finally
+            {
+                if (!Finished && UnityConsole.ConsoleWindowMayShow)
+                {
+                    UnityConsole.ShowAll.Release();
+                }
+            }
+
+            return false;
+        }
+
+        // True when the import is over (read to the end, or the console no longer holds its rows).
+        private bool ReadSlice(LogStore store, double budgetMs, bool changed, Stopwatch clock, out bool failed)
+        {
+            failed = false;
             using (var reader = UnityConsole.Reader.Open())
             {
                 if (reader == null || reader.Count < to)
                 {
                     // Unity's console was cleared since: those entries are gone.
-                    return Finish(store, failed: true);
+                    failed = true;
+                    return true;
                 }
 
                 if (!verified)
@@ -142,7 +169,8 @@ namespace Orbiters.Logger.Editor
                         UnityConsole.TrySplitTimestamp(reader.Lines(row, 2, out _), out _, out string current);
                         if (!string.Equals(current, text, StringComparison.Ordinal))
                         {
-                            return Finish(store, failed: true);
+                            failed = true;
+                            return true;
                         }
                     }
 
@@ -150,7 +178,7 @@ namespace Orbiters.Logger.Editor
                 }
 
                 // Changing the console's filters costs Unity a pass over its entries: take bigger slices then.
-                double budget = scope.Changed ? Math.Max(budgetMs, 40d) : budgetMs;
+                double budget = changed ? Math.Max(budgetMs, 40d) : budgetMs;
                 while (next < to)
                 {
                     ReadRow(store, reader, next);
@@ -162,7 +190,7 @@ namespace Orbiters.Logger.Editor
                 }
             }
 
-            return next >= to ? Finish(store, failed: false) : false;
+            return next >= to;
         }
 
         private void ReadRow(LogStore store, UnityConsole.Reader reader, int row)
@@ -254,6 +282,7 @@ namespace Orbiters.Logger.Editor
         {
             Finished = true;
             Failed = failed;
+            UnityConsole.ShowAll.Release();
             if (!failed && placement == Placement.Before && count > 0)
             {
                 store.Prepend(times, owners, flags, count, contexts);

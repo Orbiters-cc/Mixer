@@ -326,5 +326,43 @@ namespace Orbiters.Logger.Editor.Tests
             Assert.AreEqual(LogVariant.Warning, UnityConsole.VariantOf(512));
             Assert.AreEqual(LogVariant.CompileError, UnityConsole.VariantOf(2048 | 256));
         }
+
+        [Test]
+        public void BorrowedConsoleSettingsComeBackOnce()
+        {
+            Assume.That(UnityConsole.Available, "this Unity's console can't be read");
+            Assume.That(!UnityConsole.ShowAll.Held, "an import is borrowing the console");
+            bool collapse = UnityConsole.HasFlag(UnityConsole.FlagCollapse);
+            bool warnings = UnityConsole.HasFlag(UnityConsole.FlagLogLevelWarning);
+            bool timestamps = UnityConsole.HasFlag(UnityConsole.FlagShowTimestamp);
+            try
+            {
+                UnityConsole.SetFlag(UnityConsole.FlagCollapse, true);
+                UnityConsole.SetFlag(UnityConsole.FlagLogLevelWarning, false);
+                UnityConsole.SetFlag(UnityConsole.FlagShowTimestamp, false);
+
+                Assert.IsTrue(UnityConsole.ShowAll.Take(timestamps: true));
+                Assert.IsTrue(UnityConsole.ShowAll.Held);
+                Assert.IsTrue(UnityConsole.RowsAreComplete);
+                Assert.IsTrue(UnityConsole.HasFlag(UnityConsole.FlagShowTimestamp));
+                Assert.IsFalse(UnityConsole.ShowAll.Take(timestamps: true), "a second slice changes nothing");
+
+                // The user turns collapse back on while borrowed: that choice stays.
+                UnityConsole.SetFlag(UnityConsole.FlagCollapse, true);
+                UnityConsole.ShowAll.Release();
+                Assert.IsFalse(UnityConsole.ShowAll.Held);
+                Assert.IsTrue(UnityConsole.HasFlag(UnityConsole.FlagCollapse));
+                Assert.IsFalse(UnityConsole.HasFlag(UnityConsole.FlagLogLevelWarning));
+                Assert.IsFalse(UnityConsole.HasFlag(UnityConsole.FlagShowTimestamp));
+                Assert.AreEqual(string.Empty, ConsoleHistory.Anchor(0), "no anchor check while the console hides rows");
+            }
+            finally
+            {
+                UnityConsole.ShowAll.Release();
+                UnityConsole.SetFlag(UnityConsole.FlagCollapse, collapse);
+                UnityConsole.SetFlag(UnityConsole.FlagLogLevelWarning, warnings);
+                UnityConsole.SetFlag(UnityConsole.FlagShowTimestamp, timestamps);
+            }
+        }
     }
 }

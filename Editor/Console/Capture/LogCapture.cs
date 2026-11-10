@@ -28,7 +28,6 @@ namespace Orbiters.Logger.Editor
     internal static class LogCapture
     {
         private const int MaxQueued = 1_000_000;
-        private const int SynchronousHistoryRows = 20_000;
         private const int MaxReloadGapRows = 50_000;
         internal const string MaxLogsPref = "Orbiters.Logger.MaxLogs";
         internal const string GroupingPref = "Orbiters.Logger.Grouping";
@@ -60,6 +59,8 @@ namespace Orbiters.Logger.Editor
         private static int queued;
         private static int dropped;
         private static ConsoleHistory history;
+        // Logs Unity received while scripts reloaded: filed before any live log, so live logs wait in the queue for it.
+        private static ConsoleHistory gap;
         private static bool compileErrors;
         private static bool reloading;
         private static int lastVersion = -1;
@@ -84,6 +85,7 @@ namespace Orbiters.Logger.Editor
             AssemblyReloadEvents.beforeAssemblyReload += BeforeReload;
             EditorApplication.quitting += () =>
             {
+                UnityConsole.ShowAll.Release();
                 LogLedger.Save(Store);
                 LogSnapshot.Delete();
             };
@@ -110,6 +112,8 @@ namespace Orbiters.Logger.Editor
         private static void Start()
         {
             long now = Now;
+            // An editor that crashed mid-import left Unity's console settings borrowed.
+            UnityConsole.ShowAll.Recover();
             int unityRows = UnityConsole.Total();
             string anchor = unityRows > 0 ? ConsoleHistory.Anchor(unityRows - 1) : string.Empty;
             var restored = LogSnapshot.TryLoad(out var info);
@@ -125,14 +129,12 @@ namespace Orbiters.Logger.Editor
                         (info.HistoryTo - 1, info.HistoryAnchor));
                 }
 
-                // Logs Unity received while scripts reloaded, before the Mixer console listened again.
-                if (info.UnityRows <= unityRows && unityRows - info.UnityRows <= MaxReloadGapRows)
+                // Logs Unity received while scripts reloaded, before the Mixer console listened again. Read a slice per
+                // editor update like the history (not here: this runs while the editor waits for the reload).
+                if (info.UnityRows < unityRows && unityRows - info.UnityRows <= MaxReloadGapRows)
                 {
-                    var gap = new ConsoleHistory(info.UnityRows, unityRows, ConsoleHistory.Placement.After, now,
+                    gap = new ConsoleHistory(info.UnityRows, unityRows, ConsoleHistory.Placement.After, now,
                         (info.UnityRows - 1, info.UnityAnchor), (unityRows - 1, anchor));
-                    while (!gap.Step(Store, 50))
-                    {
-                    }
                 }
             }
             else
@@ -140,15 +142,8 @@ namespace Orbiters.Logger.Editor
                 Attach(new LogStore());
                 if (unityRows > 0)
                 {
+                    // Read a slice per editor update, never here: a project opening waits for this constructor.
                     history = new ConsoleHistory(0, unityRows, ConsoleHistory.Placement.Before, now, (unityRows - 1, anchor));
-                    if (unityRows <= SynchronousHistoryRows)
-                    {
-                        while (!history.Step(Store, 50))
-                        {
-                        }
-
-                        history = null;
-                    }
                 }
             }
 
@@ -215,9 +210,15 @@ namespace Orbiters.Logger.Editor
                     lastVersion = -1;
                 }
 
+                if (history == null && gap == null)
+                {
+                    // An import that was dropped (cleared, rebuilt) gives Unity's console settings back here.
+                    UnityConsole.ShowAll.Release();
+                }
+
                 // Console rows are only matched once every queued log is filed: a row whose log still waits in the
                 // queue would look like one the Mixer console never received.
-                if (queue.IsEmpty)
+                if (queue.IsEmpty && gap == null)
                 {
                     mirror.Tick(Store, Now, 2d, OnCompileRow);
                 }
@@ -252,7 +253,12 @@ namespace Orbiters.Logger.Editor
         /// <summary>Files queued logs for up to <paramref name="budgetMs"/> milliseconds (all of them when 0).</summary>
         internal static bool Drain(double budgetMs)
         {
-            if (queue.IsEmpty || Store == null)
+            if (Store == null || gap != null && !StepGap(budgetMs))
+            {
+                return false;
+            }
+
+            if (queue.IsEmpty)
             {
                 return false;
             }
@@ -271,6 +277,27 @@ namespace Orbiters.Logger.Editor
             }
 
             return filed > 0;
+        }
+
+        // True once the reload's gap is filed (all of it when the budget is 0).
+        private static bool StepGap(double budgetMs)
+        {
+            if (budgetMs > 0d)
+            {
+                if (!gap.Step(Store, budgetMs))
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                while (!gap.Step(Store, 50d))
+                {
+                }
+            }
+
+            gap = null;
+            return true;
         }
 
         private static void Ingest(RawLog raw)
@@ -462,6 +489,11 @@ namespace Orbiters.Logger.Editor
             {
                 // Without a snapshot the next domain reads Unity's console instead.
                 LogSnapshot.Delete();
+            }
+            finally
+            {
+                // The next domain borrows them again if the import goes on.
+                UnityConsole.ShowAll.Release();
             }
         }
 
