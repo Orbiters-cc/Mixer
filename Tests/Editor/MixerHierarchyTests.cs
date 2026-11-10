@@ -662,8 +662,10 @@ namespace Orbiters.Mixer.Editor.Tests
         [UnityTest]
         public System.Collections.IEnumerator TheKeptRowsEqualRowsBuiltFromScratchAfterRandomEdits()
         {
-            const string prefabPath = "Assets/__MixerHierarchyRandomEdits.prefab";
-            const string secondPath = "Assets/__MixerHierarchyRandomEdits.unity";
+            // Everything this test saves goes to a folder of its own, deleted afterwards.
+            const string folder = "Assets/__MixerHierarchyRandomEdits";
+            const string prefabPath = folder + "/Prefab.prefab";
+            const string secondPath = folder + "/Second.unity";
             undoable = redoable = 0;
             var model = new HierarchyModel();
             var filter = new HierarchyFilter();
@@ -674,7 +676,10 @@ namespace Orbiters.Mixer.Editor.Tests
             try
             {
                 // A prefab instance in the fixture, for apply, revert and unpack; a second scene, saved, for objects moved
-                // between scenes and for unloading and loading.
+                // between scenes and for unloading and loading. Unity makes no scene beside an untitled unsaved one (the
+                // fixture's): the fixture's scene is saved in the folder first.
+                if (!AssetDatabase.IsValidFolder(folder)) AssetDatabase.CreateFolder("Assets", "__MixerHierarchyRandomEdits");
+                Assert.That(EditorSceneManager.SaveScene(scene, folder + "/Fixture.unity"), Is.True, "the fixture's scene is saved");
                 var source = new GameObject("Prefab source");
                 new GameObject("Prefab child").transform.SetParent(source.transform, false);
                 var prefab = PrefabUtility.SaveAsPrefabAsset(source, prefabPath);
@@ -726,8 +731,8 @@ namespace Orbiters.Mixer.Editor.Tests
             {
                 Toolkit.Editor.EditorChangeBus.Changed -= listen;
                 if (second.IsValid()) EditorSceneManager.CloseScene(second, true);
-                AssetDatabase.DeleteAsset(secondPath);
-                AssetDatabase.DeleteAsset(prefabPath);
+                // The fixture's scene stays open (TearDown closes it); only its file goes.
+                AssetDatabase.DeleteAsset(folder);
             }
         }
 
