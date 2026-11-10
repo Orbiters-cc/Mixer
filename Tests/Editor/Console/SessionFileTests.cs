@@ -533,7 +533,7 @@ namespace Orbiters.Logger.Editor.Tests
             Assert.Greater(loaded.Texts.TotalChars, loaded.MaxTextChars, "copies were kept up to the ceiling");
         }
 
-        // Whatever the budget, one log fits it: its texts are cut to an eighth of the budget.
+        // Whatever the budget, one log fits it: its texts are cut to a 32nd of the budget.
         [Test]
         public void OneLogFitsTheSmallestBudget()
         {
@@ -545,7 +545,7 @@ namespace Orbiters.Logger.Editor.Tests
             Assert.IsTrue(store.Contains(id), "the newest log stays");
             Assert.LessOrEqual(store.Texts.TotalChars, store.MaxTextChars);
             StringAssert.EndsWith(" more characters left out by the Mixer console]", store.Texts[store.Message(store.MessageAt(id)).Text]);
-            Assert.LessOrEqual(store.Texts[store.Message(store.MessageAt(id)).Stack].Length, store.MaxTextChars / 8);
+            Assert.LessOrEqual(store.Texts[store.Message(store.MessageAt(id)).Stack].Length, store.TextLimit);
         }
 
         [Test]

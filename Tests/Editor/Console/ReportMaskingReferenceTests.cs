@@ -197,6 +197,57 @@ namespace Orbiters.Logger.Editor.Tests
             return text.ToString();
         }
 
+        // The import of Unity's console history, split into one-row updates, gives the same logs.txt and messages.txt
+        // bytes as round 1's import (ConsoleHistoryTests.Reference) on 30 random consoles under the limits.
+        [Test]
+        public void ImportedHistoryReportsAsRound1s()
+        {
+            for (int seed = 1; seed <= 30; seed++)
+            {
+                var rows = ConsoleHistoryTests.RandomConsole(seed);
+                var store = new LogStore(LogStore.HistoryRoom);
+                var import = new ConsoleHistory(0, rows.Count, ConsoleHistory.Placement.Before, 1000)
+                {
+                    Source = new ConsoleHistoryTests.Source(rows),
+                    EditorStart = ConsoleHistoryTests.EditorStart
+                };
+                while (!import.Step(store, 0d))
+                {
+                }
+
+                var reference = ConsoleHistoryTests.Reference(rows);
+                var expected = Files(reference);
+                var actual = Files(store);
+                // Raw bytes, not decoded text.
+                CollectionAssert.AreEqual(expected[0], actual[0], "logs.txt, seed " + seed);
+                CollectionAssert.AreEqual(expected[1], actual[1], "messages.txt, seed " + seed);
+            }
+        }
+
+        // The bytes of logs.txt and messages.txt of a store's report.
+        private static byte[][] Files(LogStore store)
+        {
+            var snapshot = LogReport.Take(store);
+            snapshot.EditorLog = null;
+            string staging = Path.Combine(Path.GetTempPath(), "LoggerReportReference-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                LogReport.Write(new ReportContext(staging, new ReportPrivacy(Home, Secret), null, new[] { ReportPart.Logs }), snapshot, null);
+                return new[]
+                {
+                    File.ReadAllBytes(Path.Combine(staging, "logs", "logs.txt")),
+                    File.ReadAllBytes(Path.Combine(staging, "logs", "messages.txt"))
+                };
+            }
+            finally
+            {
+                if (Directory.Exists(staging))
+                {
+                    Directory.Delete(staging, true);
+                }
+            }
+        }
+
         private static void Compare(int seed, List<string> entries, Random random)
         {
             var store = new LogStore();

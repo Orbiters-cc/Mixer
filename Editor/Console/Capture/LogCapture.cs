@@ -146,8 +146,8 @@ namespace Orbiters.Logger.Editor
                 Store.AddEvent(now, SessionEventKind.DomainReload);
                 if (info.HistoryTo > info.HistoryFrom && info.HistoryFrom >= 0)
                 {
-                    history = new ConsoleHistory(info.HistoryFrom, info.HistoryTo, ConsoleHistory.Placement.Before, now,
-                        (info.HistoryTo - 1, info.HistoryAnchor));
+                    // The range left, read again from its first row with the time state the import started from.
+                    history = ConsoleHistory.Resume(info);
                 }
 
                 // Logs Unity received while scripts reloaded, before the Mixer console listened again. Read a slice per
@@ -550,9 +550,7 @@ namespace Orbiters.Logger.Editor
                 };
                 if (history != null && history.Prepends && !history.Finished)
                 {
-                    info.HistoryFrom = history.From;
-                    info.HistoryTo = history.To;
-                    info.HistoryAnchor = history.EndAnchor;
+                    history.SaveTo(info, history.EndAnchor);
                 }
 
                 LogSnapshot.Save(Store, info);
