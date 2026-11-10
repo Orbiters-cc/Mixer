@@ -280,6 +280,16 @@ namespace Orbiters.Mixer.Editor
             }
             if ((go.hideFlags & HideFlags.HideInHierarchy) != 0) return;
             if (node.FactsStale) RefreshFacts(node);
+            // A row shown (no search: the rows are what is on the list) reads again what a script can change without any
+            // change event: its name, whether it is active, and its children. Searching uses the kept facts (a keystroke
+            // reads nothing from the scene).
+            if (!filter.Any)
+            {
+                string name = go.name;
+                if (name != node.Name) { node.Name = name; revision++; }
+                node.ActiveStale = true;
+                if (!node.ChildrenStale && node.Children != null && ChildrenDiffer(node)) MarkCachedUp(node, Mark.Meshes | Mark.Tools | Mark.Picture);
+            }
             if (node.ActiveStale) { node.Active = go.activeInHierarchy; node.ActiveStale = false; }
             if (node.VisibilityStale)
             {
@@ -320,6 +330,25 @@ namespace Orbiters.Mixer.Editor
             node.ActiveStale = true;
             node.VisibilityStale = true;
             revision++;
+        }
+
+        // Whether the object's shown children are no longer the ones listed (made, removed or moved by a script without
+        // Undo): its list is made stale.
+        private static bool ChildrenDiffer(HierarchyRow node)
+        {
+            var t = node.Object.transform;
+            var listed = node.Children;
+            int shown = 0;
+            for (int i = 0; i < t.childCount; i++)
+            {
+                var child = t.GetChild(i).gameObject;
+                if ((child.hideFlags & HideFlags.HideInHierarchy) != 0) continue;
+                if (shown >= listed.Count || listed[shown].InstanceId != child.GetInstanceID()) { node.ChildrenStale = true; return true; }
+                shown++;
+            }
+            if (shown == listed.Count) return false;
+            node.ChildrenStale = true;
+            return true;
         }
 
         private void EnsureChildren(HierarchyRow node)
