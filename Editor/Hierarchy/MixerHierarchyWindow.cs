@@ -47,6 +47,8 @@ namespace Orbiters.Mixer.Editor
         // Not kept across a script reload (Unity keeps a window's private fields): the rows must be built again first.
         // dirty: list the rows again; rebind: only bind the rows shown again.
         [NonSerialized] private bool dirty = true, rebind, visible = true, built;
+        // The rows wait for a listing caused by an editor change (re-validating), not only by input.
+        [NonSerialized] private bool changed = true;
         private int anchorId;
         // The row the keys step from: the one last clicked or stepped to (a range keeps the anchor as Unity's active object).
         private int cursorId;
@@ -141,9 +143,12 @@ namespace Orbiters.Mixer.Editor
             ReleasePictures();
         }
 
-        private void OnBecameVisible() { visible = true; MarkDirty(); }
+        private void OnBecameVisible() { visible = true; MarkChanged(); }
         private void OnBecameInvisible() => visible = false;
+        // Input in the window (a keystroke): list again from the kept facts.
         private void MarkDirty() => dirty = true;
+        // The editor changed something: the next listing re-validates (HierarchyModel.RefreshAfterChange).
+        private void MarkChanged() => dirty = changed = true;
         private void MarkRebind() => rebind = true;
 
         // What the editor changed this frame: the model makes stale what it touched (also while the window is hidden, so
@@ -151,7 +156,7 @@ namespace Orbiters.Mixer.Editor
         private void OnEditorChanges(EditorChanges changes)
         {
             var update = model.Apply(changes);
-            if (update == HierarchyUpdate.Rows) dirty = true;
+            if (update == HierarchyUpdate.Rows) MarkChanged();
             else if (update == HierarchyUpdate.Rebind) rebind = true;
         }
 
@@ -162,12 +167,12 @@ namespace Orbiters.Mixer.Editor
         private void OnSceneClosed(Scene _) => ResetRows();
         private void OnPrefabStage(PrefabStage _) => ResetRows();
         private void OnPlayModeChanged(PlayModeStateChange _) => ResetRows();
-        private void ResetRows() { model.Reset(); MarkDirty(); }
-        private void OnVisibilityChanged() { model.VisibilityChanged(); MarkDirty(); }
-        private void OnToolsChanged() { model.ToolsChanged(); MarkDirty(); }
+        private void ResetRows() { model.Reset(); MarkChanged(); }
+        private void OnVisibilityChanged() { model.VisibilityChanged(); MarkChanged(); }
+        private void OnToolsChanged() { model.ToolsChanged(); MarkChanged(); }
         // A custom base applied or reset: its name and update on the avatar's row.
-        private void OnCustomBaseChanged(Transform _) { customBases.Clear(); model.ToolsChanged(); MarkDirty(); }
-        private void OnLinkChanged() { model.LinkChanged(); MarkDirty(); }
+        private void OnCustomBaseChanged(Transform _) { customBases.Clear(); model.ToolsChanged(); MarkChanged(); }
+        private void OnLinkChanged() { model.LinkChanged(); MarkChanged(); }
 
         // Sessions began or ended: their renderers show a working copy (or the original again), which no change event
         // tells. Strokes and other edits of a session change nothing the rows show.
@@ -177,7 +182,7 @@ namespace Orbiters.Mixer.Editor
             if (target != null) { if (target.Renderer != null) model.MeshSwapped(target.Renderer.transform); }
             // The list of sessions changed as a whole: a session that ended no longer names its renderer.
             else model.MarkAllStale();
-            MarkDirty();
+            MarkChanged();
         }
 
         // An edit made here, shown at the next tick: the rows shown are read again then, whether or not its change events
@@ -185,12 +190,13 @@ namespace Orbiters.Mixer.Editor
         private void MarkEdited()
         {
             model.ResyncShown();
-            MarkDirty();
+            MarkChanged();
         }
 
         // An edit made here: its change events come a frame later, so the rows shown are read again now.
         private void RebuildAfterEdit()
         {
+            changed = true;
             model.ResyncShown();
             RebuildNow();
         }
@@ -360,7 +366,7 @@ namespace Orbiters.Mixer.Editor
             ReleaseUnusedPictures();
             TickHooks();
             if (!visible) return;
-            if (!dirty && model.NeedsRefresh) dirty = true;
+            if (!dirty && model.NeedsRefresh) MarkChanged();
             if (!dirty)
             {
                 // Only what the rows show changed (a light turned, a rank came, a scene saved).
@@ -385,7 +391,8 @@ namespace Orbiters.Mixer.Editor
         // the binds the item count's layout makes and the refresh's are one pass (BindRow skips the second).
         private void Rebuild()
         {
-            model.Refresh(filter);
+            if (changed) model.RefreshAfterChange(filter); else model.Refresh(filter);
+            changed = false;
             if (verify) Verify();
             bindGeneration++;
             rebind = false;

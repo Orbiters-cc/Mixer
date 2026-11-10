@@ -698,7 +698,13 @@ namespace Orbiters.Mixer.Editor.Tests
                     // Unity publishes its change events with the next editor frame.
                     yield return null;
                     Toolkit.Editor.EditorChangeBus.Flush();
-                    // Branches fold and open again at random: rows kept under a folded branch must be right when it opens.
+                    // The window's refresh after an editor change (the edit's events, or the hierarchyChanged that follows a
+                    // script's edit in the editor) re-validates: equal to rows from scratch.
+                    model.RefreshAfterChange(filter);
+                    var afterChange = model.Verify(filter);
+                    Assert.That(afterChange, Is.Empty, "after step " + step + " (" + what + "), the change's refresh: " + string.Join("; ", afterChange));
+                    // Then input only: branches fold and open again at random and the search changes; rows kept under a folded
+                    // branch must be right when it opens, with nothing read again for rows already checked.
                     var objects = root.GetComponentsInChildren<Transform>(true).Concat(second.GetRootGameObjects().SelectMany(g => g.GetComponentsInChildren<Transform>(true))).ToList();
                     for (int fold = random.Next(4); fold > 0 && objects.Count > 0; fold--)
                     {
@@ -709,7 +715,7 @@ namespace Orbiters.Mixer.Editor.Tests
                     filter.Pattern = step % 5 == 4 ? new Toolkit.Editor.SearchPattern(step % 10 == 4 ? "Made" : "Made 1", false, false) : Toolkit.Editor.SearchPattern.Empty;
                     model.Refresh(filter);
                     var differences = model.Verify(filter);
-                    Assert.That(differences, Is.Empty, "after step " + step + " (" + what + "): " + string.Join("; ", differences));
+                    Assert.That(differences, Is.Empty, "after step " + step + " (" + what + "), folds and search: " + string.Join("; ", differences));
                 }
                 // Unloading and loading the second scene (the window forgets every object on scene events: Reset).
                 filter.Pattern = Toolkit.Editor.SearchPattern.Empty;
@@ -718,13 +724,13 @@ namespace Orbiters.Mixer.Editor.Tests
                 yield return null;
                 Toolkit.Editor.EditorChangeBus.Flush();
                 model.Reset();
-                model.Refresh(filter);
+                model.RefreshAfterChange(filter);
                 Assert.That(model.Verify(filter), Is.Empty, "after unloading a scene");
                 second = EditorSceneManager.OpenScene(secondPath, OpenSceneMode.Additive);
                 yield return null;
                 Toolkit.Editor.EditorChangeBus.Flush();
                 model.Reset();
-                model.Refresh(filter);
+                model.RefreshAfterChange(filter);
                 Assert.That(model.Verify(filter), Is.Empty, "after loading it again");
             }
             finally
@@ -761,7 +767,8 @@ namespace Orbiters.Mixer.Editor.Tests
                 deeper.transform.SetParent(cube.transform, false);
                 yield return null;
                 Toolkit.Editor.EditorChangeBus.Flush();
-                model.Refresh(filter);
+                // The refresh the change causes comes while the branch is folded; opening it is input.
+                model.RefreshAfterChange(filter);
                 model.SetExpanded(child.gameObject.GetInstanceID(), true);
                 model.SetExpanded(cube.GetInstanceID(), true);
                 model.Refresh(filter);
@@ -770,6 +777,59 @@ namespace Orbiters.Mixer.Editor.Tests
                 Assert.That(model.Verify(filter), Is.Empty);
             }
             finally { Toolkit.Editor.EditorChangeBus.Changed -= listen; }
+        }
+
+        // Unity results: while searching, an object renamed by a script (no Undo, no change event) and a root made by a script
+        // are found at the next refresh, the roots in Unity's order.
+        [Test]
+        public void ASearchFindsScriptEditsThatRaisedNoEvent()
+        {
+            var model = new HierarchyModel();
+            var filter = new HierarchyFilter { Pattern = new Toolkit.Editor.SearchPattern("MixerNoEvent", false, false) };
+            model.SetExpanded(root.GetInstanceID(), true);
+            model.Rebuild(filter);
+            var cube = root.transform.GetChild(2).GetChild(0).gameObject;
+            cube.name = "MixerNoEvent renamed";
+            var made = new GameObject("MixerNoEvent root");
+            SceneManager.MoveGameObjectToScene(made, scene);
+            made.transform.SetSiblingIndex(0);
+            model.RefreshAfterChange(filter);
+            var matches = model.Rows.Where(r => r.Object != null && r.Match).Select(r => r.Object).ToList();
+            Assert.That(matches, Has.Member(cube).And.Member(made));
+            Assert.That(model.Verify(filter), Is.Empty);
+        }
+
+        // Review: a narrowed search after an object was made inactive by a script (no event applied): the change's refresh
+        // reads the activity again and does not reuse the old candidates.
+        [Test]
+        public void ANarrowedSearchSeesAnObjectMadeInactiveByScript()
+        {
+            var model = new HierarchyModel();
+            var filter = new HierarchyFilter { Inactive = true, Pattern = new Toolkit.Editor.SearchPattern("Cube", false, false) };
+            model.SetExpanded(root.GetInstanceID(), true);
+            model.Rebuild(filter);
+            var cube = root.transform.GetChild(1).GetChild(0).gameObject;
+            Assert.That(model.Rows.Any(r => r.Object == cube && r.Match), Is.False, "active: not kept by Inactive");
+            cube.SetActive(false);
+            filter.Pattern = new Toolkit.Editor.SearchPattern("Cube 1", false, false);
+            model.RefreshAfterChange(filter);
+            Assert.That(model.Rows.Any(r => r.Object == cube && r.Match), Is.True, "made inactive: found by the narrowed search");
+            Assert.That(model.Verify(filter), Is.Empty);
+        }
+
+        // Review: a component added by a script without Undo is found by c: at the change's refresh.
+        [Test]
+        public void ATypeSearchSeesAComponentAddedByScript()
+        {
+            var model = new HierarchyModel();
+            var filter = new HierarchyFilter { Pattern = new Toolkit.Editor.SearchPattern("c:Camera", false, false) };
+            model.Rebuild(filter);
+            var cube = root.transform.GetChild(0).GetChild(0).gameObject;
+            cube.AddComponent<Camera>();
+            model.Refresh(filter);
+            model.RefreshAfterChange(filter);
+            Assert.That(model.Rows.Any(r => r.Object == cube && r.Match), Is.True);
+            Assert.That(model.Verify(filter), Is.Empty);
         }
 
         // Review of the pictures: scrolling binds rows and makes pictures between rebuilds; the window's tick frees the
