@@ -24,6 +24,12 @@ namespace Orbiters.UnitGit.Editor
             public string AuthorEmail = string.Empty;
             public string AuthorDate = string.Empty;
             public string Message = string.Empty;
+            // The message's bytes as stored, for a commit that is only re-parented; null when the commit names another
+            // encoding (its message is then re-encoded to UTF-8 as read).
+            public byte[] RawMessage;
+            // The first header a rebuild would lose (a signature, a merged tag, anything but tree, parent, author,
+            // committer and encoding); null when there is none.
+            public string LostHeader;
         }
 
         internal GitCommandResult RenameCommit(string commitHash, string message, UnitGitHeadState expected)
@@ -154,6 +160,37 @@ namespace Orbiters.UnitGit.Editor
                 }
             }
 
+            // Before anything is written: every commit this rewrite replaces (the selected ones, and every one above a
+            // replaced parent) must be one a rebuild reproduces whole. A signature or a merged tag cannot be: it would be
+            // dropped from each, silently.
+            var replaced = new List<string>();
+            var replacedSet = new HashSet<string>(StringComparer.Ordinal);
+            for (int i = startIndex; i < history.Count; i++)
+            {
+                string hash = history[i];
+                if (selected.Contains(hash) || infos[hash].Parents.Any(replacedSet.Contains))
+                {
+                    replaced.Add(hash);
+                    replacedSet.Add(hash);
+                }
+            }
+
+            GitCommandResult raw = ReadRawCommits(replaced, infos);
+            if (!raw.Success)
+            {
+                return raw;
+            }
+
+            string carrying = replaced.FirstOrDefault(hash => infos[hash].LostHeader != null);
+            if (carrying != null)
+            {
+                string header = infos[carrying].LostHeader;
+                string what = header.StartsWith("gpgsig", StringComparison.Ordinal) ? "a signature"
+                    : header == "mergetag" ? "a merged tag" : "a \"" + header + "\" header";
+                return Failure("Commit " + ShortHash(carrying) + " carries " + what + ", which its rewritten copy could not keep: " + (squash ? "squashing" : "renaming") +
+                               " would drop it. Mixer Git left the history as it is.");
+            }
+
             // All new commits through one git fast-import (a constant number of processes), else one commit-tree each.
             var stream = new CommitStream();
             GitCommandResult streamable = CanStreamRewrite(infos.Values, stream);
@@ -186,18 +223,19 @@ namespace Orbiters.UnitGit.Editor
                 string treeHash = squash && i == startIndex
                     ? infos[history[endIndex]].TreeHash
                     : source.TreeHash;
-                string commitMessage = squash && i == startIndex
-                    ? message
-                    : (!squash && selected.Contains(originalHash) ? message : source.Message);
+                bool edited = squash ? i == startIndex : selected.Contains(originalHash);
+                string commitMessage = edited ? message : source.Message;
+                // A commit that is only re-parented keeps its message byte for byte.
+                byte[] rawMessage = edited ? null : source.RawMessage;
 
                 string newHash;
                 if (stream.Enabled)
                 {
-                    newHash = stream.Add(source, treeHash, parents, commitMessage);
+                    newHash = stream.Add(source, treeHash, parents, commitMessage, rawMessage);
                 }
                 else
                 {
-                    GitCommandResult createResult = CreateCommitFromTree(source, treeHash, parents, commitMessage);
+                    GitCommandResult createResult = CreateCommitFromTree(source, treeHash, parents, commitMessage, rawMessage);
                     if (!createResult.Success)
                     {
                         return createResult;
@@ -342,7 +380,8 @@ namespace Orbiters.UnitGit.Editor
         }
 
         // One "git commit-tree" per rewritten commit (each needs its parent's new id); the message goes through stdin.
-        private GitCommandResult CreateCommitFromTree(CommitRewriteInfo source, string treeHash, IList<string> parents, string message)
+        private GitCommandResult CreateCommitFromTree(CommitRewriteInfo source, string treeHash, IList<string> parents, string message,
+            byte[] rawMessage)
         {
             var args = new List<string> { "commit-tree", treeHash };
             foreach (string parent in parents)
@@ -358,7 +397,100 @@ namespace Orbiters.UnitGit.Editor
                 { "GIT_AUTHOR_DATE", source.AuthorDate }
             };
             // commit-tree reads the message from stdin when no -m or -F is given; with stdin unusable, from a file.
-            return RunCommitWithMessageFile(args, message, environment);
+            if (rawMessage == null)
+            {
+                return RunCommitWithMessageFile(args, message, environment);
+            }
+
+            // The stored message as it is: commit-tree keeps what it is given.
+            if (UnitGitRunner.CleanInput)
+            {
+                args.Add("-F");
+                args.Add("-");
+                return RunGitWithInput(environment, LongTimeoutMilliseconds, rawMessage, args.ToArray());
+            }
+
+            string file = Path.Combine(Path.GetTempPath(), "mixer-git-message-" + Guid.NewGuid().ToString("N") + ".txt");
+            try
+            {
+                File.WriteAllBytes(file, rawMessage);
+                args.Add("-F");
+                args.Add(file);
+                return RunGitWithEnvironment(environment, LongTimeoutMilliseconds, args.ToArray());
+            }
+            finally
+            {
+                DeleteTempFile(file);
+            }
+        }
+
+        private static readonly HashSet<string> RebuiltHeaders = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "tree", "parent", "author", "committer", "encoding"
+        };
+
+        // Each commit's stored bytes, through the kept-alive cat-file (else a cat-file of its own): its headers, and its
+        // message as stored.
+        private GitCommandResult ReadRawCommits(IList<string> hashes, IDictionary<string, CommitRewriteInfo> infos)
+        {
+            UnitGitObjects objects = UnitGitObjects.For(ProjectRoot);
+            var bytes = new MemoryStream();
+            foreach (string hash in hashes)
+            {
+                bytes.SetLength(0);
+                if (objects.Read(hash, bytes, out string type, out _) != UnitGitObjects.Answer.Found || type != "commit")
+                {
+                    bytes.SetLength(0);
+                    GitCommandResult read = ReadGitStream(DefaultTimeoutMilliseconds, (chunk, offset, count) =>
+                    {
+                        bytes.Write(chunk, offset, count);
+                        return true;
+                    }, "cat-file", "commit", hash);
+                    if (!read.Success)
+                    {
+                        return read.StandardError.Length > 0 ? read : Failure("Could not read commit " + ShortHash(hash) + ".");
+                    }
+                }
+
+                ParseRawCommit(bytes.ToArray(), infos[hash]);
+            }
+
+            return new GitCommandResult();
+        }
+
+        // Headers end at the first empty line; a line starting with a space continues the header above (a signature).
+        internal static void ParseRawCommitForTests(byte[] commit, out string lostHeader, out byte[] rawMessage)
+        {
+            var info = new CommitRewriteInfo();
+            ParseRawCommit(commit, info);
+            lostHeader = info.LostHeader;
+            rawMessage = info.RawMessage;
+        }
+
+        private static void ParseRawCommit(byte[] commit, CommitRewriteInfo info)
+        {
+            int end = 0;
+            while (end < commit.Length && !(commit[end] == (byte)'\n' && (end + 1 >= commit.Length || commit[end + 1] == (byte)'\n'))) end++;
+            int headerLength = Math.Min(end, commit.Length);
+            bool encoded = false;
+            info.LostHeader = null;
+            int line = 0;
+            while (line < headerLength)
+            {
+                int next = Array.IndexOf(commit, (byte)'\n', line, headerLength - line);
+                if (next < 0) next = headerLength;
+                if (commit[line] != (byte)' ')
+                {
+                    int space = Array.IndexOf(commit, (byte)' ', line, next - line);
+                    string key = Encoding.ASCII.GetString(commit, line, (space < 0 ? next : space) - line);
+                    if (key == "encoding") encoded = true;
+                    if (!RebuiltHeaders.Contains(key) && info.LostHeader == null) info.LostHeader = key;
+                }
+                line = next + 1;
+            }
+
+            int messageStart = Math.Min(commit.Length, end + 2);
+            info.RawMessage = encoded ? null : commit.Skip(messageStart).ToArray();
         }
 
         /// <summary>
@@ -384,7 +516,7 @@ namespace Orbiters.UnitGit.Editor
                 }
             }
 
-            internal string Add(CommitRewriteInfo source, string treeHash, IList<string> parents, string message)
+            internal string Add(CommitRewriteInfo source, string treeHash, IList<string> parents, string message, byte[] rawMessage)
             {
                 string mark = ":" + (++marks).ToString(CultureInfo.InvariantCulture);
                 // A commit with no parent on a ref that already has one in this stream would continue from it: reset first.
@@ -394,7 +526,7 @@ namespace Orbiters.UnitGit.Editor
                      source.AuthorDate + "\n");
                 Text("committer " + Committer + "\n");
                 // Exactly the bytes commit-tree is given on stdin.
-                byte[] body = UnitGitRunner.Utf8.GetBytes(NormalizeCommitMessage(message) + "\n");
+                byte[] body = rawMessage ?? UnitGitRunner.Utf8.GetBytes(NormalizeCommitMessage(message) + "\n");
                 Text("data " + body.Length.ToString(CultureInfo.InvariantCulture) + "\n");
                 Bytes.Write(body, 0, body.Length);
                 Text("\n");
@@ -450,8 +582,18 @@ namespace Orbiters.UnitGit.Editor
             return new GitCommandResult();
         }
 
-        private static bool FitsIdent(string value) =>
-            value != null && value.IndexOf('<') < 0 && value.IndexOf('>') < 0 && value.IndexOf('\n') < 0 && value.IndexOf('\0') < 0;
+        // What fast-import keeps as it is and commit-tree would write the same: nothing Git's ident sanitising changes (it
+        // drops "crud", control characters, spaces and . , : ; < > " \ ', from both ends of a name and an e-mail, and an
+        // empty name fails). Anything else goes through commit-tree, whose result is then Git's own.
+        private static bool FitsIdent(string value)
+        {
+            if (string.IsNullOrEmpty(value) || value.IndexOf('<') >= 0 || value.IndexOf('>') >= 0 || value.IndexOf('\n') >= 0 || value.IndexOf('\0') >= 0)
+                return false;
+            return !IsCrud(value[0]) && !IsCrud(value[value.Length - 1]);
+        }
+
+        private static bool IsCrud(char c) =>
+            c <= ' ' || c == '.' || c == ',' || c == ':' || c == ';' || c == '<' || c == '>' || c == '"' || c == '\\' || c == '\'';
 
         // Runs the stream into a scratch ref this call named, and reads the id of its last commit (the new HEAD).
         private GitCommandResult WriteCommitStream(CommitStream stream, out string streamRef, out string newHead)
