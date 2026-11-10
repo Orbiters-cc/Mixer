@@ -380,6 +380,100 @@ namespace Orbiters.Logger.Editor.Tests
             }
         }
 
+        // The landing is bounded on the editor's thread: many late logs, large late texts or many patches send it back to
+        // a worker; it still lands, through StepMaintenance only, and reads as a store that never compacted.
+        [Test]
+        public void TheLandingStaysWithinItsBoundsAndStillLands([Values(0, 1, 2)] int load)
+        {
+            var reference = new LogStore(LogStore.HistoryRoom) { AllowCompaction = false };
+            var store = new LogStore(LogStore.HistoryRoom) { CompactInBackground = true };
+            Fill(reference);
+            Fill(store);
+            reference.Trim(1000);
+            store.Trim(1000);
+            Assert.IsTrue(store.Compacting);
+            store.WaitForCompactionWorker();
+
+            void Late(LogStore target)
+            {
+                switch (load)
+                {
+                    case 0:
+                        // More late occurrences than the landing counts.
+                        for (int i = 0; i < 3 * LogStore.LandingLimit; i++)
+                        {
+                            target.Add(200_000 + i, "Late " + i, Stack, LogVariant.Log);
+                        }
+
+                        break;
+                    case 1:
+                        // Few, but more characters than the landing copies.
+                        string large = new string('x', LogStore.LandingChars / 8);
+                        for (int i = 0; i < 20; i++)
+                        {
+                            target.Add(200_000 + i, "Late large " + i + " " + large, Stack, LogVariant.Log);
+                        }
+
+                        break;
+                    default:
+                        // More patches than the landing applies (each message patched twice).
+                        int assembly = target.AssemblyId("Assembly-CSharp");
+                        for (int round = 0; round < 2; round++)
+                        {
+                            for (int id = target.FirstId; id < target.FirstId + 3 * LogStore.LandingPatches; id++)
+                            {
+                                target.SetAssembly(target.MessageAt(id), assembly);
+                            }
+                        }
+
+                        break;
+                }
+            }
+
+            Late(reference);
+            Late(store);
+            store.StepMaintenance();
+            Assert.IsTrue(store.Compacting, "too much for one landing: a worker catches up first");
+            for (int update = 0; update < 1000 && store.Compacting; update++)
+            {
+                store.WaitForCompactionWorker();
+                store.StepMaintenance();
+            }
+
+            Assert.IsFalse(store.Compacting, "it lands");
+            Assert.Less(store.MessageCount, reference.MessageCount);
+            AssertSameLogs(reference, store);
+        }
+
+        // The budget never depends on a compaction in the background: a flood of distinct logs whose compactions keep being
+        // cancelled (count trims) or overtaken holds at most TextCeiling characters at any time.
+        [Test]
+        public void TheTextsNeverPassTheCeilingWhileCompactionsAreCancelled()
+        {
+            var store = new LogStore(LogStore.HistoryRoom) { CompactInBackground = true, MaxOccurrences = 10_000, MaxTextChars = 1 << 20 };
+            string padding = new string('p', 90);
+            int n = 0;
+            for (; n < 200_000; n++)
+            {
+                store.Add(n, "Distinct " + n + " " + padding, Stack, LogVariant.Log);
+                Assert.LessOrEqual(store.Texts.TotalChars, store.TextCeiling, "after log " + n);
+                if (n % 3000 == 0)
+                {
+                    store.StepMaintenance();
+                }
+            }
+
+            Assert.Greater(store.CompactionsCancelled, 0, "compactions were cancelled under count pressure");
+            Assert.Greater(store.CeilingCompactions, 0, "the ceiling compacted synchronously");
+            store.FinishMaintenance();
+            for (int id = store.FirstId; id < store.EndId; id++)
+            {
+                Assert.AreEqual("Distinct " + (id - LogStore.HistoryRoom) + " " + padding, store.Texts[store.Message(store.MessageAt(id)).Text]);
+            }
+
+            AssertCountersMatchARecount(store, firstExact: false);
+        }
+
         [Test]
         public void ATrimOrAPinCancelsACompactionBeingPrepared()
         {

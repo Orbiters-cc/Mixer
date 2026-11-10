@@ -1,14 +1,36 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
 
 namespace Orbiters.Logger.Editor
 {
     internal sealed partial class LogStore
     {
-        // Occurrences the editor's thread counts itself when a compaction lands; more than that and a worker catches up
-        // first. Bounds what landing costs, whatever the store's size.
+        // What landing a compaction may do on the editor's thread, at most: count this many late occurrences, copy this
+        // many characters of their texts, apply this many late patches, and spend this long. More than any of these and a
+        // worker catches up first (the landing is tried again at the next update).
         internal const int LandingLimit = 4096;
+        internal const int LandingChars = 256 * 1024;
+        internal const int LandingPatches = 256;
+        internal const double LandingMilliseconds = 3d;
+
+        /// <summary>
+        /// The most characters of text the store ever holds outside an import: the budget plus a quarter. A compaction in
+        /// the background is an optimisation the budget never depends on: past this, the oldest logs go and what they
+        /// leave dead is compacted at once, on the editor's thread (the synchronous path), whatever runs in the background.
+        /// Compactions share the store's strings (<see cref="TextTable.InternCopy"/>) and a cancelled one lets go of its
+        /// tables at its next occurrence, so the store's own table is what holds the characters.
+        /// </summary>
+        internal long TextCeiling => maxTextChars + maxTextChars / 4;
+
+        /// <summary>Tests: compactions cancelled before they landed, and times the ceiling compacted synchronously.</summary>
+        internal int CompactionsCancelled { get; private set; }
+        internal int CeilingCompactions { get; private set; }
+
+        // While the ceiling's synchronous path runs: compactions land in the call that starts them.
+        private bool compactNow;
 
         /// <summary>
         /// Messages none of whose logs are left (trimmed), and the texts only they used, go once they are many (or the
@@ -33,20 +55,42 @@ namespace Orbiters.Logger.Editor
             }
 
             compaction = new StoreCompaction(this);
-            if (CompactInBackground)
+            if (CompactInBackground && !compactNow)
             {
                 compaction.Start();
                 return;
             }
 
             compaction.CatchUp();
-            TryLand(int.MaxValue);
+            TryLand(bounded: false);
+        }
+
+        // The ceiling: cancels what runs in the background and keeps the budget the way a store without workers does,
+        // now (trims and synchronous compactions).
+        private void EnforceCeiling()
+        {
+            if (Texts.TotalChars <= TextCeiling || pins > 0 || Texts.Faulted || compactNow)
+            {
+                return;
+            }
+
+            CancelCompaction();
+            CeilingCompactions++;
+            compactNow = true;
+            try
+            {
+                KeepTextBudget();
+            }
+            finally
+            {
+                compactNow = false;
+            }
         }
 
         /// <summary>
         /// Main thread, each editor update: lands a compaction prepared in the background once what arrived meanwhile is
-        /// little (at most <see cref="LandingLimit"/> occurrences to count here), else lets the worker catch up again.
-        /// A field read when there is none.
+        /// little (see <see cref="LandingLimit"/> and the other bounds), else lets the worker catch up again. A field read
+        /// when there is none.
         /// </summary>
         public void StepMaintenance()
         {
@@ -63,22 +107,19 @@ namespace Orbiters.Logger.Editor
                 return;
             }
 
-            TryLand(LandingLimit);
+            TryLand(bounded: true);
         }
 
-        /// <summary>Waits for a compaction in the background and lands it (tests).</summary>
+        /// <summary>
+        /// Tests: waits for the worker and lands through <see cref="StepMaintenance"/>, the production path with its
+        /// bounds, as many updates as it takes.
+        /// </summary>
         internal void FinishMaintenance()
         {
             while (compaction != null)
             {
                 compaction.Wait();
-                if (compaction.Failed)
-                {
-                    compaction = null;
-                    return;
-                }
-
-                TryLand(int.MaxValue);
+                StepMaintenance();
             }
         }
 
@@ -94,22 +135,30 @@ namespace Orbiters.Logger.Editor
             {
                 compaction.Cancel();
                 compaction = null;
+                CompactionsCancelled++;
             }
         }
 
-        // Swaps the prepared tables in when little is left to count, in one step: between updates the store is the old
-        // one, whole, and the worker's tables are its own.
-        private void TryLand(int limit)
+        // Swaps the prepared tables in, in one step, once what is left fits the landing's bounds (all of it, unbounded,
+        // on the synchronous path): between updates the store is the old one, whole, and the worker's tables are its own.
+        private void TryLand(bool bounded)
         {
             var prepared = compaction;
-            if (end - prepared.Done > limit)
+            if (bounded && (end - prepared.Done > LandingLimit || prepared.LatePatches > LandingPatches))
             {
                 prepared.Start();
                 return;
             }
 
-            prepared.CountTo(end);
-            prepared.ApplyPatches(messages);
+            long deadline = bounded ? Stopwatch.GetTimestamp() + (long)(LandingMilliseconds * Stopwatch.Frequency / 1000d) : long.MaxValue;
+            if (!prepared.CountTo(end, deadline, bounded ? LandingChars : long.MaxValue))
+            {
+                // Out of time or characters (large texts, a slow read from the session file): a worker goes on.
+                prepared.Start();
+                return;
+            }
+
+            prepared.ApplyPatches();
             if (Texts.Faulted || prepared.Failed || !ReferenceEquals(Texts, prepared.OldTexts))
             {
                 // A text read back from the session file for the copy was damaged: the copy holds its placeholder.
@@ -118,22 +167,9 @@ namespace Orbiters.Logger.Editor
                 return;
             }
 
-            var remapped = new Dictionary<int, TimingProfile>(profiles.Count);
-            foreach (var pair in profiles)
-            {
-                int moved = prepared.NewId(pair.Key);
-                if (moved >= 0)
-                {
-                    remapped[moved] = pair.Value;
-                }
-            }
-
-            profiles.Clear();
-            foreach (var pair in remapped)
-            {
-                profiles[pair.Key] = pair.Value;
-            }
-
+            // Profiles of the timings known when it started, remapped by the worker; one filed since is parsed again from
+            // its text the first time it is asked for (TimingOf).
+            profiles = prepared.Profiles();
             Texts = prepared.Texts;
             messages = prepared.Messages;
             messageCount = prepared.MessageCount;
@@ -159,18 +195,22 @@ namespace Orbiters.Logger.Editor
         /// <summary>
         /// New message, group and text tables for the occurrences in the store, built from the occurrences themselves (a
         /// message is kept when it has one, in the order of its oldest) and the fields of a message that never change
-        /// once it is filed. What changes later (a file Unity's console gave, an assembly, compile flags) is noted as a
-        /// patch and copied when the tables land. Occurrences are counted on a worker up to what was filed when it
-        /// looked, then the rest on the editor's thread at landing. Anything that moves occurrences or drops messages
-        /// (trim, clear, regroup, history, a pin, renumbering) cancels it.
+        /// once it is filed. What changes later (a file Unity's console gave, an assembly, compile flags) is queued as a
+        /// patch; the worker applies them, the landing only the few that came since. Occurrences are counted on a worker
+        /// up to what was filed when it looked, then the rest on the editor's thread at landing, within its bounds.
+        /// Anything that moves occurrences or drops messages (trim, clear, regroup, history, a pin, renumbering) cancels
+        /// it; a cancelled worker stops at its next occurrence.
         /// </summary>
         private sealed class StoreCompaction
         {
             private readonly LogStore store;
             private readonly GroupingMode grouping;
             private readonly int chunkBase;
-            private readonly int first;
-            private readonly List<int> patches = new List<int>();
+            // Messages changed since it started (any order, repeats possible): drained, deduplicated, then applied.
+            private readonly ConcurrentQueue<int> patches = new ConcurrentQueue<int>();
+            private readonly HashSet<int> patchBatch = new HashSet<int>();
+            // The timings' profiles when it started, and remapped once counted (the worker's own).
+            private readonly List<KeyValuePair<int, TimingProfile>> startProfiles;
             // Old message id + 1 -> new message id + 1 (0: not seen yet).
             private int[] map = new int[1024];
             private int[][] owners;
@@ -178,6 +218,7 @@ namespace Orbiters.Logger.Editor
             private volatile bool busy;
             private volatile bool failed;
             private int done;
+            private long copiedChars;
             private readonly ManualResetEventSlim idle = new ManualResetEventSlim(true);
 
             public StoreCompaction(LogStore store)
@@ -186,9 +227,9 @@ namespace Orbiters.Logger.Editor
                 OldTexts = store.Texts;
                 grouping = store.Grouping;
                 chunkBase = store.chunkBase;
-                first = store.first;
-                done = first;
+                done = store.first;
                 owners = new int[store.ownerChunks.Length][];
+                startProfiles = new List<KeyValuePair<int, TimingProfile>>(store.profiles);
                 Texts = new TextTable(Math.Max(1024, OldTexts.Count - store.zeroCount));
                 Messages = new LogMessage[Math.Max(256, store.messageCount - store.zeroCount)];
                 MessageIndex = new Dictionary<MessageKey, int>(Math.Max(16, store.messageCount - store.zeroCount));
@@ -208,10 +249,13 @@ namespace Orbiters.Logger.Editor
             /// <summary>Occurrences counted: ids from the first up to this one.</summary>
             public int Done => Volatile.Read(ref done);
 
+            /// <summary>Patches queued and not applied yet.</summary>
+            public int LatePatches => patches.Count;
+
             public bool Busy => busy;
             public bool Failed => failed;
 
-            /// <summary>A worker counts what was filed meanwhile (main thread).</summary>
+            /// <summary>A worker counts what was filed meanwhile and applies the patches (main thread).</summary>
             public void Start()
             {
                 busy = true;
@@ -240,24 +284,32 @@ namespace Orbiters.Logger.Editor
             public void Cancel() => cancelled = true;
 
             /// <summary>
-            /// Counts what the store filed since, a few rounds while logs keep coming, until little is left for the
-            /// editor's thread (any thread: it only reads what the store published before its last occurrence id).
+            /// Counts what the store filed since and applies the patches, a few rounds while logs keep coming, until little
+            /// is left for the editor's thread (any thread: it only reads what the store published before its last
+            /// occurrence id, and messages' fields after their patch was queued).
             /// </summary>
             public void CatchUp()
             {
                 for (int round = 0; round < 64 && !cancelled; round++)
                 {
                     int to = Volatile.Read(ref store.end);
-                    CountTo(to);
-                    if (Volatile.Read(ref store.end) - to <= LandingLimit)
+                    CountTo(to, long.MaxValue, long.MaxValue);
+                    ApplyPatches();
+                    if (Volatile.Read(ref store.end) - to <= LandingLimit / 2 && patches.Count <= LandingPatches / 2)
                     {
-                        return;
+                        break;
                     }
                 }
+
+                RemapProfiles();
             }
 
-            /// <summary>Counts the occurrences up to <paramref name="to"/>, adopting each message at its first one.</summary>
-            public void CountTo(int to)
+            /// <summary>
+            /// Counts the occurrences up to <paramref name="to"/>, adopting each message at its first one; false when it
+            /// stopped at <paramref name="deadline"/> (a Stopwatch timestamp) or after <paramref name="maxChars"/>
+            /// characters of new texts (what it counted stays counted).
+            /// </summary>
+            public bool CountTo(int to, long deadline, long maxChars)
             {
                 // Read after the occurrence id: whatever the store published before it is in these.
                 var directory = Volatile.Read(ref store.ownerChunks);
@@ -267,8 +319,9 @@ namespace Orbiters.Logger.Editor
                     Array.Resize(ref owners, directory.Length);
                 }
 
+                long charsAtStart = copiedChars;
                 int id = done;
-                while (id < to && !cancelled)
+                while (id < to)
                 {
                     int slot = id - chunkBase;
                     int chunk = slot >> ChunkShift;
@@ -278,6 +331,19 @@ namespace Orbiters.Logger.Editor
                     var remapped = owners[chunk] ?? (owners[chunk] = new int[ChunkSize]);
                     for (int i = offset; i < offset + run; i++, id++)
                     {
+                        if (cancelled)
+                        {
+                            failed = true;
+                            Volatile.Write(ref done, id);
+                            return false;
+                        }
+
+                        if ((i & 63) == 0 && (copiedChars - charsAtStart > maxChars || deadline != long.MaxValue && Stopwatch.GetTimestamp() > deadline))
+                        {
+                            Volatile.Write(ref done, id);
+                            return false;
+                        }
+
                         int message = NewIdOrAdopt(column[i], oldMessages);
                         remapped[i] = message;
                         Count(message, id);
@@ -286,30 +352,43 @@ namespace Orbiters.Logger.Editor
                     Volatile.Write(ref done, id);
                 }
 
-                if (cancelled)
-                {
-                    failed = true;
-                }
+                return true;
             }
 
             /// <summary>The new id of an old message, -1 when it had no occurrence (it goes).</summary>
             public int NewId(int old) => old >= 0 && old < map.Length ? map[old] - 1 : -1;
 
-            /// <summary>A message's later change, copied when the tables land (main thread).</summary>
-            public void Patched(int old) => patches.Add(old);
+            /// <summary>A message's later change (main thread, after the change is written).</summary>
+            public void Patched(int old) => patches.Enqueue(old);
 
-            /// <summary>Copies what changed in patched messages since they were adopted (main thread, at landing).</summary>
-            public void ApplyPatches(LogMessage[] current)
+            /// <summary>
+            /// Copies what changed in patched messages since they were adopted, each once (the worker; at landing only
+            /// what came since, at most <see cref="LandingPatches"/> on the bounded path). A message not adopted yet
+            /// needs none: it is adopted from its current fields.
+            /// </summary>
+            public void ApplyPatches()
             {
-                foreach (int old in patches)
+                patchBatch.Clear();
+                while (patches.TryDequeue(out int old))
+                {
+                    patchBatch.Add(old);
+                }
+
+                if (patchBatch.Count == 0)
+                {
+                    return;
+                }
+
+                var current = Volatile.Read(ref store.messages);
+                foreach (int old in patchBatch)
                 {
                     int moved = NewId(old);
-                    if (moved < 0)
+                    if (moved < 0 || old >= current.Length)
                     {
                         continue;
                     }
 
-                    ref var source = ref current[old];
+                    var source = current[old];
                     ref var target = ref Messages[moved];
                     target.Flags = source.Flags;
                     target.Line = source.Line;
@@ -317,6 +396,26 @@ namespace Orbiters.Logger.Editor
                     target.Callsite = Copy(source.Callsite);
                     target.Assembly = Copy(source.Assembly);
                 }
+            }
+
+            /// <summary>The timings' profiles under their new message ids.</summary>
+            public Dictionary<int, TimingProfile> Profiles() => remappedProfiles ?? new Dictionary<int, TimingProfile>();
+
+            private Dictionary<int, TimingProfile> remappedProfiles;
+
+            private void RemapProfiles()
+            {
+                var remapped = new Dictionary<int, TimingProfile>(startProfiles.Count);
+                foreach (var pair in startProfiles)
+                {
+                    int moved = NewId(pair.Key);
+                    if (moved >= 0)
+                    {
+                        remapped[moved] = pair.Value;
+                    }
+                }
+
+                remappedProfiles = remapped;
             }
 
             /// <summary>The owner chunks with the new message ids, in a directory of <paramref name="size"/>.</summary>
@@ -363,7 +462,23 @@ namespace Orbiters.Logger.Editor
                 return moved;
             }
 
-            private int Copy(int text) => text <= 0 ? 0 : Texts.Intern(OldTexts[text]);
+            // The same strings as the store's table (no new characters held), counted for the landing's bound.
+            private int Copy(int text)
+            {
+                if (text <= 0)
+                {
+                    return 0;
+                }
+
+                int count = Texts.Count;
+                int copied = Texts.InternCopy(OldTexts, text);
+                if (Texts.Count > count)
+                {
+                    copiedChars += OldTexts[text].Length;
+                }
+
+                return copied;
+            }
 
             // As LogStore.CountIn, in the new tables (occurrences come in id order).
             private void Count(int message, int id)

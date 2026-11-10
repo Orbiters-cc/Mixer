@@ -501,7 +501,7 @@ namespace Orbiters.Logger.Editor
         private readonly Dictionary<int, StackInfo> stackInfos = new Dictionary<int, StackInfo>();
 
         // Timing logs' profiles by message id, parsed once for every window (a restored store parses them on first use).
-        private readonly Dictionary<int, TimingProfile> profiles = new Dictionary<int, TimingProfile>();
+        private Dictionary<int, TimingProfile> profiles = new Dictionary<int, TimingProfile>();
         private TimingProfile pendingProfile;
         // The measured profile of the timing AddTiming is filing (never parsed back from its text).
         private TimingProfile filedProfile;
@@ -637,6 +637,7 @@ namespace Orbiters.Logger.Editor
                 KeepTextBudget();
             }
 
+            EnforceCeiling();
             return id;
         }
 
@@ -725,12 +726,14 @@ namespace Orbiters.Logger.Editor
             {
                 KeepTextBudget();
             }
+
+            EnforceCeiling();
         }
 
         // One fixed budget for every text kept (live logs and history alike, stripped copies included): the oldest
         // fifth of the logs goes until the texts fit, each trim compacting what it made dead. The newest log stays.
-        // A compaction prepared in the background stops the loop: it lands, then checks the budget again (so the texts
-        // can exceed it by what arrives while it is prepared, never by more).
+        // A compaction prepared in the background stops the loop: it lands, then checks the budget again; meanwhile the
+        // texts can exceed the budget up to TextCeiling, where EnforceCeiling takes over synchronously.
         private void KeepTextBudget()
         {
             while (Texts.TotalChars > maxTextChars && Count > 1 && pins == 0 && !Texts.Faulted && compaction == null)
@@ -1203,6 +1206,8 @@ namespace Orbiters.Logger.Editor
                 // A large history counts against the same budget as live logs.
                 KeepTextBudget();
             }
+
+            EnforceCeiling();
         }
 
         // Fresh chunks for the ids from `newFirst` up to the first one (chunk 0 copied, never written in place: a view

@@ -113,7 +113,24 @@ namespace Orbiters.Logger.Editor
         /// <summary>True when the text is in memory (not waiting in the session file).</summary>
         internal bool IsLoaded(int id) => id >= 0 && id < count && Volatile.Read(ref raw[id]) != null;
 
-        public int Intern(string text)
+        public int Intern(string text) => Add(text, null, true);
+
+        /// <summary>
+        /// A text of <paramref name="source"/> in this table, sharing its strings (the text and its stripped copy) instead
+        /// of making new ones: a compaction's table holds no character the store's table doesn't already hold.
+        /// </summary>
+        internal int InternCopy(TextTable source, int id)
+        {
+            if (id <= 0 || id >= source.Count)
+            {
+                return 0;
+            }
+
+            string text = source.Raw(id);
+            return Add(text, Volatile.Read(ref Volatile.Read(ref source.plain)[id]), false);
+        }
+
+        private int Add(string text, string stripped, bool strip)
         {
             if (string.IsNullOrEmpty(text))
             {
@@ -154,7 +171,7 @@ namespace Orbiters.Logger.Editor
 
             id = count;
             raw[id] = text;
-            plain[id] = RichText.StripOrNull(text);
+            plain[id] = strip ? RichText.StripOrNull(text) : stripped;
             hashes[id] = hash;
             if ((count + 1) * 2 > slots.Length)
             {
