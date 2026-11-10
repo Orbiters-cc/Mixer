@@ -55,27 +55,13 @@ namespace Orbiters.Mixer.Splats
             Cropped,
         }
 
-        /// <summary>The GPU layout of a splat (64 bytes; Splats.shader and SplatSort.compute read the same): what the
-        /// keyframes saw of it (negative weight where unknown), flags (bit 0: the sky shell) and how far beyond the
-        /// depth frames' reach it lies.</summary>
-        internal struct GpuSplat
-        {
-            public Vector3 position;
-            public uint color;
-            public Vector3 cov0;
-            public Vector3 cov1;
-            public Vector4 seen;
-            public uint flags;
-            public float beyond;
-        }
-
-        const int Stride = 64;
-
         ComputeBuffer splats;
+        ComputeBuffer seen;
         ComputeBuffer keys;
         ComputeBuffer values;
         SplatCloud uploaded;
         string uploadedHash;
+        bool uploadedSeen;
         SplatCloud refused;
         int paddedCount;
         Material material;
@@ -84,6 +70,8 @@ namespace Orbiters.Mixer.Splats
         readonly Dictionary<Camera, CommandBuffer> buffers = new Dictionary<Camera, CommandBuffer>();
 
         static readonly int SplatsId = Shader.PropertyToID("_Splats");
+        static readonly int SeenId = Shader.PropertyToID("_Seen");
+        static readonly int HasSeenId = Shader.PropertyToID("_HasSeen");
         static readonly int OrderId = Shader.PropertyToID("_Order");
         static readonly int KeysId = Shader.PropertyToID("_Keys");
         static readonly int ValuesId = Shader.PropertyToID("_Values");
@@ -117,44 +105,6 @@ namespace Orbiters.Mixer.Splats
             Release();
         }
 
-        /// <summary>Lower triangle of R·S²·Rᵀ, the splat's covariance: (xx, xy, xz) and (yy, yz, zz).</summary>
-        internal static void Covariance(Quaternion rotation, Vector3 scale, out Vector3 cov0, out Vector3 cov1)
-        {
-            Matrix4x4 r = Matrix4x4.Rotate(Normalized(rotation));
-            Vector3 s2 = Vector3.Scale(scale, scale);
-            float At(int i, int j) => r[i, 0] * r[j, 0] * s2.x + r[i, 1] * r[j, 1] * s2.y + r[i, 2] * r[j, 2] * s2.z;
-            cov0 = new Vector3(At(0, 0), At(0, 1), At(0, 2));
-            cov1 = new Vector3(At(1, 1), At(1, 2), At(2, 2));
-        }
-
-        static Quaternion Normalized(Quaternion q)
-        {
-            float n = Mathf.Sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
-            return n > 1e-12f ? new Quaternion(q.x / n, q.y / n, q.z / n, q.w / n) : Quaternion.identity;
-        }
-
-        internal static GpuSplat[] Pack(SplatCloud c)
-        {
-            var packed = new GpuSplat[c.Count];
-            for (int i = 0; i < packed.Length; i++)
-            {
-                Covariance(c.rotations[i], c.scales[i], out Vector3 cov0, out Vector3 cov1);
-                Color32 col = c.colors[i];
-                bool known = c.seen != null && c.seen.Length == packed.Length;
-                packed[i] = new GpuSplat
-                {
-                    position = c.positions[i],
-                    color = col.r | ((uint)col.g << 8) | ((uint)col.b << 16) | ((uint)col.a << 24),
-                    cov0 = cov0,
-                    cov1 = cov1,
-                    seen = known ? c.seen[i] : new Vector4(-1f, 0f, 0f, 0f),
-                    flags = known && c.sky != null && c.sky.Length == packed.Length && c.sky[i] ? 1u : 0u,
-                    beyond = known && c.beyond != null && c.beyond.Length == packed.Length ? c.beyond[i] : 0f,
-                };
-            }
-            return packed;
-        }
-
         bool Ready()
         {
             if (cloud == null || cloud.Count == 0)
@@ -184,18 +134,25 @@ namespace Orbiters.Mixer.Splats
 #endif
             if (sort == null || !SystemInfo.supportsComputeShaders)
                 return false;
-            // A reimport loads the cloud in place: the same object, maybe the same count, other splats.
-            if (uploaded != cloud || splats == null || splats.count != cloud.Count || uploadedHash != cloud.contentHash)
+            // A reimport loads the cloud in place: the same object, maybe the same count, other splats (the hash is of
+            // everything uploaded; whether it says what the keyframes saw is checked too, for clouds built in code).
+            if (uploaded != cloud || splats == null || splats.count != cloud.Count || uploadedHash != cloud.contentHash || uploadedSeen != cloud.HasSeen)
             {
                 ReleaseBuffers();
                 int count = cloud.Count;
                 paddedCount = Mathf.Max(512, Mathf.NextPowerOfTwo(count));
-                splats = new ComputeBuffer(count, Stride);
-                splats.SetData(Pack(cloud));
+                // The cloud's own bytes, as they are: it keeps them in this layout (SplatLayout).
+                splats = new ComputeBuffer(count, SplatLayout.Stride);
+                splats.SetData(cloud.packed);
+                // Without a record of what the keyframes saw, one placeholder: the shaders read none (_HasSeen).
+                seen = new ComputeBuffer(cloud.HasSeen ? count : 1, SplatLayout.SeenStride);
+                if (cloud.HasSeen)
+                    seen.SetData(cloud.packedSeen);
                 keys = new ComputeBuffer(paddedCount, 4);
                 values = new ComputeBuffer(paddedCount, 4);
                 uploaded = cloud;
                 uploadedHash = cloud.contentHash;
+                uploadedSeen = cloud.HasSeen;
             }
             properties = properties ?? new MaterialPropertyBlock();
             return true;
@@ -302,6 +259,8 @@ namespace Orbiters.Mixer.Splats
             }
 
             properties.SetBuffer(SplatsId, splats);
+            properties.SetBuffer(SeenId, seen);
+            properties.SetInt(HasSeenId, uploadedSeen ? 1 : 0);
             properties.SetBuffer(OrderId, values);
             properties.SetInt(CountId, count);
             properties.SetMatrix(ObjectToWorldId, objectToWorld);
@@ -334,9 +293,10 @@ namespace Orbiters.Mixer.Splats
         void ReleaseBuffers()
         {
             splats?.Release();
+            seen?.Release();
             keys?.Release();
             values?.Release();
-            splats = keys = values = null;
+            splats = seen = keys = values = null;
             uploaded = null;
             uploadedHash = null;
         }

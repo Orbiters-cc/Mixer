@@ -7,16 +7,7 @@
 #pragma kernel MergeGlobal
 #pragma kernel MergeLocal
 
-struct Splat
-{
-    float3 position;
-    uint color;
-    float3 cov0;
-    float3 cov1;
-    float4 seen;
-    uint flags;
-    float beyond;
-};
+#include "SplatData.hlsl"
 
 StructuredBuffer<Splat> _Splats;
 RWStructuredBuffer<uint> _Keys;

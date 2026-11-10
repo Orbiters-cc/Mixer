@@ -27,22 +27,12 @@ Shader "Hidden/Orbiters/Mixer/Splats"
             #pragma fragment frag
             #pragma target 4.5
             #include "UnityCG.cginc"
-
-            struct Splat
-            {
-                float3 position;
-                uint color;
-                float3 cov0;
-                float3 cov1;
-                // What the keyframes saw of it: largest weight (negative where unknown), keyframes, sector bits, finest
-                // sampling rate (pixels per metre); flags bit 0: the sky shell.
-                float4 seen;
-                uint flags;
-                // Metres beyond the reach of the capture's depth frames.
-                float beyond;
-            };
+            #include "SplatData.hlsl"
 
             StructuredBuffer<Splat> _Splats;
+            // What the keyframes saw of each splat, where the cloud says (_HasSeen; else a placeholder).
+            StructuredBuffer<SplatSeen> _Seen;
+            uint _HasSeen;
             StructuredBuffer<uint> _Order;
             uint _Count;
             float4x4 _ObjectToWorld;
@@ -99,7 +89,21 @@ Shader "Hidden/Orbiters/Mixer/Splats"
                     return o;
                 Splat s = _Splats[index];
                 // Encoded sRGB as captured, kept so: the blending happens on these values, as in training.
-                float4 color = float4((s.color & 255u), (s.color >> 8) & 255u, (s.color >> 16) & 255u, s.color >> 24) / 255.0;
+                float4 color = SplatColor(s);
+                float3 cov0, cov1;
+                SplatCovariance(s, cov0, cov1);
+                // What the keyframes saw of it: largest weight (negative where unknown), keyframes, sector bits, finest
+                // sampling rate (pixels per metre); whether it is on the sky shell; metres beyond the depth frames' reach.
+                float4 seen = float4(-1.0, 0.0, 0.0, 0.0);
+                float beyond = 0.0;
+                bool sky = false;
+                if (_HasSeen != 0u)
+                {
+                    SplatSeen t = _Seen[index];
+                    seen = SplatSeenOf(t);
+                    beyond = SplatBeyondOf(t);
+                    sky = SplatIsSky(s);
+                }
                 float3 world = mul(_ObjectToWorld, float4(s.position, 1.0)).xyz;
                 float3 view = mul(UNITY_MATRIX_V, float4(world, 1.0)).xyz;
                 float z = -view.z;
@@ -108,7 +112,7 @@ Shader "Hidden/Orbiters/Mixer/Splats"
                 float4 clip = mul(UNITY_MATRIX_P, float4(view, 1.0));
 
                 // Covariance: object → view (Z forward), then the projection's Jacobian in pixels.
-                float3x3 sigma = float3x3(s.cov0.x, s.cov0.y, s.cov0.z, s.cov0.y, s.cov1.x, s.cov1.y, s.cov0.z, s.cov1.y, s.cov1.z);
+                float3x3 sigma = float3x3(cov0.x, cov0.y, cov0.z, cov0.y, cov1.x, cov1.y, cov0.z, cov1.y, cov1.z);
                 float3x3 w = mul((float3x3)UNITY_MATRIX_V, (float3x3)_ObjectToWorld);
                 w[2] = -w[2];
                 float3x3 sc = mul(w, mul(sigma, transpose(w)));
@@ -144,19 +148,19 @@ Shader "Hidden/Orbiters/Mixer/Splats"
                 if (det3 > 0.0 && inside < extent * extent * det3)
                     return o;
                 color.a *= smoothstep(0.05, 0.2, length(view));
-                if (_Far.x > 0.5 && s.seen.x >= 0.0 && (s.flags & 1u) == 0u)
+                if (_Far.x > 0.5 && seen.x >= 0.0 && !sky)
                 {
-                    float past = s.beyond / _Far.y;
+                    float past = beyond / _Far.y;
                     if (_Far.x < 1.5)
                         color.rgb = lerp(color.rgb, _Horizon.rgb, 1.0 - exp(-past));
                     else
                         color.a *= 1.0 - smoothstep(0.0, 1.0, past);
                 }
-                if (_Confidence.x > 0.0 && s.seen.x >= 0.0 && (s.flags & 1u) == 0u)
+                if (_Confidence.x > 0.0 && seen.x >= 0.0 && !sky)
                 {
                     // The camera in the cloud's own space (where the sectors were measured), from the splat.
                     float3 towardEye = mul(_WorldToObject, float4(_WorldSpaceCameraPos, 1.0)).xyz - s.position;
-                    float k = _Confidence.x * (1.0 - Trust(s.seen, towardEye, max(fx, fy)));
+                    float k = _Confidence.x * (1.0 - Trust(seen, towardEye, max(fx, fy)));
                     if (_Confidence.y < 0.5)
                         color.a *= 1.0 - k;
                     else if (_Confidence.y < 1.5)

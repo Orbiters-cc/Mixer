@@ -4,10 +4,14 @@
   "references": [
     "Orbiters.Mixer.Splats",
     "Orbiters.Toolkit",
-    "Orbiters.Toolkit.Editor"
+    "Orbiters.Toolkit.Editor",
+    "Unity.Burst",
+    "Unity.Collections",
+    "Unity.Mathematics"
   ],
   "includePlatforms": [
     "Editor"
   ],
+  "allowUnsafeCode": true,
   "autoReferenced": false
 }
