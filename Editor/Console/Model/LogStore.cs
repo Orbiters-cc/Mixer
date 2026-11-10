@@ -102,6 +102,13 @@ namespace Orbiters.Logger.Editor
     internal sealed class LogStore
     {
         public const int DefaultMaxOccurrences = 3_000_000;
+        /// <summary>The texts kept alive at most (256 MB of UTF-16), whatever the number of logs: see <see cref="Append"/>.</summary>
+        public const long DefaultMaxTextChars = 128L * 1024 * 1024;
+        /// <summary>
+        /// The longest text kept (2 MB of UTF-16): a longer message or stack trace keeps its start and says how much was
+        /// left out, so one log can never take the whole <see cref="MaxTextChars"/> budget.
+        /// </summary>
+        public const int MaxTextLength = 1 << 20;
         /// <summary>The source of timing logs (script reloads, Play Mode, avatar builds and uploads).</summary>
         public const string TimingSource = "Timings";
         public const OccurrenceFlags Superseded = (OccurrenceFlags)8;
@@ -119,6 +126,7 @@ namespace Orbiters.Logger.Editor
         private readonly Dictionary<int, int> contexts = new Dictionary<int, int>();
         private readonly List<SessionEvent> events = new List<SessionEvent>();
         private int maxOccurrences = DefaultMaxOccurrences;
+        private long maxTextChars = DefaultMaxTextChars;
 
         public LogStore(int capacity = 4096)
         {
@@ -141,6 +149,11 @@ namespace Orbiters.Logger.Editor
         public int Epoch { get; private set; }
         /// <summary>Bumps when a message's flags change (compile errors resolved): filters must be recomputed.</summary>
         public int MessagesVersion { get; private set; }
+        /// <summary>
+        /// Changes whenever an occurrence's time or message changes (clear, trim, history merge, compaction): until then
+        /// occurrences are only appended, so the session file appends them too.
+        /// </summary>
+        public long RowsGeneration { get; private set; } = NewRowsGeneration();
         public long FirstTime => count > 0 ? times[0] : 0L;
         public long LastTime => count > 0 ? times[count - 1] : 0L;
         public IReadOnlyList<SessionEvent> Events => events;
@@ -158,6 +171,16 @@ namespace Orbiters.Logger.Editor
         {
             get => maxOccurrences;
             set => maxOccurrences = Math.Max(10_000, value);
+        }
+
+        /// <summary>How many characters of distinct texts the store keeps before the oldest logs go (tests lower it).</summary>
+        internal long MaxTextChars
+        {
+            get => maxTextChars;
+            set
+            {
+                maxTextChars = Math.Max(1L << 16, value);
+            }
         }
 
         public long TimeAt(int occurrence) => times[occurrence];
@@ -204,8 +227,8 @@ namespace Orbiters.Logger.Editor
         /// <summary>The id of the message with this text, stack trace and type, created when new.</summary>
         public int Intern(string condition, string stack, LogVariant variant, int assembly = 0, string file = null, int line = 0, int column = 0)
         {
-            int text = Texts.Intern(condition ?? string.Empty);
-            int stackId = Texts.Intern(stack ?? string.Empty);
+            int text = Texts.Intern(Capped(condition) ?? string.Empty);
+            int stackId = Texts.Intern(Capped(stack) ?? string.Empty);
             var key = new MessageKey(text, stackId, variant);
             if (messageIndex.TryGetValue(key, out int id))
             {
@@ -235,6 +258,12 @@ namespace Orbiters.Logger.Editor
             message.Group = GroupFor(text, message.Level);
             messages[id] = message;
             messageCount = id + 1;
+            if (pendingProfile != null)
+            {
+                profiles[id] = pendingProfile;
+                pendingProfile = null;
+            }
+
             messageIndex[key] = id;
             groups[message.Group].Variants++;
             return id;
@@ -243,6 +272,7 @@ namespace Orbiters.Logger.Editor
         // Callsite, file to open and source, read once per distinct message.
         private void Describe(ref LogMessage message, string condition, string stack, string file, int line, int column)
         {
+            pendingProfile = null;
             if (LogVariants.IsCompile(message.Variant))
             {
                 if (string.IsNullOrEmpty(file))
@@ -262,8 +292,10 @@ namespace Orbiters.Logger.Editor
             if (TimingProfile.IsTimings(stack))
             {
                 // A timing log: its largest shares under the message.
+                message.Flags |= MessageFlags.Timing;
                 message.Source = Sources.Get(TimingSource);
                 var profile = TimingProfile.Parse(stack);
+                pendingProfile = profile;
                 message.Callsite = Texts.Intern(profile != null ? profile.Summary(4) : string.Empty);
                 return;
             }
@@ -271,29 +303,19 @@ namespace Orbiters.Logger.Editor
             if (StackTraces.IsOutput(stack))
             {
                 // A command's log: its timing line under the message.
-                message.Source = Sources.Resolve(message.Variant, condition, new List<StackFrame>(), -1, null);
+                message.Flags |= MessageFlags.Output;
+                message.Source = Sources.Resolve(message.Variant, condition, -1);
                 message.Callsite = Texts.Intern(RichText.FirstLine(stack.Substring(StackTraces.OutputPrefix.Length), 160));
                 return;
             }
 
-            var frames = StackTraces.Parse(stack);
-            int callsite = StackTraces.FindCallsite(frames);
-            message.Source = Sources.Resolve(message.Variant, condition, frames, callsite, null);
-            if (callsite >= 0)
+            var info = StackInfoOf(message.Stack, stack);
+            message.Source = Sources.Resolve(message.Variant, condition, info.Source);
+            if (info.HasCallsite)
             {
-                var frame = frames[callsite];
-                string method = StackTraces.ShortMethod(frame.Method);
-                if (frame.HasFile)
-                {
-                    string path = StackTraces.NormalizePath(frame.File);
-                    message.File = Texts.Intern(path);
-                    message.Line = frame.Line;
-                    message.Callsite = Texts.Intern(method + "  ·  " + StackTraces.FileName(path) + ":" + frame.Line);
-                }
-                else
-                {
-                    message.Callsite = Texts.Intern(method);
-                }
+                message.File = info.File;
+                message.Line = info.Line;
+                message.Callsite = info.Callsite;
             }
             else if (!string.IsNullOrEmpty(file))
             {
@@ -308,6 +330,79 @@ namespace Orbiters.Logger.Editor
                 message.Line = line;
                 message.Callsite = Texts.Intern(StackTraces.FileName(path) + (line > 0 ? ":" + line : string.Empty));
             }
+        }
+
+        // What a stack trace says about who logged, parsed once per distinct stack: a flood of logs whose text changes
+        // (a counter, an id) from one line of code parses its stack once, not once per log.
+        private struct StackInfo
+        {
+            public int Source;
+            public bool HasCallsite;
+            public int Callsite;
+            public int File;
+            public int Line;
+        }
+
+        private readonly Dictionary<int, StackInfo> stackInfos = new Dictionary<int, StackInfo>();
+
+        // Timing logs' profiles by message id, parsed once for every window (a restored store parses them on first use).
+        private readonly Dictionary<int, TimingProfile> profiles = new Dictionary<int, TimingProfile>();
+        private TimingProfile pendingProfile;
+
+        /// <summary>The profile of a timing log (<see cref="MessageFlags.Timing"/>), or null.</summary>
+        public TimingProfile TimingOf(int message)
+        {
+            if (message < 0 || message >= messageCount || (messages[message].Flags & MessageFlags.Timing) == 0)
+            {
+                return null;
+            }
+
+            if (!profiles.TryGetValue(message, out var profile))
+            {
+                profile = TimingProfile.Parse(Texts[messages[message].Stack]);
+                profiles[message] = profile;
+            }
+
+            return profile;
+        }
+        private TextTable stackInfoTexts;
+
+        private StackInfo StackInfoOf(int stackId, string stack)
+        {
+            if (!ReferenceEquals(stackInfoTexts, Texts))
+            {
+                // Text ids changed meaning (cleared, compacted).
+                stackInfos.Clear();
+                stackInfoTexts = Texts;
+            }
+
+            if (stackInfos.TryGetValue(stackId, out var info))
+            {
+                return info;
+            }
+
+            var frames = StackTraces.Parse(stack);
+            int callsite = StackTraces.FindCallsite(frames);
+            info = new StackInfo { Source = Sources.FromFrames(frames, callsite), HasCallsite = callsite >= 0 };
+            if (callsite >= 0)
+            {
+                var frame = frames[callsite];
+                string method = StackTraces.ShortMethod(frame.Method);
+                if (frame.HasFile)
+                {
+                    string path = StackTraces.NormalizePath(frame.File);
+                    info.File = Texts.Intern(path);
+                    info.Line = frame.Line;
+                    info.Callsite = Texts.Intern(method + "  ·  " + StackTraces.FileName(path) + ":" + frame.Line);
+                }
+                else
+                {
+                    info.Callsite = Texts.Intern(method);
+                }
+            }
+
+            stackInfos[stackId] = info;
+            return info;
         }
 
         /// <summary>Adds an occurrence of <paramref name="message"/>. Times never go back: an earlier time is moved up to the last one.</summary>
@@ -353,7 +448,64 @@ namespace Orbiters.Logger.Editor
                 return count - 1;
             }
 
+            if (Texts.TotalChars > maxTextChars && pins == 0)
+            {
+                // Logs that never repeat (an id, a time in the text) keep a new text each: memory is bounded by their
+                // size, not only their number.
+                KeepTextBudget();
+                return count - 1;
+            }
+
             return index;
+        }
+
+        /// <summary>The text as stored: itself, or its first <see cref="MaxTextLength"/> characters and how many were left out.</summary>
+        public static string Capped(string text)
+        {
+            if (text == null || text.Length <= MaxTextLength)
+            {
+                return text;
+            }
+
+            // The note included, never longer than the limit: capping a capped text changes nothing, whatever path
+            // (the queue, the store, a history import) cut it first.
+            int keep = MaxTextLength - CutNote(text.Length - MaxTextLength).Length;
+            while (keep > 0 && keep + CutNote(text.Length - keep).Length > MaxTextLength)
+            {
+                keep--;
+            }
+
+            if (keep > 0 && char.IsHighSurrogate(text[keep - 1]))
+            {
+                keep--;
+            }
+
+            return text.Substring(0, keep) + CutNote(text.Length - keep);
+        }
+
+        private static string CutNote(int left) =>
+            "\n[… " + left.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) + " more characters left out by the Mixer console]";
+
+        /// <summary>
+        /// Keeps the texts within <see cref="MaxTextChars"/> when they grew without a new log (texts read back after a
+        /// reload keep their stripped copies). Main thread; cheap when within the budget.
+        /// </summary>
+        public void KeepWithinTextBudget()
+        {
+            if (Texts.TotalChars > maxTextChars && pins == 0)
+            {
+                KeepTextBudget();
+            }
+        }
+
+        // One fixed budget for every text kept (live logs and history alike, stripped copies included): the oldest
+        // fifth of the logs goes until the texts fit, each trim compacting what it made dead. The newest log stays.
+        private void KeepTextBudget()
+        {
+            while (Texts.TotalChars > maxTextChars && count > 1 && pins == 0 && !Texts.Faulted)
+            {
+                Trim(count * 4 / 5);
+            }
         }
 
         /// <summary>A compiler message: a later compilation that reports it again replaces the earlier occurrence.</summary>
@@ -466,7 +618,10 @@ namespace Orbiters.Logger.Editor
             groupIndex.Clear();
             contexts.Clear();
             events.Clear();
+            profiles.Clear();
+            pins = 0;
             Texts = new TextTable();
+            RowsGeneration = NewRowsGeneration();
             Epoch++;
             Version++;
             MessagesVersion++;
@@ -625,6 +780,18 @@ namespace Orbiters.Logger.Editor
 
         private static bool IsHex(char c) => c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F';
 
+        private int pins;
+
+        /// <summary>
+        /// Keeps message ids meaning the same message until <see cref="Unpin"/> (no compaction): for a history import
+        /// that interns messages long before it adds their occurrences. A clear forgets every pin.
+        /// </summary>
+        public void Pin() => pins++;
+
+        // No budget check here: an import unpins just before it puts its occurrences in (Prepend), and a compaction in
+        // between would drop the messages it is about to use. Prepend and the next append check the budget.
+        public void Unpin() => pins = Math.Max(0, pins - 1);
+
         /// <summary>Keeps the newest <paramref name="keep"/> occurrences.</summary>
         public void Trim(int keep)
         {
@@ -646,6 +813,7 @@ namespace Orbiters.Logger.Editor
             owners = nextOwners;
             flags = nextFlags;
             count = keep;
+            RowsGeneration = NewRowsGeneration();
             ShiftContexts(-drop);
             long first = count > 0 ? times[0] : 0L;
             events.RemoveAll(e => e.Time < first);
@@ -668,6 +836,13 @@ namespace Orbiters.Logger.Editor
         /// </summary>
         private bool CompactIfMostlyDead()
         {
+            if (pins > 0 || Texts.Faulted)
+            {
+                // An import holds message ids that have no occurrence yet; or a text could not be read back, and copying
+                // it would keep its placeholder as if it were the log (LogCapture starts over instead).
+                return false;
+            }
+
             int dead = 0;
             for (int i = 0; i < messageCount; i++)
             {
@@ -677,7 +852,8 @@ namespace Orbiters.Logger.Editor
                 }
             }
 
-            if (dead < 1024 || dead * 4 < messageCount)
+            // Many dead, or texts over budget: then any dead message's texts are worth reclaiming.
+            if (dead == 0 || Texts.TotalChars <= maxTextChars && (dead < 1024 || dead * 4 < messageCount))
             {
                 return false;
             }
@@ -704,14 +880,25 @@ namespace Orbiters.Logger.Editor
                 kept[live++] = message;
             }
 
+            if (Texts.Faulted)
+            {
+                // A text read back from the session file for the copy was damaged: the copy holds its placeholder.
+                // Keep the old table untouched; LogCapture starts over from Unity's console.
+                return false;
+            }
+
             for (int i = 0; i < count; i++)
             {
                 owners[i] = map[owners[i]];
             }
 
+            RowsGeneration = NewRowsGeneration();
+
             Texts = texts;
             messages = kept;
             messageCount = live;
+            // Message ids changed: profiles are parsed again on first use.
+            profiles.Clear();
             messageIndex.Clear();
             groups = new LogGroup[Math.Max(256, Math.Min(groupCount, live))];
             groupCount = 0;
@@ -770,6 +957,7 @@ namespace Orbiters.Logger.Editor
             owners = nextOwners;
             flags = nextFlags;
             count = total;
+            RowsGeneration = NewRowsGeneration();
             ShiftContexts(historyCount);
             if (historyContexts != null)
             {
@@ -786,6 +974,12 @@ namespace Orbiters.Logger.Editor
             if (count > maxOccurrences)
             {
                 Trim(maxOccurrences * 4 / 5);
+            }
+
+            if (Texts.TotalChars > maxTextChars && pins == 0)
+            {
+                // A large history counts against the same budget as live logs.
+                KeepTextBudget();
             }
         }
 
@@ -904,7 +1098,9 @@ namespace Orbiters.Logger.Editor
             return lo;
         }
 
-        // ---- Session snapshot ------------------------------------------------------------------------------------
+        private static long NewRowsGeneration() => BitConverter.ToInt64(Guid.NewGuid().ToByteArray(), 0) & long.MaxValue;
+
+        // ---- Session file ----------------------------------------------------------------------------------------
 
         internal void ExportColumns(out long[] exportTimes, out int[] exportOwners, out byte[] exportFlags)
         {
@@ -914,53 +1110,61 @@ namespace Orbiters.Logger.Editor
         }
 
         internal LogMessage[] MessagesArray => messages;
+        internal LogGroup[] GroupsArray => groups;
         internal Dictionary<int, int> Contexts => contexts;
 
-        /// <summary>Rebuilds a store from saved columns (see <see cref="LogSnapshot"/>).</summary>
-        internal void Import(long[] importTimes, int[] importOwners, byte[] importFlags, int importCount, LogMessage[] importMessages, int importMessageCount,
-            GroupingMode grouping, Dictionary<int, int> importContexts, List<SessionEvent> importEvents)
+        /// <summary>
+        /// Puts back a store saved by <see cref="SessionFile"/>: every column, message and group as they were, counters
+        /// included, so nothing is recounted, regrouped or read from the texts.
+        /// </summary>
+        internal void Restore(TextTable texts, long rowsGeneration, long[] restoredTimes, int[] restoredOwners, byte[] restoredFlags, int restoredCount,
+            LogMessage[] restoredMessages, int restoredMessageCount, LogGroup[] restoredGroups, int restoredGroupCount, GroupingMode grouping,
+            Dictionary<int, int> restoredContexts, List<SessionEvent> restoredEvents)
         {
-            times = importTimes;
-            owners = importOwners;
-            flags = importFlags;
-            count = importCount;
+            Texts = texts;
+            RowsGeneration = rowsGeneration;
+            profiles.Clear();
+            times = restoredTimes;
+            owners = restoredOwners;
+            flags = restoredFlags;
+            count = restoredCount;
             Grouping = grouping;
-            messages = importMessages;
-            messageCount = importMessageCount;
+            messages = restoredMessages;
+            messageCount = restoredMessageCount;
+            groups = restoredGroups;
+            groupCount = restoredGroupCount;
             messageIndex.Clear();
-            groups = new LogGroup[Math.Max(256, importMessageCount)];
-            groupCount = 0;
-            groupIndex.Clear();
             for (int i = 0; i < messageCount; i++)
             {
                 ref var message = ref messages[i];
                 messageIndex[new MessageKey(message.Text, message.Stack, message.Variant)] = i;
-                message.Group = GroupFor(message.Text, message.Level);
                 message.Explanation = -2;
-                groups[message.Group].Variants++;
+            }
+
+            groupIndex.Clear();
+            for (int i = 0; i < groupCount; i++)
+            {
+                groupIndex[((long)groups[i].Key << 2) | (long)groups[i].Level] = i;
             }
 
             contexts.Clear();
-            if (importContexts != null)
+            if (restoredContexts != null)
             {
-                foreach (var pair in importContexts)
+                foreach (var pair in restoredContexts)
                 {
                     contexts[pair.Key] = pair.Value;
                 }
             }
 
             events.Clear();
-            if (importEvents != null)
+            if (restoredEvents != null)
             {
-                events.AddRange(importEvents);
+                events.AddRange(restoredEvents);
             }
 
-            RecountAll();
             Epoch++;
             Version++;
             MessagesVersion++;
         }
-
-        internal void ReplaceTexts(TextTable texts) => Texts = texts;
     }
 }

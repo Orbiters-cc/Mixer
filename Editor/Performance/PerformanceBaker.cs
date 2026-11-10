@@ -300,6 +300,8 @@ namespace Orbiters.Mixer.Editor.Performance
                 var locomotion = new Locomotion();
                 bool moveWithVelocity = options.Locomotion && solver != null && (timeline.Has("VelocityX") || timeline.Has("VelocityZ"));
                 var targets = new Dictionary<BodyTarget, BodySolver.Pose>();
+                // The keys of targets, reused every frame (the dictionary changes while they are walked).
+                var targetKeys = new List<BodyTarget>();
                 // The last pose of each target, held through dropouts and pauses (the first one before it starts).
                 var held = new Dictionary<BodyTarget, BodySolver.Pose>();
                 if (solver != null)
@@ -349,7 +351,9 @@ namespace Orbiters.Mixer.Editor.Performance
                             var forward = Vector3.ProjectOnPlane(head.Rotation * Vector3.forward, Vector3.up);
                             float yaw = forward.sqrMagnitude > 1e-6f ? Mathf.Atan2(forward.x, forward.z) * Mathf.Rad2Deg : 0f;
                             locomotion.Step(f == 0 ? 0f : dt, head.Position, yaw, stack.Get("VelocityX"), stack.Get("VelocityZ"), stack.Get("AngularY"));
-                            foreach (var key in targets.Keys.ToList())
+                            targetKeys.Clear();
+                            targetKeys.AddRange(targets.Keys);
+                            foreach (var key in targetKeys)
                             {
                                 var target = targets[key];
                                 if (!target.Valid) continue;

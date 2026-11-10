@@ -216,6 +216,7 @@ namespace Orbiters.Logger.Editor
                     writer.Line("# " + LoggerUi.Plural(view.Count, "log") + " from " + Stamp(view.Times[0]) + " to " + Stamp(view.Times[view.Count - 1]) +
                                 ". ~ marks a time read back from Unity's console (to the second).");
                     writer.Line();
+                    var memo = new LineMemo(context.Privacy);
                     var line = new StringBuilder(256);
                     for (int i = 0; i < view.Count; i++)
                     {
@@ -229,11 +230,11 @@ namespace Orbiters.Logger.Editor
                         last[id] = time;
                         ref var message = ref view.Messages[id];
                         line.Clear();
-                        line.Append(Stamp(time)).Append(((OccurrenceFlags)view.Flags[i] & OccurrenceFlags.ApproximateTime) != 0 ? "~ " : "  ");
+                        line.Append(((OccurrenceFlags)view.Flags[i] & OccurrenceFlags.ApproximateTime) != 0 ? "~ " : "  ");
                         line.Append(LevelTag(message.Variant)).Append("  ");
                         line.Append(SourceName(snapshot, id)).Append("  ");
                         AppendIndented(line, view.Texts.Plain(message.Text), "    ");
-                        writer.Line(line.ToString());
+                        memo.Write(writer, Stamp(time), line.ToString());
                         written++;
                         if ((i & 0x3FFF) == 0)
                         {
@@ -328,6 +329,57 @@ namespace Orbiters.Logger.Editor
         {
             int source = snapshot.SourceOf[message];
             return source >= 0 && source < snapshot.Sources.Length ? snapshot.Sources[source] : "Unity";
+        }
+
+        /// <summary>
+        /// The masker's results reused, never changed (MXL-28): the files are what masking every line in order gives.
+        /// A line is masked by the real masker, in the order written, unless the masker is <see cref="ReportWriter.Neutral"/>
+        /// and the same line was masked before from that state and left it neutral: then its result is reused. A log line
+        /// differs from another of the same message only by its time; the time is reused over only when masking the line
+        /// with two different stand-in times gives the stand-in back and the same rest both times.
+        /// </summary>
+        internal sealed class LineMemo
+        {
+            private const string TimeA = "2000-01-01 00:00:00.000";
+            private const string TimeB = "2999-12-31 23:59:59.999";
+            private readonly ReportPrivacy privacy;
+            private readonly Dictionary<string, string> byRest = new Dictionary<string, string>(StringComparer.Ordinal);
+            private readonly HashSet<string> notReusable = new HashSet<string>(StringComparer.Ordinal);
+
+            public LineMemo(ReportPrivacy privacy) => this.privacy = privacy;
+
+            /// <summary>Writes <paramref name="stamp"/> + <paramref name="rest"/> as <see cref="ReportWriter.Line"/> would.</summary>
+            public void Write(ReportWriter writer, string stamp, string rest)
+            {
+                if (stamp.Length == TimeA.Length && writer.Neutral && byRest.TryGetValue(rest, out string masked))
+                {
+                    writer.Raw(stamp + masked);
+                    return;
+                }
+
+                bool neutral = writer.Neutral;
+                writer.Line(stamp + rest);
+                if (!neutral || !writer.Neutral || stamp.Length != TimeA.Length || notReusable.Contains(rest) || byRest.ContainsKey(rest))
+                {
+                    return;
+                }
+
+                // From and back to the neutral state, the masker is the stateless Mask of the line.
+                string a = privacy.Mask(TimeA + rest);
+                string b = privacy.Mask(TimeB + rest);
+                if (a.StartsWith(TimeA, StringComparison.Ordinal) && b.StartsWith(TimeB, StringComparison.Ordinal) &&
+                    string.Equals(a.Substring(TimeA.Length), b.Substring(TimeB.Length), StringComparison.Ordinal))
+                {
+                    byRest[rest] = a.Substring(TimeA.Length);
+                }
+                else
+                {
+                    notReusable.Add(rest);
+                }
+            }
+
+            /// <summary>Writes a line with no time in it (messages.txt) as <see cref="ReportWriter.Line"/> would.</summary>
+            public void Write(ReportWriter writer, string line) => Write(writer, string.Empty, line);
         }
 
         internal static string LevelTag(LogVariant variant)

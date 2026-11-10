@@ -189,7 +189,11 @@ namespace Orbiters.Logger.Editor
             byKey[key] = id;
         }
 
-        public int Resolve(LogVariant variant, string condition, List<StackFrame> frames, int callsite, string compileFile)
+        /// <summary>
+        /// Who logged a message: an asset its text starts with, else the source its stack trace names
+        /// (<paramref name="framesSource"/>, from <see cref="FromFrames"/>, -1 for none), else a [Tag] in its text.
+        /// </summary>
+        public int Resolve(LogVariant variant, string condition, int framesSource)
         {
             if (LogVariants.IsCompile(variant))
             {
@@ -204,7 +208,21 @@ namespace Orbiters.Logger.Editor
                 return FromFile(asset);
             }
 
-            // The frame that logged it, else any frame with a source file, else the first frame's namespace.
+            if (framesSource >= 0)
+            {
+                return framesSource;
+            }
+
+            int byTag = FromTag(condition);
+            return byTag >= 0 ? byTag : Unity;
+        }
+
+        /// <summary>
+        /// The source a stack trace names, or -1: the frame that logged it, else any frame with a source file, else the
+        /// first frame's namespace. It only depends on the stack, so it is worked out once per distinct stack trace.
+        /// </summary>
+        public int FromFrames(List<StackFrame> frames, int callsite)
+        {
             if (callsite >= 0 && callsite < frames.Count && frames[callsite].HasFile)
             {
                 return FromFile(frames[callsite].File);
@@ -227,8 +245,7 @@ namespace Orbiters.Logger.Editor
                 }
             }
 
-            int byTag = FromTag(condition);
-            return byTag >= 0 ? byTag : Unity;
+            return -1;
         }
 
         /// <summary>The source of a project file (for logs whose stack trace was cut, by the file Unity's console names).</summary>

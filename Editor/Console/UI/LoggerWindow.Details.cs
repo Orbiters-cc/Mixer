@@ -32,6 +32,8 @@ namespace Orbiters.Logger.Editor
         private FrequencyChart frequencyChart;
         private Label[] frequencyStats;
         private int frequencyGroup = -1;
+        // The shown group's occurrence times, read from the store once and then only from where the last refresh stopped.
+        private readonly FrequencyTimes frequencyTimes = new FrequencyTimes();
 
         private VisualElement BuildDetailsPane()
         {
@@ -258,7 +260,7 @@ namespace Orbiters.Logger.Editor
                     location.Add(FrameRow(new StackFrame(store.Texts[message.File], string.Empty, store.Texts[message.File], message.Line, StackFrameKind.User), message.Column));
                 }
             }
-            else if (message.Stack > 0 && StackTraces.IsOutput(store.Texts[message.Stack]))
+            else if (message.Stack > 0 && (message.Flags & MessageFlags.Output) != 0)
             {
                 string output = store.Texts[message.Stack].Substring(StackTraces.OutputPrefix.Length).TrimEnd();
                 Card(main, "Output").Add(LongText.Build(output, "lg-details__output", MonoFont));
@@ -532,49 +534,17 @@ namespace Orbiters.Logger.Editor
             int buckets = Mathf.Clamp((int)(Math.Max(120f, frequencyChart.layout.width) / 4f), 30, 240);
             var values = new int[buckets];
             long span = Math.Max(1L, chartTo - chartFrom);
-            int count = 0;
-            long first = 0;
-            long last = 0;
-            int peak = 0;
-            int windowStart = -1;
-            var times = new List<long>(Math.Min(group.Count, 1 << 16));
-            for (int i = group.First; i <= group.Last && i < store.Count; i++)
+            frequencyTimes.Update(store, frequencyGroup);
+            int count = frequencyTimes.Count;
+            var times = frequencyTimes.Times;
+            long first = count > 0 ? times[0] : 0L;
+            long last = count > 0 ? times[count - 1] : 0L;
+            int peak = frequencyTimes.Peak;
+            for (int i = 0; i < count; i++)
             {
-                if (store.Message(store.MessageAt(i)).Group != frequencyGroup || (store.FlagsAt(i) & LogStore.Superseded) != 0)
-                {
-                    continue;
-                }
-
-                long t = store.TimeAt(i);
-                if (count == 0)
-                {
-                    first = t;
-                }
-
-                last = t;
-                count++;
-                long offset = t - chartFrom;
+                long offset = times[i] - chartFrom;
                 int bucket = offset <= 0 ? 0 : offset >= span ? buckets - 1 : (int)(offset * buckets / span);
                 values[bucket]++;
-
-                // Peak per second: a window sliding over the (ordered) times.
-                times.Add(t);
-                if (windowStart < 0)
-                {
-                    windowStart = 0;
-                }
-
-                while (t - times[windowStart] > TimeSpan.TicksPerSecond)
-                {
-                    windowStart++;
-                }
-
-                peak = Math.Max(peak, times.Count - windowStart);
-                if (times.Count > 1 << 16)
-                {
-                    times.RemoveRange(0, windowStart);
-                    windowStart = 0;
-                }
             }
 
             frequencyChart.Set(values, chartFrom, chartTo, ChartColors.Level(group.Level));
@@ -585,6 +555,70 @@ namespace Orbiters.Logger.Editor
             frequencyStats[4].text = count > 1 ? LoggerUi.Duration(TimeSpan.FromTicks((last - first) / (count - 1))).Trim() : "once";
             frequencyStats[5].text = LoggerUi.Count(Math.Max(1, group.Variants));
             frequencyStats[5].tooltip = "Different stack traces or types logged with this text";
+        }
+
+        /// <summary>
+        /// One group's occurrence times in order, kept up to date by reading only the occurrences added since (a group
+        /// seen at the start and the end of a session spans the whole store), and their peak per second.
+        /// </summary>
+        private sealed class FrequencyTimes
+        {
+            private LogStore store;
+            private int group = -1;
+            private int epoch = -1;
+            private int messagesVersion = -1;
+            private int scanned;
+            private int window;
+
+            public long[] Times = new long[64];
+            public int Count;
+            public int Peak;
+
+            public void Update(LogStore source, int shown)
+            {
+                if (!ReferenceEquals(source, store) || shown != group || source.Epoch != epoch || source.MessagesVersion != messagesVersion)
+                {
+                    // Another group, or occurrences that changed meaning (trimmed, merged, superseded): from the start.
+                    store = source;
+                    group = shown;
+                    epoch = source.Epoch;
+                    messagesVersion = source.MessagesVersion;
+                    scanned = Math.Max(0, source.Group(shown).First);
+                    window = 0;
+                    Count = 0;
+                    Peak = 0;
+                    if (Times.Length > 1 << 16)
+                    {
+                        Times = new long[64];
+                    }
+                }
+
+                int end = Math.Min(source.Group(shown).Last + 1, source.Count);
+                for (int i = scanned; i < end; i++)
+                {
+                    if (source.Message(source.MessageAt(i)).Group != shown || (source.FlagsAt(i) & LogStore.Superseded) != 0)
+                    {
+                        continue;
+                    }
+
+                    long t = source.TimeAt(i);
+                    if (Count == Times.Length)
+                    {
+                        Array.Resize(ref Times, Times.Length * 2);
+                    }
+
+                    Times[Count++] = t;
+                    // Peak per second: a window sliding over the (ordered) times.
+                    while (t - Times[window] > TimeSpan.TicksPerSecond)
+                    {
+                        window++;
+                    }
+
+                    Peak = Math.Max(Peak, Count - window);
+                }
+
+                scanned = Math.Max(scanned, end);
+            }
         }
 
         private void ShowSelectionSummary(LogStore store, int count)

@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace Orbiters.Logger.Editor
 {
@@ -123,6 +125,13 @@ namespace Orbiters.Logger.Editor
     {
         public const int SparkBuckets = 24;
         private const int MaxSparkGroups = 50_000;
+        // Messages a worker pass searches on several cores (fewer are not worth the hand-off).
+        private const int ParallelSearchAbove = 20_000;
+        // What one pass may spend on a regular expression in all (each text also has its own timeout): past it, the
+        // messages left stay untested (not misses) and Extend tests them a slice at a time while the status says
+        // "Searching…", so a pathological pattern typed or saved with the window can't keep a worker busy for minutes.
+        // Settable for tests.
+        internal static long SearchBudgetMs = 10_000;
         private const byte BaseBit = 1;
         private const byte LevelBit = 2;
         private const byte SourceBit = 4;
@@ -145,6 +154,8 @@ namespace Orbiters.Logger.Editor
         public int[] GroupLast = new int[64];
         public int[] GroupRows = new int[64];
         public int GroupRowCount;
+        // GroupRows inverted: a group's row plus one (0: no row), so finding a group's row is an array read.
+        private int[] groupRowPlusOne = new int[64];
         public bool GroupOrderDirty;
 
         public readonly int[] LevelCounts = new int[3];
@@ -162,6 +173,27 @@ namespace Orbiters.Logger.Editor
         public int SparkMax = 1;
 
         private byte[] textMatch = new byte[0];
+        private Regex regex;
+        private long searchDeadline;
+        private bool onEditorThread;
+        // Messages from here on may not be tested yet (a pass that ran out of time): the occurrences after the first of
+        // theirs wait (Covered stops there) until Extend tests them, a slice at a time.
+        private int firstUnknown;
+        private int searchTimeouts;
+        // What one Extend (on the caller's thread) may spend on testing texts before it leaves the rest for the next one.
+        private const double ExtendBudgetMs = 6d;
+
+        // Where the next Extend goes on testing (it stops at its deadline, not only its matching).
+        private int extendNext;
+
+        /// <summary>Texts the editor's thread gave up on wait for a worker pass (the window asks for one).</summary>
+        public bool WorkerPending { get; private set; }
+
+        /// <summary>Messages are left to test: the list is still filling in (a slice per Extend).</summary>
+        public bool SearchPending { get; private set; }
+
+        /// <summary>Texts the search could not decide (the expression took too long on them): left out of the results.</summary>
+        public int SearchTimeouts => Volatile.Read(ref searchTimeouts);
         private byte[] messagePass = new byte[0];
         private bool[] groupMuted = new bool[0];
         private int groupsKnown;
@@ -189,25 +221,41 @@ namespace Orbiters.Logger.Editor
                 Buckets = Math.Max(0, buckets)
             };
 
-            int textCount = view.Texts.Snapshot(out string[] raw, out string[] plain);
+            int textCount = view.Texts.Count;
             state.textMatch = new byte[Math.Max(textCount, 16)];
             if (knownMatches != null)
             {
                 Array.Copy(knownMatches, state.textMatch, Math.Min(knownMatches.Length, state.textMatch.Length));
+                foreach (byte known in state.textMatch)
+                {
+                    if (known == LogQuery.TimedOut)
+                    {
+                        state.searchTimeouts++;
+                    }
+                }
             }
 
             state.PrepareSources(sources);
             state.Grow(view.MessageCount, view.GroupCount);
             state.groupsKnown = 0;
             state.UpdateMutes(view);
+            state.regex = spec.Query.RegexFor(view.MessageCount);
+            state.searchDeadline = spec.Query.UseRegex ? Stopwatch.GetTimestamp() + SearchBudgetMs * Stopwatch.Frequency / 1000 : 0L;
+            if (!spec.Query.IsEmpty && cancelled != null && view.MessageCount >= ParallelSearchAbove && !state.SearchInParallel(view, textCount, cancelled))
+            {
+                return null;
+            }
+
+            // A slow expression gets checked for cancellation every message, plain text every 1,024.
+            int check = spec.Query.UseRegex ? 0 : 1023;
             for (int m = 0; m < view.MessageCount; m++)
             {
-                if ((m & 1023) == 0 && cancelled != null && cancelled())
+                if ((m & check) == 0 && cancelled != null && cancelled())
                 {
                     return null;
                 }
 
-                state.messagePass[m] = state.Pass(ref view.Messages[m], raw, plain, textCount);
+                state.messagePass[m] = state.Pass(ref view.Messages[m], textCount);
             }
 
             if (state.Buckets > 0)
@@ -220,6 +268,7 @@ namespace Orbiters.Logger.Editor
                 }
             }
 
+            state.FindUnknown(view.MessageCount, 0);
             int from = 0;
             int step = 1 << 18;
             while (from < view.Count)
@@ -230,11 +279,17 @@ namespace Orbiters.Logger.Editor
                 }
 
                 int to = Math.Min(view.Count, from + step);
-                state.Scan(view, from, to);
-                from = to;
+                int stop = state.Scan(view, from, to);
+                from = stop;
+                if (stop < to)
+                {
+                    // An occurrence of a message not tested yet: Extend goes on from here.
+                    break;
+                }
             }
 
-            state.Covered = view.Count;
+            state.Covered = from;
+            state.searchDeadline = 0L;
             state.SortGroups(view);
             state.Milliseconds = clock.Elapsed.TotalMilliseconds;
             return state;
@@ -252,12 +307,12 @@ namespace Orbiters.Logger.Editor
             }
 
             var view = store.View();
-            if (view.Count == Covered && view.MessageCount <= messagePass.Length && (messagePass.Length == 0 || view.MessageCount == 0 || (messagePass[view.MessageCount - 1] & KnownBit) != 0))
+            if (view.Count == Covered && firstUnknown >= view.MessageCount)
             {
                 return true;
             }
 
-            int textCount = view.Texts.Snapshot(out string[] raw, out string[] plain);
+            int textCount = view.Texts.Count;
             if (textCount > textMatch.Length)
             {
                 Array.Resize(ref textMatch, Math.Max(textCount, textMatch.Length * 2));
@@ -266,13 +321,40 @@ namespace Orbiters.Logger.Editor
             PrepareSources(sources);
             Grow(view.MessageCount, view.GroupCount);
             UpdateMutes(view);
-            for (int m = 0; m < view.MessageCount; m++)
+            // Only messages not tested yet, within a budget: a flood of new logs or a slow expression never stalls the
+            // caller (the editor's thread); the rest waits for the next Extend.
+            var query = Spec.Query;
+            var foreground = regex;
+            regex = query.ForegroundRegex;
+            onEditorThread = true;
+            searchDeadline = query.IsEmpty ? 0L : Stopwatch.GetTimestamp() + (long)(ExtendBudgetMs * Stopwatch.Frequency / 1000d);
+            try
             {
-                if ((messagePass[m] & KnownBit) == 0)
+                int m = extendNext > firstUnknown && extendNext < view.MessageCount ? extendNext : firstUnknown;
+                for (; m < view.MessageCount; m++)
                 {
-                    messagePass[m] = Pass(ref view.Messages[m], raw, plain, textCount);
+                    if (searchDeadline != 0L && Stopwatch.GetTimestamp() > searchDeadline)
+                    {
+                        break;
+                    }
+
+                    if ((messagePass[m] & KnownBit) == 0)
+                    {
+                        messagePass[m] = Pass(ref view.Messages[m], textCount);
+                    }
                 }
+
+                // Out of time: the next call goes on from here; through to the end: from the first untested again.
+                extendNext = m < view.MessageCount ? m : 0;
             }
+            finally
+            {
+                regex = foreground;
+                searchDeadline = 0L;
+                onEditorThread = false;
+            }
+
+            FindUnknown(view.MessageCount, firstUnknown);
 
             if (Sparks != null && view.GroupCount > SparkGroups)
             {
@@ -290,8 +372,7 @@ namespace Orbiters.Logger.Editor
 
             if (Covered < view.Count)
             {
-                Scan(view, Covered, view.Count);
-                Covered = view.Count;
+                Covered = Scan(view, Covered, view.Count);
             }
 
             return true;
@@ -329,6 +410,7 @@ namespace Orbiters.Logger.Editor
                 Array.Resize(ref GroupFirst, size);
                 Array.Resize(ref GroupLast, size);
                 Array.Resize(ref groupMuted, size);
+                Array.Resize(ref groupRowPlusOne, size);
             }
 
             if (groupMuted.Length < GroupCount.Length)
@@ -347,7 +429,7 @@ namespace Orbiters.Logger.Editor
             groupsKnown = view.GroupCount;
         }
 
-        private byte Pass(ref LogMessage message, string[] raw, string[] plain, int textCount)
+        private byte Pass(ref LogMessage message, int textCount)
         {
             if (message.Resolved || message.Group < groupMuted.Length && groupMuted[message.Group])
             {
@@ -357,13 +439,19 @@ namespace Orbiters.Logger.Editor
             var query = Spec.Query;
             if (!query.IsEmpty)
             {
-                bool found = TextMatches(message.Text, query, raw, plain, textCount);
-                if (!found && query.IncludeStack && message.Stack > 0)
+                byte found = TextMatches(message.Text, query, textCount);
+                if (found == Miss && query.IncludeStack && message.Stack > 0)
                 {
-                    found = TextMatches(message.Stack, query, raw, plain, textCount);
+                    found = TextMatches(message.Stack, query, textCount);
                 }
 
-                if (!found)
+                if (found == Untested)
+                {
+                    // Out of time: not a miss, tested by a later Extend.
+                    return 0;
+                }
+
+                if (found != Hit)
                 {
                     return KnownBit;
                 }
@@ -383,24 +471,104 @@ namespace Orbiters.Logger.Editor
             return bits;
         }
 
-        private bool TextMatches(int text, LogQuery query, string[] raw, string[] plain, int textCount)
+        private const byte Untested = 0;
+        private const byte Miss = 1;
+        private const byte Hit = 2;
+
+        // Hit, Miss, or Untested when the pass's time is up (then nothing is remembered).
+        private byte TextMatches(int text, LogQuery query, int textCount)
         {
             if (text <= 0 || text >= textCount)
             {
-                return false;
+                return Miss;
             }
 
             byte known = textMatch[text];
-            if (known == 0)
+            if (known == LogQuery.ForWorker)
             {
-                known = query.Matches(plain[text] ?? raw[text]) ? (byte)2 : (byte)1;
+                // Left for a worker pass by an earlier Extend: not retried on the editor's thread.
+                return Untested;
+            }
+
+            if (known == Untested)
+            {
+                if (searchDeadline != 0L && Stopwatch.GetTimestamp() > searchDeadline)
+                {
+                    return Untested;
+                }
+
+                known = query.TryMatch(Texts.Plain(text), regex, out bool timedOut) ? Hit : Miss;
+                if (timedOut && onEditorThread)
+                {
+                    // The short editor-thread timeout: the worker's compiled expression may well finish it.
+                    textMatch[text] = LogQuery.ForWorker;
+                    WorkerPending = true;
+                    return Untested;
+                }
+
+                if (timedOut)
+                {
+                    // A worker gave up too: left out of the results, and said so in the status.
+                    known = LogQuery.TimedOut;
+                    Interlocked.Increment(ref searchTimeouts);
+                }
+
                 textMatch[text] = known;
             }
 
-            return known == 2;
+            return known == LogQuery.TimedOut ? Miss : known;
         }
 
-        private void Scan(StoreView view, int from, int to)
+        // The first message from `from` on not tested yet.
+        private void FindUnknown(int messageCount, int from)
+        {
+            int m = Math.Max(0, from);
+            while (m < messageCount && (messagePass[m] & KnownBit) != 0)
+            {
+                m++;
+            }
+
+            firstUnknown = m;
+            SearchPending = m < messageCount;
+        }
+
+        // Fills the search results of every message's texts on several cores; the serial pass then only reads them.
+        // Each text id has its own byte, so threads never share a write (two messages with one text write the same value).
+        private bool SearchInParallel(StoreView view, int textCount, Func<bool> cancelled)
+        {
+            var query = Spec.Query;
+            var messages = view.Messages;
+            int chunk = 4096;
+            int chunks = (view.MessageCount + chunk - 1) / chunk;
+            var options = new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount / 2) };
+            var result = Parallel.For(0, chunks, options, (c, loop) =>
+            {
+                int end = Math.Min(view.MessageCount, (c + 1) * chunk);
+                for (int m = c * chunk; m < end; m++)
+                {
+                    if ((query.UseRegex || (m & 63) == 0) && (loop.ShouldExitCurrentIteration || cancelled()))
+                    {
+                        loop.Stop();
+                        return;
+                    }
+
+                    ref var message = ref messages[m];
+                    if (message.Resolved || message.Group < groupMuted.Length && groupMuted[message.Group])
+                    {
+                        continue;
+                    }
+
+                    if (TextMatches(message.Text, query, textCount) == Miss && query.IncludeStack && message.Stack > 0)
+                    {
+                        TextMatches(message.Stack, query, textCount);
+                    }
+                }
+            });
+            return result.IsCompleted && !cancelled();
+        }
+
+        // Adds occurrences from `from`; returns where it stopped: `to`, or the first occurrence of a message not tested yet.
+        private int Scan(StoreView view, int from, int to)
         {
             var times = view.Times;
             var owners = view.Owners;
@@ -424,6 +592,12 @@ namespace Orbiters.Logger.Editor
 
                 int m = owners[i];
                 byte pass = messagePass[m];
+                if ((pass & KnownBit) == 0)
+                {
+                    to = i;
+                    break;
+                }
+
                 if ((pass & BaseBit) == 0)
                 {
                     continue;
@@ -485,6 +659,7 @@ namespace Orbiters.Logger.Editor
                     }
 
                     GroupRows[GroupRowCount++] = group;
+                    groupRowPlusOne[group] = GroupRowCount;
                 }
                 else if (Spec.Sort != GroupSort.FirstSeen)
                 {
@@ -498,6 +673,8 @@ namespace Orbiters.Logger.Editor
             {
                 GroupOrderDirty = true;
             }
+
+            return to;
         }
 
         /// <summary>Puts group rows in the chosen order (first seen needs nothing: groups arrive in that order).</summary>
@@ -542,6 +719,138 @@ namespace Orbiters.Logger.Editor
             }
 
             Array.Sort(GroupRows, 0, GroupRowCount, Comparer<int>.Create(comparison));
+            for (int i = 0; i < GroupRowCount; i++)
+            {
+                groupRowPlusOne[GroupRows[i]] = i + 1;
+            }
+        }
+
+        /// <summary>
+        /// The chart and sparklines of this state for another time axis, computed from what the state already knows
+        /// (which messages show): only the occurrences' times are read again, nothing is allocated but the count arrays,
+        /// and rows, groups and search results stay. Safe on a worker thread (see <see cref="AdoptChart"/>).
+        /// </summary>
+        public ChartPass ComputeChart(StoreView view, long chartFrom, long chartTo, int buckets, int[] spareSparks, Func<bool> cancelled)
+        {
+            var pass = new ChartPass
+            {
+                Epoch = view.Epoch,
+                MessagesVersion = view.MessagesVersion,
+                Texts = view.Texts,
+                From = chartFrom,
+                To = Math.Max(chartTo, chartFrom + TimeSpan.TicksPerSecond),
+                Clips = view.Count > 0 && chartFrom > view.Times[0],
+                Buckets = Math.Max(1, buckets),
+                Covered = Math.Min(view.Count, Covered)
+            };
+            pass.Timeline = new int[3 * pass.Buckets];
+            if (Sparks != null)
+            {
+                pass.SparkGroups = SparkGroups;
+                int size = Math.Max(1, SparkGroups) * SparkBuckets;
+                pass.Sparks = spareSparks != null && spareSparks.Length == size ? spareSparks : new int[size];
+                Array.Clear(pass.Sparks, 0, pass.Sparks.Length);
+            }
+
+            var passes = messagePass;
+            for (int from = 0; from < pass.Covered; from += 1 << 18)
+            {
+                if (cancelled != null && cancelled())
+                {
+                    return null;
+                }
+
+                ChartScan(view, passes, pass, from, Math.Min(pass.Covered, from + (1 << 18)));
+            }
+
+            return pass;
+        }
+
+        /// <summary>
+        /// Takes a chart computed by <see cref="ComputeChart"/> (main thread), adding the occurrences that arrived since.
+        /// False when the store changed shape meanwhile: the pass is dropped. The old sparkline array is handed back for
+        /// the next pass.
+        /// </summary>
+        public bool AdoptChart(ChartPass pass, StoreView view, out int[] spareSparks)
+        {
+            spareSparks = null;
+            if (pass == null || pass.Epoch != Epoch || pass.MessagesVersion != MessagesVersion || !ReferenceEquals(pass.Texts, Texts) ||
+                view.Epoch != Epoch || pass.Covered > Covered || Timeline == null)
+            {
+                return false;
+            }
+
+            if (Sparks == null)
+            {
+                pass.Sparks = null;
+                pass.SparkGroups = 0;
+            }
+            else if (pass.Sparks == null || pass.SparkGroups < SparkGroups)
+            {
+                // Groups that appeared since: their sparklines start empty, as Extend makes them.
+                Array.Resize(ref pass.Sparks, Math.Max(1, SparkGroups) * SparkBuckets);
+                pass.SparkGroups = SparkGroups;
+            }
+
+            ChartScan(view, messagePass, pass, pass.Covered, Covered);
+            spareSparks = Sparks;
+            ChartFrom = pass.From;
+            ChartTo = pass.To;
+            ChartClips = pass.Clips;
+            Buckets = pass.Buckets;
+            Timeline = pass.Timeline;
+            Sparks = pass.Sparks;
+            SparkGroups = pass.SparkGroups;
+            SparkMax = pass.SparkMax;
+            return true;
+        }
+
+        // The chart half of Scan, by the same rules.
+        private static void ChartScan(StoreView view, byte[] passes, ChartPass pass, int from, int to)
+        {
+            var times = view.Times;
+            var owners = view.Owners;
+            var flags = view.Flags;
+            var messages = view.Messages;
+            long chartFrom = pass.From;
+            long span = Math.Max(1L, pass.To - pass.From);
+            int buckets = pass.Buckets;
+            var timeline = pass.Timeline;
+            var sparks = pass.Sparks;
+            int sparkGroups = pass.SparkGroups;
+            for (int i = from; i < to; i++)
+            {
+                if ((flags[i] & SupersededBit) != 0)
+                {
+                    continue;
+                }
+
+                int m = owners[i];
+                if (m >= passes.Length || (passes[m] & ViewBits) != ViewBits)
+                {
+                    continue;
+                }
+
+                long time = times[i];
+                if (pass.Clips && time < chartFrom)
+                {
+                    continue;
+                }
+
+                ref var message = ref messages[m];
+                long offset = time - chartFrom;
+                int bucket = offset <= 0 ? 0 : offset >= span ? buckets - 1 : (int)(offset * buckets / span);
+                timeline[(int)message.Level * buckets + bucket]++;
+                if (sparks != null && message.Group < sparkGroups)
+                {
+                    int spark = offset <= 0 ? 0 : offset >= span ? SparkBuckets - 1 : (int)(offset * SparkBuckets / span);
+                    int value = ++sparks[message.Group * SparkBuckets + spark];
+                    if (value > pass.SparkMax)
+                    {
+                        pass.SparkMax = value;
+                    }
+                }
+            }
         }
 
         /// <summary>The row position of an occurrence (binary search: rows are in time order), or -1.</summary>
@@ -558,18 +867,24 @@ namespace Orbiters.Logger.Editor
             return index >= 0 ? index : ~index;
         }
 
-        public int GroupRowOf(int group)
-        {
-            for (int i = 0; i < GroupRowCount; i++)
-            {
-                if (GroupRows[i] == group)
-                {
-                    return i;
-                }
-            }
+        public int GroupRowOf(int group) => group >= 0 && group < groupRowPlusOne.Length ? groupRowPlusOne[group] - 1 : -1;
+    }
 
-            return -1;
-        }
+    /// <summary>A <see cref="FilterState"/>'s chart for a moved time axis (<see cref="FilterState.ComputeChart"/>).</summary>
+    internal sealed class ChartPass
+    {
+        public int Epoch;
+        public int MessagesVersion;
+        public TextTable Texts;
+        public long From;
+        public long To;
+        public bool Clips;
+        public int Buckets;
+        public int Covered;
+        public int[] Timeline;
+        public int[] Sparks;
+        public int SparkGroups;
+        public int SparkMax = 1;
     }
 
     /// <summary>
@@ -590,14 +905,17 @@ namespace Orbiters.Logger.Editor
         public FilterState Request(LogStore store, FilterSpec spec, FilterState previous, long chartFrom, long chartTo, int buckets, bool allowAsync)
         {
             int id = Interlocked.Increment(ref generation);
+            Interlocked.Increment(ref chartGeneration);
+            readyChart = null;
             var view = store.View();
             var sources = new List<LogSource>(store.Sources.All);
-            byte[] known = previous != null && previous.Spec != null && previous.Spec.Query.SameAs(spec.Query) &&
-                           ReferenceEquals(previous.Texts, store.Texts)
-                ? (byte[])previous.KnownTextMatches.Clone()
+            // What the previous search found still holds for the same query, and in part for one typed on or back.
+            byte[] known = previous != null && previous.Spec != null && ReferenceEquals(previous.Texts, store.Texts)
+                ? spec.Query.Reuse(previous.Spec.Query, previous.KnownTextMatches)
                 : null;
             long work = view.Count + (spec.Query.IsEmpty ? 0 : (spec.Query.IncludeStack ? 40L : 4L) * view.MessageCount);
-            if (!allowAsync || work <= SynchronousLimit)
+            // A regular expression can be slow on any store: never on the editor's thread unless the caller needs it there.
+            if (!allowAsync || work <= SynchronousLimit && !spec.Query.UseRegex)
             {
                 running = false;
                 ready = null;
@@ -631,6 +949,78 @@ namespace Orbiters.Logger.Editor
             return null;
         }
 
+        private int chartGeneration;
+        private volatile ChartPass readyChart;
+        private int readyChartGeneration;
+        private volatile bool charting;
+        private int[] spareSparks;
+
+        /// <summary>
+        /// Moves the chart of <paramref name="state"/> to a new time axis without a filter pass. The result comes from
+        /// <see cref="TryTakeChart"/>; a full <see cref="Request"/> drops it.
+        /// </summary>
+        public void RequestChart(LogStore store, FilterState state, long chartFrom, long chartTo, int buckets)
+        {
+            if (state == null || charting)
+            {
+                return;
+            }
+
+            int id = Interlocked.Increment(ref chartGeneration);
+            int full = Volatile.Read(ref generation);
+            var view = store.View();
+            var spare = spareSparks;
+            spareSparks = null;
+            if (view.Count <= SynchronousLimit)
+            {
+                readyChartGeneration = id;
+                readyChart = state.ComputeChart(view, chartFrom, chartTo, buckets, spare, null);
+                return;
+            }
+
+            charting = true;
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                try
+                {
+                    var result = state.ComputeChart(view, chartFrom, chartTo, buckets, spare,
+                        () => Volatile.Read(ref chartGeneration) != id || Volatile.Read(ref generation) != full);
+                    if (result != null && Volatile.Read(ref chartGeneration) == id)
+                    {
+                        readyChartGeneration = id;
+                        readyChart = result;
+                    }
+                }
+                catch (Exception)
+                {
+                    // The next request tries again.
+                }
+                finally
+                {
+                    charting = false;
+                }
+            });
+        }
+
+        /// <summary>Puts the latest chart into <paramref name="state"/> (main thread). True when it changed.</summary>
+        public bool TryTakeChart(LogStore store, FilterState state)
+        {
+            var result = readyChart;
+            if (result == null || readyChartGeneration != Volatile.Read(ref chartGeneration))
+            {
+                return false;
+            }
+
+            readyChart = null;
+            if (state == null || !state.AdoptChart(result, store.View(), out int[] spare))
+            {
+                return false;
+            }
+
+            spareSparks = spare;
+            return true;
+        }
+
         /// <summary>The finished result of the latest request, once.</summary>
         public FilterState TryTake()
         {
@@ -648,6 +1038,8 @@ namespace Orbiters.Logger.Editor
         public void Cancel()
         {
             Interlocked.Increment(ref generation);
+            Interlocked.Increment(ref chartGeneration);
+            readyChart = null;
             ready = null;
             running = false;
         }

@@ -28,6 +28,12 @@ namespace Orbiters.Logger.Editor
         private static int scanned;
         private static int scannedEpoch = -1;
         private static LogStore scannedStore;
+        // The last time each message was noted at (0: not yet), for one store, epoch and text table: a message
+        // that wasn't logged again since needs no hashing.
+        private static long[] notedLast = new long[0];
+        private static LogStore notedStore;
+        private static int notedEpoch = -1;
+        private static TextTable notedTexts;
 
         public static string FilePath => Path.Combine("Library", "Orbiters", "Logger", "ledger.bin");
 
@@ -54,6 +60,23 @@ namespace Orbiters.Logger.Editor
             }
 
             scanned = store.MessageCount;
+        }
+
+        /// <summary>A store read back after a script reload: every message in it was noted (and saved) just before.</summary>
+        public static void Restored(LogStore store)
+        {
+            scannedStore = store;
+            scannedEpoch = store.Epoch;
+            scanned = store.MessageCount;
+            NotedFor(store);
+            for (int i = 0; i < store.MessageCount; i++)
+            {
+                ref var message = ref store.Message(i);
+                if (message.Count > 0 && message.Last >= 0 && message.Last < store.Count)
+                {
+                    notedLast[i] = store.TimeAt(message.Last);
+                }
+            }
         }
 
         /// <summary>When the message with this text was first and last seen, if it ever was.</summary>
@@ -142,9 +165,21 @@ namespace Orbiters.Logger.Editor
                 return;
             }
 
-            ulong key = Hash(store.Texts.Plain(message.Text));
             long first = store.TimeAt(message.First);
             long last = store.TimeAt(message.Last);
+            NotedFor(store);
+            if (messageId >= notedLast.Length)
+            {
+                Array.Resize(ref notedLast, Math.Max(messageId + 1, notedLast.Length * 2));
+            }
+
+            if (notedLast[messageId] == last)
+            {
+                return;
+            }
+
+            notedLast[messageId] = last;
+            ulong key = Hash(store.Texts.Plain(message.Text));
             if (entries.TryGetValue(key, out var entry))
             {
                 if (first >= entry.First && last <= entry.Last)
@@ -162,6 +197,25 @@ namespace Orbiters.Logger.Editor
             }
 
             dirty = true;
+        }
+
+        // Message ids and times only mean the same within one store, epoch and text table.
+        private static void NotedFor(LogStore store)
+        {
+            if (ReferenceEquals(store, notedStore) && store.Epoch == notedEpoch && ReferenceEquals(store.Texts, notedTexts))
+            {
+                if (notedLast.Length < store.MessageCount)
+                {
+                    Array.Resize(ref notedLast, Math.Max(store.MessageCount, notedLast.Length * 2));
+                }
+
+                return;
+            }
+
+            notedStore = store;
+            notedEpoch = store.Epoch;
+            notedTexts = store.Texts;
+            notedLast = new long[Math.Max(256, store.MessageCount)];
         }
 
         private static void EnsureLoaded()

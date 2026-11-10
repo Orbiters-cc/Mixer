@@ -384,7 +384,10 @@ namespace Orbiters.Logger.Editor
             var history = LogCapture.History;
             string status = history != null
                 ? "Reading Unity's console · " + LoggerUi.Compact(history.Done) + " / " + LoggerUi.Compact(history.Total)
-                : runner.Busy ? "Filtering…" : string.Empty;
+                : runner.Busy ? "Filtering…"
+                : state != null && state.SearchPending ? "Searching…"
+                : state != null && state.SearchTimeouts > 0 ? "Search incomplete · " + LoggerUi.Count(state.SearchTimeouts) + " too slow to test"
+                : string.Empty;
             statusText.text = status;
             statusArea.EnableInClassList("lg-status--idle", string.IsNullOrEmpty(status));
             LoggerUi.Show(footerProgress, history != null);

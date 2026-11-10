@@ -483,6 +483,12 @@ namespace Orbiters.Logger.Editor
 
             public LineMasker(ReportPrivacy privacy) => this.privacy = privacy;
 
+            /// <summary>
+            /// No secret is open (no flag waiting for its value, no key block): the next line is masked as
+            /// <see cref="ReportPrivacy.Mask"/> masks it alone. Lets callers reuse a result (LogReport) without changing it.
+            /// </summary>
+            public bool Neutral => !valueNext && !inKey;
+
             public string Mask(string line)
             {
                 line = line ?? string.Empty;

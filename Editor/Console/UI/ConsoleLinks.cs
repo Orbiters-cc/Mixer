@@ -22,7 +22,8 @@ namespace Orbiters.Logger.Editor
         private static readonly Regex ConsoleText = new Regex(@"\b(?:check|show|open)\s+(?:the\s+)?(?:unity\s+)?console\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         private static readonly HashSet<VisualElement> Hooked = new HashSet<VisualElement>();
         private static List<Type> panelTypes;
-        private static double nextScan;
+        private static bool requested;
+        private static EditorWindow lastFocused;
 
         static ConsoleLinks()
         {
@@ -31,7 +32,40 @@ namespace Orbiters.Logger.Editor
                 return;
             }
 
-            EditorApplication.update += Scan;
+            // Panels already open (after a script reload) on the first update; later ones when a window opens or takes
+            // the focus (an SDK panel does both), or when the VRChat bridge sees the panel enable (Request). Watching the
+            // focus is one field read per update, where the old poll searched every loaded object each second.
+            Request();
+            EditorApplication.update += WatchFocus;
+        }
+
+        private static void WatchFocus()
+        {
+            var focused = EditorWindow.focusedWindow;
+            if (!ReferenceEquals(focused, lastFocused))
+            {
+                lastFocused = focused;
+                Request();
+            }
+        }
+
+        /// <summary>Looks for SDK panels to hook on the next editor update (once, however often it is asked).</summary>
+        internal static void Request()
+        {
+            if (requested)
+            {
+                return;
+            }
+
+            requested = true;
+            EditorApplication.update += ScanOnce;
+        }
+
+        private static void ScanOnce()
+        {
+            EditorApplication.update -= ScanOnce;
+            requested = false;
+            Scan();
         }
 
         /// <summary>Whether <paramref name="element"/> is (in) a button that opens the Console.</summary>
@@ -48,20 +82,14 @@ namespace Orbiters.Logger.Editor
             return false;
         }
 
-        // Once a second: the SDK panels open now get the hook (once each).
+        // The SDK panels open now get the hook (once each).
         private static void Scan()
         {
-            if (EditorApplication.timeSinceStartup < nextScan)
-            {
-                return;
-            }
-
-            nextScan = EditorApplication.timeSinceStartup + 1d;
             var types = PanelTypes();
             if (types.Count == 0)
             {
                 // No VRChat SDK in this project (a script reload looks again).
-                EditorApplication.update -= Scan;
+                EditorApplication.update -= WatchFocus;
                 return;
             }
 

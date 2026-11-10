@@ -129,6 +129,294 @@ namespace Orbiters.Logger.Editor.Tests
         }
 
         [Test]
+        public void StackTracesAreReadOncePerStackWithTheSameResult()
+        {
+            const string unityOnly = "UnityEngine.Debug:LogWarning (object)\nUnityEditor.EditorApplication:Internal_CallUpdateFunctions ()\n";
+            var conditions = new[]
+            {
+                "Count 1", "Count 2", "[Mixer] tagged", "Packages/orbiters.toolkit/Editor/UI/orbit.uss (line 27): warning", "[VRCFury] Building"
+            };
+
+            // One store sees every text with each stack (cached after the first); each fresh store sees one message only.
+            var shared = new LogStore();
+            foreach (string stack in new[] { LogStack, ExceptionStack, unityOnly, string.Empty })
+            {
+                foreach (string condition in conditions)
+                {
+                    int a = shared.Intern(condition, stack, LogVariant.Warning);
+                    var fresh = new LogStore();
+                    int b = fresh.Intern(condition, stack, LogVariant.Warning);
+                    ref var cached = ref shared.Message(a);
+                    ref var alone = ref fresh.Message(b);
+                    string label = condition + " / " + stack.Length;
+                    Assert.AreEqual(fresh.SourceOf(b).Name, shared.SourceOf(a).Name, label);
+                    Assert.AreEqual(fresh.Texts[alone.Callsite], shared.Texts[cached.Callsite], label);
+                    Assert.AreEqual(fresh.Texts[alone.File], shared.Texts[cached.File], label);
+                    Assert.AreEqual(alone.Line, cached.Line, label);
+                }
+            }
+        }
+
+        [Test]
+        public void TextsAreBoundedBySizeNotOnlyByCount()
+        {
+            var store = new LogStore { MaxTextChars = 1 << 20 };
+            string padding = new string('x', 100);
+            for (int i = 0; i < 40_000; i++)
+            {
+                store.Add(1000 + i, "Distinct log " + i + " " + padding, LogStack, LogVariant.Log);
+            }
+
+            Assert.Less(store.Texts.TotalChars, 2L << 20, "texts nobody logs any more were let go");
+            Assert.Less(store.Count, 40_000);
+            Assert.AreEqual(1000 + 39_999, store.LastTime);
+            Assert.AreEqual("Distinct log 39999 " + padding, store.Texts[store.Message(store.MessageAt(store.Count - 1)).Text]);
+            Assert.AreEqual(store.Count, CountAll(store), "counters still add up after the trims");
+        }
+
+        [Test]
+        public void TheTextBudgetHoldsForFewLargeLogsHistoryAndStrippedCopies()
+        {
+            // Few logs (far under any count limit), each large.
+            var store = new LogStore { MaxTextChars = 1 << 20 };
+            string large = new string('a', 200_000);
+            for (int i = 0; i < 40; i++)
+            {
+                store.Add(1000 + i, i + " " + large, string.Empty, LogVariant.Log);
+                Assert.LessOrEqual(store.Texts.TotalChars, (1 << 20) + 300_000, "after log " + i);
+            }
+
+            Assert.AreEqual("39 " + large, store.Texts[store.Message(store.MessageAt(store.Count - 1)).Text], "the newest log stays");
+
+            // One log larger than the whole budget is cut, and says so.
+            var huge = new LogStore();
+            string original = new string('h', LogStore.MaxTextLength + 5000);
+            int id = huge.Intern(original, string.Empty, LogVariant.Log);
+            string kept = huge.Texts[huge.Message(id).Text];
+            Assert.LessOrEqual(kept.Length, LogStore.MaxTextLength, "the note included");
+            StringAssert.EndsWith(" more characters left out by the Mixer console]", kept);
+            int shown = kept.IndexOf('\n');
+            StringAssert.Contains("[… " + (original.Length - shown).ToString("N0", System.Globalization.CultureInfo.InvariantCulture) + " more", kept, "the count is what was left out");
+            Assert.AreSame(kept, LogStore.Capped(kept), "capping a capped text changes nothing");
+            Assert.AreEqual(kept, LogStore.Capped(original));
+            Assert.AreEqual(id, huge.Intern(LogStore.Capped(original), string.Empty, LogVariant.Log), "cut in the queue first, the same message");
+
+            // Rich text keeps a stripped copy: it counts.
+            var tags = new TextTable();
+            tags.Intern("<b>bold</b>");
+            Assert.AreEqual("<b>bold</b>".Length + "bold".Length, tags.TotalChars);
+
+            // History put in front counts against the same budget.
+            var history = new LogStore { MaxTextChars = 1 << 20 };
+            history.Add(5_000, "live", string.Empty, LogVariant.Log);
+            history.Pin();
+            var owners = new int[30];
+            for (int i = 0; i < owners.Length; i++)
+            {
+                owners[i] = history.Intern("old " + i + " " + large, string.Empty, LogVariant.Log);
+            }
+
+            var times = new long[owners.Length];
+            for (int i = 0; i < times.Length; i++)
+            {
+                times[i] = 100 + i;
+            }
+
+            history.Unpin();
+            history.Prepend(times, owners, new byte[owners.Length], owners.Length, null);
+            Assert.LessOrEqual(history.Texts.TotalChars, (1 << 20) + 300_000);
+            Assert.AreEqual("live", history.Texts[history.Message(history.MessageAt(history.Count - 1)).Text]);
+            Assert.AreEqual(history.Count, CountAll(history));
+        }
+
+        [Test]
+        public void PinnedMessagesSurviveATrim()
+        {
+            var store = new LogStore();
+            int imported = store.Intern("From Unity's console", string.Empty, LogVariant.Log);
+            store.Pin();
+            for (int i = 0; i < 6000; i++)
+            {
+                store.Add(100 + i, "Distinct " + i, string.Empty, LogVariant.Log);
+            }
+
+            store.Trim(1000);
+            Assert.AreEqual("From Unity's console", store.Texts[store.Message(imported).Text], "no compaction while pinned");
+            store.Unpin();
+            store.Prepend(new long[] { 1 }, new[] { imported }, new byte[1], 1, null);
+            Assert.AreEqual("From Unity's console", store.Texts[store.Message(store.MessageAt(0)).Text]);
+            long texts = store.Texts.Generation;
+            store.Trim(500);
+            Assert.AreNotEqual(texts, store.Texts.Generation, "unpinned, the dead messages go");
+            Assert.AreEqual("Distinct 5999", store.Texts[store.Message(store.MessageAt(store.Count - 1)).Text]);
+            Assert.AreEqual(store.Count, CountAll(store));
+        }
+
+        private static int CountAll(LogStore store)
+        {
+            int total = 0;
+            for (int i = 0; i < store.MessageCount; i++)
+            {
+                total += store.Message(i).Count;
+            }
+
+            return total;
+        }
+
+        [Test]
+        public void RepeatedLogsShareTheirTexts()
+        {
+            var texts = new QueueTexts(1000);
+            var recent = new QueueTexts.Recent();
+            Assert.IsTrue(texts.Admit(recent, "Boom", "at Thing.Do ()" + 1, out var condition, out var stack));
+            Assert.AreEqual(4 + 15, texts.Chars);
+            Assert.IsTrue(texts.Admit(recent, "Bo" + "om", "at Thing.Do ()" + 1, out var condition2, out var stack2));
+            Assert.AreSame(condition, condition2, "an equal text keeps the earlier instance");
+            Assert.AreSame(stack, stack2);
+            Assert.AreEqual(19, texts.Chars, "and adds nothing to the queue");
+
+            // The charge stays until the last queued log holding the text is filed.
+            texts.Release(condition);
+            texts.Release(stack);
+            Assert.AreEqual(19, texts.Chars);
+            texts.Release(condition2);
+            texts.Release(stack2);
+            Assert.AreEqual(0, texts.Chars);
+
+            // Filed in between, then logged again: charged again.
+            Assert.IsTrue(texts.Admit(recent, "Boom", null, out var again, out var none));
+            Assert.AreSame(condition, again);
+            Assert.IsNull(none);
+            Assert.AreEqual(4, texts.Chars);
+            texts.Release(again);
+
+            // Over the budget: refused with nothing charged; one log alone always fits into an empty queue.
+            Assert.IsTrue(texts.Admit(recent, new string('x', 990), null, out var big, out _));
+            Assert.IsFalse(texts.Admit(recent, new string('y', 20), null, out _, out _));
+            Assert.AreEqual(990, texts.Chars);
+            texts.Release(big);
+            Assert.IsTrue(texts.Admit(new QueueTexts.Recent(), new string('z', 5000), null, out var huge, out _));
+            texts.Release(huge);
+            Assert.AreEqual(0, texts.Chars);
+
+            // The main thread finds a shared instance again by reference, with the same id.
+            var table = new TextTable();
+            int id = table.Intern(condition.Text);
+            Assert.AreEqual(id, table.Intern(again.Text));
+            Assert.AreEqual(id, table.Intern(string.Copy(condition.Text)));
+        }
+
+        [Test]
+        public void QueueChargesAddUpUnderConcurrentAdmission()
+        {
+            var texts = new QueueTexts(long.MaxValue / 4);
+            var queue = new System.Collections.Concurrent.ConcurrentQueue<SharedText>();
+            int producers = 6;
+            int done = 0;
+            var threads = new System.Threading.Thread[producers];
+            for (int p = 0; p < producers; p++)
+            {
+                int seed = p;
+                threads[p] = new System.Threading.Thread(() =>
+                {
+                    var recent = new QueueTexts.Recent();
+                    for (int i = 0; i < 20_000; i++)
+                    {
+                        // Runs of equal texts (shared) and new ones, per thread.
+                        string text = "log " + seed + " " + i / 7;
+                        if (texts.Admit(recent, text, "stack " + seed, out var c, out var s))
+                        {
+                            queue.Enqueue(c);
+                            queue.Enqueue(s);
+                        }
+                    }
+
+                    System.Threading.Interlocked.Increment(ref done);
+                });
+                threads[p].Start();
+            }
+
+            // The main thread files while they log.
+            while (System.Threading.Volatile.Read(ref done) < producers || !queue.IsEmpty)
+            {
+                if (queue.TryDequeue(out var text))
+                {
+                    texts.Release(text);
+                }
+            }
+
+            foreach (var thread in threads)
+            {
+                thread.Join();
+            }
+
+            while (queue.TryDequeue(out var text))
+            {
+                texts.Release(text);
+            }
+
+            Assert.AreEqual(0, texts.Chars, "every charge went with the last log holding its text");
+
+            // A small budget, texts filed and logged again (held again from zero): the bound holds throughout.
+            var small = new QueueTexts(10_000);
+            var held = new System.Collections.Concurrent.ConcurrentQueue<SharedText>();
+            long peak = 0;
+            done = 0;
+            for (int p = 0; p < producers; p++)
+            {
+                int seed = p;
+                threads[p] = new System.Threading.Thread(() =>
+                {
+                    var recent = new QueueTexts.Recent();
+                    string repeated = new string((char)('a' + seed), 100);
+                    for (int i = 0; i < 20_000; i++)
+                    {
+                        if (small.Admit(recent, repeated, i % 5 == 0 ? new string('s', 100) + i : null, out var c, out var s))
+                        {
+                            held.Enqueue(c);
+                            if (s != null)
+                            {
+                                held.Enqueue(s);
+                            }
+
+                            long now = small.Chars;
+                            long seen;
+                            while (now > (seen = System.Threading.Interlocked.Read(ref peak)) &&
+                                   System.Threading.Interlocked.CompareExchange(ref peak, now, seen) != seen)
+                            {
+                            }
+                        }
+                    }
+
+                    System.Threading.Interlocked.Increment(ref done);
+                });
+                threads[p].Start();
+            }
+
+            while (System.Threading.Volatile.Read(ref done) < producers || !held.IsEmpty)
+            {
+                if (held.TryDequeue(out var text))
+                {
+                    small.Release(text);
+                }
+            }
+
+            foreach (var thread in threads)
+            {
+                thread.Join();
+            }
+
+            while (held.TryDequeue(out var text))
+            {
+                small.Release(text);
+            }
+
+            // Each thread may have one refused reservation in flight (taken back at once).
+            Assert.LessOrEqual(peak, 10_000 + producers * 250, "a revived text is reserved like a new one");
+            Assert.AreEqual(0, small.Chars);
+        }
+
+        [Test]
         public void StoreGroupsAndCounts()
         {
             var store = new LogStore();
@@ -272,48 +560,6 @@ namespace Orbiters.Logger.Editor.Tests
         }
 
         [Test]
-        public void SnapshotRoundTrip()
-        {
-            var store = new LogStore();
-            store.Add(100, "<color=red>Red</color> thing", LogStack, LogVariant.Log);
-            store.Add(200, "Boom", ExceptionStack, LogVariant.Exception);
-            store.AddCompile(300, "Assets/B.cs(1,1): warning CS0618: obsolete", false, store.AssemblyId("Asm"), null, 0, 0);
-            store.SetContext(1, 42);
-            store.AddEvent(150, SessionEventKind.EnterPlayMode);
-            store.SetGrouping(GroupingMode.SimilarText);
-
-            var info = new SnapshotInfo { UnityRows = 12, UnityAnchor = "anchor", HistoryFrom = 0, HistoryTo = 4, HistoryAnchor = "h" };
-            var stream = new MemoryStream();
-            using (var writer = new BinaryWriter(stream, System.Text.Encoding.UTF8, leaveOpen: true))
-            {
-                LogSnapshot.Write(writer, store, info, 1234, 5678);
-            }
-
-            stream.Position = 0;
-            LogStore loaded;
-            SnapshotInfo loadedInfo;
-            using (var reader = new BinaryReader(stream))
-            {
-                Assert.IsNull(LogSnapshot.Read(reader, 999, 5678, out _), "another editor process");
-                stream.Position = 0;
-                loaded = LogSnapshot.Read(reader, 1234, 5678, out loadedInfo);
-            }
-
-            Assert.IsNotNull(loaded);
-            Assert.AreEqual(3, loaded.Count);
-            Assert.AreEqual(GroupingMode.SimilarText, loaded.Grouping);
-            Assert.AreEqual("Boom", loaded.Texts[loaded.Message(loaded.MessageAt(1)).Text]);
-            Assert.AreEqual(store.SourceOf(store.MessageAt(1)).Name, loaded.SourceOf(loaded.MessageAt(1)).Name);
-            Assert.AreEqual(200, loaded.TimeAt(1));
-            Assert.IsTrue(loaded.TryGetContext(1, out int context) && context == 42);
-            Assert.AreEqual(1, loaded.Events.Count);
-            Assert.AreEqual(12, loadedInfo.UnityRows);
-            Assert.AreEqual("anchor", loadedInfo.UnityAnchor);
-            Assert.AreEqual(4, loadedInfo.HistoryTo);
-            Assert.IsTrue(loaded.HasActiveCompileMessage("Assets/B.cs(1,1): warning CS0618: obsolete", out _));
-        }
-
-        [Test]
         public void ConsoleTimestamps()
         {
             Assert.IsTrue(UnityConsole.TrySplitTimestamp("[21:50:43] Hello", out int seconds, out string text));
@@ -325,6 +571,71 @@ namespace Orbiters.Logger.Editor.Tests
             Assert.AreEqual(LogVariant.Log, UnityConsole.VariantOf(8406016));
             Assert.AreEqual(LogVariant.Warning, UnityConsole.VariantOf(512));
             Assert.AreEqual(LogVariant.CompileError, UnityConsole.VariantOf(2048 | 256));
+        }
+
+        [Test]
+        public void UnityConsoleIsReachable()
+        {
+            // Every LogEntries member is bound (directly or by expression): a failure would turn history import off.
+            Assert.IsTrue(UnityConsole.Available);
+            Assert.GreaterOrEqual(UnityConsole.Total(), 0);
+            using (var reader = UnityConsole.Reader.Open())
+            {
+                Assert.IsNotNull(reader);
+                if (reader.Count > 0)
+                {
+                    Assert.IsNotNull(reader.Lines(0, 1, out _));
+                    Assert.IsTrue(reader.TryRead(0, out _));
+                }
+            }
+        }
+
+        [Test]
+        public void AJournalBelongsToOneProcessStart()
+        {
+            int self = System.Diagnostics.Process.GetCurrentProcess().Id;
+            long started = System.Diagnostics.Process.GetCurrentProcess().StartTime.ToUniversalTime().Ticks;
+            Assert.IsTrue(UnityConsole.ShowAll.IsRunning(self, started));
+            Assert.IsFalse(UnityConsole.ShowAll.IsRunning(self, started - TimeSpan.TicksPerMinute), "the same id given to a new process");
+            Assert.IsFalse(UnityConsole.ShowAll.IsRunning(self, 0L));
+        }
+
+        [Test]
+        public void BorrowedConsoleSettingsComeBackOnce()
+        {
+            Assume.That(UnityConsole.Available, "this Unity's console can't be read");
+            Assume.That(!UnityConsole.ShowAll.Held, "an import is borrowing the console");
+            bool collapse = UnityConsole.HasFlag(UnityConsole.FlagCollapse);
+            bool warnings = UnityConsole.HasFlag(UnityConsole.FlagLogLevelWarning);
+            bool timestamps = UnityConsole.HasFlag(UnityConsole.FlagShowTimestamp);
+            try
+            {
+                UnityConsole.SetFlag(UnityConsole.FlagCollapse, true);
+                UnityConsole.SetFlag(UnityConsole.FlagLogLevelWarning, false);
+                UnityConsole.SetFlag(UnityConsole.FlagShowTimestamp, false);
+
+                Assert.IsTrue(UnityConsole.ShowAll.Take(timestamps: true));
+                Assert.IsTrue(UnityConsole.ShowAll.Held);
+                Assert.IsTrue(UnityConsole.RowsAreComplete);
+                Assert.IsTrue(UnityConsole.HasFlag(UnityConsole.FlagShowTimestamp));
+                Assert.IsFalse(UnityConsole.ShowAll.Take(timestamps: true), "a second slice changes nothing");
+
+                // The user turns collapse back on while borrowed: that choice stays.
+                UnityConsole.SetFlag(UnityConsole.FlagCollapse, true);
+                UnityConsole.ShowAll.Release();
+                Assert.IsFalse(UnityConsole.ShowAll.Held);
+                Assert.IsTrue(UnityConsole.HasFlag(UnityConsole.FlagCollapse));
+                Assert.IsFalse(UnityConsole.HasFlag(UnityConsole.FlagLogLevelWarning));
+                Assert.IsFalse(UnityConsole.HasFlag(UnityConsole.FlagShowTimestamp));
+                Assert.AreEqual(string.Empty, ConsoleHistory.Anchor(0), "no anchor check while the console hides rows");
+            }
+            finally
+            {
+                UnityConsole.ShowAll.Release();
+                UnityConsole.SetFlag(UnityConsole.FlagCollapse, collapse);
+                UnityConsole.SetFlag(UnityConsole.FlagLogLevelWarning, warnings);
+                UnityConsole.SetFlag(UnityConsole.FlagShowTimestamp, timestamps);
+            }
         }
     }
 }

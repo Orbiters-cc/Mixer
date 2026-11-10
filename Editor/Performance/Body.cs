@@ -47,8 +47,10 @@ namespace Orbiters.Mixer.Editor.Performance
 
         public bool Valid => Animator.isHuman && Hips != null && Head != null && LeftHand != null && RightHand != null && LeftFoot != null && RightFoot != null;
 
-        /// <summary>Spine bones from the hips up to the neck (missing optional bones left out).</summary>
-        public Transform[] SpineChain => new[] { Spine, Chest, UpperChest, Neck }.Where(t => t != null).ToArray();
+        private Transform[] spineChain;
+
+        /// <summary>Spine bones from the hips up to the neck (missing optional bones left out). Built once: read every baked frame.</summary>
+        public Transform[] SpineChain => spineChain ?? (spineChain = new[] { Spine, Chest, UpperChest, Neck }.Where(t => t != null).ToArray());
 
         public Transform Of(BodyTarget target) => target switch
         {
@@ -319,6 +321,9 @@ namespace Orbiters.Mixer.Editor.Performance
     {
         readonly BodyRig rig;
         readonly Vector3 hipsBelowHead;
+        // The spine up to the chest tracker's bone, for that bone (built once: read every baked frame).
+        Transform[] chestChain;
+        Transform chestChainFor;
         float bodyYaw;
         bool started;
 
@@ -394,8 +399,13 @@ namespace Orbiters.Mixer.Editor.Performance
             {
                 var chestBone = rig.Of(BodyTarget.Chest);
                 var target = targets[BodyTarget.Chest];
-                var chain = rig.SpineChain.TakeWhile(t => t != chestBone).Concat(new[] { chestBone }).Where(t => t != null).ToArray();
-                Bend(chain, chestBone, target.Position, 6f);
+                if (chestChain == null || chestChainFor != chestBone)
+                {
+                    chestChainFor = chestBone;
+                    chestChain = rig.SpineChain.TakeWhile(t => t != chestBone).Concat(new[] { chestBone }).Where(t => t != null).ToArray();
+                }
+
+                Bend(chestChain, chestBone, target.Position, 6f);
                 chestBone.rotation = target.Rotation;
             }
             if (Has(BodyTarget.Head) && tracking.Head)

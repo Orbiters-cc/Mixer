@@ -177,7 +177,8 @@ namespace Orbiters.Logger.Editor
 
             Bind(Store);
             timings.Update(Store);
-            Refilter(allowAsync: false);
+            // After every script reload with the window open: the window shows at once, the pass may take a worker.
+            RefilterInvalidated();
             list.ScrollToEnd();
             rootVisualElement.schedule.Execute(Tick).Every(TickMs);
             rootVisualElement.schedule.Execute(KeepFocusInside);
@@ -261,15 +262,7 @@ namespace Orbiters.Logger.Editor
                 return;
             }
 
-            long now = LogCapture.Now;
-            long chartTo = Math.Max(store.LastTime, now);
-            long chartFrom = store.Count > 0 ? TimelineWindow.From(store.FirstTime, chartTo, TimelineWindow.Minutes) : now - TimeSpan.TicksPerMinute;
-            if (chartTo - chartFrom < TimeSpan.TicksPerSecond * 30)
-            {
-                chartTo = chartFrom + TimeSpan.TicksPerSecond * 30;
-            }
-
-            int buckets = Mathf.Clamp((int)(timeline.PlotWidth / 4f), 30, 500);
+            ChartAxis(store, out long chartFrom, out long chartTo, out int buckets);
             lastFullPass = EditorApplication.timeSinceStartup;
             fullPassVersion = store.Version;
             var result = runner.Request(store, BuildSpec(), state, chartFrom, chartTo, buckets, allowAsync);
@@ -277,6 +270,46 @@ namespace Orbiters.Logger.Editor
             {
                 Adopt(result);
             }
+        }
+
+        // The chart runs from the oldest log (or the window's start) to now, at least 30 seconds, a bucket per 4 pixels.
+        private void ChartAxis(LogStore store, out long chartFrom, out long chartTo, out int buckets)
+        {
+            long now = LogCapture.Now;
+            chartTo = Math.Max(store.LastTime, now);
+            chartFrom = store.Count > 0 ? TimelineWindow.From(store.FirstTime, chartTo, TimelineWindow.Minutes) : now - TimeSpan.TicksPerMinute;
+            if (chartTo - chartFrom < TimeSpan.TicksPerSecond * 30)
+            {
+                chartTo = chartFrom + TimeSpan.TicksPerSecond * 30;
+            }
+
+            buckets = Mathf.Clamp((int)(timeline.PlotWidth / 4f), 30, 500);
+        }
+
+        // The rows no longer match the store (or there are none yet): they go at once, and the pass that makes new ones
+        // runs on a worker when it could take long (a big store, a regular expression); the status says "Filtering…"
+        // meanwhile. Never a full pass on the editor's thread at a window's creation, a trim, a merge or a regroup.
+        private void RefilterInvalidated()
+        {
+            if (state != null)
+            {
+                state = null;
+                newRows = 0;
+                list?.SetItemCount(0, keepAtEnd: false);
+                chromeDirty = true;
+                detailsDirty = true;
+            }
+
+            Refilter(allowAsync: true);
+        }
+
+        // Only the time axis moved: the chart and sparklines are counted again, the rows and groups stay.
+        private void Rechart(LogStore store)
+        {
+            ChartAxis(store, out long chartFrom, out long chartTo, out int buckets);
+            lastFullPass = EditorApplication.timeSinceStartup;
+            fullPassVersion = store.Version;
+            runner.RequestChart(store, state, chartFrom, chartTo, buckets);
         }
 
         private void Adopt(FilterState result)
@@ -290,7 +323,7 @@ namespace Orbiters.Logger.Editor
             if (!result.Extend(store, store.Sources.All))
             {
                 // The store changed shape while the pass ran (cleared, merged): start again.
-                Refilter(allowAsync: false);
+                RefilterInvalidated();
                 return;
             }
 
@@ -356,7 +389,7 @@ namespace Orbiters.Logger.Editor
             if (store != boundStore)
             {
                 Bind(store);
-                Refilter(allowAsync: false);
+                RefilterInvalidated();
             }
 
             timings.Update(store);
@@ -372,15 +405,36 @@ namespace Orbiters.Logger.Editor
                 Adopt(ready);
             }
 
+            if (runner.TryTakeChart(store, state))
+            {
+                if (grouped)
+                {
+                    // Sparklines are drawn by the rows.
+                    list?.RefreshRows();
+                }
+
+                chromeDirty = true;
+                detailsDirty = true;
+            }
+
             double now = EditorApplication.timeSinceStartup;
             if (state == null || state.Epoch != store.Epoch || state.MessagesVersion != store.MessagesVersion || !ReferenceEquals(state.Texts, store.Texts))
             {
-                // Row ids no longer match the store: never draw them, recompute now.
-                Refilter(allowAsync: false);
+                // Row ids no longer match the store: never draw them, recompute (a pass already running gives its result).
+                if (state != null || !runner.Busy)
+                {
+                    RefilterInvalidated();
+                }
             }
-            else if (store.Version != seenVersion)
+            else if (store.Version != seenVersion || state.SearchPending)
             {
+                // New logs, or a search that goes on a slice at a time.
                 Catchup(store, now);
+                if (state != null && state.WorkerPending && !runner.Busy && !specDirty)
+                {
+                    // Texts too slow for the editor's thread: a worker pass (with what is known kept) tests them.
+                    QueueRefilter();
+                }
             }
 
             if (seenWindow != TimelineWindow.Version)
@@ -395,11 +449,12 @@ namespace Orbiters.Logger.Editor
             }
             else if (!runner.Busy && timeline != null && timeline.resolvedStyle.display != DisplayStyle.None)
             {
-                // The chart keeps up with time: every 3 seconds while logs arrive, every 15 seconds otherwise.
+                // The chart keeps up with time: every 3 seconds while logs arrive, every 15 seconds otherwise. Only its
+                // counts are redone (a full pass would also rebuild the rows, groups and search results that didn't change).
                 double age = now - lastFullPass;
                 if (age > 3d && store.Version != fullPassVersion || age > 15d)
                 {
-                    Refilter(allowAsync: true);
+                    Rechart(store);
                 }
             }
 
@@ -437,7 +492,7 @@ namespace Orbiters.Logger.Editor
             bool atEnd = list.AtEnd;
             if (!state.Extend(store, store.Sources.All))
             {
-                Refilter(allowAsync: false);
+                RefilterInvalidated();
                 return;
             }
 

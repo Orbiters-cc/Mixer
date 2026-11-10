@@ -28,7 +28,9 @@ namespace Orbiters.Logger.Editor
     internal static class LogCapture
     {
         private const int MaxQueued = 1_000_000;
-        private const int SynchronousHistoryRows = 20_000;
+        // Characters of text the queue may hold (64 MB of UTF-16) while the main thread is busy: a flood of long, distinct
+        // logs is bounded by its size, not only by its number.
+        private const long MaxQueuedChars = 32L * 1024 * 1024;
         private const int MaxReloadGapRows = 50_000;
         internal const string MaxLogsPref = "Orbiters.Logger.MaxLogs";
         internal const string GroupingPref = "Orbiters.Logger.Grouping";
@@ -36,13 +38,13 @@ namespace Orbiters.Logger.Editor
         private readonly struct RawLog
         {
             public readonly long Time;
-            public readonly string Condition;
-            public readonly string Stack;
+            public readonly SharedText Condition;
+            public readonly SharedText Stack;
             public readonly LogType Type;
             public readonly bool Background;
             public readonly bool Injected;
 
-            public RawLog(long time, string condition, string stack, LogType type, bool background, bool injected = false)
+            public RawLog(long time, SharedText condition, SharedText stack, LogType type, bool background, bool injected)
             {
                 Time = time;
                 Condition = condition;
@@ -53,6 +55,9 @@ namespace Orbiters.Logger.Editor
             }
         }
 
+        [ThreadStatic] private static QueueTexts.Recent recent;
+        private static readonly QueueTexts queueTexts = new QueueTexts(MaxQueuedChars);
+
         private static readonly ConcurrentQueue<RawLog> queue = new ConcurrentQueue<RawLog>();
         private static readonly ConsoleMirror mirror = new ConsoleMirror();
         private static readonly HashSet<string> compileCycle = new HashSet<string>(StringComparer.Ordinal);
@@ -60,6 +65,8 @@ namespace Orbiters.Logger.Editor
         private static int queued;
         private static int dropped;
         private static ConsoleHistory history;
+        // Logs Unity received while scripts reloaded: filed before any live log, so live logs wait in the queue for it.
+        private static ConsoleHistory gap;
         private static bool compileErrors;
         private static bool reloading;
         private static int lastVersion = -1;
@@ -84,6 +91,7 @@ namespace Orbiters.Logger.Editor
             AssemblyReloadEvents.beforeAssemblyReload += BeforeReload;
             EditorApplication.quitting += () =>
             {
+                UnityConsole.ShowAll.Release();
                 LogLedger.Save(Store);
                 LogSnapshot.Delete();
             };
@@ -102,7 +110,7 @@ namespace Orbiters.Logger.Editor
         /// <summary>The import of Unity's console history in progress, or null.</summary>
         public static ConsoleHistory History => history != null && history.Prepends ? history : null;
 
-        /// <summary>Logs dropped because they arrived faster than they could be filed (over a million queued).</summary>
+        /// <summary>Logs dropped because they arrived faster than they could be filed (over a million, or 64 MB of text, queued).</summary>
         public static int Dropped => dropped;
 
         public static long Now => DateTime.UtcNow.Ticks;
@@ -110,12 +118,26 @@ namespace Orbiters.Logger.Editor
         private static void Start()
         {
             long now = Now;
+            // An editor that crashed mid-import left Unity's console settings borrowed.
+            UnityConsole.ShowAll.Recover();
             int unityRows = UnityConsole.Total();
             string anchor = unityRows > 0 ? ConsoleHistory.Anchor(unityRows - 1) : string.Empty;
-            var restored = LogSnapshot.TryLoad(out var info);
+            var restored = LogSnapshot.TryLoad(out var info, out string problem);
+            if (problem != null)
+            {
+                // One recovery for every abnormal start (no valid head, a head skipped, a save that failed): an empty store
+                // and Unity's console read again through the history import, whose progress is saved across reloads. The
+                // session files stay until a save of that recovery succeeds. Queued like any log: the one line about it.
+                restored = null;
+                Debug.LogWarning("[Mixer console] The logs from before the script reload could not be read back (" + problem +
+                    "): the Mixer console reads Unity's console again. Logs only the Mixer console had (timings, Git commands) are lost.");
+            }
+
             if (restored != null)
             {
                 Attach(restored);
+                // Every restored message was noted just before the reload.
+                LogLedger.Restored(restored);
                 // Scripts only reload once every assembly compiles: earlier compile errors are fixed.
                 Store.ResolveCompile(-1, errorsOnly: true);
                 Store.AddEvent(now, SessionEventKind.DomainReload);
@@ -125,14 +147,12 @@ namespace Orbiters.Logger.Editor
                         (info.HistoryTo - 1, info.HistoryAnchor));
                 }
 
-                // Logs Unity received while scripts reloaded, before the Mixer console listened again.
-                if (info.UnityRows <= unityRows && unityRows - info.UnityRows <= MaxReloadGapRows)
+                // Logs Unity received while scripts reloaded, before the Mixer console listened again. Read a slice per
+                // editor update like the history (not here: this runs while the editor waits for the reload).
+                if (info.UnityRows < unityRows && unityRows - info.UnityRows <= MaxReloadGapRows)
                 {
-                    var gap = new ConsoleHistory(info.UnityRows, unityRows, ConsoleHistory.Placement.After, now,
+                    gap = new ConsoleHistory(info.UnityRows, unityRows, ConsoleHistory.Placement.After, now,
                         (info.UnityRows - 1, info.UnityAnchor), (unityRows - 1, anchor));
-                    while (!gap.Step(Store, 50))
-                    {
-                    }
                 }
             }
             else
@@ -140,15 +160,8 @@ namespace Orbiters.Logger.Editor
                 Attach(new LogStore());
                 if (unityRows > 0)
                 {
+                    // Read a slice per editor update, never here: a project opening waits for this constructor.
                     history = new ConsoleHistory(0, unityRows, ConsoleHistory.Placement.Before, now, (unityRows - 1, anchor));
-                    if (unityRows <= SynchronousHistoryRows)
-                    {
-                        while (!history.Step(Store, 50))
-                        {
-                        }
-
-                        history = null;
-                    }
                 }
             }
 
@@ -163,19 +176,12 @@ namespace Orbiters.Logger.Editor
             Store.Shifted += mirror.Shift;
         }
 
-        // Any thread. Must stay fast and never throw or log.
+        // Any thread. Must stay fast and never throw or log: no lock, two interlocked counters, one queue write.
         private static void OnLog(string condition, string stackTrace, LogType type)
         {
             try
             {
-                if (Interlocked.Increment(ref queued) > MaxQueued)
-                {
-                    Interlocked.Decrement(ref queued);
-                    Interlocked.Increment(ref dropped);
-                    return;
-                }
-
-                queue.Enqueue(new RawLog(DateTime.UtcNow.Ticks, condition, stackTrace, type, Thread.CurrentThread.ManagedThreadId != mainThread));
+                Enqueue(condition, stackTrace, type, injected: false);
             }
             catch (Exception)
             {
@@ -183,12 +189,9 @@ namespace Orbiters.Logger.Editor
             }
         }
 
-        /// <summary>
-        /// Files a log that never goes through Unity's console (another tool's activity, such as Mixer Git's commands).
-        /// Any thread.
-        /// </summary>
-        internal static void Inject(string condition, string stack, LogType type)
+        private static void Enqueue(string condition, string stack, LogType type, bool injected)
         {
+            long time = DateTime.UtcNow.Ticks;
             if (Interlocked.Increment(ref queued) > MaxQueued)
             {
                 Interlocked.Decrement(ref queued);
@@ -196,8 +199,23 @@ namespace Orbiters.Logger.Editor
                 return;
             }
 
-            queue.Enqueue(new RawLog(DateTime.UtcNow.Ticks, condition, stack, type, Thread.CurrentThread.ManagedThreadId != mainThread, injected: true));
+            // Cut as the store would file them, so one huge log can't fill the queue's budget.
+            if (!queueTexts.Admit(recent ?? (recent = new QueueTexts.Recent()), LogStore.Capped(condition), LogStore.Capped(stack),
+                    out var sharedCondition, out var sharedStack))
+            {
+                Interlocked.Decrement(ref queued);
+                Interlocked.Increment(ref dropped);
+                return;
+            }
+
+            queue.Enqueue(new RawLog(time, sharedCondition, sharedStack, type, Thread.CurrentThread.ManagedThreadId != mainThread, injected));
         }
+
+        /// <summary>
+        /// Files a log that never goes through Unity's console (another tool's activity, such as Mixer Git's commands).
+        /// Any thread.
+        /// </summary>
+        internal static void Inject(string condition, string stack, LogType type) => Enqueue(condition, stack, type, injected: true);
 
         private static void Update()
         {
@@ -208,16 +226,36 @@ namespace Orbiters.Logger.Editor
 
             try
             {
+                if (Store.Texts.Faulted)
+                {
+                    // The session file was damaged after it was read back: never show placeholders as logs.
+                    Debug.LogWarning("[Mixer console] Some logs from before the script reload could not be read back: the Mixer console reads Unity's console again. Logs only the Mixer console had (timings, Git commands) are lost.");
+                    RebuildFromUnityConsole();
+                }
+
                 Drain(6d);
+                // Texts read back lazily (a search over a restored session) add stripped copies while no log arrives.
+                Store.KeepWithinTextBudget();
                 if (history != null && history.Step(Store, ImportBudget()))
                 {
+                    if (history.Error != null)
+                    {
+                        Report(history.Error);
+                    }
+
                     history = null;
                     lastVersion = -1;
                 }
 
+                if (history == null && gap == null)
+                {
+                    // An import that was dropped (cleared, rebuilt) gives Unity's console settings back here.
+                    UnityConsole.ShowAll.Release();
+                }
+
                 // Console rows are only matched once every queued log is filed: a row whose log still waits in the
                 // queue would look like one the Mixer console never received.
-                if (queue.IsEmpty)
+                if (queue.IsEmpty && gap == null)
                 {
                     mirror.Tick(Store, Now, 2d, OnCompileRow);
                 }
@@ -252,7 +290,12 @@ namespace Orbiters.Logger.Editor
         /// <summary>Files queued logs for up to <paramref name="budgetMs"/> milliseconds (all of them when 0).</summary>
         internal static bool Drain(double budgetMs)
         {
-            if (queue.IsEmpty || Store == null)
+            if (Store == null || gap != null && !StepGap(budgetMs))
+            {
+                return false;
+            }
+
+            if (queue.IsEmpty)
             {
                 return false;
             }
@@ -262,6 +305,9 @@ namespace Orbiters.Logger.Editor
             while (queue.TryDequeue(out var raw))
             {
                 Interlocked.Decrement(ref queued);
+                // Released first: a log that fails to file must not keep its charge for ever.
+                queueTexts.Release(raw.Condition);
+                queueTexts.Release(raw.Stack);
                 Ingest(raw);
                 filed++;
                 if (budgetMs > 0 && (filed & 63) == 0 && clock.Elapsed.TotalMilliseconds >= budgetMs)
@@ -273,11 +319,37 @@ namespace Orbiters.Logger.Editor
             return filed > 0;
         }
 
+        // True once the reload's gap is filed (all of it when the budget is 0).
+        private static bool StepGap(double budgetMs)
+        {
+            if (budgetMs > 0d)
+            {
+                if (!gap.Step(Store, budgetMs))
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                while (!gap.Step(Store, 50d))
+                {
+                }
+            }
+
+            if (gap.Error != null)
+            {
+                Report(gap.Error);
+            }
+
+            gap = null;
+            return true;
+        }
+
         private static void Ingest(RawLog raw)
         {
             var variant = LogVariants.From(raw.Type);
-            string condition = raw.Condition ?? string.Empty;
-            string stack = raw.Stack ?? string.Empty;
+            string condition = raw.Condition?.Text ?? string.Empty;
+            string stack = raw.Stack?.Text ?? string.Empty;
             if (ReloadTimings.IsOwnNotice(condition))
             {
                 // Unity's notice that the Mixer console's reload measuring is on, at every reload: not a problem to report.
@@ -460,8 +532,13 @@ namespace Orbiters.Logger.Editor
             }
             catch (Exception)
             {
-                // Without a snapshot the next domain reads Unity's console instead.
-                LogSnapshot.Delete();
+                // The last committed session stays: the next domain reads it, then Unity's console for the rest, and says so.
+                LogSnapshot.SaveFailed();
+            }
+            finally
+            {
+                // The next domain borrows them again if the import goes on.
+                UnityConsole.ShowAll.Release();
             }
         }
 

@@ -94,6 +94,7 @@ namespace Orbiters.Logger.Editor
         private static readonly Func<object, int> entryMode;
         private static readonly Func<object, int> entryInstanceId;
         private static readonly Func<object, int> entryCallstackStart;
+        private static readonly FieldInfo consoleWindowField;
 
         static UnityConsole()
         {
@@ -108,8 +109,11 @@ namespace Orbiters.Logger.Editor
                 }
 
                 const BindingFlags Static = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;
-                startGettingEntries = Static0<int>(entries.GetMethod("StartGettingEntries", Static));
-                endGettingEntries = Expression.Lambda<Action>(Expression.Call(entries.GetMethod("EndGettingEntries", Static))).Compile();
+                // Static methods are bound directly (no expression to compile at every domain load); one whose signature
+                // no longer matches gets an expression, which converts what it can.
+                startGettingEntries = Bind(entries.GetMethod("StartGettingEntries", Static), () => Static0<int>(entries.GetMethod("StartGettingEntries", Static)));
+                endGettingEntries = Bind(entries.GetMethod("EndGettingEntries", Static),
+                    () => Expression.Lambda<Action>(Expression.Call(entries.GetMethod("EndGettingEntries", Static))).Compile());
 
                 var row = Expression.Parameter(typeof(int), "row");
                 var boxed = Expression.Parameter(typeof(object), "entry");
@@ -119,24 +123,26 @@ namespace Orbiters.Logger.Editor
                 var lines = Expression.Parameter(typeof(int), "lines");
                 var mode = Expression.Parameter(typeof(int).MakeByRefType(), "mode");
                 var text = Expression.Parameter(typeof(string).MakeByRefType(), "text");
-                getLines = Expression.Lambda<LinesDelegate>(
-                    Expression.Call(entries.GetMethod("GetLinesAndModeFromEntryInternal", Static), row, lines, mode, text), row, lines, mode, text).Compile();
+                getLines = Bind(entries.GetMethod("GetLinesAndModeFromEntryInternal", Static), () => Expression.Lambda<LinesDelegate>(
+                    Expression.Call(entries.GetMethod("GetLinesAndModeFromEntryInternal", Static), row, lines, mode, text), row, lines, mode, text).Compile());
 
                 var errors = Expression.Parameter(typeof(int).MakeByRefType(), "errors");
                 var warnings = Expression.Parameter(typeof(int).MakeByRefType(), "warnings");
                 var logs = Expression.Parameter(typeof(int).MakeByRefType(), "logs");
-                getCounts = Expression.Lambda<CountsDelegate>(
-                    Expression.Call(entries.GetMethod("GetCountsByType", Static), errors, warnings, logs), errors, warnings, logs).Compile();
+                getCounts = Bind(entries.GetMethod("GetCountsByType", Static), () => Expression.Lambda<CountsDelegate>(
+                    Expression.Call(entries.GetMethod("GetCountsByType", Static), errors, warnings, logs), errors, warnings, logs).Compile());
 
                 var flagsProperty = entries.GetProperty("consoleFlags", Static);
-                getFlags = Expression.Lambda<Func<int>>(Expression.Property(null, flagsProperty)).Compile();
+                getFlags = Bind(flagsProperty?.GetGetMethod(true), () => Expression.Lambda<Func<int>>(Expression.Property(null, flagsProperty)).Compile());
                 var bit = Expression.Parameter(typeof(int), "bit");
                 var value = Expression.Parameter(typeof(bool), "value");
-                setFlag = Expression.Lambda<Action<int, bool>>(Expression.Call(entries.GetMethod("SetConsoleFlag", Static), bit, value), bit, value).Compile();
-                getFilteringText = Static0<string>(entries.GetMethod("GetFilteringText", Static));
+                setFlag = Bind(entries.GetMethod("SetConsoleFlag", Static),
+                    () => Expression.Lambda<Action<int, bool>>(Expression.Call(entries.GetMethod("SetConsoleFlag", Static), bit, value), bit, value).Compile());
+                getFilteringText = Bind(entries.GetMethod("GetFilteringText", Static), () => Static0<string>(entries.GetMethod("GetFilteringText", Static)));
                 var filter = Expression.Parameter(typeof(string), "filter");
-                setFilteringText = Expression.Lambda<Action<string>>(Expression.Call(entries.GetMethod("SetFilteringText", Static), filter), filter).Compile();
-                clear = Expression.Lambda<Action>(Expression.Call(entries.GetMethod("Clear", Static))).Compile();
+                setFilteringText = Bind(entries.GetMethod("SetFilteringText", Static),
+                    () => Expression.Lambda<Action<string>>(Expression.Call(entries.GetMethod("SetFilteringText", Static), filter), filter).Compile());
+                clear = Bind(entries.GetMethod("Clear", Static), () => Expression.Lambda<Action>(Expression.Call(entries.GetMethod("Clear", Static))).Compile());
 
                 newEntry = Expression.Lambda<Func<object>>(Expression.Convert(Expression.New(entryType), typeof(object))).Compile();
                 entryMessage = Field<string>(entryType, "message");
@@ -149,6 +155,7 @@ namespace Orbiters.Logger.Editor
                 entryCallstackStart = entryType.GetField("callstackTextStartUTF16", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance) != null
                     ? Field<int>(entryType, "callstackTextStartUTF16")
                     : null;
+                consoleWindowField = assembly.GetType("UnityEditor.ConsoleWindow")?.GetField("ms_ConsoleWindow", BindingFlags.NonPublic | BindingFlags.Static);
                 Available = true;
             }
             catch (Exception)
@@ -161,6 +168,23 @@ namespace Orbiters.Logger.Editor
         public static bool Available { get; }
 
         private static Func<T> Static0<T>(MethodInfo method) => Expression.Lambda<Func<T>>(Expression.Call(method)).Compile();
+
+        private static T Bind<T>(MethodInfo method, Func<T> expression) where T : class
+        {
+            if (method != null)
+            {
+                try
+                {
+                    return (T)(object)Delegate.CreateDelegate(typeof(T), method);
+                }
+                catch (ArgumentException)
+                {
+                    // The signature changed: the expression below converts or fails like before.
+                }
+            }
+
+            return expression();
+        }
 
         private static Func<object, T> Field<T>(Type type, string name)
         {
@@ -230,78 +254,247 @@ namespace Orbiters.Logger.Editor
         }
 
         /// <summary>
-        /// While alive, Unity's console lists every entry in order with timestamps (collapse, level filters and search
-        /// off), then its settings come back. Nothing repaints in between, so the Console window doesn't flicker.
+        /// True when a Unity Console window may be showing (or this Unity doesn't tell): settings borrowed by
+        /// <see cref="ShowAll"/> are then given back after each slice, so the user never sees them changed.
         /// </summary>
-        public sealed class ShowAllScope : IDisposable
+        public static bool ConsoleWindowMayShow
         {
-            private readonly int savedFlags;
-            private readonly string savedFilter;
-            private readonly bool changedFlags;
-            private readonly bool changedFilter;
+            get
+            {
+                if (consoleWindowField == null)
+                {
+                    return true;
+                }
 
-            public ShowAllScope(bool timestamps)
+                try
+                {
+                    // Unity sets it while a Console window exists (open, even in a hidden tab) and clears it when it closes.
+                    return consoleWindowField.GetValue(null) as UnityEngine.Object != null;
+                }
+                catch (Exception)
+                {
+                    return true;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Unity's console borrowed to list every entry in order (collapse, level filters and search off, timestamps on
+        /// when asked), held for a whole history import and then given back. Each change of those settings costs Unity a
+        /// pass over all its entries, so they change once per import instead of once per slice.
+        /// <para>
+        /// Only the settings this changed are given back, and only those still as this set them (the user may have
+        /// changed one since). What was borrowed is also kept in EditorPrefs, so an editor that crashed mid-import gets
+        /// its console settings back at the next start (<see cref="Recover"/>). Main thread only.
+        /// </para>
+        /// </summary>
+        public static class ShowAll
+        {
+            // One journal per project (EditorPrefs are shared by every editor of this user), owned by one editor process.
+            private static string RecoveryPref => "Orbiters.Logger.BorrowedConsole." +
+                                                  TextTable.Hash(UnityEngine.Application.dataPath ?? string.Empty).ToString("x8");
+            private static readonly int[] Borrowable = { FlagCollapse, FlagLogLevelLog, FlagLogLevelWarning, FlagLogLevelError, FlagShowTimestamp };
+            private static int changedBits;
+            private static int savedFlags;
+            private static bool changedFilter;
+            private static string savedFilter = string.Empty;
+
+            /// <summary>Some of Unity's console settings are borrowed right now.</summary>
+            public static bool Held => changedBits != 0 || changedFilter;
+
+            /// <summary>
+            /// Makes Unity's console list every entry in order. True when a setting had to change now (Unity re-filtered
+            /// its entries); false when it already did, or this Unity's console can't be changed.
+            /// </summary>
+            public static bool Take(bool timestamps)
             {
                 if (!Available)
+                {
+                    return false;
+                }
+
+                try
+                {
+                    int flags = getFlags();
+                    int wanted = (flags & ~FlagCollapse) | AllLevels | (timestamps ? FlagShowTimestamp : 0);
+                    int change = flags ^ wanted;
+                    string filter = getFilteringText() ?? string.Empty;
+                    if (change == 0 && filter.Length == 0)
+                    {
+                        return false;
+                    }
+
+                    // Remember the user's value of each setting the first time it is borrowed.
+                    int fresh = change & ~changedBits;
+                    savedFlags = (savedFlags & ~fresh) | (flags & fresh);
+                    changedBits |= change;
+                    if (filter.Length > 0 && !changedFilter)
+                    {
+                        savedFilter = filter;
+                        changedFilter = true;
+                    }
+
+                    SaveRecovery();
+                    foreach (int flag in Borrowable)
+                    {
+                        if ((change & flag) != 0)
+                        {
+                            setFlag(flag, (wanted & flag) != 0);
+                        }
+                    }
+
+                    if (filter.Length > 0)
+                    {
+                        setFilteringText(string.Empty);
+                    }
+
+                    return true;
+                }
+                catch (Exception)
+                {
+                    return false;
+                }
+            }
+
+            /// <summary>Gives Unity's console its settings back. Nothing happens when none are borrowed.</summary>
+            public static void Release()
+            {
+                if (!Held)
                 {
                     return;
                 }
 
                 try
                 {
-                    savedFlags = getFlags();
-                    savedFilter = getFilteringText() ?? string.Empty;
-                    int wanted = (savedFlags & ~FlagCollapse) | AllLevels | (timestamps ? FlagShowTimestamp : 0);
-                    if (wanted != savedFlags)
-                    {
-                        changedFlags = true;
-                        Apply(savedFlags, wanted);
-                    }
-
-                    if (savedFilter.Length > 0)
-                    {
-                        changedFilter = true;
-                        setFilteringText(string.Empty);
-                    }
-                }
-                catch (Exception)
-                {
-                    changedFlags = false;
-                    changedFilter = false;
-                }
-            }
-
-            /// <summary>True when the scope had to change Unity's console settings (each change re-filters its entries).</summary>
-            public bool Changed => changedFlags || changedFilter;
-
-            public void Dispose()
-            {
-                try
-                {
-                    if (changedFilter)
+                    if (changedFilter && string.IsNullOrEmpty(getFilteringText()))
                     {
                         setFilteringText(savedFilter);
                     }
 
-                    if (changedFlags)
+                    int flags = getFlags();
+                    foreach (int flag in Borrowable)
                     {
-                        Apply(getFlags(), savedFlags);
+                        if ((changedBits & flag) == 0)
+                        {
+                            continue;
+                        }
+
+                        bool saved = (savedFlags & flag) != 0;
+                        // Still what this set (the opposite of the user's value): give the user's value back.
+                        if (((flags & flag) != 0) != saved)
+                        {
+                            setFlag(flag, saved);
+                        }
                     }
                 }
                 catch (Exception)
                 {
-                    // Leave the console as it is.
+                    // Unity changed the API: leave its console as it is.
+                }
+                finally
+                {
+                    changedBits = 0;
+                    savedFlags = 0;
+                    changedFilter = false;
+                    savedFilter = string.Empty;
+                    ClearRecovery();
                 }
             }
 
-            private static void Apply(int from, int to)
+            /// <summary>Gives back settings an earlier editor borrowed and never returned (it crashed mid-import).</summary>
+            public static void Recover()
             {
-                foreach (int flag in new[] { FlagCollapse, FlagLogLevelLog, FlagLogLevelWarning, FlagLogLevelError, FlagShowTimestamp })
+                try
                 {
-                    if ((from & flag) != (to & flag))
+                    string saved = EditorPrefs.GetString(RecoveryPref, string.Empty);
+                    if (string.IsNullOrEmpty(saved))
                     {
-                        setFlag(flag, (to & flag) != 0);
+                        return;
                     }
+
+                    var parts = saved.Split(new[] { ';' }, 6);
+                    if (parts.Length == 6 && int.TryParse(parts[0], out int owner) && long.TryParse(parts[1], out long started) &&
+                        !(owner == CurrentProcess && started == StartTicks(CurrentProcess)) && IsRunning(owner, started))
+                    {
+                        // The editor that borrowed them still runs (the same process id and start time): not ours.
+                        return;
+                    }
+
+                    if (Available && parts.Length == 6 && int.TryParse(parts[2], out int bits) && int.TryParse(parts[3], out int values))
+                    {
+                        changedBits = bits;
+                        savedFlags = values;
+                        changedFilter = parts[4] == "1";
+                        savedFilter = parts[5];
+                        Release();
+                    }
+
+                    ClearRecovery();
+                }
+                catch (Exception)
+                {
+                    // Nothing to give back with.
+                }
+            }
+
+            private static void SaveRecovery()
+            {
+                try
+                {
+                    EditorPrefs.SetString(RecoveryPref, CurrentProcess + ";" + StartTicks(CurrentProcess) + ";" + changedBits + ";" + savedFlags + ";" + (changedFilter ? "1" : "0") + ";" + savedFilter);
+                }
+                catch (Exception)
+                {
+                    // Only the crash recovery is lost.
+                }
+            }
+
+            private static int CurrentProcess
+            {
+                get
+                {
+                    try
+                    {
+                        return System.Diagnostics.Process.GetCurrentProcess().Id;
+                    }
+                    catch (Exception)
+                    {
+                        return 0;
+                    }
+                }
+            }
+
+            // When a process started (UTC ticks), or 0 when it doesn't exist or can't be asked.
+            private static long StartTicks(int processId)
+            {
+                try
+                {
+                    using (var process = System.Diagnostics.Process.GetProcessById(processId))
+                    {
+                        return process.HasExited ? 0L : process.StartTime.ToUniversalTime().Ticks;
+                    }
+                }
+                catch (Exception)
+                {
+                    return 0L;
+                }
+            }
+
+            // The very process that wrote a journal: its id alone could have been given to a new process since.
+            internal static bool IsRunning(int processId, long startTicks) => startTicks != 0L && StartTicks(processId) == startTicks;
+
+            private static void ClearRecovery()
+            {
+                try
+                {
+                    if (EditorPrefs.HasKey(RecoveryPref))
+                    {
+                        EditorPrefs.DeleteKey(RecoveryPref);
+                    }
+                }
+                catch (Exception)
+                {
+                    // Only the crash recovery is affected.
                 }
             }
         }
