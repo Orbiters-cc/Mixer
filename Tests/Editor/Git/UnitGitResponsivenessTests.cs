@@ -188,6 +188,13 @@ namespace Orbiters.UnitGit.Editor.Tests
                 owner.changesTab.selectedChangePath = diff.Path;
                 owner.changesTab.requestedDiffPath = diff.Path;
                 owner.changesTab.loadedDiff = diff;
+                // The shown diff is current for what it depends on (its key), as after a read: entering Text then reads
+                // nothing, and the test's diff stays. With no key the window reads the file again (it cannot know the shown
+                // diff is still right), and that read of a file that does not exist replaces it.
+                var root = ((UnitGitService)typeof(UnitGitWindow).GetField("gitService", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(owner)).ProjectRoot;
+                UnitGitPaths.GitPath(root, "index");
+                owner.changesTab.requestedDiffKey = (string)Invoke(owner, "TextDiffKey", snapshot.Changes[0], UnitGitDiffViewer.Whitespace);
+                Assert.That(owner.changesTab.requestedDiffKey, Is.Not.Null, "The project must be in a Git repository for its index to be known.");
                 host.position = new Rect(0, 0, 1200, 700);
                 host.rootVisualElement.style.width = 1200;
                 host.rootVisualElement.style.height = 700;
