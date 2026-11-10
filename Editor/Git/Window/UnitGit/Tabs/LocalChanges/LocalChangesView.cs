@@ -496,6 +496,7 @@ namespace Orbiters.UnitGit.Editor
                     var service = new UnitGitService(root);
                     service.ProcessLogReceived = line => QueueConsoleLine("prepare commit", line);
                     GitCommandResult last = null;
+                    // Exactly the files the user ticked, all in one command (Git reads the list on stdin).
                     foreach (var (paths, include) in batch)
                     {
                         last = include ? service.Stage(paths) : service.Unstage(paths);
@@ -853,6 +854,12 @@ namespace Orbiters.UnitGit.Editor
             if (value)
             {
                 commitMessageBeforeAmend = commitMessage;
+                // Refreshes read HEAD's message only while Amend is ticked: the first tick reads it here (one short read).
+                if (snapshot != null && snapshot.HeadMessage == null && snapshot.HasCommits && gitService != null)
+                {
+                    GitCommandResult head = gitService.GetHeadCommitMessage();
+                    if (head.Success) snapshot.HeadMessage = head.StandardOutput;
+                }
                 commitMessage = snapshot != null ? snapshot.HeadMessage?.Trim() ?? string.Empty : string.Empty;
                 commitAmend = true;
             }

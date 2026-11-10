@@ -291,7 +291,7 @@ namespace Orbiters.UnitGit.Editor.Tests
         public void ParsingKeepsFieldPositionsAndReadsMergeAndRenameLines()
         {
             const string separator = "\x1f";
-            string log = string.Join(separator, "a1b2c3d", "full-1", "Merge", "Ada", "ada@example.test", "2 days ago", "HEAD -> main", "", "p1 p2", "1612325106");
+            string log = string.Join(separator, "a1b2c3d", "full-1", "Merge", "Ada", "ada@example.test", "HEAD -> main", "", "p1 p2", "1612325106");
             UnitGitCommit commit = UnitGitService.ParseCommits(log, string.Empty).Single();
             Assert.That(commit.ReleaseId, Is.Empty);
             Assert.That(commit.Parents, Is.EqualTo(new[] { "p1", "p2" }));

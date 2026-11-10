@@ -566,18 +566,15 @@ namespace Orbiters.UnitGit.Editor
                     return Fail(IgnoredReleaseFileMessage);
                 paths = included;
                 if (paths.Length == 0) return Fail("All requested checkpoint files are ignored by Git.");
-                var addArgs = new List<string> { "add", "--" };
-                addArgs.AddRange(paths);
-                GitCommandResult stage = index.Run(addArgs.ToArray());
+                // Every path in one command, on stdin (a checkpoint of a few hundred long paths would not fit a command line).
+                GitCommandResult stage = index.RunForPaths(paths, "add");
 
                 if (!stage.Success)
                 {
                     return Fail("Staging files failed: " + stage.Message);
                 }
 
-                var diffArgs = new List<string> { "diff", "--cached", "--quiet", "--exit-code", "--" };
-                diffArgs.AddRange(paths);
-                GitCommandResult difference = index.Run(diffArgs.ToArray());
+                GitCommandResult difference = StagedDifference(index, paths);
                 if (difference.Success)
                     return new UnitGitReleaseResult { Success = true, NoChanges = true, Message = "No new changes to checkpoint." };
                 if (difference.TimedOut || difference.ExitCode != 1)
@@ -590,9 +587,7 @@ namespace Orbiters.UnitGit.Editor
                     commitArgs.Add(trailingParagraph.Trim());
                 }
 
-                commitArgs.Add("--");
-                commitArgs.AddRange(paths);
-                GitCommandResult commit = index.Run(commitArgs.ToArray());
+                GitCommandResult commit = index.RunForPaths(paths, commitArgs.ToArray());
                 if (!commit.Success)
                 {
                     return Fail("Commit failed: " + commit.Message);
@@ -740,6 +735,25 @@ namespace Orbiters.UnitGit.Editor
         {
             string sanitized = Regex.Replace(value ?? string.Empty, "[^A-Za-z0-9._-]+", "-").Trim('-').ToLowerInvariant();
             return string.IsNullOrEmpty(sanitized) ? fallback : sanitized;
+        }
+
+        // "git diff --cached --quiet" for these paths: exit 1 when one of them is staged differently from HEAD. diff takes no
+        // path list on stdin, so a list too long for a command line is checked against the names of every staged change.
+        private static GitCommandResult StagedDifference(UnitGitScopedIndex index, string[] paths)
+        {
+            if (UnitGitService.FitsCommandLine(paths))
+            {
+                var diffArgs = new List<string> { "diff", "--cached", "--quiet", "--exit-code", "--" };
+                diffArgs.AddRange(paths);
+                return index.Run(diffArgs.ToArray());
+            }
+
+            GitCommandResult names = index.Run("diff", "--cached", "--name-only", "--no-renames", "-z");
+            if (!names.Success) return names;
+            var wanted = new HashSet<string>(paths, StringComparer.Ordinal);
+            bool changed = names.StandardOutput.Split('\0').Any(path => path.Length > 0 &&
+                (wanted.Contains(path) || paths.Any(folder => path.StartsWith(folder.TrimEnd('/') + "/", StringComparison.Ordinal))));
+            return new GitCommandResult { ExitCode = changed ? 1 : 0 };
         }
 
         private static UnitGitReleaseResult Fail(string message)

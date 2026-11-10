@@ -23,6 +23,8 @@ namespace Orbiters.UnitGit.Editor
         public string StandardOutput = string.Empty;
         public string StandardError = string.Empty;
         public bool TimedOut;
+        // A streamed read the caller stopped once it had what it needed: a success, with only part of the output.
+        public bool Stopped;
 
         public bool Success
         {
@@ -63,7 +65,13 @@ namespace Orbiters.UnitGit.Editor
         public UnitGitReleaseFile Releases = new UnitGitReleaseFile();
         public List<string> Shelves = new List<string>();
         public List<string> Remotes = new List<string>();
-        public string HeadMessage = string.Empty;
+        // HEAD's whole message, read only when asked for (Amend); null when it was not.
+        public string HeadMessage;
+        public string Head = string.Empty; // HEAD's full id; empty before the first commit
+        // What each slice was read from: a slice whose signature did not change is taken from the snapshot before.
+        public string RefsSignature = string.Empty; // HEAD, the branch, every branch, tag and the stash
+        public string ConfigStamp = string.Empty; // Git's config file (the remotes)
+        public string StashStamp = string.Empty; // the stash and its reflog (the shelves)
         // Files Git still tracks although the ignore rules now leave them out (MCB version downloads).
         public List<string> TrackedIgnoredDownloads = new List<string>();
         public long TrackedIgnoredDownloadBytes;
@@ -76,6 +84,31 @@ namespace Orbiters.UnitGit.Editor
         public string ReturnBranch = string.Empty; // the local branch "Back" goes to: the visit's own, else PreviousBranch
         public int NewerCommits = -1; // commits on ReturnBranch after the checked-out commit; -1 when not counted
         public string DetachedBy = string.Empty; // "Rebasing", "Bisecting": Git's own detached HEAD, which is no visit
+
+        /// <summary>The same snapshot with its own (empty) history, for reading more history onto.</summary>
+        internal UnitGitSnapshot CopyWithoutHistory()
+        {
+            var copy = (UnitGitSnapshot)MemberwiseClone();
+            copy.Commits = new List<UnitGitCommit>();
+            copy.HasMoreCommits = false;
+            return copy;
+        }
+    }
+
+    /// <summary>What a refresh reads (<see cref="UnitGitService.BuildSnapshot(UnitGitSnapshotRequest)"/>).</summary>
+    internal sealed class UnitGitSnapshotRequest
+    {
+        public string LogSearch = string.Empty;
+        public int HistoryLimit = 300;
+        public UnitGitLogFilter Filter;
+        public string VisitBranch;
+        // The snapshot shown now: slices whose signature did not change are taken from it.
+        public UnitGitSnapshot Previous;
+        // Where the history reading continues; null reads it from the top with a reader of its own.
+        public UnitGitHistory History;
+        public bool ReadHeadMessage = true;
+        // Only more history: everything else is taken from Previous.
+        public bool HistoryOnly;
     }
 
     /// <summary>
@@ -175,7 +208,8 @@ namespace Orbiters.UnitGit.Editor
         public string Subject = string.Empty;
         public string AuthorName = string.Empty;
         public string AuthorEmail = string.Empty;
-        public string RelativeDate = string.Empty;
+        // The age as Git words it ("5 minutes ago"), worded when read: a history kept between refreshes never goes stale.
+        public string RelativeDate => Timestamp > 0 ? UnitGitTime.GitRelative(Timestamp) : string.Empty;
         public string Decorations = string.Empty;
         public string ReleaseId = string.Empty;
         public string[] Parents = Array.Empty<string>(); // full hashes, first parent first
@@ -198,6 +232,19 @@ namespace Orbiters.UnitGit.Editor
         public List<string> ChangedFiles = new List<string>(); // renamed and copied files by their new path
         // Status letter of each changed path: A, M, D, R, C or T (for merges, the change against the first parent).
         public Dictionary<string, char> FileStatus = new Dictionary<string, char>(StringComparer.Ordinal);
+        // The previous path of each renamed or copied file (by its new path).
+        public Dictionary<string, string> OriginalPaths = new Dictionary<string, string>(StringComparer.Ordinal);
+    }
+
+    /// <summary>
+    /// What the Log already knows about one file of a commit, so its diff needs no read to find it again: the commit's
+    /// parents and short id, and where the file was before (empty: not renamed).
+    /// </summary>
+    internal sealed class UnitGitCommitFileHint
+    {
+        public string ShortHash = string.Empty;
+        public string[] Parents = Array.Empty<string>();
+        public string PreviousPath = string.Empty;
     }
 
     /// <summary>Narrows the history: one branch instead of all refs, commits by one author, commits since a date.</summary>

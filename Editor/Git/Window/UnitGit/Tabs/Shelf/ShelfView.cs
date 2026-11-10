@@ -204,9 +204,10 @@ namespace Orbiters.UnitGit.Editor
                 {
                     var service = new UnitGitService(root);
                     var files = new List<ShelfFile>();
-                    var tracked = service.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "stash", "show", "--name-status", reference);
+                    // -z: paths exactly as Git has them (a non-ASCII name would otherwise come quoted and escaped).
+                    var tracked = service.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "stash", "show", "--name-status", "-z", reference);
                     if (tracked.Success) files.AddRange(ParseNameStatus(tracked.StandardOutput, reference, false));
-                    var untracked = service.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "show", "--name-status", "--format=", reference + "^3");
+                    var untracked = service.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "show", "--name-status", "-z", "--format=", reference + "^3");
                     if (untracked.Success) files.AddRange(ParseNameStatus(untracked.StandardOutput, reference, true));
                     return files;
                 })
@@ -218,15 +219,24 @@ namespace Orbiters.UnitGit.Editor
             EnsureEditorUpdatePump();
         }
 
-        private static IEnumerable<ShelfFile> ParseNameStatus(string output, string reference, bool untracked)
+        // "--name-status -z": "status NUL path NUL", a rename or copy "R100 NUL old NUL new NUL"; the file is its new path.
+        internal static List<(char status, string path)> ParseNameStatus(string output)
         {
-            foreach (string raw in (output ?? string.Empty).Replace("\r", string.Empty).Split('\n'))
+            var files = new List<(char, string)>();
+            string[] tokens = (output ?? string.Empty).Split('\0');
+            for (int i = 0; i + 1 < tokens.Length; i++)
             {
-                string[] parts = raw.Split('\t');
-                if (parts.Length < 2 || parts[0].Length == 0) continue;
-                yield return new ShelfFile { Shelf = reference, Status = parts[0][0], Path = parts[parts.Length - 1].Trim(), Untracked = untracked };
+                string status = tokens[i].TrimStart('\n');
+                if (status.Length == 0) continue;
+                string path = tokens[++i];
+                if ((status[0] == 'R' || status[0] == 'C') && i + 1 < tokens.Length) path = tokens[++i];
+                if (path.Length > 0) files.Add((status[0], path));
             }
+            return files;
         }
+
+        private static IEnumerable<ShelfFile> ParseNameStatus(string output, string reference, bool untracked) =>
+            ParseNameStatus(output).Select(file => new ShelfFile { Shelf = reference, Status = file.status, Path = file.path, Untracked = untracked });
 
         private void ShowShelfDiff()
         {

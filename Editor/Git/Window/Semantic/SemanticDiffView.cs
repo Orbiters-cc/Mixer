@@ -128,7 +128,12 @@ namespace Orbiters.UnitGit.Editor
                 }
                 lock (Results)
                 {
-                    if (Results.Count > 24) Results.Clear();
+                    if (Results.Count > 24)
+                    {
+                        // The sets shown before go with them: each holds both parsed files.
+                        Results.Clear();
+                        Animated.Clear();
+                    }
                     Results[requested] = task.Result;
                 }
                 Show(task.Result);

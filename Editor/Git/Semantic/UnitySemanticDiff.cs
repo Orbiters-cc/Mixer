@@ -115,6 +115,8 @@ namespace Orbiters.UnitGit.Editor.Semantic
                 after.ById.TryGetValue(id, out var now);
                 var document = now ?? old;
                 if (document.Stripped) continue;
+                // The same text: nothing of it changed, and its fields are never parsed (most of a scene, usually).
+                if (old != null && now != null && SameText(old, now)) continue;
                 var kind = old == null ? SemanticChangeKind.Added : now == null ? SemanticChangeKind.Removed : SemanticChangeKind.Modified;
 
                 if (document.ClassId == PrefabInstanceClass)
@@ -177,6 +179,15 @@ namespace Orbiters.UnitGit.Editor.Semantic
             }
             set.Objects.Sort((a, b) => string.Compare(a.Path, b.Path, StringComparison.OrdinalIgnoreCase));
             return set;
+        }
+
+        private static bool SameText(UnityYamlDocument old, UnityYamlDocument now)
+        {
+            if (old.ClassId != now.ClassId || old.Stripped != now.Stripped || old.Hash != now.Hash) return false;
+            int length = old.End - old.Start;
+            // Same length: compared exactly. Otherwise only the line breaks differ (the fingerprint counts any as one).
+            return length != now.End - now.Start ||
+                   string.CompareOrdinal(old.Source, old.Start, now.Source, now.Start, length) == 0;
         }
 
         private static int Order(SemanticComponent component)
@@ -389,7 +400,11 @@ namespace Orbiters.UnitGit.Editor.Semantic
                 file.TransformOf = new Dictionary<long, long>();
                 foreach (var d in file.Documents)
                     if ((d.ClassId == TransformClass || d.ClassId == RectTransformClass) && !d.Stripped)
-                        file.TransformOf[Reference(d.Body["m_GameObject"]).fileId] = d.FileId;
+                    {
+                        // Its one line, rather than parsing every Transform of the file.
+                        string owner = d.TopLevelValue("m_GameObject");
+                        file.TransformOf[Reference(owner != null ? UnityYaml.ParseInline(owner) : d.Body["m_GameObject"]).fileId] = d.FileId;
+                    }
             }
             return file.TransformOf.TryGetValue(gameObject, out long transform) ? TransformPath(file, transform) : GameObjectName(file, gameObject);
         }
@@ -466,7 +481,7 @@ namespace Orbiters.UnitGit.Editor.Semantic
         {
             euler = null;
             if (value == null || !value.StartsWith("{", StringComparison.Ordinal) || value.IndexOf("w:", StringComparison.Ordinal) < 0) return false;
-            var map = UnityYaml.Parse("%YAML 1.1\n--- !u!1 &1\nX:\n  v: " + value).Documents.FirstOrDefault()?.Body["v"] as YamlMap;
+            var map = UnityYaml.ParseInline(value) as YamlMap;
             if (map == null) return false;
             float F(string key) => float.TryParse(map.Text(key), NumberStyles.Float, CultureInfo.InvariantCulture, out float f) ? f : float.NaN;
             var q = new Quaternion(F("x"), F("y"), F("z"), F("w"));

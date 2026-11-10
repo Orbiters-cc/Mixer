@@ -83,6 +83,11 @@ namespace Orbiters.UnitGit.Editor
         private double queuedLogSearchRefreshTime;
         private double lastEditorEventRefreshTime = -1000d;
         private int refreshRequestId;
+        // The history as it streams: "load more" and searches read on from where it stopped.
+        private UnitGitHistory history;
+        // Hidden (another tab of the dock in front): editor events only mark the view stale; it reads Git when shown again.
+        private bool visible = true;
+        private bool staleWhileHidden;
 
         [MenuItem("Tools/Orbiters/Mixer Git", priority = 2003)]
         internal static void OpenWindow()
@@ -105,7 +110,7 @@ namespace Orbiters.UnitGit.Editor
             ResetTransientAsyncState();
             gitService = new UnitGitService();
             initializer = new UnitGitProjectInitializer();
-            EditorApplication.projectChanged += QueueRefreshFromEditorEvent;
+            EditorApplication.projectChanged += OnProjectChanged;
             EditorApplication.focusChanged += OnEditorFocusChanged;
             EditorSceneManager.sceneSaved += OnSceneSaved;
             UnitGitReleases.ChangedExternally += OnReleasesChangedExternally;
@@ -118,10 +123,12 @@ namespace Orbiters.UnitGit.Editor
             diffRead.Dispose();
             detailsRead.Dispose();
             promptRead.Dispose();
+            history?.Dispose();
+            history = null;
             if (diffFont != null)
                 DestroyImmediate(diffFont);
             ReleaseThumbnailCacheClear();
-            EditorApplication.projectChanged -= QueueRefreshFromEditorEvent;
+            EditorApplication.projectChanged -= OnProjectChanged;
             EditorApplication.focusChanged -= OnEditorFocusChanged;
             EditorSceneManager.sceneSaved -= OnSceneSaved;
             UnitGitReleases.ChangedExternally -= OnReleasesChangedExternally;

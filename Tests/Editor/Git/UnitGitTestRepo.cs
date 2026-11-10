@@ -116,6 +116,11 @@ namespace Orbiters.UnitGit.Editor.Tests
             return Run("rev-parse", "HEAD").Trim();
         }
 
-        public void Dispose() => DeleteTempFolder(Root);
+        public void Dispose()
+        {
+            // A kept-alive reader runs in the folder: Windows deletes no folder a process works in.
+            UnitGitObjects.Stop(Root);
+            DeleteTempFolder(Root);
+        }
     }
 }

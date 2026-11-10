@@ -41,6 +41,41 @@ namespace Orbiters.UnitGit.Editor
             return time.ToString("d", CultureInfo.CurrentCulture);
         }
 
+        /// <summary>
+        /// A commit's age worded as Git's <c>--date=relative</c> / <c>%ar</c> words it ("5 minutes ago", "2 years, 3 months
+        /// ago"), the same rounding included (show_date_relative in Git's date.c). Computed when shown, so a history kept
+        /// between refreshes never shows a stale age.
+        /// </summary>
+        internal static string GitRelative(long unixSeconds) => GitRelative(unixSeconds, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+
+        internal static string GitRelative(long unixSeconds, long nowSeconds)
+        {
+            if (nowSeconds < unixSeconds) return "in the future";
+            long diff = nowSeconds - unixSeconds;
+            if (diff < 90) return Ago(diff, "second");
+            diff = (diff + 30) / 60; // minutes
+            if (diff < 90) return Ago(diff, "minute");
+            diff = (diff + 30) / 60; // hours
+            if (diff < 36) return Ago(diff, "hour");
+            diff = (diff + 12) / 24; // days from here on
+            if (diff < 14) return Ago(diff, "day");
+            if (diff < 70) return Ago((diff + 3) / 7, "week");
+            if (diff < 365) return Ago((diff + 15) / 30, "month");
+            if (diff < 1825)
+            {
+                long totalMonths = (diff * 12 * 2 + 365) / (365 * 2);
+                long years = totalMonths / 12;
+                long months = totalMonths % 12;
+                return months == 0 ? Ago(years, "year") : Count(years, "year") + ", " + Ago(months, "month");
+            }
+            return Ago((diff + 183) / 365, "year");
+        }
+
+        private static string Count(long count, string unit) =>
+            count.ToString(CultureInfo.InvariantCulture) + " " + unit + (count == 1 ? string.Empty : "s");
+
+        private static string Ago(long count, string unit) => Count(count, unit) + " ago";
+
         /// <summary>"850 ms", "34.5 s", "2 min 05 s", "1 h 02 min".</summary>
         internal static string Duration(TimeSpan span)
         {

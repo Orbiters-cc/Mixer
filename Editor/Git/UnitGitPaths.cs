@@ -14,9 +14,22 @@ namespace Orbiters.UnitGit.Editor
         // Asked together the first time: one Git call answers them all.
         private static readonly string[] Usual =
         {
-            "index", "MERGE_HEAD", "MERGE_MSG", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply", "BISECT_LOG", "logs/HEAD", "info/exclude"
+            "index", "MERGE_HEAD", "MERGE_MSG", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply", "BISECT_LOG", "logs/HEAD", "info/exclude",
+            // UnitGitRepositoryStamp
+            "HEAD", "packed-refs", "FETCH_HEAD", "ORIG_HEAD", "logs/refs/stash", "config", "refs/heads", "refs/tags", "refs/remotes", "reftable"
         };
         private static readonly Dictionary<string, Dictionary<string, string>> Known = new Dictionary<string, Dictionary<string, string>>(StringComparer.Ordinal);
+
+        /// <summary>The path of <paramref name="name"/> when it is already known: never starts Git (safe on the main thread).</summary>
+        internal static bool TryGetKnown(string projectRoot, string name, out string path)
+        {
+            path = null;
+            string root = Path.GetFullPath(projectRoot);
+            lock (Known)
+            {
+                return Known.TryGetValue(root, out var paths) && paths.TryGetValue(name, out path);
+            }
+        }
 
         /// <summary>The full path Git uses for <paramref name="name"/> in the project's repository. Null when Git cannot tell.</summary>
         public static string GitPath(string projectRoot, string name)

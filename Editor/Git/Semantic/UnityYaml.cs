@@ -38,15 +38,64 @@ namespace Orbiters.UnitGit.Editor.Semantic
         public bool Flow;
     }
 
-    /// <summary>One object of a Unity text asset: <c>--- !u!&lt;classId&gt; &amp;&lt;fileId&gt;</c> then its type and fields.</summary>
+    /// <summary>
+    /// One object of a Unity text asset: <c>--- !u!&lt;classId&gt; &amp;&lt;fileId&gt;</c> then its type and fields. Its fields
+    /// are parsed the first time <see cref="Body"/> is read: a compare parses only the objects that differ (by
+    /// <see cref="Hash"/>) and the few others it needs a name or a parent from.
+    /// </summary>
     internal sealed class UnityYamlDocument
     {
         public int ClassId;
         public long FileId;
         public bool Stripped;
         public string TypeName = string.Empty;
-        public YamlMap Body = new YamlMap();
         public int Line;
+        // The file's text and where this object's type line and fields are in it: [Start, End), up to the next "--- ".
+        internal string Source = string.Empty;
+        internal int Start, BodyStart, End;
+        /// <summary>A fingerprint of the type line and the fields (line breaks of any kind count as one): equal hashes, same object.</summary>
+        internal ulong Hash;
+        private YamlMap body;
+
+        public YamlMap Body
+        {
+            get
+            {
+                YamlMap parsed = body;
+                if (parsed != null) return parsed;
+                parsed = UnityYaml.ParseBody(Source, BodyStart, End);
+                // Two threads may parse it at once (the compare's worker, the view): both get the same fields.
+                return System.Threading.Interlocked.CompareExchange(ref body, parsed, null) ?? parsed;
+            }
+            set { body = value; }
+        }
+
+        internal bool IsParsed => body != null;
+
+        /// <summary>
+        /// A top-level field's value as written on its own line ("{fileID: 123}"), read without parsing the object; null when
+        /// the field is missing or its value continues on the next lines.
+        /// </summary>
+        internal string TopLevelValue(string key)
+        {
+            if (body != null || Source.Length == 0) return null;
+            int line = BodyStart;
+            while (line < End)
+            {
+                int next = UnityYaml.NextLine(Source, line, End, out int length);
+                // "  key: value" at the fields' own indentation (two spaces).
+                if (length > key.Length + 3 && Source[line] == ' ' && Source[line + 1] == ' ' && Source[line + 2] != ' ' &&
+                    string.CompareOrdinal(Source, line + 2, key, 0, key.Length) == 0 && Source[line + 2 + key.Length] == ':')
+                {
+                    string value = Source.Substring(line + 3 + key.Length, length - 3 - key.Length).Trim();
+                    bool open = value.StartsWith("{", StringComparison.Ordinal) && value.IndexOf('}') < 0 ||
+                                value.StartsWith("[", StringComparison.Ordinal) && value.IndexOf(']') < 0;
+                    return open ? null : value;
+                }
+                line = next;
+            }
+            return null;
+        }
     }
 
     internal sealed class UnityYamlFile
@@ -70,38 +119,121 @@ namespace Orbiters.UnitGit.Editor.Semantic
     {
         private static readonly Regex Header = new Regex(@"^--- !u!(-?\d+) &(-?\d+)( stripped)?", RegexOptions.Compiled);
 
+        /// <summary>
+        /// The file's objects with their headers, types and fingerprints, in one pass over the text and without copying it;
+        /// each object's fields are parsed when first read (<see cref="UnityYamlDocument.Body"/>).
+        /// </summary>
         public static UnityYamlFile Parse(string text)
         {
             var file = new UnityYamlFile();
             if (string.IsNullOrEmpty(text)) return file;
-            var lines = text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
-            int i = 0;
-            while (i < lines.Length)
+            int length = text.Length;
+            int position = 0, lineNumber = 0;
+            UnityYamlDocument open = null;
+            while (position < length)
             {
-                var match = Header.Match(lines[i]);
-                if (!match.Success) { i++; continue; }
-                var document = new UnityYamlDocument
+                int next = NextLine(text, position, length, out int lineLength);
+                lineNumber++;
+                if (lineLength >= 4 && string.CompareOrdinal(text, position, "--- ", 0, 4) == 0)
                 {
-                    ClassId = int.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture),
-                    FileId = long.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture),
-                    Stripped = match.Groups[3].Success,
-                    Line = i + 1
-                };
-                i++;
-                if (i < lines.Length && lines[i].Length > 0 && !lines[i].StartsWith("---", StringComparison.Ordinal))
-                {
-                    document.TypeName = lines[i].TrimEnd().TrimEnd(':');
-                    i++;
+                    // Any "--- " line ends the object before it.
+                    if (open != null) Close(open, position);
+                    open = null;
+                    Match match = lineLength >= 7 && string.CompareOrdinal(text, position, "--- !u!", 0, 7) == 0
+                        ? Header.Match(text.Substring(position, lineLength))
+                        : Match.Empty;
+                    if (match.Success)
+                    {
+                        open = new UnityYamlDocument
+                        {
+                            ClassId = int.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture),
+                            FileId = long.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture),
+                            Stripped = match.Groups[3].Success,
+                            Line = lineNumber,
+                            Source = text,
+                            Start = next,
+                            BodyStart = next
+                        };
+                        // The type line ("GameObject:") right after the header, unless the object is empty.
+                        if (next < length)
+                        {
+                            int afterType = NextLine(text, next, length, out int typeLength);
+                            if (typeLength > 0 && !(typeLength >= 3 && string.CompareOrdinal(text, next, "---", 0, 3) == 0))
+                            {
+                                open.TypeName = text.Substring(next, typeLength).TrimEnd().TrimEnd(':');
+                                open.BodyStart = afterType;
+                                position = afterType;
+                                lineNumber++;
+                                file.Documents.Add(open);
+                                file.ById[open.FileId] = open;
+                                continue;
+                            }
+                        }
+                        file.Documents.Add(open);
+                        file.ById[open.FileId] = open;
+                    }
                 }
-                int end = i;
-                while (end < lines.Length && !lines[end].StartsWith("--- ", StringComparison.Ordinal)) end++;
-                var reader = new Reader(lines, i, end);
-                document.Body = reader.Map(2);
-                i = end;
-                file.Documents.Add(document);
-                file.ById[document.FileId] = document;
+                position = next;
             }
+            if (open != null) Close(open, length);
             return file;
+        }
+
+        private static void Close(UnityYamlDocument document, int end)
+        {
+            document.End = Math.Max(document.BodyStart, end);
+            document.Hash = Fingerprint(document.Source, document.Start, document.End);
+        }
+
+        /// <summary>The start of the line after the one at <paramref name="position"/>; <paramref name="length"/>: that line
+        /// without its break ("\r\n", "\r" or "\n").</summary>
+        internal static int NextLine(string text, int position, int end, out int length)
+        {
+            int at = position;
+            while (at < end && text[at] != '\n' && text[at] != '\r') at++;
+            length = at - position;
+            if (at >= end) return end;
+            return text[at] == '\r' && at + 1 < end && text[at + 1] == '\n' ? at + 2 : at + 1;
+        }
+
+        // FNV-1a over the characters, every line break counted as one '\n' (as the fields are read).
+        private static ulong Fingerprint(string text, int start, int end)
+        {
+            ulong hash = 14695981039346656037UL;
+            for (int i = start; i < end; i++)
+            {
+                char character = text[i];
+                if (character == '\r')
+                {
+                    if (i + 1 < end && text[i + 1] == '\n') continue;
+                    character = '\n';
+                }
+                hash ^= character;
+                hash *= 1099511628211UL;
+            }
+            return hash;
+        }
+
+        /// <summary>The fields of one object: the lines [<paramref name="start"/>, <paramref name="end"/>) of the text.</summary>
+        internal static YamlMap ParseBody(string text, int start, int end)
+        {
+            if (string.IsNullOrEmpty(text) || end <= start) return new YamlMap();
+            var lines = new List<string>();
+            int position = start;
+            while (position < end)
+            {
+                int next = NextLine(text, position, end, out int length);
+                lines.Add(text.Substring(position, length));
+                position = next;
+            }
+            return new Reader(lines.ToArray(), 0, lines.Count).Map(2);
+        }
+
+        /// <summary>An inline value ("{x: 0, y: 1}", "[1, 2]", a scalar) as the fields' reader reads it.</summary>
+        public static YamlNode ParseInline(string text)
+        {
+            int position = 0;
+            return Flow(text ?? string.Empty, ref position);
         }
 
         private sealed class Reader

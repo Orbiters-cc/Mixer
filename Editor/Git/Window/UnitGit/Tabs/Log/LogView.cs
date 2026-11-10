@@ -22,6 +22,7 @@ namespace Orbiters.UnitGit.Editor
         private Label logCountLabel;
         private float graphWidth = 40f;
         private bool loadingMoreHistory;
+        private bool historyOnlyRequested;
 
         private sealed class LogItem
         {
@@ -449,6 +450,7 @@ namespace Orbiters.UnitGit.Editor
         {
             if (snapshot == null || !snapshot.HasMoreCommits || refreshingSnapshot || loadingMoreHistory) return;
             loadingMoreHistory = true;
+            historyOnlyRequested = true;
             historyLimit += CommitPageSize * 3;
             if (logCountLabel != null) logCountLabel.text = "Loading older commits…";
             RefreshSnapshot();
