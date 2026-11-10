@@ -167,7 +167,9 @@ namespace Orbiters.Mixer.Editor.Tests
             Assert.That(decoded.InfluenceCount.Length, Is.EqualTo(n.WeldedCount));
             Assert.That(decoded.InfluenceBone.Length, Is.EqualTo(decoded.InfluenceCount.Sum(c => c)), "the influences add up");
             Assert.That(decoded.CornerAttribute, Is.EqualTo(mesh.triangles), "a corner's attribute is the Unity vertex it came from");
-            Assert.That(decoded.AttributeUv, Is.EqualTo(mesh.uv), "whose UV travels once");
+            // Protocol 4 always carries UV0 (Blender makes its UV map from it): a mesh without UVs sends zeros, as protocol 3 did.
+            var uv = mesh.uv.Length == mesh.vertexCount ? mesh.uv : new Vector2[mesh.vertexCount];
+            Assert.That(decoded.AttributeUv, Is.EqualTo(uv), "whose UV travels once");
             Assert.That(decoded.Shapes.Count, Is.EqualTo(1));
             Assert.That(decoded.Shapes[0].name, Is.EqualTo("Wide"));
             Assert.That(decoded.Shapes[0].indices.Length, Is.GreaterThan(10));
@@ -1156,6 +1158,8 @@ namespace Orbiters.Mixer.Editor.Tests
                 }
                 var b0 = doc.Positions[v];
                 var b1 = b0 + Vector3.forward;
+                // The shape as it is before both steps (a delta on the base): what the undo gives back.
+                var before = doc.GetLayerPosition("Wide", v);
                 doc.SetLayerPosition(null, v, b1);
                 var s0 = doc.GetLayerPosition("Wide", v);
                 var s1 = s0 + Vector3.up;
@@ -1180,7 +1184,11 @@ namespace Orbiters.Mixer.Editor.Tests
                     Assert.That(shapeAt, Is.GreaterThan(baseAt), "and the shape after it");
                     Assert.That(frames[shapeAt].Indices, Is.Null, "whole");
                     Assert.That(frames[shapeAt].Positions[0], Is.EqualTo(doc.GetLayerPosition("Wide", v)));
-                    Assert.That(doc.GetLayerPosition("Wide", v), Is.EqualTo(undo ? s0 : s1).Using<Vector3>((a, b) => (a - b).sqrMagnitude < 1e-10f ? 0 : 1));
+                    // Undone, the steps go back in reverse: the shape's step puts its delta back (s0 over the moved base), then
+                    // the base's step moves the base back, and the shape with it (a shape is a delta on the base): the shape
+                    // is where it was before both steps, not at s0. Redone, the base goes first, then the shape is s1.
+                    Assert.That(doc.Positions[v], Is.EqualTo(undo ? b0 : b1));
+                    Assert.That(doc.GetLayerPosition("Wide", v), Is.EqualTo(undo ? before : s1).Using<Vector3>((a, b) => (a - b).sqrMagnitude < 1e-10f ? 0 : 1));
                 }
             }
         }
