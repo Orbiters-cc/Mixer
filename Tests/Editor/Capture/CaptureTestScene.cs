@@ -57,7 +57,7 @@ namespace Orbiters.Mixer.Editor.Capture.Tests
         };
 
         /// <summary>Top-down image of a frame (as the writer stores it).</summary>
-        public static ImageBuffer TopDown(CaptureFrame frame) => ImageBuffer.FromBottomUp(frame.Width, frame.Height, frame.Colour);
+        public static ImageBuffer TopDown(CaptureFrame frame) => new ImageBuffer(frame.Width, frame.Height, frame.Colour);
 
         /// <summary>True depth at a top-down pixel.</summary>
         public static float DepthAt(CaptureFrame frame, int x, int y) => frame.Depth[(frame.Height - 1 - y) * frame.Width + x];

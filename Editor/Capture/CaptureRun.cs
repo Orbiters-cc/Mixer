@@ -54,6 +54,8 @@ namespace Orbiters.Mixer.Editor.Capture
         private readonly CapturePose[] poses;
         private readonly Scene? previewScene;
         private readonly uint[][] words;
+        private readonly int[] sample;
+        private readonly bool[] sampled;
         private readonly Stopwatch clock = Stopwatch.StartNew();
         private readonly CancellationTokenSource cancel = new CancellationTokenSource();
         private readonly int threads;
@@ -75,6 +77,12 @@ namespace Orbiters.Mixer.Editor.Capture
             SceneName = string.IsNullOrEmpty(scene.name) ? "Untitled" : scene.name;
             ScenePath = string.IsNullOrEmpty(scene.path) ? null : scene.path;
             words = new uint[FrameCount][];
+            // The frames the self-check will decode, known from the start, so only theirs keep what they must decode to.
+            // Rig frames' strips come from the GPU's normalised axes (the last bit may differ from the CPU's): not checked
+            // bit for bit.
+            sample = CaptureSelfCheck.Sample(FrameCount, Settings.IsDepthFrame).Where(i => !Settings.IsRigFrame(i)).ToArray();
+            sampled = new bool[FrameCount];
+            foreach (int i in sample) sampled[i] = true;
             threads = Mathf.Clamp(SystemInfo.processorCount / 4, 1, 4);
         }
 
@@ -92,7 +100,7 @@ namespace Orbiters.Mixer.Editor.Capture
             {
                 run.rig = new CaptureRig(run.Settings, previewScene);
                 run.PostNote = run.rig.PostNote;
-                run.writer = new CaptureWriter(folder, run.Settings.Width, run.Settings.Height, run.threads);
+                run.writer = new CaptureWriter(folder, run.Settings.Width, run.Settings.Height, run.threads, i => run.sampled[i]);
                 run.posesOut = new StreamWriter(Path.Combine(folder, RawCapture.PosesFile), false, new UTF8Encoding(false)) { NewLine = "\n" };
             }
             catch
@@ -188,7 +196,7 @@ namespace Orbiters.Mixer.Editor.Capture
                 int index = Rendered;
                 bool depthFrame = Settings.IsDepthFrame(index);
                 var frame = rig.Render(index, poses[index], Settings.TimeOf(index), depthFrame, writer.RentColour(), writer.RentDepth(), Settings.IsRigFrame(index));
-                words[index] = frame.Payload.ToWords();
+                if (sampled[index]) words[index] = frame.Payload.ToWords();
                 posesOut.WriteLine(JsonConvert.SerializeObject(new GroundTruthPose
                 {
                     Index = index,
@@ -227,8 +235,9 @@ namespace Orbiters.Mixer.Editor.Capture
                 Finish(Phase.Cancelled);
                 return;
             }
-            // Rig frames' strips come from the GPU's normalised axes (the last bit may differ from the CPU's): not checked bit for bit.
-            var frames = CaptureSelfCheck.Sample(Rendered, Settings.IsDepthFrame).Where(i => !Settings.IsRigFrame(i)).ToArray();
+            // Every frame was rendered here (a capture stopped early is cancelled above), so the sample is the one chosen at
+            // the start.
+            var frames = sample.Where(i => i < Rendered).ToArray();
             CheckTotal = frames.Length;
             var expectedDepth = writer;
             checking = Task.Run(() => CaptureSelfCheck.Run(Folder, frames, i => words[i], expectedDepth.ExpectedDepthCodes, threads, cancel.Token,

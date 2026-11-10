@@ -9,9 +9,9 @@ namespace Orbiters.Mixer.Editor.Capture
 {
     /// <summary>
     /// Writes rendered frames on worker threads: <c>frames/NNNNNN.qoi</c> (top-down RGB) and
-    /// <c>groundtruth/depth/NNNNNN.f16z</c>, and keeps, for every depth frame, the codes its symbols must decode to
-    /// (the self-check compares them later). The queue is bounded so memory stays flat; buffers are pooled so the
-    /// editor's garbage collector stays quiet.
+    /// <c>groundtruth/depth/NNNNNN.f16z</c>, and keeps, for the depth frames the self-check will look at, the codes their
+    /// symbols must decode to. The queue is bounded so memory stays flat; buffers are pooled so the editor's garbage
+    /// collector stays quiet.
     /// </summary>
     internal sealed class CaptureWriter : IDisposable
     {
@@ -20,11 +20,12 @@ namespace Orbiters.Mixer.Editor.Capture
         private readonly BlockingCollection<CaptureFrame> queue;
         private readonly Task[] workers;
         private readonly CancellationTokenSource cancel = new CancellationTokenSource();
-        private readonly ConcurrentBag<byte[]> colourPool = new ConcurrentBag<byte[]>(), imagePool = new ConcurrentBag<byte[]>();
+        private readonly ConcurrentBag<byte[]> colourPool = new ConcurrentBag<byte[]>();
         private readonly ConcurrentBag<float[]> depthPool = new ConcurrentBag<float[]>();
         private readonly ConcurrentDictionary<int, ushort[]> expectedDepth = new ConcurrentDictionary<int, ushort[]>();
         private readonly DepthLayout depthLayout;
         private readonly bool hasDepthLayout;
+        private readonly Func<int, bool> checkedFrame;
         private int written, added, done;
         private long bytes;
         private volatile Exception error;
@@ -39,11 +40,13 @@ namespace Orbiters.Mixer.Editor.Capture
         public bool Finished => queue.IsAddingCompleted && Pending == 0;
 
         /// <param name="threads">Worker threads; keep about a quarter of the cores so the editor and the MCP bridge stay responsive.</param>
-        public CaptureWriter(string folder, int width, int height, int threads)
+        /// <param name="checkedFrame">The frames whose expected depth codes are kept (the self-check's sample); null: all.</param>
+        public CaptureWriter(string folder, int width, int height, int threads, Func<int, bool> checkedFrame = null)
         {
             Folder = folder;
             Width = width;
             Height = height;
+            this.checkedFrame = checkedFrame;
             hasDepthLayout = DepthLayout.TryCreate(width, height, out depthLayout);
             long frameBytes = (long)width * height * 8;
             int capacity = (int)Math.Max(2, Math.Min(threads * 2 + 2, (384L << 20) / Math.Max(1, frameBytes)));
@@ -99,11 +102,8 @@ namespace Orbiters.Mixer.Editor.Capture
 
         private void Write(CaptureFrame frame)
         {
-            // Unity reads back bottom-up; frames are stored top-down.
-            var top = imagePool.TryTake(out var pooled) ? pooled : new byte[Width * Height * 4];
-            int row = Width * 4;
-            for (int y = 0; y < Height; y++) Buffer.BlockCopy(frame.Colour, (Height - 1 - y) * row, top, y * row, row);
-            var image = new ImageBuffer(Width, Height, top);
+            // Top-down already (the rig turned it in its read-back copy).
+            var image = new ImageBuffer(Width, Height, frame.Colour);
             long size = 0;
             string framePath = Path.Combine(Folder, RawCapture.FramesDir, RawCapture.FrameFile(frame.Index));
             using (var file = new FileStream(framePath, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16))
@@ -111,14 +111,13 @@ namespace Orbiters.Mixer.Editor.Capture
                 Qoi.Encode(image, file, 3);
                 size += file.Length;
             }
-            imagePool.Add(top);
             string depthPath = Path.Combine(Folder, RawCapture.GroundTruthDepthDir, RawCapture.GroundTruthDepthFile(frame.Index));
             using (var file = new FileStream(depthPath, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16))
             {
                 GroundTruthDepth.Encode(frame.Depth, Width, Height, file, bottomUp: true);
                 size += file.Length;
             }
-            if (frame.DepthFrame && hasDepthLayout) expectedDepth[frame.Index] = ExpectedCodes(frame.Depth);
+            if (frame.DepthFrame && hasDepthLayout && (checkedFrame == null || checkedFrame(frame.Index))) expectedDepth[frame.Index] = ExpectedCodes(frame.Depth);
             colourPool.Add(frame.Colour);
             depthPool.Add(frame.Depth);
             frame.Colour = null;
