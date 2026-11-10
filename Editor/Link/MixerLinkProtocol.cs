@@ -23,6 +23,13 @@ namespace Orbiters.Mixer.Editor
     /// end with a Link section (topology, asset key); meshes larger than a frame travel as <see cref="FrameType.MeshChunk"/>
     /// frames; Blender acknowledges every mesh (<see cref="FrameType.MeshReceived"/>) before Unity sends the next.
     /// </para>
+    /// <para>
+    /// Protocol 4: every array of a binary payload is one block of its elements (influences as counts, bones and weights;
+    /// sparse vectors and weights as indices, then values); a mesh's corners name an attribute (from Unity: a Unity vertex,
+    /// whose UV, normal, extra UVs and colour travel once) besides their vertex; positions frames carry only the welded
+    /// vertices that moved since the side's last frame (all of them, in order, after a mesh, a claim or a reconnect), so
+    /// none of them may be dropped or collapsed; a mesh section of an unknown kind is an error.
+    /// </para>
     /// </summary>
     internal static class MixerLinkProtocol
     {
@@ -30,7 +37,7 @@ namespace Orbiters.Mixer.Editor
         /// <summary>The frame layout (the header's version byte).</summary>
         public const byte FrameVersion = 2;
         /// <summary>The link protocol both sides must speak.</summary>
-        public const int ProtocolVersion = 3;
+        public const int ProtocolVersion = 4;
         public const int MaxPayloadBytes = 64 * 1024 * 1024;
         /// <summary>A mesh payload larger than one frame goes in chunks of this size.</summary>
         public const int ChunkBytes = 16 * 1024 * 1024;
@@ -48,7 +55,7 @@ namespace Orbiters.Mixer.Editor
             SceneGraph = 3,     // Unity to Blender: the whole scene (SceneGraph JSON)
             SceneDelta = 4,     // either way: {transforms, active, renamed, removed, reparented, added, changed, materials}
             MeshData = 5,       // either way: binary mesh (MeshDataCodec)
-            Positions = 6,      // either way: binary {id, shape, topology, count, positions} of the welded vertices
+            Positions = 6,      // either way: binary {id, shape, topology, vertexCount, count, [indices], positions} of the welded vertices that moved
             Weights = 7,        // either way: binary {id, channel, isGroup, bone, topology, count, (index, weight)}
             Armature = 8,       // either way: {id, bones:[{id, name, parent, head, tail, matrix}]}
             Claim = 9,          // either way: {id, meshId, side, claim}: that side edits the mesh now (Blender numbers its claims)
@@ -99,8 +106,6 @@ namespace Orbiters.Mixer.Editor
             public string host = "127.0.0.1";
             public int port;
             public string token;
-            /// <summary>The server answers a proof request (Toolkit's live link proof): Blender checks Unity holds the token before it sends anything.</summary>
-            public bool proof;
             public string projectPath;
             public string sceneGuid;
             public string sceneName;
@@ -110,9 +115,6 @@ namespace Orbiters.Mixer.Editor
 
         public static string EndpointFolder => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Orbiters", "Mixer");
         public static string EndpointPath => Path.Combine(EndpointFolder, "unity-" + System.Diagnostics.Process.GetCurrentProcess().Id + ".json");
-
-        /// <summary>Whether the Toolkit's live link server answers proof requests (Blender asks before it trusts the endpoint).</summary>
-        public static bool ServerProvesToken => typeof(LiveLinkFormat).GetMethod("Proof", new[] { typeof(string), typeof(int), typeof(byte[]) }) != null;
 
         public static byte[] Json(object value) => LiveLinkJson.Encode(value);
         public static T Read<T>(byte[] payload) => LiveLinkJson.Decode<T>(payload);
@@ -199,9 +201,7 @@ namespace Orbiters.Mixer.Editor
     {
         public MixerLinkProtocol.FrameType Type;
         public byte[] Payload;
-        /// <summary>For mesh frames: the mesh id read ahead, so the newest frame per mesh can replace older ones.</summary>
+        /// <summary>For mesh, positions and weights frames: the mesh id, read ahead.</summary>
         public string MeshId;
-        /// <summary>For positions frames: the shape they are of (null for the base).</summary>
-        public string Shape;
     }
 }

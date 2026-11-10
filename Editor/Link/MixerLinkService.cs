@@ -320,7 +320,15 @@ namespace Orbiters.Mixer.Editor
         private uint nextTransfer = 1;
         private Dictionary<string, string> heldByBlender;
         private readonly Dictionary<string, SentMesh> sent = new Dictionary<string, SentMesh>();
-        private readonly Dictionary<string, double> positionsDue = new Dictionary<string, double>();
+        // Live positions due, per session and layer ("" for the base): the layer a stroke edited, not the one shown when they leave.
+        private readonly Dictionary<(string target, string layer), double> positionsDue = new Dictionary<(string, string), double>();
+        private readonly List<(string, string)> leavingKeys = new List<(string, string)>();
+        // What Blender has of a layer of a mesh (mesh id, layer or ""), per welded vertex, as Unity's positions frames
+        // left it: the next frame carries only the vertices that differ. Forgotten whenever Blender's copy can have
+        // changed otherwise (a whole mesh either way, a claim of Blender's, a new connection): the next frame is then whole.
+        private readonly Dictionary<(string mesh, string layer), Vector3[]> sentLayers = new Dictionary<(string, string), Vector3[]>();
+        private readonly List<int> movedIndices = new List<int>();
+        private readonly List<Vector3> movedPositions = new List<Vector3>();
         private readonly Dictionary<string, int> checkedRevision = new Dictionary<string, int>();
 
         private readonly MeshChunkAssembler assembler = new MeshChunkAssembler();
@@ -332,7 +340,8 @@ namespace Orbiters.Mixer.Editor
             Token = token ?? throw new ArgumentNullException(nameof(token));
             writesEndpoint = writeEndpoint;
             this.log = log ?? new List<string>();
-            Server = new LiveLinkServer(MixerLinkProtocol.Format, token, port, singleClient: true, accept: Accept, collapseKey: CollapseKey,
+            // Nothing Blender sends collapses: its positions frames carry only what moved since its previous one.
+            Server = new LiveLinkServer(MixerLinkProtocol.Format, token, port, singleClient: true, accept: Accept,
                 closingType: (byte)MixerLinkProtocol.FrameType.Bye, threadName: isLive ? "Mixer Blender link" : "Mixer Blender link (test)",
                 replacedGoodbye: MixerLinkProtocol.Json(new MixerLinkProtocol.Goodbye { replaced = true }));
             try
@@ -407,7 +416,6 @@ namespace Orbiters.Mixer.Editor
                 pid = System.Diagnostics.Process.GetCurrentProcess().Id,
                 port = Server.Port,
                 token = Token,
-                proof = MixerLinkProtocol.ServerProvesToken,
                 projectPath = Path.GetFullPath(Path.Combine(Application.dataPath, "..")),
                 sceneGuid = AssetDatabase.AssetPathToGUID(scene.path),
                 sceneName = scene.name,
@@ -426,14 +434,9 @@ namespace Orbiters.Mixer.Editor
             var frame = new MixerLinkFrame { Type = type, Payload = raw.Payload };
             if (type == MixerLinkProtocol.FrameType.MeshData || type == MixerLinkProtocol.FrameType.Positions || type == MixerLinkProtocol.FrameType.Weights)
                 frame.MeshId = MeshDataCodec.PeekId(raw.Payload);
-            if (type == MixerLinkProtocol.FrameType.Positions) frame.Shape = MeshDataCodec.PeekShape(raw.Payload);
             raw.Decoded = frame;
             return true;
         }
-
-        // The newest positions of one shape of one mesh replace older ones waiting: another shape's never do.
-        private static string CollapseKey(LiveLinkFrame raw) =>
-            raw.Decoded is MixerLinkFrame frame && frame.Type == MixerLinkProtocol.FrameType.Positions && frame.MeshId != null ? "pos:" + frame.MeshId + "\n" + (frame.Shape ?? "") : null;
 
         private void OnConnection(int id, bool up)
         {
@@ -465,6 +468,7 @@ namespace Orbiters.Mixer.Editor
             inFlightBefore = null;
             assembler.Reset();
             positionsDue.Clear();
+            sentLayers.Clear();
             unityEditing = unityEditingNode = null;
         }
 
@@ -596,7 +600,8 @@ namespace Orbiters.Mixer.Editor
                 Refuse(claim, e.Message);
                 return;
             }
-            positionsDue.Remove(claim.id);
+            ForgetPositions(claim.id);
+            ForgetSentLayers(meshId);
             Status(claim.id, "Blender edits " + r.name + ".", "info");
             Say("Blender edits " + r.name + ".");
             RaiseChanged();
@@ -628,6 +633,7 @@ namespace Orbiters.Mixer.Editor
         {
             if (meshId == null || !blenderMeshes.TryGetValue(meshId, out string node)) return;
             if (takeBack) LinkApply.RevertBlenderEdit(meshId); else LinkApply.EndBlenderEdit(meshId);
+            ForgetSentLayers(meshId);
             blenderMeshes.Remove(meshId);
             blenderClaims.TryGetValue(meshId, out int number);
             blenderClaims.Remove(meshId);
@@ -653,6 +659,7 @@ namespace Orbiters.Mixer.Editor
             if (!blenderMeshes.ContainsKey(meshId)) return;
             // Still held while the history is written, so nothing of it echoes back to Blender.
             LinkApply.EndBlenderEdit(meshId);
+            ForgetSentLayers(meshId);
             blenderMeshes.Remove(meshId);
             blenderClaims.Remove(meshId);
             RaiseChanged();
@@ -695,7 +702,8 @@ namespace Orbiters.Mixer.Editor
                 }));
                 RaiseChanged();
             }
-            positionsDue.Remove(target.Id);
+            ForgetPositions(target.Id);
+            ForgetSentLayers(meshId);
             checkedRevision.Remove(target.Id);
             // A revert (or a commit into the same asset) leaves the mesh id as it was: Blender gets that mesh again. A commit
             // into a new asset changes the node's mesh, which the graph's delta sends.
@@ -786,15 +794,65 @@ namespace Orbiters.Mixer.Editor
             return list;
         }
 
-        // The welded positions of one layer of a session (null: the base), as live positions.
+        // The welded positions of one layer of a session (null: the base) that Blender does not have yet, as live
+        // positions: every one when Unity does not know what Blender has of that layer, else those that differ from it.
+        // The layer is resolved once (its deltas array), not per vertex.
         private void SendLayer(EditTarget target, string layer)
         {
             var doc = target.Document;
             if (layer != null && !doc.HasShape(layer)) return;
+            string meshId = MixerLinkService.MeshIdOf(target);
+            if (meshId == null) return;
             var n = doc.LinkWeld;
-            var positions = new Vector3[n.WeldedCount];
-            for (int w = 0; w < positions.Length; w++) positions[w] = doc.GetLayerPosition(layer, n.Representative[w]);
-            Send(MixerLinkProtocol.FrameType.Positions, MeshDataCodec.EncodePositions(MixerLinkService.MeshIdOf(target), layer, MeshDataCodec.Topology(doc), positions));
+            var representative = n.Representative;
+            var basePositions = doc.Positions;
+            var deltas = layer != null && doc.ShapeEdits.TryGetValue(layer, out var shape) ? shape.Deltas : null;
+            int count = n.WeldedCount;
+            var key = (meshId, layer ?? "");
+            ulong topology = MeshDataCodec.Topology(doc);
+            if (!sentLayers.TryGetValue(key, out var known) || known.Length != count)
+            {
+                known = new Vector3[count];
+                for (int w = 0; w < count; w++) { int v = representative[w]; known[w] = deltas != null ? basePositions[v] + deltas[v] : basePositions[v]; }
+                if (Send(MixerLinkProtocol.FrameType.Positions, MeshDataCodec.EncodePositions(meshId, layer, topology, known))) sentLayers[key] = known;
+                return;
+            }
+            movedIndices.Clear();
+            movedPositions.Clear();
+            for (int w = 0; w < count; w++)
+            {
+                int v = representative[w];
+                var p = deltas != null ? basePositions[v] + deltas[v] : basePositions[v];
+                if (!MeshDocument.Differs(p, known[w])) continue;
+                movedIndices.Add(w);
+                movedPositions.Add(p);
+            }
+            if (movedIndices.Count == 0) return;
+            if (!Send(MixerLinkProtocol.FrameType.Positions, MeshDataCodec.EncodePositions(meshId, layer, topology, count, movedIndices, movedPositions)))
+            {
+                sentLayers.Remove(key);
+                return;
+            }
+            for (int i = 0; i < movedIndices.Count; i++) known[movedIndices[i]] = movedPositions[i];
+        }
+
+        // Blender's copy of the mesh may now differ from what Unity's frames left it: the next frame of each layer is whole.
+        private void ForgetSentLayers(string meshId)
+        {
+            if (meshId == null || sentLayers.Count == 0) return;
+            leavingKeys.Clear();
+            foreach (var key in sentLayers.Keys) if (key.mesh == meshId) leavingKeys.Add(key);
+            foreach (var key in leavingKeys) sentLayers.Remove(key);
+            leavingKeys.Clear();
+        }
+
+        private void ForgetPositions(string targetId)
+        {
+            if (targetId == null || positionsDue.Count == 0) return;
+            leavingKeys.Clear();
+            foreach (var key in positionsDue.Keys) if (key.target == targetId) leavingKeys.Add(key);
+            foreach (var key in leavingKeys) positionsDue.Remove(key);
+            leavingKeys.Clear();
         }
 
         // ---- What Blender was sent ---------------------------------------------------------------------------------------
@@ -1014,6 +1072,7 @@ namespace Orbiters.Mixer.Editor
                 if (!SendMeshPayload(job.Payload)) { Say("The mesh of " + job.Name + " was not sent: Blender is gone."); continue; }
                 inFlightBefore = sent.TryGetValue(job.MeshId, out var before) ? before : null;
                 sent[job.MeshId] = job.Sent;
+                ForgetSentLayers(job.MeshId);
                 inFlight = job.MeshId;
                 inFlightSince = EditorApplication.timeSinceStartup;
             }
@@ -1037,11 +1096,12 @@ namespace Orbiters.Mixer.Editor
             Status(nodeId, "Unity could not send " + name + ": " + e.Message, "error");
         }
 
-        /// <summary>A Mixer stroke moved a target: Blender gets the new positions soon (collapsed, at most every 100 ms).</summary>
+        /// <summary>A Mixer stroke moved a target's shown layer: Blender gets what moved of it soon (at most every 100 ms).</summary>
         public void NotePositions(EditTarget target)
         {
             if (!Connected || target == null || !graphNodes.Contains(target.Id) || IsBlenderOwned(target)) return;
-            positionsDue[target.Id] = Math.Min(positionsDue.TryGetValue(target.Id, out double due) ? due : double.MaxValue, EditorApplication.timeSinceStartup + 0.1);
+            var key = (target.Id, target.Document.Layer ?? "");
+            positionsDue[key] = Math.Min(positionsDue.TryGetValue(key, out double due) ? due : double.MaxValue, EditorApplication.timeSinceStartup + 0.1);
         }
 
         /// <summary>A Mixer stroke changed weights: Blender gets the sparse change now.</summary>
@@ -1081,7 +1141,7 @@ namespace Orbiters.Mixer.Editor
                 var shapes = new HashSet<string>(doc.ShapeOrder.Where(doc.HasShape));
                 var groups = new HashSet<string>(doc.Groups.Select(g => g.Name));
                 if (shapes.SetEquals(info.Shapes) && groups.SetEquals(info.Groups)) continue;
-                positionsDue.Remove(target.Id);
+                ForgetPositions(target.Id);
                 SendMesh(target.Id);
             }
         }
@@ -1102,12 +1162,18 @@ namespace Orbiters.Mixer.Editor
             else if (recheckAt > 0 && now >= recheckAt) { recheckAt = 0; SendGraph(force: false, recheck: false); }
             CheckShapeLists();
             if (positionsDue.Count == 0) return;
-            foreach (var pair in positionsDue.Where(p => p.Value <= now).ToList())
+            leavingKeys.Clear();
+            foreach (var pair in positionsDue) if (pair.Value <= now) leavingKeys.Add(pair.Key);
+            if (leavingKeys.Count == 0) return;
+            var leaving = leavingKeys.ToArray();
+            leavingKeys.Clear();
+            foreach (var (targetId, layer) in leaving)
             {
-                positionsDue.Remove(pair.Key);
-                var target = MixerSession.Targets.FirstOrDefault(t => t.Id == pair.Key);
+                positionsDue.Remove((targetId, layer));
+                EditTarget target = null;
+                foreach (var t in MixerSession.Targets) if (t.Id == targetId) { target = t; break; }
                 if (target == null || !target.Alive || IsBlenderOwned(target) || queuedMeshes.Contains(target.Id)) continue;
-                SendLayer(target, target.Document.Layer);
+                SendLayer(target, layer.Length == 0 ? null : layer);
             }
         }
     }
