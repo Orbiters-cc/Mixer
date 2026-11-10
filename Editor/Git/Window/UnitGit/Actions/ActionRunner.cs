@@ -67,7 +67,8 @@ namespace Orbiters.UnitGit.Editor
                     gitService.ProcessLogReceived = line => QueueConsoleLine(label, line);
                     try
                     {
-                        return ExecuteGitAction(action);
+                        // The whole action is one operation, on this worker: it holds the repository's lease to its end.
+                        return ExecuteGitAction(() => UnitGitLease.Hold(action));
                     }
                     finally
                     {

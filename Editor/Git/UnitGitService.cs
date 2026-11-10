@@ -395,6 +395,15 @@ namespace Orbiters.UnitGit.Editor
         /// </summary>
         internal GitCommandResult VisitCommit(string revision, string shelfMessage, bool discardChanges, out bool shelved, bool overwriteIgnored = false)
         {
+            // One operation: it holds the repository's lease from here to its end (see UnitGitLease).
+            bool wasShelved = false;
+            GitCommandResult result = UnitGitLease.Hold(() => VisitCommitHeld(revision, shelfMessage, discardChanges, out wasShelved, overwriteIgnored));
+            shelved = wasShelved;
+            return result;
+        }
+
+        private GitCommandResult VisitCommitHeld(string revision, string shelfMessage, bool discardChanges, out bool shelved, bool overwriteIgnored)
+        {
             shelved = false;
             GitCommandResult resolved = ResolveCommit(revision, out string hash);
             if (!resolved.Success) return resolved;
@@ -451,46 +460,51 @@ namespace Orbiters.UnitGit.Editor
         /// </summary>
         internal GitCommandResult ReturnFromVisit(string branch, bool discardChanges, string shelfMessage, string changedShelf = null)
         {
-            branch = (branch ?? string.Empty).Trim();
-            GitCommandResult open = CanReturnTo(branch);
-            if (!open.Success) return open;
-
-            GitCommandResult changes = ReadChangeCount(out int tracked, out _);
-            if (!changes.Success) return changes;
-            GitCommandResult way = ReadFilesInTheWay("refs/heads/" + branch, out List<string> inTheWay, out _);
-            if (!way.Success) return way;
-            bool shelved = false;
-            string left = null;
-            if (!string.IsNullOrWhiteSpace(changedShelf) && tracked + inTheWay.Count > 0)
+            // One operation: it holds the repository's lease from here to its end (see UnitGitLease).
+            return UnitGitLease.Hold(() =>
             {
-                GitCommandResult shelve = ShelveChanges(changedShelf, inTheWay);
-                if (!shelve.Success) return shelve;
-                shelved = true;
-                // What Git sees right after shelving, to put the shelf back onto only that (see PutShelfBack). A read that
-                // did not finish (a reload) is no answer: null, and the shelf then stays where it is.
-                GitCommandResult after = ReadChangeStatus();
-                left = after.Success ? after.StandardOutput : null;
-            }
-            else if (!discardChanges && tracked > 0)
-            {
-                return Failure(Plural(tracked, "file") + " changed while visiting. Discard or shelve them before going back to ‘" + branch + "’.");
-            }
-            else if (!discardChanges && inTheWay.Count > 0)
-            {
-                return Failure(NewFilesInTheWay(inTheWay, "‘" + branch + "’"));
-            }
+                branch = (branch ?? string.Empty).Trim();
+                GitCommandResult open = CanReturnTo(branch);
+                if (!open.Success) return open;
 
-            // "--" after the branch: a file called like the branch is never read as a path to restore.
-            GitCommandResult checkout = discardChanges && !shelved
-                ? RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "checkout", "--force", branch, "--")
-                : RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "checkout", branch, "--");
-            if (!checkout.Success) return shelved ? PutShelfBack(checkout, changedShelf, left, out _) : checkout;
-            if (FindShelf(shelfMessage).Length == 0) return checkout;
+                GitCommandResult changes = ReadChangeCount(out int tracked, out _);
+                if (!changes.Success) return changes;
+                GitCommandResult way = ReadFilesInTheWay("refs/heads/" + branch, out List<string> inTheWay, out _);
+                if (!way.Success) return way;
+                bool shelved = false;
+                string left = null;
+                if (!string.IsNullOrWhiteSpace(changedShelf) && tracked + inTheWay.Count > 0)
+                {
+                    GitCommandResult shelve = ShelveChanges(changedShelf, inTheWay);
+                    if (!shelve.Success) return shelve;
+                    shelved = true;
+                    // What Git sees right after shelving, to put the shelf back onto only that (see PutShelfBack). A read that
+                    // did not finish (a reload) is no answer: null, and the shelf then stays where it is.
+                    GitCommandResult after = ReadChangeStatus();
+                    left = after.Success ? after.StandardOutput : null;
+                }
+                else if (!discardChanges && tracked > 0)
+                {
+                    return Failure(Plural(tracked, "file") + " changed while visiting. Discard or shelve them before going back to ‘" + branch + "’.");
+                }
+                else if (!discardChanges && inTheWay.Count > 0)
+                {
+                    return Failure(NewFilesInTheWay(inTheWay, "‘" + branch + "’"));
+                }
 
-            GitCommandResult restored = UnshelveByMessage(shelfMessage);
-            return restored.Success
-                ? checkout
-                : Failure("Back on ‘" + branch + "’, but your changes from before the visit stay on the shelf ‘" + shelfMessage.Trim() + "’: " + restored.Message);
+                // "--" after the branch: a file called like the branch is never read as a path to restore.
+                GitCommandResult checkout = discardChanges && !shelved
+                    ? RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "checkout", "--force", branch, "--")
+                    : RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "checkout", branch, "--");
+                if (!checkout.Success) return shelved ? PutShelfBack(checkout, changedShelf, left, out _) : checkout;
+                if (FindShelf(shelfMessage).Length == 0) return checkout;
+
+                GitCommandResult restored = UnshelveByMessage(shelfMessage);
+                return restored.Success
+                    ? checkout
+                    : Failure("Back on ‘" + branch + "’, but your changes from before the visit stay on the shelf ‘" + shelfMessage.Trim() + "’: " + restored.Message);
+        
+            });
         }
 
         /// <summary>Whether Back can check out <paramref name="branch"/>: it exists, and no merge, rebase or bisect is under way.</summary>
@@ -519,16 +533,21 @@ namespace Orbiters.UnitGit.Editor
         /// </summary>
         internal GitCommandResult ShelveChanges(string message, IList<string> newFiles)
         {
-            bool staged = newFiles != null && newFiles.Count > 0;
-            if (staged)
+            // One operation: it holds the repository's lease from here to its end (see UnitGitLease).
+            return UnitGitLease.Hold(() =>
             {
-                GitCommandResult add = RunGitForPaths(LongTimeoutMilliseconds, newFiles, "add");
-                if (!add.Success) return add;
-            }
+                bool staged = newFiles != null && newFiles.Count > 0;
+                if (staged)
+                {
+                    GitCommandResult add = RunGitForPaths(LongTimeoutMilliseconds, newFiles, "add");
+                    if (!add.Success) return add;
+                }
 
-            GitCommandResult shelve = RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "stash", "push", "-m", message.Trim());
-            if (!shelve.Success && staged) RunGitForPaths(LongTimeoutMilliseconds, newFiles, "reset", "-q");
-            return shelve;
+                GitCommandResult shelve = RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "stash", "push", "-m", message.Trim());
+                if (!shelve.Success && staged) RunGitForPaths(LongTimeoutMilliseconds, newFiles, "reset", "-q");
+                return shelve;
+        
+            });
         }
 
         // After a failed checkout the shelf goes back only onto the files as they were (before: what Git saw right after
@@ -638,31 +657,46 @@ namespace Orbiters.UnitGit.Editor
         /// <summary>Stops tracking these files: they stay on disk and their removal is staged for the next commit.</summary>
         public GitCommandResult StopTracking(IList<string> paths)
         {
-            var result = RunGitForPaths(LongTimeoutMilliseconds, paths, "rm", "--cached", "--quiet", "--ignore-unmatch");
-            if (result.Success)
-                result.StandardOutput = "Stopped tracking " + paths.Count + " files. They stay on disk; commit to record it.";
-            return result;
+            // One operation: it holds the repository's lease from here to its end (see UnitGitLease).
+            return UnitGitLease.Hold(() =>
+            {
+                var result = RunGitForPaths(LongTimeoutMilliseconds, paths, "rm", "--cached", "--quiet", "--ignore-unmatch");
+                if (result.Success)
+                    result.StandardOutput = "Stopped tracking " + paths.Count + " files. They stay on disk; commit to record it.";
+                return result;
+        
+            });
         }
 
         /// <summary>Includes these files in the next commit as they are on disk, deletions included.</summary>
         public GitCommandResult Stage(IList<string> paths)
         {
-            List<string> selected = SelectedPaths(paths);
-            if (selected.Count == 0)
-                return Failure("No files selected.");
-            return RunGitForPaths(LongTimeoutMilliseconds, selected, "add", "-A");
+            // One operation: it holds the repository's lease from here to its end (see UnitGitLease).
+            return UnitGitLease.Hold(() =>
+            {
+                List<string> selected = SelectedPaths(paths);
+                if (selected.Count == 0)
+                    return Failure("No files selected.");
+                return RunGitForPaths(LongTimeoutMilliseconds, selected, "add", "-A");
+        
+            });
         }
 
         /// <summary>Leaves these files out of the next commit again. Their content on disk is unchanged.</summary>
         public GitCommandResult Unstage(IList<string> paths)
         {
-            List<string> selected = SelectedPaths(paths);
-            if (selected.Count == 0)
-                return Failure("No files selected.");
-            if (HasCommits())
-                return RunGitForPaths(LongTimeoutMilliseconds, selected, "reset", "-q", "HEAD");
-            // Before the first commit there is no HEAD to reset to: everything staged is new. --cached keeps the files on disk.
-            return RunGitForPaths(LongTimeoutMilliseconds, selected, "rm", "--cached", "-r", "-f", "-q", "--ignore-unmatch");
+            // One operation: it holds the repository's lease from here to its end (see UnitGitLease).
+            return UnitGitLease.Hold(() =>
+            {
+                List<string> selected = SelectedPaths(paths);
+                if (selected.Count == 0)
+                    return Failure("No files selected.");
+                if (HasCommits())
+                    return RunGitForPaths(LongTimeoutMilliseconds, selected, "reset", "-q", "HEAD");
+                // Before the first commit there is no HEAD to reset to: everything staged is new. --cached keeps the files on disk.
+                return RunGitForPaths(LongTimeoutMilliseconds, selected, "rm", "--cached", "-r", "-f", "-q", "--ignore-unmatch");
+        
+            });
         }
 
         /// <summary>
@@ -672,51 +706,56 @@ namespace Orbiters.UnitGit.Editor
         /// </summary>
         public GitCommandResult Rollback(IList<string> paths)
         {
-            List<string> selected = SelectedPaths(paths);
-            if (selected.Count == 0)
-                return Failure("No files selected.");
-
-            // Only paths Git lists are passed on, so a selected untracked file never reaches restore (which would fail) or rm.
-            var committed = new List<string>();
-            if (HasCommits())
+            // One operation: it holds the repository's lease from here to its end (see UnitGitLease).
+            return UnitGitLease.Hold(() =>
             {
-                GitCommandResult listed = ListPaths(selected, committed, "ls-tree", "-r", "--name-only", "HEAD");
-                if (!listed.Success)
-                    return listed;
-            }
+                List<string> selected = SelectedPaths(paths);
+                if (selected.Count == 0)
+                    return Failure("No files selected.");
 
-            var indexed = new List<string>();
-            GitCommandResult index = ListPaths(selected, indexed, "ls-files", "--cached");
-            if (!index.Success)
-                return index;
+                // Only paths Git lists are passed on, so a selected untracked file never reaches restore (which would fail) or rm.
+                var committed = new List<string>();
+                if (HasCommits())
+                {
+                    GitCommandResult listed = ListPaths(selected, committed, "ls-tree", "-r", "--name-only", "HEAD");
+                    if (!listed.Success)
+                        return listed;
+                }
 
-            var inHead = new HashSet<string>(committed, StringComparer.Ordinal);
-            List<string> added = indexed.Where(path => !inHead.Contains(path)).Distinct(StringComparer.Ordinal).ToList();
-            if (committed.Count > 0)
-            {
-                GitCommandResult restored = RunGitForPaths(LongTimeoutMilliseconds, committed, "restore", "--source=HEAD", "--staged", "--worktree");
-                if (!restored.Success)
-                    return restored;
-            }
+                var indexed = new List<string>();
+                GitCommandResult index = ListPaths(selected, indexed, "ls-files", "--cached");
+                if (!index.Success)
+                    return index;
 
-            if (added.Count > 0)
-            {
-                // Not in HEAD, so restore would delete them from disk. -f: dropping the staged content is the point of a rollback.
-                GitCommandResult removed = RunGitForPaths(LongTimeoutMilliseconds, added, "rm", "--cached", "-f", "-q");
-                if (!removed.Success)
-                    return removed;
-            }
+                var inHead = new HashSet<string>(committed, StringComparer.Ordinal);
+                List<string> added = indexed.Where(path => !inHead.Contains(path)).Distinct(StringComparer.Ordinal).ToList();
+                if (committed.Count > 0)
+                {
+                    GitCommandResult restored = RunGitForPaths(LongTimeoutMilliseconds, committed, "restore", "--source=HEAD", "--staged", "--worktree");
+                    if (!restored.Success)
+                        return restored;
+                }
 
-            if (committed.Count == 0 && added.Count == 0)
-                return new GitCommandResult { StandardOutput = "Nothing to roll back: the selected files are not tracked." };
+                if (added.Count > 0)
+                {
+                    // Not in HEAD, so restore would delete them from disk. -f: dropping the staged content is the point of a rollback.
+                    GitCommandResult removed = RunGitForPaths(LongTimeoutMilliseconds, added, "rm", "--cached", "-f", "-q");
+                    if (!removed.Success)
+                        return removed;
+                }
 
-            var message = new StringBuilder();
-            if (committed.Count > 0)
-                message.Append("Rolled back ").Append(Plural(committed.Count, "file")).Append(" to the last commit.");
-            if (added.Count > 0)
-                message.Append(message.Length > 0 ? " " : string.Empty)
-                    .Append("Untracked again and kept on disk: ").Append(Plural(added.Count, "added file")).Append('.');
-            return new GitCommandResult { StandardOutput = message.ToString() };
+                if (committed.Count == 0 && added.Count == 0)
+                    return new GitCommandResult { StandardOutput = "Nothing to roll back: the selected files are not tracked." };
+
+                var message = new StringBuilder();
+                if (committed.Count > 0)
+                    message.Append("Rolled back ").Append(Plural(committed.Count, "file")).Append(" to the last commit.");
+                if (added.Count > 0)
+                    message.Append(message.Length > 0 ? " " : string.Empty)
+                        .Append("Untracked again and kept on disk: ").Append(Plural(added.Count, "added file")).Append('.');
+                return new GitCommandResult { StandardOutput = message.ToString() };
+        
+            });
         }
 
         public UnitGitCommitDetails GetCommitDetails(string fullHash)
@@ -795,12 +834,17 @@ namespace Orbiters.UnitGit.Editor
 
         public GitCommandResult PullFastForward()
         {
-            if (!HasRemotes())
+            // One operation: it holds the repository's lease from here to its end (see UnitGitLease).
+            return UnitGitLease.Hold(() =>
             {
-                return Failure("No Git remote is configured. Use GitHub remote setup or add a remote before pulling.");
-            }
+                if (!HasRemotes())
+                {
+                    return Failure("No Git remote is configured. Use GitHub remote setup or add a remote before pulling.");
+                }
 
-            return RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "pull", "--ff-only");
+                return RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "pull", "--ff-only");
+        
+            });
         }
 
         /// <summary>
@@ -839,13 +883,23 @@ namespace Orbiters.UnitGit.Editor
         /// <summary>Copies a commit onto the current branch. Conflicts fail and leave Git's cherry-pick in progress.</summary>
         public GitCommandResult CherryPick(string fullHash)
         {
-            return ApplyCommit(fullHash, UnitGitOperation.CherryPick, "cherry-pick");
+            // One operation: it holds the repository's lease from here to its end (see UnitGitLease).
+            return UnitGitLease.Hold(() =>
+            {
+                return ApplyCommit(fullHash, UnitGitOperation.CherryPick, "cherry-pick");
+        
+            });
         }
 
         /// <summary>Adds a commit that undoes this one. Conflicts fail and leave Git's revert in progress.</summary>
         public GitCommandResult RevertCommit(string fullHash)
         {
-            return ApplyCommit(fullHash, UnitGitOperation.Revert, "revert", "--no-edit");
+            // One operation: it holds the repository's lease from here to its end (see UnitGitLease).
+            return UnitGitLease.Hold(() =>
+            {
+                return ApplyCommit(fullHash, UnitGitOperation.Revert, "revert", "--no-edit");
+        
+            });
         }
 
         private GitCommandResult ApplyCommit(string fullHash, UnitGitOperation operation, params string[] command)
@@ -902,47 +956,72 @@ namespace Orbiters.UnitGit.Editor
 
         public GitCommandResult StageAll()
         {
-            return RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "add", "-A");
+            // One operation: it holds the repository's lease from here to its end (see UnitGitLease).
+            return UnitGitLease.Hold(() =>
+            {
+                return RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "add", "-A");
+        
+            });
         }
 
         public GitCommandResult UnstageAll()
         {
-            return RunGit(GitAccess.Exclusive, DefaultTimeoutMilliseconds, "reset");
+            // One operation: it holds the repository's lease from here to its end (see UnitGitLease).
+            return UnitGitLease.Hold(() =>
+            {
+                return RunGit(GitAccess.Exclusive, DefaultTimeoutMilliseconds, "reset");
+        
+            });
         }
 
         public GitCommandResult Commit(string message)
         {
-            if (string.IsNullOrWhiteSpace(message))
+            // One operation: it holds the repository's lease from here to its end (see UnitGitLease).
+            return UnitGitLease.Hold(() =>
             {
-                return Failure("Commit message is required.");
-            }
+                if (string.IsNullOrWhiteSpace(message))
+                {
+                    return Failure("Commit message is required.");
+                }
 
-            return RunCommitWithMessageFile(new[] { "commit" }, message);
+                return RunCommitWithMessageFile(new[] { "commit" }, message);
+        
+            });
         }
 
         public GitCommandResult Commit(string message, string trailingParagraph)
         {
-            if (string.IsNullOrWhiteSpace(message))
+            // One operation: it holds the repository's lease from here to its end (see UnitGitLease).
+            return UnitGitLease.Hold(() =>
             {
-                return Failure("Commit message is required.");
-            }
+                if (string.IsNullOrWhiteSpace(message))
+                {
+                    return Failure("Commit message is required.");
+                }
 
-            if (string.IsNullOrWhiteSpace(trailingParagraph))
-            {
-                return Commit(message);
-            }
+                if (string.IsNullOrWhiteSpace(trailingParagraph))
+                {
+                    return Commit(message);
+                }
 
-            return RunCommitWithMessageFile(new[] { "commit" }, message.Trim() + "\n\n" + trailingParagraph.Trim());
+                return RunCommitWithMessageFile(new[] { "commit" }, message.Trim() + "\n\n" + trailingParagraph.Trim());
+        
+            });
         }
 
         public GitCommandResult CommitAmend(string message)
         {
-            if (string.IsNullOrWhiteSpace(message))
+            // One operation: it holds the repository's lease from here to its end (see UnitGitLease).
+            return UnitGitLease.Hold(() =>
             {
-                return Failure("Commit message is required.");
-            }
+                if (string.IsNullOrWhiteSpace(message))
+                {
+                    return Failure("Commit message is required.");
+                }
 
-            return RunCommitWithMessageFile(new[] { "commit", "--amend" }, message);
+                return RunCommitWithMessageFile(new[] { "commit", "--amend" }, message);
+        
+            });
         }
 
         public GitCommandResult GetHeadCommitMessage()
@@ -988,31 +1067,36 @@ namespace Orbiters.UnitGit.Editor
         /// <summary>Resets HEAD only while it is still the branch and commit the user confirmed.</summary>
         internal GitCommandResult ResetCurrentBranch(string commitHash, UnitGitResetMode mode, UnitGitHeadState expected)
         {
-            if (string.IsNullOrWhiteSpace(commitHash))
+            // One operation: it holds the repository's lease from here to its end (see UnitGitLease).
+            return UnitGitLease.Hold(() =>
             {
-                return Failure("Commit hash is required.");
-            }
+                if (string.IsNullOrWhiteSpace(commitHash))
+                {
+                    return Failure("Commit hash is required.");
+                }
 
-            GitCommandResult resolved = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "rev-parse", "--verify", commitHash.Trim() + "^{commit}");
-            if (!resolved.Success)
-            {
-                return resolved;
-            }
+                GitCommandResult resolved = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "rev-parse", "--verify", commitHash.Trim() + "^{commit}");
+                if (!resolved.Success)
+                {
+                    return resolved;
+                }
 
-            GitCommandResult current = ReadHeadState(out UnitGitHeadState state);
-            if (!current.Success)
-            {
-                return current;
-            }
+                GitCommandResult current = ReadHeadState(out UnitGitHeadState state);
+                if (!current.Success)
+                {
+                    return current;
+                }
 
-            GitCommandResult changed = CheckHeadUnchanged("Reset", expected, state, true);
-            if (changed != null)
-            {
-                return changed;
-            }
+                GitCommandResult changed = CheckHeadUnchanged("Reset", expected, state, true);
+                if (changed != null)
+                {
+                    return changed;
+                }
 
-            string targetHash = FirstNonEmptyLine(resolved.StandardOutput);
-            return RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "reset", GetResetModeArgument(mode), targetHash);
+                string targetHash = FirstNonEmptyLine(resolved.StandardOutput);
+                return RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "reset", GetResetModeArgument(mode), targetHash);
+        
+            });
         }
 
         private static GitCommandResult CheckHeadUnchanged(string operation, UnitGitHeadState expected, UnitGitHeadState current, bool sameCommit)
@@ -1044,11 +1128,16 @@ namespace Orbiters.UnitGit.Editor
 
         public GitCommandResult ShelveAll(string message)
         {
-            string shelfMessage = string.IsNullOrWhiteSpace(message)
-                ? "Mixer Git shelf " + DateTime.Now.ToString("yyyy-MM-dd HH:mm")
-                : message.Trim();
+            // One operation: it holds the repository's lease from here to its end (see UnitGitLease).
+            return UnitGitLease.Hold(() =>
+            {
+                string shelfMessage = string.IsNullOrWhiteSpace(message)
+                    ? "Mixer Git shelf " + DateTime.Now.ToString("yyyy-MM-dd HH:mm")
+                    : message.Trim();
 
-            return RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "stash", "push", "-u", "-m", shelfMessage);
+                return RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "stash", "push", "-u", "-m", shelfMessage);
+        
+            });
         }
 
         private static string GetResetModeArgument(UnitGitResetMode mode)
@@ -1379,97 +1468,117 @@ namespace Orbiters.UnitGit.Editor
 
         public GitCommandResult Checkout(UnitGitBranch branch)
         {
-            if (branch == null || string.IsNullOrWhiteSpace(branch.Name))
+            // One operation: it holds the repository's lease from here to its end (see UnitGitLease).
+            return UnitGitLease.Hold(() =>
             {
-                return new GitCommandResult
+                if (branch == null || string.IsNullOrWhiteSpace(branch.Name))
                 {
-                    ExitCode = 1,
-                    StandardError = "No branch selected."
-                };
-            }
+                    return new GitCommandResult
+                    {
+                        ExitCode = 1,
+                        StandardError = "No branch selected."
+                    };
+                }
 
-            // A checkout writes the whole project: the long timeout, as a visit has (stopped midway, it leaves two versions mixed).
-            if (!branch.IsRemote)
-            {
-                return RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "checkout", branch.Name);
-            }
+                // A checkout writes the whole project: the long timeout, as a visit has (stopped midway, it leaves two versions mixed).
+                if (!branch.IsRemote)
+                {
+                    return RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "checkout", branch.Name);
+                }
 
-            return RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "checkout", "-t", branch.Name);
+                return RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "checkout", "-t", branch.Name);
+        
+            });
         }
 
         public GitCommandResult CreateBranch(string branchName, string startPoint)
         {
-            if (string.IsNullOrWhiteSpace(branchName))
+            // One operation: it holds the repository's lease from here to its end (see UnitGitLease).
+            return UnitGitLease.Hold(() =>
             {
-                return Failure("Branch name is required.");
-            }
+                if (string.IsNullOrWhiteSpace(branchName))
+                {
+                    return Failure("Branch name is required.");
+                }
 
-            branchName = branchName.Trim();
-            var validation = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "check-ref-format", "--branch", branchName);
-            if (!validation.Success)
-            {
-                return Failure("Invalid branch name: " + branchName);
-            }
+                branchName = branchName.Trim();
+                var validation = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "check-ref-format", "--branch", branchName);
+                if (!validation.Success)
+                {
+                    return Failure("Invalid branch name: " + branchName);
+                }
 
-            if (string.IsNullOrWhiteSpace(startPoint))
-            {
-                return RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "checkout", "-b", branchName);
-            }
+                if (string.IsNullOrWhiteSpace(startPoint))
+                {
+                    return RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "checkout", "-b", branchName);
+                }
 
-            return RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "checkout", "-b", branchName, startPoint);
+                return RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "checkout", "-b", branchName, startPoint);
+        
+            });
         }
 
         public GitCommandResult UpdateBranch(UnitGitBranch branch)
         {
-            if (branch == null || string.IsNullOrWhiteSpace(branch.Name))
+            // One operation: it holds the repository's lease from here to its end (see UnitGitLease).
+            return UnitGitLease.Hold(() =>
             {
-                return Failure("Select a branch first.");
-            }
+                if (branch == null || string.IsNullOrWhiteSpace(branch.Name))
+                {
+                    return Failure("Select a branch first.");
+                }
 
-            if (branch.IsRemote)
-            {
-                return Fetch();
-            }
+                if (branch.IsRemote)
+                {
+                    return Fetch();
+                }
 
-            branch = GetBranches().FirstOrDefault(candidate => !candidate.IsRemote && candidate.FullRef == branch.FullRef);
-            if (branch == null)
-                return Failure("The selected branch no longer exists. Refresh the branch list.");
-            if (string.IsNullOrWhiteSpace(branch.Upstream))
-                return Failure("Selected branch has no upstream. Fetch still works, but there is nothing to fast-forward.");
+                branch = GetBranches().FirstOrDefault(candidate => !candidate.IsRemote && candidate.FullRef == branch.FullRef);
+                if (branch == null)
+                    return Failure("The selected branch no longer exists. Refresh the branch list.");
+                if (string.IsNullOrWhiteSpace(branch.Upstream))
+                    return Failure("Selected branch has no upstream. Fetch still works, but there is nothing to fast-forward.");
 
-            GitCommandResult checkout = RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "checkout", branch.Name);
-            if (!checkout.Success)
-            {
-                return checkout;
-            }
+                GitCommandResult checkout = RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "checkout", branch.Name);
+                if (!checkout.Success)
+                {
+                    return checkout;
+                }
 
-            GitCommandResult current = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "symbolic-ref", "--quiet", "HEAD");
-            if (!current.Success || FirstNonEmptyLine(current.StandardOutput) != branch.FullRef)
-            {
-                return Failure("The current branch changed during Update. Refresh and try again.");
-            }
+                GitCommandResult current = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "symbolic-ref", "--quiet", "HEAD");
+                if (!current.Success || FirstNonEmptyLine(current.StandardOutput) != branch.FullRef)
+                {
+                    return Failure("The current branch changed during Update. Refresh and try again.");
+                }
 
-            return PullFastForward();
+                return PullFastForward();
+        
+            });
         }
 
         public GitCommandResult DeleteBranch(UnitGitBranch branch)
         {
-            if (branch == null || string.IsNullOrWhiteSpace(branch.Name))
+            // One operation: it holds the repository's lease from here to its end (see UnitGitLease).
+            return UnitGitLease.Hold(() =>
             {
-                return Failure("Select a branch first.");
-            }
+                if (branch == null || string.IsNullOrWhiteSpace(branch.Name))
+                {
+                    return Failure("Select a branch first.");
+                }
 
-            if (branch.IsCurrent)
-            {
-                return Failure("Cannot delete the current branch. Checkout another branch first.");
-            }
+                if (branch.IsCurrent)
+                {
+                    return Failure("Cannot delete the current branch. Checkout another branch first.");
+                }
 
-            if (branch.IsRemote)
-            {
-                return RunGit(GitAccess.Exclusive, DefaultTimeoutMilliseconds, "branch", "-dr", branch.Name);
-            }
+                if (branch.IsRemote)
+                {
+                    return RunGit(GitAccess.Exclusive, DefaultTimeoutMilliseconds, "branch", "-dr", branch.Name);
+                }
 
-            return RunGit(GitAccess.Exclusive, DefaultTimeoutMilliseconds, "branch", "-d", branch.Name);
+                return RunGit(GitAccess.Exclusive, DefaultTimeoutMilliseconds, "branch", "-d", branch.Name);
+        
+            });
         }
 
         private static List<string> SelectedPaths(IList<string> paths)

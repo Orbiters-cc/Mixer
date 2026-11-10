@@ -38,32 +38,42 @@ namespace Orbiters.UnitGit.Editor
 
         internal GitCommandResult RenameCommit(string commitHash, string message, UnitGitHeadState expected)
         {
-            if (string.IsNullOrWhiteSpace(commitHash))
+            // One operation: it holds the repository's lease from here to its end (see UnitGitLease).
+            return UnitGitLease.Hold(() =>
             {
-                return Failure("Commit hash is required.");
-            }
+                if (string.IsNullOrWhiteSpace(commitHash))
+                {
+                    return Failure("Commit hash is required.");
+                }
 
-            if (string.IsNullOrWhiteSpace(message))
-            {
-                return Failure("Commit message is required.");
-            }
+                if (string.IsNullOrWhiteSpace(message))
+                {
+                    return Failure("Commit message is required.");
+                }
 
-            return RewriteHeadHistory(new[] { commitHash.Trim() }, message, false, expected);
+                return RewriteHeadHistory(new[] { commitHash.Trim() }, message, false, expected);
+        
+            });
         }
 
         internal GitCommandResult SquashCommits(IList<string> commitHashes, string message, UnitGitHeadState expected)
         {
-            if (commitHashes == null || commitHashes.Count < 2)
+            // One operation: it holds the repository's lease from here to its end (see UnitGitLease).
+            return UnitGitLease.Hold(() =>
             {
-                return Failure("Select at least two commits to squash.");
-            }
+                if (commitHashes == null || commitHashes.Count < 2)
+                {
+                    return Failure("Select at least two commits to squash.");
+                }
 
-            if (string.IsNullOrWhiteSpace(message))
-            {
-                return Failure("Commit message is required.");
-            }
+                if (string.IsNullOrWhiteSpace(message))
+                {
+                    return Failure("Commit message is required.");
+                }
 
-            return RewriteHeadHistory(commitHashes, message, true, expected);
+                return RewriteHeadHistory(commitHashes, message, true, expected);
+        
+            });
         }
 
         // One object reader for the whole rewrite (raw commits, the check of the written copies), stopped and waited for

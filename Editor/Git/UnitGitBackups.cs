@@ -124,32 +124,37 @@ namespace Orbiters.UnitGit.Editor
         /// </summary>
         public static GitCommandResult Create(UnitGitService git, string folder, int keep)
         {
-            Directory.CreateDirectory(folder);
-            string name = OwnPrefix(git.ProjectRoot) + DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss", CultureInfo.InvariantCulture);
-            string final = System.IO.Path.Combine(folder, name + Extension);
-            for (int n = 2; File.Exists(final); n++) final = System.IO.Path.Combine(folder, name + "_" + n + Extension);
-            string temporary = final + ".partial";
-            // A rename's scratch ref a reload left behind would go into the backup with --all.
-            git.SweepScratchRefs();
-            var result = Bundle(git, temporary);
-            if (!result.Success)
+            // One operation: it holds the repository's lease from here to its end (see UnitGitLease).
+            return UnitGitLease.Hold(() =>
             {
-                TryDelete(temporary);
-                return result;
-            }
-            var check = Check(git, temporary);
-            if (check.Healthy != true)
-            {
-                TryDelete(temporary);
-                return Failure("The backup could not be read back: " + check.Problem);
-            }
-            File.Move(temporary, final);
-            check.Path = System.IO.Path.GetFullPath(final);
-            Remember(final, check);
-            if (keep > 0)
-                foreach (var old in Own(List(folder), git.ProjectRoot).Where(b => !string.Equals(b.Path, check.Path, StringComparison.OrdinalIgnoreCase)).Skip(keep - 1))
-                    Delete(old.Path);
-            return new GitCommandResult { StandardOutput = "Backed up " + check.Branches + " branch" + (check.Branches == 1 ? "" : "es") + " to " + System.IO.Path.GetFileName(final) + "." };
+                Directory.CreateDirectory(folder);
+                string name = OwnPrefix(git.ProjectRoot) + DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss", CultureInfo.InvariantCulture);
+                string final = System.IO.Path.Combine(folder, name + Extension);
+                for (int n = 2; File.Exists(final); n++) final = System.IO.Path.Combine(folder, name + "_" + n + Extension);
+                string temporary = final + ".partial";
+                // A rename's scratch ref a reload left behind would go into the backup with --all.
+                git.SweepScratchRefs();
+                var result = Bundle(git, temporary);
+                if (!result.Success)
+                {
+                    TryDelete(temporary);
+                    return result;
+                }
+                var check = Check(git, temporary);
+                if (check.Healthy != true)
+                {
+                    TryDelete(temporary);
+                    return Failure("The backup could not be read back: " + check.Problem);
+                }
+                File.Move(temporary, final);
+                check.Path = System.IO.Path.GetFullPath(final);
+                Remember(final, check);
+                if (keep > 0)
+                    foreach (var old in Own(List(folder), git.ProjectRoot).Where(b => !string.Equals(b.Path, check.Path, StringComparison.OrdinalIgnoreCase)).Skip(keep - 1))
+                        Delete(old.Path);
+                return new GitCommandResult { StandardOutput = "Backed up " + check.Branches + " branch" + (check.Branches == 1 ? "" : "es") + " to " + System.IO.Path.GetFileName(final) + "." };
+        
+            });
         }
 
         /// <summary>

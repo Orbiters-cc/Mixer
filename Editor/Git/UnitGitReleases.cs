@@ -208,6 +208,14 @@ namespace Orbiters.UnitGit.Editor
 
         internal static UnitGitReleaseResult HideRelease(string projectRoot, string id)
         {
+            // One operation on the repository (it commits the catalog): it holds its lease (see UnitGitLease).
+            return UnitGitLease.Hold(() => HideReleaseHeld(projectRoot, id), () => Fail(LeaseBusyMessage));
+        }
+
+        private const string LeaseBusyMessage = "Another Git change is running. Try again once it is done.";
+
+        private static UnitGitReleaseResult HideReleaseHeld(string projectRoot, string id)
+        {
             if (string.IsNullOrWhiteSpace(projectRoot))
             {
                 return Fail("Project root is required.");
@@ -369,6 +377,12 @@ namespace Orbiters.UnitGit.Editor
         /// </summary>
         private static UnitGitReleaseResult RecordRelease(UnitGitService service, UnitGitReleaseEntry entry, Func<UnitGitReleaseResult> commit)
         {
+            // One operation: the catalog written and committed under the repository's lease (see UnitGitLease).
+            return UnitGitLease.Hold(() => RecordReleaseHeld(service, entry, commit), () => Fail(LeaseBusyMessage));
+        }
+
+        private static UnitGitReleaseResult RecordReleaseHeld(UnitGitService service, UnitGitReleaseEntry entry, Func<UnitGitReleaseResult> commit)
+        {
             if (!Monitor.TryEnter(CatalogGate))
             {
                 return Fail(CatalogBusyMessage);
@@ -529,6 +543,14 @@ namespace Orbiters.UnitGit.Editor
 
         private static UnitGitReleaseResult CommitFiles(UnitGitService service, string commitTitle, string trailingParagraph, string[] projectRelativePaths,
             bool notify = true, bool requireAll = false, bool requireReleaseFile = false)
+        {
+            // One operation (a checkpoint commit) under the repository's lease (see UnitGitLease).
+            return UnitGitLease.Hold(() => CommitFilesHeld(service, commitTitle, trailingParagraph, projectRelativePaths, notify, requireAll, requireReleaseFile),
+                () => Fail(LeaseBusyMessage));
+        }
+
+        private static UnitGitReleaseResult CommitFilesHeld(UnitGitService service, string commitTitle, string trailingParagraph, string[] projectRelativePaths,
+            bool notify, bool requireAll, bool requireReleaseFile)
         {
             if (string.IsNullOrWhiteSpace(commitTitle))
             {

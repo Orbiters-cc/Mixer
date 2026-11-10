@@ -72,7 +72,6 @@ namespace Orbiters.UnitGit.Editor
 
     internal static class UnitGitWriteGate
     {
-        private static readonly SemaphoreSlim Gate = new SemaphoreSlim(1, 1);
         private static readonly int[] LockRetryDelays = { 100, 200, 400, 700, 1000, 1500, 2000 };
 
         // One step that takes the index lock before doing anything: failing on the lock changed nothing, so it can run again.
@@ -235,48 +234,186 @@ namespace Orbiters.UnitGit.Editor
             (result.StandardError ?? string.Empty).IndexOf("index.lock': File exists", StringComparison.Ordinal) >= 0;
 
         /// <summary>Runs a Git command: reads at once, changes one at a time with short waits on another program's index lock.</summary>
-        /// <summary>Runs a Git command as its access says: reads at once, changes one at a time with short waits on another
-        /// program's index lock, and changes Git keeps safe beside local ones once no exclusive change runs.</summary>
+        private const string Busy = "Another Git change is running. Try again once it is done.";
+
+        /// <summary>
+        /// Runs one Git command as its access says. A read runs at once. A change Git keeps safe beside local ones (fetch,
+        /// push) runs once no operation holds the lease or waits for it (inside an operation that holds it, at once). An
+        /// exclusive change runs under the lease of the operation it belongs to (UnitGitLease); one with no operation
+        /// around it is a bug, recorded for the tests, and takes a lease for itself. Short waits on another program's index
+        /// lock are retried on workers only: the editor thread never sleeps.
+        /// </summary>
         internal static GitCommandResult Run(GitAccess access, IList<string> arguments, int timeoutMilliseconds, Func<GitCommandResult> run, Action<string> log)
         {
             if (access == GitAccess.Read) return run();
             if (access == GitAccess.Change)
+                return UnitGitLease.WaitUntilChangesMayStart(Math.Max(1000, timeoutMilliseconds))
+                    ? run()
+                    : new GitCommandResult { ExitCode = 1, TimedOut = true, StandardError = Busy };
+            if (UnitGitLease.Current == null)
             {
-                // A change Git keeps safe beside local changes (see GitAccess.Change) waits until no exclusive change runs,
-                // then runs without holding the gate: a rewrite or a branch delete in progress blocks a fetch from starting,
-                // a fetch in progress does not block a commit. The main thread never waits (as below).
-                bool onMain = UnityEditorInternal.InternalEditorUtility.CurrentThreadIsMainThread();
-                if (!Gate.Wait(onMain ? 0 : Math.Max(1000, timeoutMilliseconds)))
-                {
-                    if (!onMain)
-                        return new GitCommandResult { ExitCode = 1, TimedOut = true, StandardError = "Another Git change is still running. Try again once it is done." };
-                }
-                else Gate.Release();
-                return run();
+                UnitGitLease.NoteUnleased(arguments);
+                return UnitGitLease.Hold(() => RunExclusive(arguments, run, log), Math.Max(1000, timeoutMilliseconds));
             }
-            // The editor's main thread never waits on the gate (a long background write would freeze Unity): it relies on the retries.
-            bool mainThread = UnityEditorInternal.InternalEditorUtility.CurrentThreadIsMainThread();
-            bool entered = Gate.Wait(mainThread ? 0 : Math.Max(1000, timeoutMilliseconds));
-            // A worker that waited its whole timeout: another change still runs, and two at once is what the gate prevents.
-            if (!entered && !mainThread)
-                return new GitCommandResult { ExitCode = 1, TimedOut = true, StandardError = "Another Git change is still running. Try again once it is done." };
+            return RunExclusive(arguments, run, log);
+        }
+
+        private static GitCommandResult RunExclusive(IList<string> arguments, Func<GitCommandResult> run, Action<string> log)
+        {
+            bool retryable = RetryableVerbs.Contains(Verb(arguments)) && !UnityEditorInternal.InternalEditorUtility.CurrentThreadIsMainThread();
+            for (int attempt = 0; ; attempt++)
+            {
+                GitCommandResult result = run();
+                if (!result.Success && LockFile.IsMatch(result.StandardError ?? string.Empty) &&
+                    (!retryable || attempt >= LockRetryDelays.Length || !IsLockContention(result)))
+                    result.StandardError = ExplainLock(result.StandardError);
+                if (!retryable || attempt >= LockRetryDelays.Length || !IsLockContention(result)) return result;
+                log?.Invoke("waiting for another Git process to release the index lock");
+                Thread.Sleep(LockRetryDelays[attempt]);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The right to change the repository, held by one operation at a time: a public operation that changes it (a commit,
+    /// a staging, a visit, a rename, a release...) holds the lease from its start to its end, and every command it runs, on
+    /// any thread it starts, runs under it (the lease flows with the operation's execution context). It is released in a
+    /// finally when the operation ends, whatever the end: an error, a cancellation, a reload (a domain reload also drops
+    /// it with the statics). The editor thread never waits for it: when it is held, an operation started there is refused
+    /// with a clear message; operations run on workers (the window's actions) wait there. Changes Git keeps safe beside
+    /// local ones (fetch, push) start only when no operation holds it or waits for it, so they never starve local changes,
+    /// and while one runs an operation can still take the lease.
+    /// </summary>
+    internal sealed class UnitGitLease : IDisposable
+    {
+        private static readonly object Sync = new object();
+        private static readonly AsyncLocal<UnitGitLease> Held = new AsyncLocal<UnitGitLease>();
+        private static UnitGitLease holder;
+        private static int waiting;
+        private int released;
+
+        /// <summary>For tests: called each time a thread is about to wait for the lease or for changes to be allowed.</summary>
+        internal static Action<string> WaitingForTests;
+
+        /// <summary>For tests: when true, exclusive commands run with no operation's lease around them are recorded.</summary>
+        internal static bool RecordUnleased;
+        private static readonly System.Collections.Concurrent.ConcurrentQueue<string> Unleased = new System.Collections.Concurrent.ConcurrentQueue<string>();
+
+        /// <summary>The lease the current operation holds, or null.</summary>
+        internal static UnitGitLease Current
+        {
+            get
+            {
+                UnitGitLease lease = Held.Value;
+                return lease != null && lease.released == 0 ? lease : null;
+            }
+        }
+
+        internal static void NoteUnleased(IList<string> arguments)
+        {
+            if (RecordUnleased) Unleased.Enqueue(string.Join(" ", arguments));
+        }
+
+        /// <summary>For tests: the exclusive commands recorded as run outside any operation since the last call.</summary>
+        internal static List<string> TakeUnleased()
+        {
+            var taken = new List<string>();
+            while (Unleased.TryDequeue(out string line)) taken.Add(line);
+            return taken;
+        }
+
+        /// <summary>
+        /// Runs <paramref name="operation"/> holding the lease: at once inside an operation that holds it already (nested
+        /// calls share it), else once it is free; on the editor thread never waiting (refused when held).
+        /// </summary>
+        internal static GitCommandResult Hold(Func<GitCommandResult> operation, int timeoutMilliseconds = UnitGitService.LongTimeoutMilliseconds)
+        {
+            if (Current != null) return operation();
+            UnitGitLease lease = Acquire(!UnityEditorInternal.InternalEditorUtility.CurrentThreadIsMainThread(), timeoutMilliseconds);
+            if (lease == null) return new GitCommandResult { ExitCode = 1, StandardError = "Another Git change is running. Try again once it is done." };
+            UnitGitLease previous = Held.Value;
+            Held.Value = lease;
             try
             {
-                bool retryable = RetryableVerbs.Contains(Verb(arguments));
-                for (int attempt = 0; ; attempt++)
-                {
-                    GitCommandResult result = run();
-                    if (!result.Success && LockFile.IsMatch(result.StandardError ?? string.Empty) &&
-                        (!retryable || attempt >= LockRetryDelays.Length || !IsLockContention(result)))
-                        result.StandardError = ExplainLock(result.StandardError);
-                    if (!retryable || attempt >= LockRetryDelays.Length || !IsLockContention(result)) return result;
-                    log?.Invoke("waiting for another Git process to release the index lock");
-                    Thread.Sleep(LockRetryDelays[attempt]);
-                }
+                return operation();
             }
             finally
             {
-                if (entered) Gate.Release();
+                Held.Value = previous;
+                lease.Dispose();
+            }
+        }
+
+        /// <summary>The same for an operation that returns something else.</summary>
+        internal static T Hold<T>(Func<T> operation, Func<T> refused, int timeoutMilliseconds = UnitGitService.LongTimeoutMilliseconds)
+        {
+            T value = default(T);
+            GitCommandResult result = Hold(() =>
+            {
+                value = operation();
+                return new GitCommandResult();
+            }, timeoutMilliseconds);
+            return result.Success ? value : refused();
+        }
+
+        private static UnitGitLease Acquire(bool wait, int timeoutMilliseconds)
+        {
+            lock (Sync)
+            {
+                if (holder == null && waiting == 0) return holder = new UnitGitLease();
+                if (!wait) return null;
+                WaitingForTests?.Invoke("lease");
+                waiting++;
+                try
+                {
+                    var elapsed = System.Diagnostics.Stopwatch.StartNew();
+                    while (holder != null)
+                    {
+                        long left = timeoutMilliseconds - elapsed.ElapsedMilliseconds;
+                        if (left <= 0) return null;
+                        Monitor.Wait(Sync, (int)Math.Min(left, 250));
+                    }
+                    return holder = new UnitGitLease();
+                }
+                finally
+                {
+                    waiting--;
+                    Monitor.PulseAll(Sync);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Whether a fetch or a push may start now: inside an operation that holds the lease at once (it decides), else once
+        /// no operation holds it or waits for it. The editor thread never waits: false when it would have to.
+        /// </summary>
+        internal static bool WaitUntilChangesMayStart(int timeoutMilliseconds)
+        {
+            if (Current != null) return true;
+            bool onMain = UnityEditorInternal.InternalEditorUtility.CurrentThreadIsMainThread();
+            lock (Sync)
+            {
+                if (holder == null && waiting == 0) return true;
+                if (onMain) return false;
+                WaitingForTests?.Invoke("change");
+                var elapsed = System.Diagnostics.Stopwatch.StartNew();
+                while (holder != null || waiting > 0)
+                {
+                    long left = timeoutMilliseconds - elapsed.ElapsedMilliseconds;
+                    if (left <= 0) return false;
+                    Monitor.Wait(Sync, (int)Math.Min(left, 250));
+                }
+                return true;
+            }
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref released, 1) != 0) return;
+            lock (Sync)
+            {
+                if (holder == this) holder = null;
+                Monitor.PulseAll(Sync);
             }
         }
     }

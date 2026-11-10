@@ -164,42 +164,47 @@ namespace Orbiters.UnitGit.Editor
 
         public GitCommandResult Initialize(UnitGitService gitService, bool excludeRootPackageFolder)
         {
-            if (gitService == null)
+            // One operation: it holds the repository's lease from here to its end (see UnitGitLease).
+            return UnitGitLease.Hold(() =>
             {
-                return Failure("Git service is not available.");
-            }
+                if (gitService == null)
+                {
+                    return Failure("Git service is not available.");
+                }
 
-            if (!UnitGitService.IsUnityProject(gitService.ProjectRoot))
-            {
-                return Failure("Cannot initialize Git because this folder is not a Unity project.");
-            }
+                if (!UnitGitService.IsUnityProject(gitService.ProjectRoot))
+                {
+                    return Failure("Cannot initialize Git because this folder is not a Unity project.");
+                }
 
-            EnsureVrchatGitIgnore(gitService.ProjectRoot, excludeRootPackageFolder);
-            AppendMissing(Path.Combine(gitService.ProjectRoot, ".gitignore"), McbDownloadPatterns);
+                EnsureVrchatGitIgnore(gitService.ProjectRoot, excludeRootPackageFolder);
+                AppendMissing(Path.Combine(gitService.ProjectRoot, ".gitignore"), McbDownloadPatterns);
 
-            var initResult = gitService.RunGit(GitAccess.Exclusive, UnitGitService.LongTimeoutMilliseconds, "init");
-            if (!initResult.Success)
-            {
-                return initResult;
-            }
+                var initResult = gitService.RunGit(GitAccess.Exclusive, UnitGitService.LongTimeoutMilliseconds, "init");
+                if (!initResult.Success)
+                {
+                    return initResult;
+                }
 
-            var addResult = gitService.RunGit(GitAccess.Exclusive, UnitGitService.LongTimeoutMilliseconds, "add", "-A", "--", ".");
-            if (!addResult.Success)
-            {
-                return addResult;
-            }
+                var addResult = gitService.RunGit(GitAccess.Exclusive, UnitGitService.LongTimeoutMilliseconds, "add", "-A", "--", ".");
+                if (!addResult.Success)
+                {
+                    return addResult;
+                }
 
-            var commitResult = gitService.RunGit(GitAccess.Exclusive, UnitGitService.LongTimeoutMilliseconds, "commit", "-m", InitialCommitMessage);
-            if (!commitResult.Success)
-            {
-                return commitResult;
-            }
+                var commitResult = gitService.RunGit(GitAccess.Exclusive, UnitGitService.LongTimeoutMilliseconds, "commit", "-m", InitialCommitMessage);
+                if (!commitResult.Success)
+                {
+                    return commitResult;
+                }
 
-            return new GitCommandResult
-            {
-                ExitCode = 0,
-                StandardOutput = "Initialized project repository and created the first commit."
-            };
+                return new GitCommandResult
+                {
+                    ExitCode = 0,
+                    StandardOutput = "Initialized project repository and created the first commit."
+                };
+        
+            });
         }
 
         private static void EnsureVrchatGitIgnore(string projectRoot, bool excludeRootPackageFolder)

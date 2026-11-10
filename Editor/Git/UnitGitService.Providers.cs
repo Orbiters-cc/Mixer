@@ -27,32 +27,37 @@ namespace Orbiters.UnitGit.Editor
 
         public GitCommandResult CreateGitHubRemoteRepository(string repositoryName, string remoteName, bool isPrivate)
         {
-            if (!IsGitHubCliAvailable())
+            // One operation: it holds the repository's lease from here to its end (see UnitGitLease).
+            return UnitGitLease.Hold(() =>
             {
-                return Failure("GitHub CLI was not found on PATH. Install GitHub CLI, then reopen Unity.");
-            }
+                if (!IsGitHubCliAvailable())
+                {
+                    return Failure("GitHub CLI was not found on PATH. Install GitHub CLI, then reopen Unity.");
+                }
 
-            if (string.IsNullOrWhiteSpace(repositoryName))
-            {
-                return Failure("GitHub repository name is required.");
-            }
+                if (string.IsNullOrWhiteSpace(repositoryName))
+                {
+                    return Failure("GitHub repository name is required.");
+                }
 
-            remoteName = string.IsNullOrWhiteSpace(remoteName) ? "origin" : remoteName.Trim();
-            if (GetRemoteNames().Any(remote => string.Equals(remote, remoteName, StringComparison.OrdinalIgnoreCase)))
-            {
-                return Failure("Remote '" + remoteName + "' already exists.");
-            }
+                remoteName = string.IsNullOrWhiteSpace(remoteName) ? "origin" : remoteName.Trim();
+                if (GetRemoteNames().Any(remote => string.Equals(remote, remoteName, StringComparison.OrdinalIgnoreCase)))
+                {
+                    return Failure("Remote '" + remoteName + "' already exists.");
+                }
 
-            return RunGitHubCli(
-                LongTimeoutMilliseconds,
-                "repo",
-                "create",
-                repositoryName.Trim(),
-                "--source",
-                ProjectRoot,
-                "--remote",
-                remoteName,
-                isPrivate ? "--private" : "--public");
+                return RunGitHubCli(
+                    LongTimeoutMilliseconds,
+                    "repo",
+                    "create",
+                    repositoryName.Trim(),
+                    "--source",
+                    ProjectRoot,
+                    "--remote",
+                    remoteName,
+                    isPrivate ? "--private" : "--public");
+        
+            });
         }
 
         private GitCommandResult RunGitHubCli(int timeoutMilliseconds, params string[] arguments)
@@ -87,30 +92,35 @@ namespace Orbiters.UnitGit.Editor
 
         public GitCommandResult CreateGitLabRemoteRepository(string repositoryName, string remoteName, bool isPrivate)
         {
-            if (!IsGitLabCliAvailable())
+            // One operation: it holds the repository's lease from here to its end (see UnitGitLease).
+            return UnitGitLease.Hold(() =>
             {
-                return Failure("GitLab CLI was not found. Mixer Git checked PATH and common Windows install locations. Install GitLab CLI, then reopen Unity.");
-            }
+                if (!IsGitLabCliAvailable())
+                {
+                    return Failure("GitLab CLI was not found. Mixer Git checked PATH and common Windows install locations. Install GitLab CLI, then reopen Unity.");
+                }
 
-            if (string.IsNullOrWhiteSpace(repositoryName))
-            {
-                return Failure("GitLab repository path is required.");
-            }
+                if (string.IsNullOrWhiteSpace(repositoryName))
+                {
+                    return Failure("GitLab repository path is required.");
+                }
 
-            remoteName = string.IsNullOrWhiteSpace(remoteName) ? "origin" : remoteName.Trim();
-            if (GetRemoteNames().Any(remote => string.Equals(remote, remoteName, StringComparison.OrdinalIgnoreCase)))
-            {
-                return Failure("Remote '" + remoteName + "' already exists.");
-            }
+                remoteName = string.IsNullOrWhiteSpace(remoteName) ? "origin" : remoteName.Trim();
+                if (GetRemoteNames().Any(remote => string.Equals(remote, remoteName, StringComparison.OrdinalIgnoreCase)))
+                {
+                    return Failure("Remote '" + remoteName + "' already exists.");
+                }
 
-            return RunGitLabCli(
-                LongTimeoutMilliseconds,
-                "repo",
-                "create",
-                repositoryName.Trim(),
-                "--remoteName",
-                remoteName,
-                isPrivate ? "--private" : "--public");
+                return RunGitLabCli(
+                    LongTimeoutMilliseconds,
+                    "repo",
+                    "create",
+                    repositoryName.Trim(),
+                    "--remoteName",
+                    remoteName,
+                    isPrivate ? "--private" : "--public");
+        
+            });
         }
 
         private GitCommandResult RunGitLabCli(int timeoutMilliseconds, params string[] arguments)
