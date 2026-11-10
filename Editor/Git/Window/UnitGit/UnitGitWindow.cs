@@ -75,6 +75,9 @@ namespace Orbiters.UnitGit.Editor
         // The Shelf tab: the shelf and file selected, what is expanded and its diff pane.
         private readonly UnitGitShelfState shelfTab = new UnitGitShelfState();
 
+        // The Conflicts tab: the conflict selected and what was resolved.
+        private readonly UnitGitConflictsState conflictsState = new UnitGitConflictsState();
+
         [MenuItem("Tools/Orbiters/Mixer Git", priority = 2003)]
         internal static void OpenWindow()
         {

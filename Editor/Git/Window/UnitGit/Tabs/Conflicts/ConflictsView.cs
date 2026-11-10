@@ -14,7 +14,7 @@ namespace Orbiters.UnitGit.Editor
         private const string ConflictStyleSheetPath = "Packages/orbiters.mixer/Editor/Git/Styles/unitgit-conflicts.uss";
 
         /// <summary>Everything read for one conflicted file: its sides, Unity's attempt, the parts to choose.</summary>
-        private sealed class ConflictWork
+        internal sealed class ConflictWork
         {
             public string Path = string.Empty;
             // Which sides have the file, as Git lists them: a side without it deleted it.
@@ -28,10 +28,6 @@ namespace Orbiters.UnitGit.Editor
             public string Error;
         }
 
-        private string selectedConflict;
-        // Files resolved since the operation began: they stay listed, ticked, until it is finished or cancelled.
-        private readonly List<string> resolvedConflicts = new List<string>();
-        private readonly Dictionary<string, Task<ConflictWork>> conflictWork = new Dictionary<string, Task<ConflictWork>>();
 
         private List<UnitGitStatusEntry> Conflicted()
         {
@@ -52,9 +48,9 @@ namespace Orbiters.UnitGit.Editor
 
             var conflicts = Conflicted();
             var operation = UnitGitConflicts.Operation(gitService.ProjectRoot, out string title);
-            if (operation == UnitGitOperation.None && conflicts.Count == 0) resolvedConflicts.Clear();
-            foreach (var entry in conflicts) resolvedConflicts.Remove(entry.Path);
-            int total = conflicts.Count + resolvedConflicts.Count;
+            if (operation == UnitGitOperation.None && conflicts.Count == 0) conflictsState.resolvedConflicts.Clear();
+            foreach (var entry in conflicts) conflictsState.resolvedConflicts.Remove(entry.Path);
+            int total = conflicts.Count + conflictsState.resolvedConflicts.Count;
 
             page.Add(ConflictBanner(operation, title, conflicts.Count, total));
             if (total == 0)
@@ -71,21 +67,21 @@ namespace Orbiters.UnitGit.Editor
                 return page;
             }
 
-            if (string.IsNullOrEmpty(selectedConflict) || (!conflicts.Any(c => c.Path == selectedConflict) && !resolvedConflicts.Contains(selectedConflict)))
-                selectedConflict = conflicts.Count > 0 ? conflicts[0].Path : resolvedConflicts[0];
+            if (string.IsNullOrEmpty(conflictsState.selectedConflict) || (!conflicts.Any(c => c.Path == conflictsState.selectedConflict) && !conflictsState.resolvedConflicts.Contains(conflictsState.selectedConflict)))
+                conflictsState.selectedConflict = conflicts.Count > 0 ? conflicts[0].Path : conflictsState.resolvedConflicts[0];
 
             var split = BuildTrackedSplit("Orbiters.UnitGit.ConflictsSplit", 0, 300f);
             split.AddToClassList("ugc-split");
             var files = new ScrollView();
             files.AddToClassList("ugc-files");
             foreach (var entry in conflicts) files.Add(ConflictFileRow(entry.Path, UnitGitConflicts.Describe(entry), false));
-            foreach (string path in resolvedConflicts) files.Add(ConflictFileRow(path, "Resolved", true));
+            foreach (string path in conflictsState.resolvedConflicts) files.Add(ConflictFileRow(path, "Resolved", true));
             split.Add(files);
 
             var workbench = new VisualElement();
             workbench.AddToClassList("ugc-workbench");
-            var selectedEntry = conflicts.FirstOrDefault(c => c.Path == selectedConflict);
-            if (selectedEntry == null) workbench.Add(ResolvedPanel(selectedConflict));
+            var selectedEntry = conflicts.FirstOrDefault(c => c.Path == conflictsState.selectedConflict);
+            if (selectedEntry == null) workbench.Add(ResolvedPanel(conflictsState.selectedConflict));
             else workbench.Add(Workbench(selectedEntry));
             split.Add(workbench);
             page.Add(split);
@@ -120,9 +116,9 @@ namespace Orbiters.UnitGit.Editor
             texts.Add(track);
             float ratio = total == 0 ? 1f : (total - left) / (float)total;
             // The bar grows from where it was, so each resolved file visibly moves it.
-            fill.style.width = new Length(lastConflictRatio * 100f, LengthUnit.Percent);
+            fill.style.width = new Length(conflictsState.lastConflictRatio * 100f, LengthUnit.Percent);
             fill.schedule.Execute(() => fill.style.width = new Length(ratio * 100f, LengthUnit.Percent)).StartingIn(30);
-            lastConflictRatio = ratio;
+            conflictsState.lastConflictRatio = ratio;
 
             var actions = new VisualElement();
             actions.AddToClassList("ugc-banner__actions");
@@ -133,13 +129,13 @@ namespace Orbiters.UnitGit.Editor
                 actions.Add(ConflictButton(cancel, "ugc-button", "Go back to how things were before, as if it never started.", () =>
                 {
                     if (!EditorUtility.DisplayDialog("Mixer Git", cancel + "? Your resolved files go back to how they were before.", cancel, "Keep resolving")) return;
-                    RunAction(cancel, () => UnitGitConflicts.Abort(gitService, operation), _ => { resolvedConflicts.Clear(); AssetDatabase.Refresh(); });
+                    RunAction(cancel, () => UnitGitConflicts.Abort(gitService, operation), _ => { conflictsState.resolvedConflicts.Clear(); AssetDatabase.Refresh(); });
                 }));
                 string finish = operation == UnitGitOperation.Merge ? "Finish merge" : "Continue";
                 var finishButton = ConflictButton(finish, "ugc-button ugc-button--primary", left == 0 ? "Record the result with Git's prepared message." : "Resolve every file first.", () =>
                     RunAction(finish, () => UnitGitConflicts.Finish(gitService, operation), result =>
                     {
-                        if (result != null && result.Success) resolvedConflicts.Clear();
+                        if (result != null && result.Success) conflictsState.resolvedConflicts.Clear();
                     }));
                 finishButton.SetEnabled(left == 0 && !busy);
                 actions.Add(finishButton);
@@ -147,13 +143,12 @@ namespace Orbiters.UnitGit.Editor
             return banner;
         }
 
-        private float lastConflictRatio;
 
         private VisualElement ConflictFileRow(string path, string description, bool resolved)
         {
             var row = new VisualElement();
             row.AddToClassList("ugc-file");
-            row.EnableInClassList("ugc-file--selected", path == selectedConflict);
+            row.EnableInClassList("ugc-file--selected", path == conflictsState.selectedConflict);
             row.EnableInClassList("ugc-file--resolved", resolved);
             row.Add(BuildProjectFileIcon(path, "ugc-file__icon"));
             var texts = new VisualElement();
@@ -171,8 +166,8 @@ namespace Orbiters.UnitGit.Editor
             row.Add(state);
             row.RegisterCallback<PointerDownEvent>(evt =>
             {
-                if (evt.button != 0 || selectedConflict == path) return;
-                selectedConflict = path;
+                if (evt.button != 0 || conflictsState.selectedConflict == path) return;
+                conflictsState.selectedConflict = path;
                 // The highlight moves on press; the workbench follows.
                 foreach (var other in row.parent.Children()) other.EnableInClassList("ugc-file--selected", other == row);
                 row.schedule.Execute(RebuildContent).StartingIn(40);
@@ -229,15 +224,15 @@ namespace Orbiters.UnitGit.Editor
 
             // These exact versions: the sides Git holds (its index) and the file on disk, which may be edited by hand meanwhile.
             string key = path + "|" + IndexStamp(gitService.ProjectRoot) + "|" + DiskStamp(Path.Combine(gitService.ProjectRoot, path));
-            if (!conflictWork.TryGetValue(key, out var task))
+            if (!conflictsState.conflictWork.TryGetValue(key, out var task))
             {
                 // An older read of this file is never shown or saved again.
-                foreach (string old in conflictWork.Keys.Where(k => k.StartsWith(path + "|", StringComparison.Ordinal)).ToList()) conflictWork.Remove(old);
+                foreach (string old in conflictsState.conflictWork.Keys.Where(k => k.StartsWith(path + "|", StringComparison.Ordinal)).ToList()) conflictsState.conflictWork.Remove(old);
                 string root = gitService.ProjectRoot;
                 string tool = DiffYaml(path) ? UnitGitConflicts.UnityMergeTool() : null;
                 bool yaml = DiffYaml(path);
                 task = Task.Run(() => ReadConflict(root, path, yaml, tool));
-                conflictWork[key] = task;
+                conflictsState.conflictWork[key] = task;
             }
             if (!task.IsCompleted)
             {
@@ -576,10 +571,10 @@ namespace Orbiters.UnitGit.Editor
         private void AfterResolved(string path, GitCommandResult result)
         {
             if (result == null || !result.Success) return;
-            if (!resolvedConflicts.Contains(path)) resolvedConflicts.Add(path);
+            if (!conflictsState.resolvedConflicts.Contains(path)) conflictsState.resolvedConflicts.Add(path);
             // Unity picks the new file content up; the next conflict opens by itself.
             AssetDatabase.Refresh();
-            selectedConflict = null;
+            conflictsState.selectedConflict = null;
         }
 
         private static Button ConflictButton(string text, string classes, string tooltip, Action action)
