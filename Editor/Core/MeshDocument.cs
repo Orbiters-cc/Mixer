@@ -91,12 +91,17 @@ namespace Orbiters.Mixer.Editor
         public float LayerWeight = 1f;
         /// <summary>Bumped by every change, edits and display alike (a picked layer, the mask): what views refresh on.</summary>
         public int Revision;
-        /// <summary>Mesh vertices changed since the last flush to the working mesh.</summary>
-        public readonly HashSet<int> Dirty = new HashSet<int>();
         /// <summary>
-        /// Edits written straight into the shown arrays (a stroke's moves, recomputed normals): the next flush uploads
-        /// them as they are, where <see cref="Dirty"/> vertices make it work the shown positions out again first.
+        /// Mesh vertices the document changed since the last flush to the working mesh (by page): the flush works their
+        /// shown positions out again and uploads them.
         /// </summary>
+        public readonly VertexPages Dirty;
+        /// <summary>
+        /// Vertices whose shown arrays were written straight (a stroke's moves, recomputed normals): the next flush
+        /// uploads those pages as they are.
+        /// </summary>
+        public readonly VertexPages UnflushedPages;
+        /// <summary>The shown arrays changed in no particular place (every normal recomputed): the next flush uploads them all.</summary>
         public bool Unflushed;
         /// <summary>Base vertices moved since the session started (what the commit recomputes normals for).</summary>
         public readonly HashSet<int> MovedBase = new HashSet<int>();
@@ -396,6 +401,8 @@ namespace Orbiters.Mixer.Editor
             Positions = original.vertices;
             if (Positions == null || Positions.Length == 0) throw new InvalidOperationException("'" + original.name + "' has no vertex data the editor can read.");
             VertexCount = Positions.Length;
+            Dirty = new VertexPages(VertexCount);
+            UnflushedPages = new VertexPages(VertexCount);
             ShapeSource = shapeSource != null && shapeSource.vertexCount == VertexCount && shapeSource.blendShapeCount == original.blendShapeCount ? shapeSource : original;
             OriginalPositions = (Vector3[])Positions.Clone();
             Triangles = original.triangles;
@@ -625,14 +632,18 @@ namespace Orbiters.Mixer.Editor
         }
 
         /// <summary>Positions of the active layer (at <see cref="LayerWeight"/>) for every vertex, into <paramref name="into"/>.</summary>
-        public void DisplayPositions(Vector3[] into)
+        public void DisplayPositions(Vector3[] into) => DisplayPositions(into, 0, VertexCount);
+
+        /// <summary><see cref="DisplayPositions(Vector3[])"/> for vertices <paramref name="start"/> to <paramref name="start"/> + <paramref name="count"/> - 1.</summary>
+        public void DisplayPositions(Vector3[] into, int start, int count)
         {
-            Array.Copy(Positions, into, VertexCount);
+            Array.Copy(Positions, start, into, start, count);
             if (Layer == null || !ShapeEdits.TryGetValue(Layer, out var layer)) return;
             var d = layer.Deltas;
             float weight = LayerWeight;
-            if (weight == 1f) for (int v = 0; v < VertexCount; v++) into[v] += d[v];
-            else for (int v = 0; v < VertexCount; v++) into[v] += d[v] * weight;
+            int end = start + count;
+            if (weight == 1f) for (int v = start; v < end; v++) into[v] += d[v];
+            else for (int v = start; v < end; v++) into[v] += d[v] * weight;
         }
 
         /// <summary>Moves a vertex of the active layer by <paramref name="delta"/> (mesh space).</summary>
@@ -668,9 +679,9 @@ namespace Orbiters.Mixer.Editor
             return p;
         }
 
-        public void MarkEdited(IEnumerable<int> vertices)
+        public void MarkEdited(IReadOnlyList<int> vertices)
         {
-            foreach (int v in vertices) Dirty.Add(v);
+            for (int i = 0; i < vertices.Count; i++) Dirty.Add(vertices[i]);
             Revision++;
             BoundsDirty = true;
         }
@@ -678,7 +689,7 @@ namespace Orbiters.Mixer.Editor
         /// <summary>Every vertex goes to the working mesh at the next flush.</summary>
         public void MarkAllDirty()
         {
-            for (int v = 0; v < VertexCount; v++) Dirty.Add(v);
+            Dirty.AddAll();
             Revision++;
             BoundsDirty = true;
         }
@@ -719,10 +730,12 @@ namespace Orbiters.Mixer.Editor
                 foreach (int a in weld.Adjacent[w])
                     if (normalStamp[a] != stamp) { normalStamp[a] = stamp; ring.Add(a); }
             }
+            // The pages the ring's normals land on are the ones the flush uploads.
+            var members = weld.Members;
+            foreach (int w in ring) foreach (int m in members[w]) UnflushedPages.Add(m);
             // Each welded vertex writes only its own members: a large stroke splits the ring over the cores.
             if (ring.Count < 4096) RecomputeNormals(ring, 0, ring.Count, weld, display);
             else Parallel.ForEach(Partitioner.Create(0, ring.Count, 2048), range => RecomputeNormals(ring, range.Item1, range.Item2, weld, display));
-            Unflushed = true;
         }
 
         private void RecomputeNormals(List<int> ring, int from, int to, MeshNeighbors weld, Vector3[] display)

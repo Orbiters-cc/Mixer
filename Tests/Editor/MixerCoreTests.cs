@@ -237,6 +237,36 @@ namespace Orbiters.Mixer.Editor.Tests
             target.Flush();
             Assert.That(MaxDistance(before, target.Working.normals), Is.LessThan(1e-4f), "and the working mesh shows them");
         }
+
+        // The flush uploads only the pages that changed: after strokes, an undo, a layer switch and a shape at half weight,
+        // the working mesh still holds exactly what the document shows, everywhere.
+        [Test]
+        public void ThePagedFlushLeavesTheWorkingMeshEqualToTheDocument()
+        {
+            var target = MixerSession.Edit(renderer);
+            void Same(string when)
+            {
+                target.Flush();
+                Assert.That(MaxDistance(target.Working.vertices, target.Display), Is.LessThan(1e-7f), "positions " + when);
+                Assert.That(MaxDistance(target.Working.normals, target.Document.Normals), Is.LessThan(1e-7f), "normals " + when);
+                var expected = new Vector3[target.Document.VertexCount];
+                target.Document.DisplayPositions(expected);
+                Assert.That(MaxDistance(target.Display, expected), Is.LessThan(1e-7f), "the shown positions are the document's " + when);
+            }
+            Same("at the start");
+            MixerSceneTool.StrokeBetween(target, Brushes.Named("Inflate"), new Vector3(0.3f, 0.5f, 0f), new Vector3(0.3f, 0.6f, 0f), 3, 0.2f, 1f, Vector3.forward);
+            Same("after a stroke");
+            Undo.PerformUndo();
+            Same("after an undo");
+            MixerSession.SetLayer(target, "Wide", createIfMissing: false);
+            Same("on another layer");
+            MixerSceneTool.StrokeBetween(target, Brushes.Named("Grab"), new Vector3(0.3f, 2f, 0f), new Vector3(0.5f, 2f, 0f), 3, 0.25f, 1f, Vector3.forward);
+            Same("after a stroke on the layer");
+            MixerSession.SetLayerWeight(target, 0.5f);
+            Same("with the layer at half weight");
+            MixerSession.SetLayer(target, null, false);
+            Same("back on the base");
+        }
     }
 
     internal static class MixerTestHooks

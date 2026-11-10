@@ -59,7 +59,7 @@ namespace Orbiters.Mixer.Editor
             Apply(Before);
             if (NormalIndices == null || NormalsBefore == null) { Target.RefreshNormals(Indices); return; }
             var doc = Target.Document;
-            for (int i = 0; i < NormalIndices.Length; i++) { doc.Normals[NormalIndices[i]] = NormalsBefore[i]; doc.Dirty.Add(NormalIndices[i]); }
+            for (int i = 0; i < NormalIndices.Length; i++) { doc.Normals[NormalIndices[i]] = NormalsBefore[i]; doc.UnflushedPages.Add(NormalIndices[i]); }
         }
 
         public override void Redo()
