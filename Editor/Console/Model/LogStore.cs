@@ -328,6 +328,8 @@ namespace Orbiters.Logger.Editor
 
         // Texts of one occurrence each (a command's output), by occurrence id, and the ids in the order they came.
         private Dictionary<int, int> payloads = new Dictionary<int, int>();
+        // Outputs let go since the last compaction: their texts belong to no message, only a compaction reclaims them.
+        private int droppedPayloads;
         private Queue<int> payloadOrder = new Queue<int>();
 
         /// <summary>What the command of this occurrence printed (<see cref="AddOutput"/>), or null when it isn't kept.</summary>
@@ -344,6 +346,13 @@ namespace Orbiters.Logger.Editor
             while (payloadOrder.Count > MaxPayloads)
             {
                 payloads.Remove(payloadOrder.Dequeue());
+                droppedPayloads++;
+            }
+
+            if (droppedPayloads >= MaxPayloads)
+            {
+                // A tool that runs commands all the time keeps one message: its old outputs' texts go with a compaction.
+                MaybeCompact();
             }
         }
 
@@ -352,6 +361,7 @@ namespace Orbiters.Logger.Editor
             while (payloadOrder.Count > 0 && payloadOrder.Peek() < id)
             {
                 payloads.Remove(payloadOrder.Dequeue());
+                droppedPayloads++;
             }
         }
 
@@ -895,6 +905,7 @@ namespace Orbiters.Logger.Editor
             profiles.Clear();
             payloads.Clear();
             payloadOrder.Clear();
+            droppedPayloads = 0;
             pins = 0;
             Texts = new TextTable();
             RowsGeneration = NewRowsGeneration();

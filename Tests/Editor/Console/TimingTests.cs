@@ -237,6 +237,18 @@ namespace Orbiters.Logger.Editor.Tests
             Assert.IsNull(store.OutputOf(first));
             Assert.AreEqual((LogStore.MaxPayloads + 9) + " ms in C:/Project\n", store.OutputOf(store.EndId - 1));
 
+            // A tool polling all the time keeps one message: the outputs it let go still have their texts reclaimed.
+            var polling = new LogStore();
+            for (int i = 0; i < 3 * LogStore.MaxPayloads; i++)
+            {
+                polling.AddOutput(i, command, "run " + i + "\n", LogVariant.Log);
+            }
+
+            Assert.AreEqual(1, polling.MessageCount);
+            Assert.LessOrEqual(polling.Texts.Count, 2 * LogStore.MaxPayloads + 10, "old outputs' texts went with compactions");
+            Assert.AreEqual("run " + (3 * LogStore.MaxPayloads - 1) + "\n", polling.OutputOf(polling.EndId - 1));
+            Assert.AreEqual("run " + (2 * LogStore.MaxPayloads) + "\n", polling.OutputOf(polling.EndId - LogStore.MaxPayloads));
+
             // They survive a trim of older logs, a compaction and a reload.
             var mixed = new LogStore();
             for (int i = 0; i < 3000; i++)

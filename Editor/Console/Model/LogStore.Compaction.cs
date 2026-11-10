@@ -26,8 +26,10 @@ namespace Orbiters.Logger.Editor
             }
 
             int dead = zeroCount;
-            // Many dead, or texts over budget: then any dead message's texts are worth reclaiming.
-            if (dead == 0 || Texts.TotalChars <= maxTextChars && (dead < 1024 || dead * 4 < messageCount))
+            // Many dead, or texts over budget: then any dead message's texts are worth reclaiming. Commands' outputs let go
+            // count too (a polling tool's outputs leave no dead message).
+            bool outputs = droppedPayloads >= MaxPayloads || droppedPayloads > 0 && Texts.TotalChars > maxTextChars;
+            if (!outputs && (dead == 0 || Texts.TotalChars <= maxTextChars && (dead < 1024 || dead * 4 < messageCount)))
             {
                 return;
             }
@@ -151,6 +153,7 @@ namespace Orbiters.Logger.Editor
             groupIndex = prepared.GroupIndex;
             ownerChunks = prepared.OwnerDirectory(ownerChunks.Length);
             zeroCount = 0;
+            droppedPayloads = 0;
             compaction = null;
             RowsGeneration = NewRowsGeneration();
             MessagesVersion++;
