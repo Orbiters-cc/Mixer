@@ -13,6 +13,8 @@ namespace Orbiters.UnitGit.Editor
         private readonly UnitGitLatestRequest<UnitGitDiff> diffRead = new UnitGitLatestRequest<UnitGitDiff>();
         private UnitGitDiff loadedDiff;
         private string requestedDiffPath;
+        // What the text diff asked last was read from (see TextDiffKey); null: no text diff asked for this file yet.
+        private string requestedDiffKey;
         private UnitGitDiffViewer diffViewer;
         private Label diffCountLabel;
         // A newly selected file opens at its first change; a refresh of the same file keeps the scroll.
@@ -179,6 +181,8 @@ namespace Orbiters.UnitGit.Editor
                 pane.Add(mode == DiffMode.Scene ? BuildLocalSceneView(change) : BuildLocalModelView(change));
                 return pane;
             }
+            // Shown in Text now after another view: its text diff was never read.
+            if (loadedDiff == null && requestedDiffKey == null) RequestLocalDiff(change);
             if (loadedDiff == null)
             {
                 pane.Add(BuildDiffPlaceholder("Loading the diff…", spinner: true));
@@ -367,10 +371,19 @@ namespace Orbiters.UnitGit.Editor
             bool changedPath = requestedDiffPath != path;
             requestedDiffPath = path;
             if (changedPath)
+            {
                 loadedDiff = null;
+                requestedDiffKey = null;
+            }
+            // The Scene and 3D views read both versions themselves: no text diff for them.
+            if (change != null && ModeFor(path) != DiffMode.Text) return;
+            var whitespace = UnitGitDiffViewer.Whitespace;
+            // Nothing the diff depends on moved (the file, the index, HEAD, the option): what is shown is still it.
+            string key = TextDiffKey(change, whitespace);
+            if (!changedPath && loadedDiff != null && key != null && key == requestedDiffKey) return;
+            requestedDiffKey = key ?? string.Empty;
             var previous = loadedDiff;
             string root = gitService.ProjectRoot;
-            var whitespace = UnitGitDiffViewer.Whitespace;
             diffRead.Request(stale =>
             {
                 var next = new UnitGitService(root) { ReadSuperseded = stale }.GetFileDiff(change, whitespace);
@@ -380,6 +393,16 @@ namespace Orbiters.UnitGit.Editor
                 return next;
             });
             EnsureEditorUpdatePump();
+        }
+
+        // The file on disk, Git's index, HEAD, the change's status and the whitespace option; null when the index is not known yet.
+        private string TextDiffKey(UnitGitStatusEntry change, UnitGitWhitespace whitespace)
+        {
+            if (change == null || gitService == null || !UnitGitPaths.TryGetKnown(gitService.ProjectRoot, "index", out string index)) return null;
+            var file = new FileInfo(Path.Combine(gitService.ProjectRoot, change.Path));
+            var staged = new FileInfo(index);
+            return change.Path + "|" + change.IndexStatus + change.WorkTreeStatus + "|" + (file.Exists ? file.LastWriteTimeUtc.Ticks + ":" + file.Length : "-") +
+                   "|" + (staged.Exists ? staged.LastWriteTimeUtc.Ticks + ":" + staged.Length : "-") + "|" + snapshot?.Head + "|" + whitespace;
         }
 
         // Tabs show as four spaces; the exact text stays for copying and for putting a change back.
