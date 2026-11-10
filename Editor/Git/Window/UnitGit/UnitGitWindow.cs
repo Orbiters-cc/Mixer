@@ -121,14 +121,11 @@ namespace Orbiters.UnitGit.Editor
             promptRead.Dispose();
             logTab.history?.Dispose();
             logTab.history = null;
-            if (diffFont != null)
-                DestroyImmediate(diffFont);
             ReleaseThumbnailCacheClear();
             EditorApplication.projectChanged -= OnProjectChanged;
             EditorApplication.focusChanged -= OnEditorFocusChanged;
             EditorSceneManager.sceneSaved -= OnSceneSaved;
             UnitGitReleases.ChangedExternally -= OnReleasesChangedExternally;
-            EditorApplication.delayCall -= RunQueuedRefresh;
             EditorApplication.update -= RunQueuedRefresh;
             EditorApplication.update -= RunQueuedLogSearchRefresh;
             EditorApplication.update -= DrainEditorQueues;

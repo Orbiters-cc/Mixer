@@ -163,7 +163,7 @@ namespace Orbiters.UnitGit.Editor
                 pendingCommitDescription = "preparing files for your commit";
                 EnsureEditorUpdatePump();
                 UpdateCommitSummary();
-                RefreshTopBar();
+                UpdateTopBar();
                 return;
             }
 

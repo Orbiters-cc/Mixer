@@ -181,7 +181,6 @@ namespace Orbiters.UnitGit.Editor.Tests
                 var snapshot = new UnitGitSnapshot { HasCommits = true, HasRepository = true, GitAvailable = true, IsUnityProject = true };
                 snapshot.Changes = Enumerable.Range(0, 100000)
                     .Select(i => new UnitGitStatusEntry { Path = "file" + i.ToString("D6") + ".txt", WorkTreeStatus = 'M' }).ToList();
-                snapshot.ChangeList = UnitGitFileList.FromChanges(snapshot.Changes);
                 var diff = new UnitGitDiff { Path = snapshot.Changes[0].Path, MaxLineLength = 1000000 };
                 diff.Lines = Enumerable.Range(0, 100000).Select(i => new UnitGitDiffLine { Right = "line " + i }).ToList();
                 diff.Lines[0].Right = new string('x', 500000) + "needle" + new string('y', 499994);

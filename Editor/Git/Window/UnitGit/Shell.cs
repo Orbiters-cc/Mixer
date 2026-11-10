@@ -181,8 +181,6 @@ namespace Orbiters.UnitGit.Editor
             UpdateVisitBanner();
         }
 
-        private void RefreshTopBar() => UpdateTopBar();
-
         private void SetActiveTab(UnitGitTab tab)
         {
             bool changed = activeTab != tab;

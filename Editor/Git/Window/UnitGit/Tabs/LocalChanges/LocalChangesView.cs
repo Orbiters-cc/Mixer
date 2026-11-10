@@ -512,7 +512,7 @@ namespace Orbiters.UnitGit.Editor
                         return;
                     }
                     UpdateCommitSummary();
-                    RefreshTopBar();
+                    UpdateTopBar();
                     RefreshSnapshot();
                 }));
             EnsureEditorUpdatePump();

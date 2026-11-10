@@ -58,7 +58,7 @@ namespace Orbiters.UnitGit.Editor
             busyLabel = working ?? char.ToUpperInvariant(label[0]) + label.Substring(1) + "…";
             busySuccess = success;
             AppendConsole(label, "started");
-            RefreshTopBar();
+            UpdateTopBar();
             EnsureEditorUpdatePump();
             if (holdEditor) UnitGitCheckoutHold.Begin();
 

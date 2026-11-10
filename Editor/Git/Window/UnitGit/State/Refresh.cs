@@ -302,7 +302,7 @@ namespace Orbiters.UnitGit.Editor
                 RequestLocalDiff(change);
                 if (changedPath)
                     RebuildLocalDiffPane();
-                RefreshTopBar();
+                UpdateTopBar();
             }
             else if (activeTab == UnitGitTab.Log && logTab.logList != null && logTab.logList.panel != null && task.Status == TaskStatus.RanToCompletion &&
                      snapshot.HasRepository && snapshot.HasCommits && string.IsNullOrWhiteSpace(snapshot.LastError) && snapshot.Commits.Count > 0)

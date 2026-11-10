@@ -10,7 +10,6 @@ namespace Orbiters.UnitGit.Editor
 {
     internal sealed partial class UnitGitWindow
     {
-        private Font diffFont;
         private const string DiffModePref = "Orbiters.UnitGit.Diff.Mode";
 
         internal enum DiffMode { Scene, Model, Text }
@@ -463,8 +462,6 @@ namespace Orbiters.UnitGit.Editor
             UpdateDiffCount();
         }
 
-        private void PreviousDiffSearchMatch() { MoveDiffSearchMatch(-1); }
-        private void NextDiffSearchMatch() { MoveDiffSearchMatch(1); }
         private void MoveDiffSearchMatch(int step)
         {
             if (changesTab.diffViewer == null || changesTab.diffViewer.MatchCount == 0)
