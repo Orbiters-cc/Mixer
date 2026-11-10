@@ -653,7 +653,7 @@ namespace Orbiters.UnitGit.Editor
             {
                 get
                 {
-                    if (reference.Length == 0) reference = ScratchRefs + Guid.NewGuid().ToString("N");
+                    if (reference.Length == 0) reference = ScratchRefs + OwnerTag + "/" + Guid.NewGuid().ToString("N");
                     return reference;
                 }
             }
@@ -724,10 +724,41 @@ namespace Orbiters.UnitGit.Editor
                 RunGit(GitAccess.Exclusive, DefaultTimeoutMilliseconds, "update-ref", "--no-deref", "-d", reference, FirstNonEmptyLine(at.StandardOutput));
         }
 
+        // Who wrote a scratch ref, readable from the repository: refs/mixer-git/rewrite/<process id>-<its start time>/<id>.
+        // Another editor on the same repository sees whether that editor still runs.
+        private static readonly string OwnerTag = OwnerOf(Process.GetCurrentProcess());
+
+        private static string OwnerOf(Process process) =>
+            process.Id.ToString(CultureInfo.InvariantCulture) + "-" + process.StartTime.ToUniversalTime().Ticks.ToString(CultureInfo.InvariantCulture);
+
+        /// <summary>For tests: whether the editor with this process id and start time still runs (stands for another editor).</summary>
+        internal static Func<int, long, bool> OwnerAliveForTests;
+
+        // True unless it is proven gone: no process with that id, or one that started at another time. In doubt (no right to
+        // read its start time), alive.
+        private static bool OwnerAlive(int id, long startTicks)
+        {
+            if (OwnerAliveForTests != null) return OwnerAliveForTests(id, startTicks);
+            try
+            {
+                using (Process process = Process.GetProcessById(id))
+                    return process.StartTime.ToUniversalTime().Ticks == startTicks;
+            }
+            catch (ArgumentException)
+            {
+                return false; // no such process
+            }
+            catch (Exception)
+            {
+                return true;
+            }
+        }
+
         /// <summary>
         /// Deletes the scratch refs a rewrite left behind (a reload stopped it before it could), each with the value it was
-        /// read at, so a ref that moved meanwhile stays. A running rewrite's own is never touched. Called at the start of a
-        /// rewrite and before a backup (whose --all would carry them).
+        /// read at, so a ref that moved meanwhile stays. Only refs whose owner is provably done: this editor's own when none
+        /// of its rewrites runs with it, another editor's only when that editor no longer runs. A name that cannot be read
+        /// is kept. Called at the start of a rewrite and before a backup (whose --all would carry them).
         /// </summary>
         internal void SweepScratchRefs()
         {
@@ -739,8 +770,18 @@ namespace Orbiters.UnitGit.Editor
                 if (space <= 0) continue;
                 string id = line.Substring(0, space), reference = line.Substring(space + 1).Trim();
                 if (!reference.StartsWith(ScratchRefs, StringComparison.Ordinal)) continue;
-                lock (RunningRewrites)
-                    if (RunningRewrites.Contains(reference)) continue;
+                string[] parts = reference.Substring(ScratchRefs.Length).Split('/');
+                if (parts.Length != 2) continue;
+                string[] owner = parts[0].Split('-');
+                if (owner.Length != 2 || !int.TryParse(owner[0], NumberStyles.None, CultureInfo.InvariantCulture, out int pid) ||
+                    !long.TryParse(owner[1], NumberStyles.None, CultureInfo.InvariantCulture, out long started))
+                    continue;
+                if (parts[0] == OwnerTag)
+                {
+                    lock (RunningRewrites)
+                        if (RunningRewrites.Contains(reference)) continue;
+                }
+                else if (OwnerAlive(pid, started)) continue;
                 RunGit(GitAccess.Exclusive, DefaultTimeoutMilliseconds, "update-ref", "--no-deref", "-d", reference, id);
             }
         }
