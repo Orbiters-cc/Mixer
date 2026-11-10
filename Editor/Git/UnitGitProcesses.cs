@@ -353,7 +353,16 @@ namespace Orbiters.UnitGit.Editor
         internal static GitCommandResult Hold(Func<GitCommandResult> operation, int timeoutMilliseconds = UnitGitService.LongTimeoutMilliseconds)
         {
             if (Current != null) return operation();
-            UnitGitLease lease = Acquire(!UnityEditorInternal.InternalEditorUtility.CurrentThreadIsMainThread(), timeoutMilliseconds);
+            bool onEditorThread = UnityEditorInternal.InternalEditorUtility.CurrentThreadIsMainThread();
+            // A change runs on a worker (the window's actions, the include queue, the upload hook, the async API): there it
+            // waits for the lease and retries another program's index lock without blocking the editor. Asked on the editor
+            // thread it does not run there: refused (in the product), or an exception (tests in strict mode).
+            if (onEditorThread && !oldCaller && !EditorThreadAllowedForTests)
+            {
+                if (EditorThreadThrowsForTests) throw new InvalidOperationException(EditorThreadRefusal);
+                return new GitCommandResult { ExitCode = 1, StandardError = EditorThreadRefusal };
+            }
+            UnitGitLease lease = Acquire(!onEditorThread, timeoutMilliseconds);
             if (lease == null) return new GitCommandResult { ExitCode = 1, StandardError = "Another Git change is running. Try again once it is done." };
             UnitGitLease previous = Held.Value;
             Held.Value = lease;
@@ -365,6 +374,37 @@ namespace Orbiters.UnitGit.Editor
             {
                 Held.Value = previous;
                 lease.Dispose();
+            }
+        }
+
+        internal const string EditorThreadRefusal =
+            "Mixer Git changes the repository off the editor thread, and this change was asked on it: it did not run.";
+
+        /// <summary>For tests: a synchronous change asked on the editor thread runs there (without lock retries), as the
+        /// suite's tests call them.</summary>
+        internal static bool EditorThreadAllowedForTests;
+
+        /// <summary>For tests: a synchronous change asked on the editor thread throws instead of being refused.</summary>
+        internal static bool EditorThreadThrowsForTests;
+
+        [ThreadStatic] private static bool oldCaller;
+
+        /// <summary>
+        /// The public synchronous release entry points other packages call on the editor thread (MCB, by reflection): they
+        /// run there as before, taking a free lease at once or refused, without lock retries, until those callers move to
+        /// the awaitable API. Nothing else may.
+        /// </summary>
+        internal static T ForOldCallers<T>(Func<T> call)
+        {
+            bool before = oldCaller;
+            oldCaller = true;
+            try
+            {
+                return call();
+            }
+            finally
+            {
+                oldCaller = before;
             }
         }
 

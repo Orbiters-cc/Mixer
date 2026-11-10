@@ -26,6 +26,7 @@ namespace Orbiters.UnitGit.Editor.Tests
             if (!new UnitGitService(Path.GetTempPath()).IsGitAvailable()) Assert.Ignore("Git is not available on PATH.");
             // Every test of the suite: no public operation may run an exclusive command outside its lease (checked at Dispose).
             UnitGitLease.RecordUnleased = true;
+            UnitGitLease.EditorThreadAllowedForTests = true;
             string root = TempFolder();
             var repo = new UnitGitTestRepo(root);
             try

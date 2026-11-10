@@ -280,7 +280,8 @@ namespace Orbiters.UnitGit.Editor
         /// </summary>
         public static UnitGitReleaseResult PublishRelease(UnitGitReleaseEntry entry, string commitTitle, params string[] projectRelativePaths)
         {
-            return PublishRelease(entry, commitTitle, new UnitGitService(), projectRelativePaths);
+            // Called by MCB on the editor thread: an old entry point (see UnitGitLease.ForOldCallers).
+            return UnitGitLease.ForOldCallers(() => PublishRelease(entry, commitTitle, new UnitGitService(), projectRelativePaths));
         }
 
         internal static UnitGitReleaseResult PublishRelease(UnitGitReleaseEntry entry, string commitTitle, UnitGitService service, params string[] projectRelativePaths)
@@ -530,7 +531,8 @@ namespace Orbiters.UnitGit.Editor
         /// </summary>
         public static UnitGitReleaseResult CommitFiles(string commitTitle, string trailingParagraph, params string[] projectRelativePaths)
         {
-            return CommitFiles(new UnitGitService(), commitTitle, trailingParagraph, projectRelativePaths);
+            // Called by MCB on the editor thread: an old entry point (see UnitGitLease.ForOldCallers).
+            return UnitGitLease.ForOldCallers(() => CommitFiles(new UnitGitService(), commitTitle, trailingParagraph, projectRelativePaths));
         }
 
         /// <summary>Explicit project root for integrations running Git off the Unity main thread.</summary>
