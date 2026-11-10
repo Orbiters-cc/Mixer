@@ -79,6 +79,9 @@ namespace Orbiters.UnitGit.Editor
         // The Console tab: Git's output lines, those waiting for the main thread, and the list showing them.
         private readonly UnitGitConsoleState consoleTab = new UnitGitConsoleState();
 
+        // The Backups tab: the backup highlighted.
+        private readonly UnitGitBackupsState backupsTab = new UnitGitBackupsState();
+
         [MenuItem("Tools/Orbiters/Mixer Git", priority = 2003)]
         internal static void OpenWindow()
         {

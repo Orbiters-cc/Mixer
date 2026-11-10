@@ -12,8 +12,6 @@ namespace Orbiters.UnitGit.Editor
     internal sealed partial class UnitGitWindow
     {
         private const string BackupStyleSheetPath = "Packages/orbiters.mixer/Editor/Git/Styles/unitgit-backups.uss";
-        // The backup just made or checked: its row flashes once so the eye finds it.
-        private string highlightedBackup;
 
         private VisualElement BuildBackupsBody()
         {
@@ -91,7 +89,7 @@ namespace Orbiters.UnitGit.Editor
             {
                 RunAction("Back up project", () => UnitGitBackups.Create(gitService, folder, UnitGitSettings.BackupsToKeep), result =>
                 {
-                    if (result != null && result.Success) highlightedBackup = UnitGitBackups.List(folder).FirstOrDefault()?.Path;
+                    if (result != null && result.Success) backupsTab.highlightedBackup = UnitGitBackups.List(folder).FirstOrDefault()?.Path;
                     RebuildContent();
                 });
                 // Show the moving bar right away.
@@ -139,7 +137,7 @@ namespace Orbiters.UnitGit.Editor
             row.AddToClassList("ugb-row");
             row.AddToClassList("ugb-row--enter");
             row.schedule.Execute(() => row.RemoveFromClassList("ugb-row--enter")).StartingIn(20 + Math.Min(index, 10) * 30);
-            if (string.Equals(backup.Path, highlightedBackup, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(backup.Path, backupsTab.highlightedBackup, StringComparison.OrdinalIgnoreCase))
             {
                 row.AddToClassList("ugb-row--flash");
                 row.schedule.Execute(() => row.RemoveFromClassList("ugb-row--flash")).StartingIn(900);
@@ -177,7 +175,7 @@ namespace Orbiters.UnitGit.Editor
                         : new GitCommandResult { ExitCode = 1, StandardError = "The backup is damaged: " + checkedBackup.Problem };
                 }, _ =>
                 {
-                    highlightedBackup = backup.Path;
+                    backupsTab.highlightedBackup = backup.Path;
                     RebuildContent();
                 })));
             actions.Add(BackupButton("Restore…", "ugb-button", "Recreate the project from this backup in a new, empty folder. This project is not touched.", () =>
