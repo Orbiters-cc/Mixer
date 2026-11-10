@@ -75,8 +75,9 @@ namespace Orbiters.Mixer.Editor.Performance
             var worn = session.Parameters.Avatars.Where(a => a != null).OrderBy(a => a.TimeNs).ToList();
             bool filter = !string.IsNullOrEmpty(avatarId) && worn.Any(a => a.Id == avatarId) && worn.Any(a => a.Id != avatarId);
             int w = 0;
-            // Initial values come first at time 0; the rest is in arrival order. A stable sort keeps both.
-            foreach (var c in session.Changes.Select((c, i) => (c, i)).OrderBy(x => x.c.TimeNs).ThenBy(x => x.i).Select(x => x.c))
+            // Initial values come first at time 0; the rest is in arrival order. A stable sort keeps both; a recording is
+            // almost always in time order already (millions of changes for face tracking), so it is only sorted when not.
+            foreach (var c in InTimeOrder(session.Changes, change => change.TimeNs))
             {
                 if (!byId.TryGetValue(c.Id, out var track)) continue;
                 if (filter && track.IsAvatarParameter)
@@ -90,6 +91,17 @@ namespace Orbiters.Mixer.Editor.Performance
             }
             foreach (var a in session.Parameters.Avatars) timeline.Avatars.Add((a.TimeNs * 1e-9, a.Id));
             return timeline;
+        }
+
+        internal static IEnumerable<T> InTimeOrder<T>(IReadOnlyList<T> changes, Func<T, ulong> time)
+        {
+            bool ordered = true;
+            for (int i = 1; i < changes.Count && ordered; i++)
+            {
+                ordered = time(changes[i - 1]) <= time(changes[i]);
+            }
+
+            return ordered ? changes : changes.Select((c, i) => (c, i)).OrderBy(x => time(x.c)).ThenBy(x => x.i).Select(x => x.c);
         }
 
         public float ValueAt(string name, double seconds, float fallback = 0f) => Tracks.TryGetValue(name, out var t) && t.Times.Count > 0 ? t.ValueAt(seconds) : fallback;

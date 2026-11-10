@@ -96,6 +96,16 @@ namespace Orbiters.Mixer.Editor.Performance.Tests
         }
 
         [Test]
+        public void ChangesAreSortedOnlyWhenOutOfOrder()
+        {
+            var ordered = new List<(ulong time, int arrival)> { (0, 0), (0, 1), (5, 2), (9, 3) };
+            Assert.AreSame(ordered, ParameterTimeline.InTimeOrder(ordered, c => c.time), "a recording in order is used as it is");
+            var late = new List<(ulong time, int arrival)> { (5, 0), (0, 1), (5, 2), (0, 3) };
+            CollectionAssert.AreEqual(new[] { 1, 3, 0, 2 }, ParameterTimeline.InTimeOrder(late, c => c.time).Select(c => c.arrival).ToArray(),
+                "out of order: by time, arrival order kept for equal times");
+        }
+
+        [Test]
         public void TrackingInterpolatesAndDoesNotBridgeDropouts()
         {
             var s = new PerformanceSession { Devices = new TrackingDevices() };
