@@ -10,6 +10,21 @@ namespace Orbiters.UnitGit.Editor.Tests
     {
         // While one release is being recorded, another one (or hiding a row) from elsewhere in the editor is refused
         // instead of writing over its catalog entry or rolling the catalog back under it.
+        // The command log's line for the release's commit: "> git [options] commit ...". The checkpoint commits with its
+        // paths on stdin, so options (--literal-pathspecs) come before the verb.
+        private static bool IsCommit(string line)
+        {
+            if (!line.StartsWith("> git ", StringComparison.Ordinal)) return false;
+            string[] words = line.Substring(6).Split(' ');
+            for (int i = 0; i < words.Length; i++)
+            {
+                if (words[i] == "-c" || words[i] == "-C") { i++; continue; }
+                if (words[i].StartsWith("-", StringComparison.Ordinal)) continue;
+                return words[i] == "commit";
+            }
+            return false;
+        }
+
         [Test]
         public void SecondReleaseWhileOneIsRecordedIsRefused()
         {
@@ -21,7 +36,7 @@ namespace Orbiters.UnitGit.Editor.Tests
                 UnitGitReleaseResult second = null, hide = null;
                 repo.Git.ProcessLogReceived = line =>
                 {
-                    if (second != null || !line.StartsWith("> git commit ", StringComparison.Ordinal)) return;
+                    if (second != null || !IsCommit(line)) return;
                     // Other threads of the editor, while the first release commits.
                     second = Task.Run(() => UnitGitReleases.PublishRelease(new UnitGitReleaseEntry { id = "second" }, "second",
                         new UnitGitService(repo.Root), "Assets/a.txt")).Result;
@@ -60,7 +75,7 @@ namespace Orbiters.UnitGit.Editor.Tests
                 bool written = false;
                 repo.Git.ProcessLogReceived = line =>
                 {
-                    if (written || !line.StartsWith("> git commit ", StringComparison.Ordinal)) return;
+                    if (written || !IsCommit(line)) return;
                     // Another program saves the catalog while the release commits.
                     written = true;
                     File.WriteAllText(path, edited);
