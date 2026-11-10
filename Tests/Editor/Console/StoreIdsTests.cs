@@ -181,6 +181,67 @@ namespace Orbiters.Logger.Editor.Tests
             AssertCountersMatchARecount(store, firstExact: true);
         }
 
+        // Ids near the top of the range: a filter pass, its extension and a moved chart step through them without
+        // overflowing, and count exactly what a store starting at 0 counts for the same logs.
+        [Test]
+        public void FilteringAndChartsWorkJustBelowTheLastIds()
+        {
+            int top = LogStore.MaxEnd - 100_000;
+            var high = new LogStore(top) { AllowCompaction = false };
+            var low = new LogStore { AllowCompaction = false };
+            for (int n = 0; n < 99_000; n++)
+            {
+                var variant = n % 13 == 0 ? LogVariant.Error : n % 5 == 0 ? LogVariant.Warning : LogVariant.Log;
+                high.Add(n * 1000L, TextOf(n % 3000), Stack, variant);
+                low.Add(n * 1000L, TextOf(n % 3000), Stack, variant);
+            }
+
+            Assert.AreEqual(top, high.FirstId, "not renumbered");
+            foreach (var query in new[] { LogQuery.Empty, new LogQuery("Distinct log 2", false, false, false) })
+            {
+                var spec = new FilterSpec { Query = query };
+                var a = FilterState.Compute(high.View(), spec, high.Sources.All, null, high.FirstTime, high.LastTime, 50, () => false);
+                var b = FilterState.Compute(low.View(), spec, low.Sources.All, null, low.FirstTime, low.LastTime, 50, () => false);
+                AssertSameState(a, b, top);
+
+                for (int n = 99_000; n < 99_500; n++)
+                {
+                    high.Add(n * 1000L, TextOf(n), Stack, LogVariant.Log);
+                    low.Add(n * 1000L, TextOf(n), Stack, LogVariant.Log);
+                }
+
+                Assert.IsTrue(a.Extend(high, high.Sources.All));
+                Assert.IsTrue(b.Extend(low, low.Sources.All));
+                AssertSameState(a, b, top);
+
+                var chartA = a.ComputeChart(high.View(), high.FirstTime, high.LastTime + 1000, 40, null, () => false);
+                var chartB = b.ComputeChart(low.View(), low.FirstTime, low.LastTime + 1000, 40, null, () => false);
+                CollectionAssert.AreEqual(chartB.Timeline, chartA.Timeline);
+                Assert.AreEqual(chartB.Covered + top, chartA.Covered);
+            }
+        }
+
+        private static void AssertSameState(FilterState a, FilterState b, int offset)
+        {
+            Assert.AreEqual(b.RowCount, a.RowCount);
+            for (int i = 0; i < b.RowCount; i++)
+            {
+                Assert.AreEqual(b.Rows[i] + offset, a.Rows[i], "row " + i);
+            }
+
+            Assert.AreEqual(b.Covered + offset, a.Covered);
+            CollectionAssert.AreEqual(b.LevelCounts, a.LevelCounts);
+            CollectionAssert.AreEqual(b.Timeline, a.Timeline);
+            Assert.AreEqual(b.GroupRowCount, a.GroupRowCount);
+            for (int g = 0; g < b.GroupRowCount; g++)
+            {
+                int group = b.GroupRows[g];
+                Assert.AreEqual(b.GroupCount[group], a.GroupCount[group]);
+                Assert.AreEqual(b.GroupFirst[group] + offset, a.GroupFirst[group]);
+                Assert.AreEqual(b.GroupLast[group] + offset, a.GroupLast[group]);
+            }
+        }
+
         [Test]
         public void ARandomSessionKeepsItsCountersRight()
         {

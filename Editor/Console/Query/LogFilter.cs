@@ -283,7 +283,8 @@ namespace Orbiters.Logger.Editor
                     return null;
                 }
 
-                int to = Math.Min(view.End, from + step);
+                // From the distance left: ids near the top of the range would overflow from + step.
+                int to = view.End - from <= step ? view.End : from + step;
                 int stop = state.Scan(view, from, to);
                 from = stop;
                 if (stop < to)
@@ -777,14 +778,17 @@ namespace Orbiters.Logger.Editor
             }
 
             var passes = messagePass;
-            for (int from = view.First; from < pass.Covered; from += 1 << 18)
+            for (int from = view.First; from < pass.Covered;)
             {
                 if (cancelled != null && cancelled())
                 {
                     return null;
                 }
 
-                ChartScan(view, passes, pass, from, Math.Min(pass.Covered, from + (1 << 18)));
+                // From the distance left: ids near the top of the range would overflow from + step.
+                int to = pass.Covered - from <= 1 << 18 ? pass.Covered : from + (1 << 18);
+                ChartScan(view, passes, pass, from, to);
+                from = to;
             }
 
             return pass;
