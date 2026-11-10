@@ -262,7 +262,7 @@ namespace Orbiters.Mixer.Editor
                             if (inf.Bone >= 0 && inf.Bone < boneIndex.Length && boneIndex[inf.Bone] >= 0 && inf.Weight > 0f) list.Add(new MeshDocument.Influence(boneIndex[inf.Bone], inf.Weight));
                         foreach (int v in n.Members[w])
                         {
-                            if (SameInfluences(doc.EnsureInfluences()[v], list)) continue;
+                            if (SameInfluences(doc.InfluencesOf(v), list)) continue;
                             recorder.Touch(v);
                             doc.SetInfluences(v, list.ToArray());
                             any = true;

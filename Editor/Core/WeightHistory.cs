@@ -1,31 +1,52 @@
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 
 namespace Orbiters.Mixer.Editor
 {
-    /// <summary>Bone influences of vertices changed: the full influence lists before and after.</summary>
+    /// <summary>
+    /// The influences of several vertices in one flat block: vertex i's are <c>this[i]</c> (strongest first). Two arrays
+    /// however many vertices, where an array per vertex was garbage for every vertex a stroke touched.
+    /// </summary>
+    internal sealed class InfluenceBlock
+    {
+        /// <summary>Where vertex i's influences start in <see cref="Flat"/>; one more entry than vertices.</summary>
+        public readonly int[] Start;
+        public readonly MeshDocument.Influence[] Flat;
+
+        public InfluenceBlock(int[] start, MeshDocument.Influence[] flat) { Start = start; Flat = flat; }
+
+        public int Length => Start.Length - 1;
+        public ArraySegment<MeshDocument.Influence> this[int i] => new ArraySegment<MeshDocument.Influence>(Flat, Start[i], Start[i + 1] - Start[i]);
+        public long Bytes => Start.Length * 4L + Flat.Length * 8L + 32;
+
+        /// <summary>The influences the document has now for <paramref name="vertices"/>.</summary>
+        public static InfluenceBlock Of(MeshDocument doc, IReadOnlyList<int> vertices)
+        {
+            var start = new int[vertices.Count + 1];
+            for (int i = 0; i < vertices.Count; i++) start[i + 1] = start[i] + doc.InfluenceCount(vertices[i]);
+            var flat = new MeshDocument.Influence[start[vertices.Count]];
+            for (int i = 0; i < vertices.Count; i++)
+                for (int k = 0, n = start[i + 1] - start[i]; k < n; k++) flat[start[i] + k] = doc.InfluenceAt(vertices[i], k);
+            return new InfluenceBlock(start, flat);
+        }
+    }
+
+    /// <summary>Bone influences of vertices changed: each vertex's influences before and after.</summary>
     internal sealed class WeightEdit : HistoryEntry
     {
         public int[] Indices;
-        public MeshDocument.Influence[][] Before, After;
+        public InfluenceBlock Before, After;
 
-        public override long Bytes
-        {
-            get
-            {
-                long bytes = 64 + Indices.Length * 4L;
-                for (int i = 0; i < Indices.Length; i++) bytes += (Before[i].Length + After[i].Length) * 8L + 32;
-                return bytes;
-            }
-        }
+        public override long Bytes => 64 + Indices.Length * 4L + Before.Bytes + After.Bytes;
 
         public override void Undo() => Apply(Before);
         public override void Redo() => Apply(After);
 
-        private void Apply(MeshDocument.Influence[][] values)
+        private void Apply(InfluenceBlock values)
         {
             var doc = Target.Document;
-            for (int i = 0; i < Indices.Length; i++) doc.SetInfluences(Indices[i], values[i]);
+            for (int i = 0; i < Indices.Length; i++) doc.SetInfluences(Indices[i], values.Flat, values.Start[i], values.Start[i + 1] - values.Start[i]);
             doc.Revision++;
             // Undone with others (a jump in the Undo History window), the upload and skinning wait for the last one.
             if (!MixerHistory.Applying) Target.FlushWeights(force: true);
@@ -76,10 +97,14 @@ namespace Orbiters.Mixer.Editor
         }
     }
 
-    /// <summary>Records the influences a weight stroke touches (first touch keeps the list before).</summary>
+    /// <summary>Records the influences a weight stroke touches (first touch keeps the influences before).</summary>
     internal sealed class WeightRecorder
     {
-        private readonly Dictionary<int, MeshDocument.Influence[]> before = new Dictionary<int, MeshDocument.Influence[]>();
+        // The touched vertices in order, with their influences before in one flat list (see InfluenceBlock).
+        private readonly HashSet<int> touched = new HashSet<int>();
+        private readonly List<int> order = new List<int>();
+        private readonly List<int> beforeStart = new List<int> { 0 };
+        private readonly List<MeshDocument.Influence> beforeFlat = new List<MeshDocument.Influence>();
         private readonly Dictionary<int, float> groupBefore = new Dictionary<int, float>();
         private readonly EditTarget target;
         private readonly string group;
@@ -92,7 +117,10 @@ namespace Orbiters.Mixer.Editor
             Label = label;
         }
 
-        public bool Empty => before.Count == 0 && groupBefore.Count == 0;
+        public bool Empty => order.Count == 0 && groupBefore.Count == 0;
+
+        /// <summary>The mesh vertices touched so far (bone weights only), in order.</summary>
+        public IReadOnlyList<int> Touched => order;
 
         public void Touch(int v)
         {
@@ -103,8 +131,11 @@ namespace Orbiters.Mixer.Editor
                 groupBefore[v] = g != null && g.Weights.TryGetValue(v, out float w) ? w : 0f;
                 return;
             }
-            if (before.ContainsKey(v)) return;
-            before[v] = target.Document.EnsureInfluences()[v].ToArray();
+            if (!touched.Add(v)) return;
+            var doc = target.Document;
+            order.Add(v);
+            for (int i = 0, n = doc.InfluenceCount(v); i < n; i++) beforeFlat.Add(doc.InfluenceAt(v, i));
+            beforeStart.Add(beforeFlat.Count);
         }
 
         public HistoryEntry Finish()
@@ -124,18 +155,13 @@ namespace Orbiters.Mixer.Editor
                 }
                 return edit;
             }
-            if (before.Count == 0) return null;
-            var weights = new WeightEdit { Target = target, Label = Label, Indices = new int[before.Count], Before = new MeshDocument.Influence[before.Count][], After = new MeshDocument.Influence[before.Count][] };
-            int i = 0;
-            var lists = target.Document.EnsureInfluences();
-            foreach (var pair in before)
+            if (order.Count == 0) return null;
+            return new WeightEdit
             {
-                weights.Indices[i] = pair.Key;
-                weights.Before[i] = pair.Value;
-                weights.After[i] = lists[pair.Key].ToArray();
-                i++;
-            }
-            return weights;
+                Target = target, Label = Label, Indices = order.ToArray(),
+                Before = new InfluenceBlock(beforeStart.ToArray(), beforeFlat.ToArray()),
+                After = InfluenceBlock.Of(target.Document, order),
+            };
         }
     }
 }

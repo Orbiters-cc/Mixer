@@ -29,12 +29,15 @@ namespace Orbiters.Mixer.Editor
         /// <summary>World position of every vertex as shown (active layer + the other shapes' weights, skinned).</summary>
         public Vector3[] World;
         private readonly Vector3[] display;
-        private Vector3[] shapeOffset;
+        private Vector3[] shapeOffset, shapeFrame;
         private int shapeOffsetHash;
         private float[] savedWeight;
         private MirrorMap mirror;
         private int flushedRevision = -1;
-        private int flushes;
+        private readonly WorkingMeshUploader uploader = new WorkingMeshUploader();
+        // What the shown positions were last worked out for: another layer object or weight makes them all stale.
+        private ShapeLayer shownLayer;
+        private float shownWeight = 1f;
         private MeshBvh bvh;
         private bool worldStale;
 
@@ -99,9 +102,19 @@ namespace Orbiters.Mixer.Editor
         }
 
         // What the first stroke needs and takes about a second to build on a body (welds, mirror, BVH) starts on worker
-        // threads as the session opens: they read the original's arrays and the world picture only.
-        private void Prewarm()
+        // threads as the session opens in Sculpt or Weight Paint, or when one of them is entered: they read the original's
+        // arrays and the world picture only. A session opened for anything else (Edit Armature's rig mates, a shape added
+        // from the inspector) builds none of it until a brush needs it.
+        private bool prewarmed;
+
+        /// <summary>For tests: whether <see cref="Prewarm"/> ran.</summary>
+        internal bool Prewarmed => prewarmed;
+
+        /// <summary>Starts building what brushes need on worker threads (once; the getters build it anyway when asked first).</summary>
+        public void Prewarm()
         {
+            if (prewarmed) return;
+            prewarmed = true;
             var doc = Document;
             doc.Prewarm();
             var neighbors = doc.NeighborsTask;
@@ -121,8 +134,7 @@ namespace Orbiters.Mixer.Editor
         // A negative scale turns the front faces round in the world picture: raycasts and face normals follow.
         private bool Mirrored()
         {
-            var toWorld = Skin?.ToWorld;
-            float determinant = toWorld != null && toWorld.Length > 0 ? toWorld[0].determinant : Renderer != null ? Renderer.transform.localToWorldMatrix.determinant : 1f;
+            float determinant = Skin != null && Document.VertexCount > 0 ? Skin.BlendedMatrix(0).determinant : Renderer != null ? Renderer.transform.localToWorldMatrix.determinant : 1f;
             return determinant < 0f;
         }
 
@@ -137,11 +149,11 @@ namespace Orbiters.Mixer.Editor
             Id = SceneGraphExporter.IdOf(renderer.gameObject);
             Document = new MeshDocument(original, working);
             display = new Vector3[Document.VertexCount];
-            Document.DisplayPositions(display);
+            DisplayAll();
             World = new Vector3[Document.VertexCount];
-            Skin = SkinningMap.For(renderer, working);
+            Skin = SkinningMap.For(renderer, working, Document);
             RebuildWorld();
-            Prewarm();
+            if (MixerSceneTool.Mode == MixerMode.Sculpt || MixerSceneTool.Mode == MixerMode.Weights) Prewarm();
         }
 
         /// <summary>The mesh the renderer shows now.</summary>
@@ -202,7 +214,8 @@ namespace Orbiters.Mixer.Editor
             if (shapeOffset == null) shapeOffset = new Vector3[Document.VertexCount];
             Array.Clear(shapeOffset, 0, shapeOffset.Length);
             if (skinned == null) return true;
-            var deltas = new Vector3[Document.VertexCount];
+            // One frame buffer for the session (V vertices: megabytes on a body), not one per refresh.
+            var deltas = shapeFrame ?? (shapeFrame = new Vector3[Document.VertexCount]);
             for (int i = 0; i < count; i++)
             {
                 float w = skinned.GetBlendShapeWeight(i) / 100f;
@@ -218,14 +231,8 @@ namespace Orbiters.Mixer.Editor
 
         private void RebuildWorld()
         {
-            Document.DisplayPositions(display);
-            var toWorld = Skin.ToWorld;
-            for (int v = 0; v < World.Length; v++)
-            {
-                var p = display[v];
-                if (shapeOffset != null) p += shapeOffset[v];
-                World[v] = toWorld[v].MultiplyPoint3x4(p);
-            }
+            DisplayAll();
+            Skin.WorldOf(display, shapeOffset, World);
             bvh?.Refit();
         }
 
@@ -239,15 +246,46 @@ namespace Orbiters.Mixer.Editor
                 RebuildWorld();
                 return;
             }
-            var toWorld = Skin.ToWorld;
+            var skin = Skin;
+            var shown = Document.ShownView();
             for (int i = 0; i < moved.Count; i++)
             {
                 int v = moved[i];
-                var p = Document.LayerPosition(v);
+                var p = shown[v];
                 if (shapeOffset != null) p += shapeOffset[v];
-                World[v] = toWorld[v].MultiplyPoint3x4(p);
+                World[v] = skin.PointToWorld(v, p);
             }
             bvh?.RefitVertices(moved, Document.Neighbors);
+        }
+
+        // Vertices undo or redo moved, for the world picture to follow once (CatchUpWorld), each once.
+        private readonly List<int> worldMoved = new List<int>();
+        private int[] worldMovedMark;
+        private int worldMovedSerial = 1;
+
+        /// <summary>The document moved these vertices: the next <see cref="CatchUpWorld"/> brings them into the world picture.</summary>
+        public void NoteWorldMoved(IReadOnlyList<int> vertices)
+        {
+            if (worldMovedMark == null) worldMovedMark = new int[Document.VertexCount];
+            for (int i = 0; i < vertices.Count; i++)
+            {
+                int v = vertices[i];
+                if ((uint)v >= (uint)worldMovedMark.Length || worldMovedMark[v] == worldMovedSerial) continue;
+                worldMovedMark[v] = worldMovedSerial;
+                worldMoved.Add(v);
+            }
+        }
+
+        /// <summary>
+        /// The world picture after history steps: the vertices they moved, or all of it when the skin went stale (bind
+        /// poses, a pose) since.
+        /// </summary>
+        public void CatchUpWorld()
+        {
+            if (worldStale) AfterEdit(Array.Empty<int>(), fullRefresh: true);
+            else if (worldMoved.Count > 0) AfterEdit(worldMoved);
+            worldMoved.Clear();
+            if (++worldMovedSerial == int.MaxValue) { if (worldMovedMark != null) Array.Clear(worldMovedMark, 0, worldMovedMark.Length); worldMovedSerial = 1; }
         }
 
         // ---- Strokes: moves go straight into the shown arrays, normals and the upload follow once a frame ----------
@@ -272,7 +310,7 @@ namespace Orbiters.Mixer.Editor
                 RefreshShapeOffset();
                 RebuildWorld();
             }
-            else Document.DisplayPositions(display);
+            else SyncDisplay();
         }
 
         /// <summary>
@@ -300,7 +338,7 @@ namespace Orbiters.Mixer.Editor
                 deltas = layer.Deltas;
             }
             var positions = doc.Positions;
-            var toWorld = Skin.ToWorld;
+            var skin = Skin;
             var offset = shapeOffset;
             var normalWeld = doc.NormalWeld.Weld;
             if (pendingStamp == null || pendingStamp.Length != doc.NormalWeld.WeldedCount) { pendingStamp = new int[doc.NormalWeld.WeldedCount]; pendingStampValue = 1; }
@@ -314,15 +352,15 @@ namespace Orbiters.Mixer.Editor
                     var p = display[v] + d;
                     display[v] = p;
                     if (offset != null) p += offset[v];
-                    World[v] = toWorld[v].MultiplyPoint3x4(p);
+                    World[v] = skin.PointToWorld(v, p);
                     moved.Add(v);
+                    doc.UnflushedPages.Add(v);
                     int nw = normalWeld[v];
                     if (pendingStamp[nw] != pendingStampValue) { pendingStamp[nw] = pendingStampValue; pendingNormals.Add(nw); }
                 }
             }
             doc.Revision++;
             doc.BoundsDirty = true;
-            doc.Unflushed = true;
             bvh?.RefitVertices(moved, n);
         }
 
@@ -351,19 +389,11 @@ namespace Orbiters.Mixer.Editor
             Flush();
         }
 
-        // The working mesh's bounds from the shown positions: one pass over them, where Mesh.RecalculateBounds took ~27 ms
-        // on a 90k-vertex body with 500 shapes.
+        // The working mesh's bounds from the shown positions: one pass over them (a Burst job), where Mesh.RecalculateBounds
+        // took ~27 ms on a 90k-vertex body with 500 shapes.
         private void UpdateBounds()
         {
-            if (display.Length == 0) return;
-            Vector3 min = display[0], max = display[0];
-            for (int v = 1; v < display.Length; v++)
-            {
-                var p = display[v];
-                if (p.x < min.x) min.x = p.x; else if (p.x > max.x) max.x = p.x;
-                if (p.y < min.y) min.y = p.y; else if (p.y > max.y) max.y = p.y;
-                if (p.z < min.z) min.z = p.z; else if (p.z > max.z) max.z = p.z;
-            }
+            if (!MeshKernels.Bounds(display, out var min, out var max)) return;
             Working.bounds = new Bounds((min + max) * 0.5f, max - min);
             Document.BoundsDirty = false;
         }
@@ -462,7 +492,7 @@ namespace Orbiters.Mixer.Editor
         /// </summary>
         public void RecomputeAllNormals()
         {
-            Document.DisplayPositions(display);
+            DisplayAll();
             Document.RefreshAllNormals(display);
         }
 
@@ -493,26 +523,55 @@ namespace Orbiters.Mixer.Editor
             using (FlushMarker.Auto()) return FlushNow();
         }
 
+        // The shown positions as the document has them now, for the pages it changed (the moves of a stroke are in the
+        // shown positions already), or all of them when another layer or weight is shown. Those pages go to the upload.
+        private void SyncDisplay()
+        {
+            var doc = Document;
+            if (ShownLayerChanged()) { DisplayAll(); return; }
+            if (!doc.Dirty.Any) return;
+            if (doc.Dirty.All) doc.DisplayPositions(display);
+            else
+            {
+                int page = 0;
+                while (doc.Dirty.NextRun(ref page, out int start, out int count)) doc.DisplayPositions(display, start, count);
+            }
+            doc.UnflushedPages.UnionWith(doc.Dirty);
+            doc.Dirty.Clear();
+        }
+
+        // Every shown position worked out again; what changed (the dirty pages, everything after a layer change) is uploaded.
+        private void DisplayAll()
+        {
+            var doc = Document;
+            bool layerChanged = ShownLayerChanged();
+            doc.DisplayPositions(display);
+            shownLayer = ActiveLayer();
+            shownWeight = doc.LayerWeight;
+            if (layerChanged) doc.UnflushedPages.AddAll(); else doc.UnflushedPages.UnionWith(doc.Dirty);
+            doc.Dirty.Clear();
+        }
+
+        private ShapeLayer ActiveLayer() => Document.Layer != null && Document.ShapeEdits.TryGetValue(Document.Layer, out var layer) ? layer : null;
+
+        private bool ShownLayerChanged() => ActiveLayer() != shownLayer || (shownLayer != null && Document.LayerWeight != shownWeight);
+
         private bool FlushNow()
         {
             var doc = Document;
-            if (doc.Dirty.Count == 0 && !doc.Unflushed && pendingNormals.Count == 0 && flushedRevision == doc.Revision) return false;
+            bool pending = doc.Dirty.Any || doc.Unflushed || doc.UnflushedPages.Any || pendingNormals.Count > 0 || ShownLayerChanged();
+            if (!pending && flushedRevision == doc.Revision) return false;
             if (Working == null) return false;
-            if (doc.Dirty.Count > 0 || doc.Unflushed || pendingNormals.Count > 0)
+            if (pending)
             {
-                // Dirty vertices changed the document only; a stroke's moves are in the shown positions already.
-                if (doc.Dirty.Count > 0) doc.DisplayPositions(display);
+                SyncDisplay();
                 using (NormalsMarker.Auto()) SettleNormals();
-                // Normals first, then the positions with the renderers told: a skinned renderer keeps showing what it
-                // skinned last until its mesh says it changed (without it, a stroke only showed when the bounds grew).
-                using (UploadMarker.Auto())
-                {
-                    Working.SetNormals(doc.Normals, 0, doc.Normals.Length, UnityEngine.Rendering.MeshUpdateFlags.DontRecalculateBounds | UnityEngine.Rendering.MeshUpdateFlags.DontValidateIndices | UnityEngine.Rendering.MeshUpdateFlags.DontNotifyMeshUsers);
-                    Working.SetVertices(display, 0, display.Length, UnityEngine.Rendering.MeshUpdateFlags.DontRecalculateBounds | UnityEngine.Rendering.MeshUpdateFlags.DontValidateIndices);
-                }
-                doc.Dirty.Clear();
+                // The changed pages' normals and positions, the renderers told with the last range: a skinned renderer
+                // keeps showing what it skinned last until its mesh says it changed (without it, a stroke only showed
+                // when the bounds grew).
+                using (UploadMarker.Auto()) uploader.Upload(Working, display, doc.Normals, doc.Unflushed ? null : doc.UnflushedPages);
+                doc.UnflushedPages.Clear();
                 doc.Unflushed = false;
-                flushes++;
                 // Not during a stroke: once it ends, or after an undo or a link edit.
                 if (doc.BoundsDirty && !inStroke) using (BoundsMarker.Auto()) UpdateBounds();
             }
@@ -524,6 +583,10 @@ namespace Orbiters.Mixer.Editor
         public float[] OverlayWeights;
         public WeightChannel ShownChannel = WeightChannel.None;
         private double lastWeightUpload;
+        private readonly BoneWeightUploader weightUploader = new BoneWeightUploader();
+
+        /// <summary>For tests: what sends the influences to the working mesh.</summary>
+        internal BoneWeightUploader WeightUploader => weightUploader;
 
         /// <summary>
         /// Uploads the influences to the working mesh when they changed (throttled unless forced) and refreshes the
@@ -537,9 +600,7 @@ namespace Orbiters.Mixer.Editor
             double now = EditorApplication.timeSinceStartup;
             if (!force && now - lastWeightUpload < 0.08) return;
             lastWeightUpload = now;
-            doc.BuildBoneWeights(out var perVertex, out var weights);
-            try { Working.SetBoneWeights(perVertex, weights); }
-            finally { perVertex.Dispose(); weights.Dispose(); }
+            weightUploader.Upload(Working, doc);
             doc.WeightsDirty = false;
             Skin.InvalidateWeights();
             if (force)
@@ -601,21 +662,24 @@ namespace Orbiters.Mixer.Editor
             }
         }
 
-        /// <summary>At a stroke's end: bounds and the normals around what moved.</summary>
+        /// <summary>At the end of an edit made outside a stroke (Blender's): the normals around what moved, the upload, the bounds.</summary>
         public void FinishStroke(IEnumerable<int> moved)
         {
             RefreshNormals(moved);
-            Working.RecalculateBounds();
-            Document.BoundsDirty = false;
+            Document.BoundsDirty = true;
             Flush();
+            if (Document.BoundsDirty && !inStroke && Working != null) using (BoundsMarker.Auto()) UpdateBounds();
         }
 
         /// <summary>The normals around the given vertices, from the shown positions (after an undo, a redo or a stroke).</summary>
         public void RefreshNormals(IEnumerable<int> vertices)
         {
-            Document.DisplayPositions(display);
+            SyncDisplay();
             Document.RefreshNormals(vertices, display);
         }
+
+        /// <summary>For tests: what sends the shown arrays to the working mesh (whether it sends pages, how much it sent last).</summary>
+        internal WorkingMeshUploader Uploader => uploader;
 
         /// <summary>The display positions (active layer) as last computed.</summary>
         public Vector3[] Display => display;

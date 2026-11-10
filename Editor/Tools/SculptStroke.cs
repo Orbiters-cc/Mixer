@@ -25,8 +25,8 @@ namespace Orbiters.Mixer.Editor
         // stamp instead of filling sets: what Gather saw, the mesh-space move a step gives (and its mirror).
         private readonly StrokeScratch scratch;
         private readonly BrushContext ctx;
-        private readonly List<int> triangles, moved, local, mirrored;
-        private readonly int[] gatherStamp, moveStamp, mirrorStamp;
+        private readonly List<int> moved, local, mirrored;
+        private readonly int[] moveStamp, mirrorStamp;
         private readonly Vector3[] moveOf, mirrorOf;
         private Vector3 planePoint;
         private Vector3 lastSample;
@@ -54,8 +54,8 @@ namespace Orbiters.Mixer.Editor
             Strength = strength;
             scratch = target.Scratch;
             ctx = scratch.Context;
-            triangles = scratch.Triangles; moved = scratch.Moved; local = scratch.Local; mirrored = scratch.Mirrored;
-            gatherStamp = scratch.GatherMark; moveStamp = scratch.MoveMark; mirrorStamp = scratch.MirrorMark;
+            moved = scratch.Moved; local = scratch.Local; mirrored = scratch.Mirrored;
+            moveStamp = scratch.MoveMark; mirrorStamp = scratch.MirrorMark;
             moveOf = scratch.MoveOf; mirrorOf = scratch.MirrorOf;
             recorder = new StrokeRecorder(target, brush.Name + (target.Document.Layer != null ? " on " + target.Document.Layer : ""), scratch);
             ctx.Welded.Clear();
@@ -85,7 +85,6 @@ namespace Orbiters.Mixer.Editor
         }
 
         private static readonly ProfilerMarker StepMarker = new ProfilerMarker("Mixer.Stroke.Step");
-        private static readonly ProfilerMarker GatherMarker = new ProfilerMarker("Mixer.Stroke.Gather");
         private static readonly ProfilerMarker BrushMarker = new ProfilerMarker("Mixer.Stroke.Brush");
 
         /// <summary>
@@ -166,7 +165,7 @@ namespace Orbiters.Mixer.Editor
                 foreach (var pair in maskBefore) { maskEdit.Indices[k] = pair.Key; maskEdit.Before[k] = pair.Value; maskEdit.After[k] = mask[pair.Key]; k++; }
                 if (cancel) { maskEdit.Undo(); return null; }
                 MixerHistory.Push(maskEdit);
-                MixerSession.NoteEdited(target);
+                MixerSession.NoteEdited(target, SessionChange.Mask);
                 return null;
             }
             // The normals of the last moves first: a cancel then puts the recorded ones back over them.
@@ -180,7 +179,7 @@ namespace Orbiters.Mixer.Editor
             }
             target.EndStroke();
             MixerHistory.Push(edit);
-            MixerSession.NoteEdited(target);
+            MixerSession.NoteEdited(target, SessionChange.Geometry);
             return edit;
         }
 
@@ -189,41 +188,7 @@ namespace Orbiters.Mixer.Editor
         // The welded vertices within the radius (each once, by its representative), with their falloff and mask weight.
         private void Gather(Vector3 center)
         {
-            using (GatherMarker.Auto()) GatherNow(center);
-        }
-
-        private void GatherNow(Vector3 center)
-        {
-            var doc = target.Document;
-            var n = doc.Neighbors;
-            int mark = NextStamp();
-            target.Bvh.TrianglesNear(center, Radius, triangles);
-            ctx.Welded.Clear();
-            ctx.Weight.Clear();
-            var world = target.World;
-            var tris = doc.Triangles;
-            float r2 = Radius * Radius;
-            float inverse = 1f / Radius;
-            bool painting = brush.PaintsMask;
-            foreach (int t in triangles)
-            {
-                for (int k = t * 3, end = k + 3; k < end; k++)
-                {
-                    int w = n.Weld[tris[k]];
-                    if (gatherStamp[w] == mark) continue;
-                    gatherStamp[w] = mark;
-                    int rep = n.Representative[w];
-                    var p = world[rep];
-                    float dx = p.x - center.x, dy = p.y - center.y, dz = p.z - center.z;
-                    float d2 = dx * dx + dy * dy + dz * dz;
-                    if (d2 > r2) continue;
-                    float weight = Brush.Curve(falloff, (float)Math.Sqrt(d2) * inverse);
-                    if (!painting) weight *= doc.Free(rep);
-                    if (weight <= 0f) continue;
-                    ctx.Welded.Add(w);
-                    ctx.Weight.Add(weight);
-                }
-            }
+            StrokeGather.Sphere(target, scratch, center, Radius, falloff, brush.PaintsMask, ctx.Welded, ctx.Weight);
             if (scratch.Moves.Length < ctx.Welded.Count) scratch.Moves = new Vector3[Mathf.NextPowerOfTwo(ctx.Welded.Count)];
         }
 

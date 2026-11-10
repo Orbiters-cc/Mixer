@@ -34,18 +34,17 @@ namespace Orbiters.Mixer.Editor
         private readonly Falloff falloff;
         private readonly bool symmetry, normalize, paintMirror;
         private readonly WeightRecorder recorder;
-        private readonly List<int> scratch = new List<int>();
-        private readonly HashSet<int> touchedAll = new HashSet<int>();
-        // A dab's work lists, kept for the stroke (a dab allocates nothing of its own).
-        private readonly HashSet<int> seen = new HashSet<int>();
+        // A dab works in the target's stroke scratch (marks per welded vertex instead of sets) and these lists, kept for
+        // the stroke: a dab allocates nothing of its own.
+        private readonly StrokeScratch scratch;
         private readonly List<int> welded = new List<int>();
         private readonly List<float> weights = new List<float>();
-        private readonly Dictionary<int, float> blurTargets = new Dictionary<int, float>();
         // Each welded vertex and channel a dab paints, once: the strongest falloff that reaches it (straight or through its
         // mirror) and whose blur target it takes. A mirror pair both under the brush on the same channel (a vertex group, a
         // bone on the middle line) is painted once, not once for each.
         private readonly List<(int w, bool mirror, float f, int blurFrom)> plan = new List<(int, bool, float, int)>();
-        private readonly Dictionary<long, int> planned = new Dictionary<long, int>();
+        // The groups a dab reads and writes, looked up once a dab (by name, in a list).
+        private VertexGroup channelGroup, mirrorGroup;
         private Vector3 lastSample;
         private bool begun;
         private double lastFlush;
@@ -70,6 +69,7 @@ namespace Orbiters.Mixer.Editor
             paintMirror = symmetry && (channel.IsGroup || mirrorChannel.Bone != channel.Bone || IsCentered(target, channel.Bone));
             string name = channel.IsGroup ? channel.Group : BoneName(target, channel.Bone);
             recorder = new WeightRecorder(target, channel.Group, kind + " weights of " + name);
+            scratch = target.Scratch;
         }
 
         public static string BoneName(EditTarget target, int bone)
@@ -107,15 +107,30 @@ namespace Orbiters.Mixer.Editor
         {
             var animator = skinned.GetComponentInParent<Animator>(true);
             if (animator == null || animator.avatar == null || !animator.isHuman) return null;
+            foreach (var (human, pair) in HumanPairs)
+            {
+                if (animator.GetBoneTransform(human) != bone) continue;
+                return pair >= 0 ? animator.GetBoneTransform((HumanBodyBones)pair) : null;
+            }
+            return null;
+        }
+
+        // Every human bone with the one on the other side (-1 for a bone on the middle line), worked out once: the window
+        // asks for the mirror of the painted bone at each refresh.
+        private static readonly (HumanBodyBones human, int pair)[] HumanPairs = MakeHumanPairs();
+
+        private static (HumanBodyBones, int)[] MakeHumanPairs()
+        {
+            var pairs = new List<(HumanBodyBones, int)>();
             foreach (HumanBodyBones human in Enum.GetValues(typeof(HumanBodyBones)))
             {
-                if (human == HumanBodyBones.LastBone || animator.GetBoneTransform(human) != bone) continue;
+                if (human == HumanBodyBones.LastBone) continue;
                 string name = human.ToString();
                 string other = name.StartsWith("Left", StringComparison.Ordinal) ? "Right" + name.Substring(4)
                     : name.StartsWith("Right", StringComparison.Ordinal) ? "Left" + name.Substring(5) : null;
-                return other != null && Enum.TryParse(other, out HumanBodyBones pair) ? animator.GetBoneTransform(pair) : null;
+                pairs.Add((human, other != null && Enum.TryParse(other, out HumanBodyBones pair) ? (int)pair : -1));
             }
-            return null;
+            return pairs.ToArray();
         }
 
         /// <summary>Whether a bone sits on the mesh's middle line (X = 0 in mesh space at bind time), where both sides share it.</summary>
@@ -193,10 +208,31 @@ namespace Orbiters.Mixer.Editor
             if (cancel) { edit.Undo(); return null; }
             if (channel.IsGroup) target.GroupsChanged(); else target.FlushWeights(force: true);
             MixerHistory.Push(edit);
-            MixerSession.NoteEdited(target);
-            MixerLinkService.SendWeights(target, channel, new List<int>(touchedAll));
-            if (symmetry && !mirrorChannel.Equals(channel)) MixerLinkService.SendWeights(target, mirrorChannel, new List<int>(touchedAll));
+            MixerSession.NoteEdited(target, channel.IsGroup ? SessionChange.Groups : SessionChange.Weights);
+            SendToLink(edit);
             return edit;
+        }
+
+        // Blender gets every channel the stroke changed: the painted group, or every bone whose weight moved on the
+        // touched vertices (normalizing scales the vertex's other bones, which Blender must get too).
+        private void SendToLink(HistoryEntry edit)
+        {
+            if (edit is GroupWeightEdit group) { MixerLinkService.SendWeights(target, channel, new List<int>(group.Indices)); return; }
+            if (!(edit is WeightEdit weights)) return;
+            var byBone = new Dictionary<int, List<int>>();
+            void Add(int bone, int v)
+            {
+                if (bone < 0) return;
+                if (!byBone.TryGetValue(bone, out var list)) byBone[bone] = list = new List<int>();
+                if (list.Count == 0 || list[list.Count - 1] != v) list.Add(v);
+            }
+            for (int i = 0; i < weights.Indices.Length; i++)
+            {
+                int v = weights.Indices[i];
+                foreach (var influence in weights.Before[i]) Add(influence.Bone, v);
+                foreach (var influence in weights.After[i]) Add(influence.Bone, v);
+            }
+            foreach (var pair in byBone) MixerLinkService.SendWeights(target, WeightChannel.OfBone(pair.Key), pair.Value);
         }
 
         private void Apply(bool invert)
@@ -204,26 +240,12 @@ namespace Orbiters.Mixer.Editor
             Steps++;
             var doc = target.Document;
             var n = doc.Neighbors;
-            target.Bvh.VerticesInSphere(Center, radius, scratch);
-            if (scratch.Count == 0) return;
-            var world = target.World;
-            seen.Clear();
-            welded.Clear();
-            weights.Clear();
-            blurTargets.Clear();
+            StrokeGather.Sphere(target, scratch, Center, radius, falloff, false, welded, weights);
+            if (welded.Count == 0) return;
             plan.Clear();
-            planned.Clear();
-            foreach (int v in scratch)
-            {
-                int w = n.Weld[v];
-                if (!seen.Add(w)) continue;
-                int rep = n.Representative[w];
-                float d = (world[rep] - Center).magnitude / radius;
-                float f = Brush.Curve(falloff, d) * doc.Free(rep);
-                if (f <= 0f) continue;
-                welded.Add(w);
-                weights.Add(f);
-            }
+            channelGroup = channel.IsGroup ? doc.Group(channel.Group) : null;
+            mirrorGroup = mirrorChannel.IsGroup ? doc.Group(mirrorChannel.Group) : null;
+            int mark = scratch.NextMark();
             // Blur reads the neighbours' current weights before anything changes.
             if (kind == WeightBrushKind.Blur)
             {
@@ -232,8 +254,9 @@ namespace Orbiters.Mixer.Editor
                     var adjacent = n.Adjacent[w];
                     if (adjacent.Length == 0) continue;
                     float mean = 0f;
-                    foreach (int a in adjacent) mean += Read(n.Representative[a], channel);
-                    blurTargets[w] = mean / adjacent.Length;
+                    foreach (int a in adjacent) mean += Read(n.Representative[a], channel, channelGroup);
+                    scratch.ValueOf[w] = mean / adjacent.Length;
+                    scratch.ValueMark[w] = mark;
                 }
             }
             float goal = invert ? 0f : value;
@@ -241,13 +264,13 @@ namespace Orbiters.Mixer.Editor
             for (int i = 0; i < welded.Count; i++)
             {
                 int w = welded[i];
-                Plan(w, false, weights[i], -1);
+                Plan(mark, w, false, weights[i], -1);
                 if (!paintMirror) continue;
                 int other = target.Mirror.Of[w];
                 if (other < 0 || other == w) continue;
-                Plan(other, !sameChannel, weights[i], w);
+                Plan(mark, other, !sameChannel, weights[i], w);
             }
-            foreach (var (w, mirror, f, blurFrom) in plan) PaintWelded(w, f, goal, blurTargets, mirror ? mirrorChannel : channel, blurFrom);
+            foreach (var (w, mirror, f, blurFrom) in plan) PaintWelded(mark, w, f, goal, mirror, blurFrom);
             if (channel.IsGroup) target.GroupsChanged();
             else if (EditorTime() - lastFlush > 0.08) { lastFlush = EditorTime(); target.FlushWeights(force: false); }
             doc.Revision++;
@@ -255,33 +278,36 @@ namespace Orbiters.Mixer.Editor
 
         private static double EditorTime() => UnityEditor.EditorApplication.timeSinceStartup;
 
-        private void Plan(int w, bool mirror, float f, int blurFrom)
+        private void Plan(int mark, int w, bool mirror, float f, int blurFrom)
         {
-            long key = ((long)w << 1) | (mirror ? 1L : 0L);
-            if (planned.TryGetValue(key, out int at))
+            int key = 2 * w + (mirror ? 1 : 0);
+            if (scratch.PlanMark[key] == mark)
             {
+                int at = scratch.PlanAt[key];
                 if (f > plan[at].f) plan[at] = (w, mirror, f, blurFrom);
                 return;
             }
-            planned[key] = plan.Count;
+            scratch.PlanMark[key] = mark;
+            scratch.PlanAt[key] = plan.Count;
             plan.Add((w, mirror, f, blurFrom));
         }
 
-        private void PaintWelded(int w, float f, float goal, Dictionary<int, float> blurTargets, WeightChannel on, int blurFrom = -1)
+        private void PaintWelded(int mark, int w, float f, float goal, bool mirror, int blurFrom)
         {
+            var on = mirror ? mirrorChannel : channel;
             var doc = target.Document;
             var n = doc.Neighbors;
             int rep = n.Representative[w];
-            float current = Read(rep, on);
+            float current = Read(rep, on, mirror ? mirrorGroup : channelGroup);
             float next;
             switch (kind)
             {
                 case WeightBrushKind.Replace: next = Mathf.Lerp(current, goal, Mathf.Clamp01(f * strength * 4f)); break;
                 case WeightBrushKind.Blur:
                 {
-                    float mean;
-                    if (!blurTargets.TryGetValue(blurFrom >= 0 ? blurFrom : w, out mean)) return;
-                    next = Mathf.Lerp(current, mean, strength * f);
+                    int from = blurFrom >= 0 ? blurFrom : w;
+                    if (scratch.ValueMark[from] != mark) return;
+                    next = Mathf.Lerp(current, scratch.ValueOf[from], strength * f);
                     break;
                 }
                 default: next = Mathf.Lerp(current, goal, strength * f * 0.5f); break;
@@ -290,28 +316,30 @@ namespace Orbiters.Mixer.Editor
             foreach (int v in n.Members[w])
             {
                 recorder.Touch(v);
-                touchedAll.Add(v);
-                Write(v, on, next);
+                Write(v, on, next, mirror);
             }
         }
 
-        private float Read(int v, WeightChannel on)
+        private float Read(int v, WeightChannel on, VertexGroup group)
         {
-            if (on.IsGroup)
-            {
-                var g = target.Document.Group(on.Group);
-                return g != null && g.Weights.TryGetValue(v, out float w) ? w : 0f;
-            }
+            if (on.IsGroup) return group != null && group.Weights.TryGetValue(v, out float w) ? w : 0f;
             return target.Document.BoneWeight(v, on.Bone);
         }
 
-        private void Write(int v, WeightChannel on, float weight)
+        private void Write(int v, WeightChannel on, float weight, bool mirror)
         {
             if (on.IsGroup)
             {
-                var doc = target.Document;
-                var g = doc.Group(on.Group);
-                if (g == null) { g = new VertexGroup { Name = on.Group }; doc.Groups.Add(g); }
+                var g = mirror ? mirrorGroup : channelGroup;
+                if (g == null)
+                {
+                    var doc = target.Document;
+                    g = doc.Group(on.Group);
+                    if (g == null) { g = new VertexGroup { Name = on.Group }; doc.Groups.Add(g); }
+                    // The same group both ways (a group's mirror is itself).
+                    if (on.Group == channel.Group) channelGroup = g;
+                    if (on.Group == mirrorChannel.Group) mirrorGroup = g;
+                }
                 if (weight > 0.0005f) g.Weights[v] = Mathf.Clamp01(weight); else g.Weights.Remove(v);
                 return;
             }

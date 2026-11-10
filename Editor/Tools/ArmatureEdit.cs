@@ -48,8 +48,10 @@ namespace Orbiters.Mixer.Editor
             Undo.postprocessModifications += OnModifications;
             Undo.undoRedoPerformed += OnUndoRedo;
             EditorApplication.update += Tick;
-            MixerSession.Changed += () =>
+            MixerSession.Edited += (_, change) =>
             {
+                // Only who is edited matters here (a stroke used to run these scans at its end).
+                if ((change & SessionChange.Sessions) == 0) return;
                 foreach (var gone in holders.Keys.Where(t => !MixerSession.Targets.Contains(t) && !MixerSession.IsParked(t)).ToList()) Forget(gone);
                 if (!active) return;
                 foreach (var gone in rest.Keys.Where(t => !t.Alive || !MixerSession.Targets.Contains(t)).ToList()) rest.Remove(gone);

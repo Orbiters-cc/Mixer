@@ -15,6 +15,10 @@ namespace Orbiters.Mixer.Editor
         // Per welded vertex: what Gather saw, the step's move and its mirror.
         public readonly int[] GatherMark, MoveMark, MirrorMark;
         public readonly Vector3[] MoveOf, MirrorOf;
+        // Per welded vertex, for weight strokes: a value a dab worked out (Blur's target) and where a dab planned to
+        // paint it (index 2w straight, 2w + 1 through its mirror).
+        public readonly float[] ValueOf;
+        public readonly int[] ValueMark, PlanMark, PlanAt;
         // Per mesh vertex and per normal-welded vertex: what the stroke's undo record kept (the stroke's serial).
         public readonly int[] Kept, NormalKept, RingKept;
         public readonly BrushContext Context = new BrushContext();
@@ -28,6 +32,7 @@ namespace Orbiters.Mixer.Editor
         {
             GatherMark = new int[weldedCount]; MoveMark = new int[weldedCount]; MirrorMark = new int[weldedCount];
             MoveOf = new Vector3[weldedCount]; MirrorOf = new Vector3[weldedCount];
+            ValueOf = new float[weldedCount]; ValueMark = new int[weldedCount]; PlanMark = new int[2 * weldedCount]; PlanAt = new int[2 * weldedCount];
             Kept = new int[vertexCount]; NormalKept = new int[vertexCount]; RingKept = new int[normalWeldedCount];
         }
 
@@ -37,6 +42,7 @@ namespace Orbiters.Mixer.Editor
             if (++mark == int.MaxValue)
             {
                 Array.Clear(GatherMark, 0, GatherMark.Length); Array.Clear(MoveMark, 0, MoveMark.Length); Array.Clear(MirrorMark, 0, MirrorMark.Length);
+                Array.Clear(ValueMark, 0, ValueMark.Length); Array.Clear(PlanMark, 0, PlanMark.Length);
                 mark = 1;
             }
             return mark;

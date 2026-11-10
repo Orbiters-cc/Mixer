@@ -124,7 +124,7 @@ namespace Orbiters.Mixer.Editor.Tests
             var top = new Vector3(0.3f, 1.9f, 0f);
             int probe = Enumerable.Range(0, mesh.vertexCount).OrderBy(v => Vector3.Distance(mesh.vertices[v], top)).First();
             MixerSceneTool.WeightStrokeBetween(target, WeightBrushKind.Replace, WeightChannel.OfBone(1), top, top + Vector3.forward * 0.2f, 6, 0.2f, 1f, 0f, normalize: false);
-            Assert.That(doc.EnsureInfluences()[probe].Count, Is.EqualTo(1));
+            Assert.That(doc.InfluenceCount(probe), Is.EqualTo(1));
             Assert.That(doc.BoneWeight(probe, 1), Is.GreaterThan(0f), "its last bone stays");
             // Blender sending a vertex without groups: the same.
             doc.SetInfluences(probe, new MeshDocument.Influence[0]);

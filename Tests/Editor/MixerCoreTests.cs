@@ -237,6 +237,159 @@ namespace Orbiters.Mixer.Editor.Tests
             target.Flush();
             Assert.That(MaxDistance(before, target.Working.normals), Is.LessThan(1e-4f), "and the working mesh shows them");
         }
+
+        // Undo and redo bring only the vertices they moved into the world picture: it ends where a full rebuild puts it.
+        [Test]
+        public void UndoKeepsTheWorldPictureRightWithoutARebuild()
+        {
+            var target = MixerSession.Edit(renderer);
+            var worldBefore = (Vector3[])target.World.Clone();
+            MixerSceneTool.StrokeBetween(target, Brushes.Named("Grab"), new Vector3(0.3f, 1.5f, 0f), new Vector3(0.6f, 1.5f, 0f), 6, 0.25f, 1f, Vector3.forward);
+            var worldAfter = (Vector3[])target.World.Clone();
+            Assert.That(MaxDistance(worldBefore, worldAfter), Is.GreaterThan(0.1f));
+            Undo.PerformUndo();
+            Assert.That(MaxDistance(target.World, worldBefore), Is.LessThan(1e-5f), "undone in the world picture too");
+            Undo.PerformRedo();
+            Assert.That(MaxDistance(target.World, worldAfter), Is.LessThan(1e-5f), "redone");
+            var full = new Vector3[target.World.Length];
+            target.Skin.WorldOf(target.Display, null, full);
+            Assert.That(MaxDistance(target.World, full), Is.LessThan(1e-5f), "what a full rebuild gives (no shape shows)");
+            var hit = target.Bvh.Raycast(new Vector3(2f, 1.5f, 0f), Vector3.left, 5f);
+            Assert.That(hit.Found, Is.True, "the BVH follows the picture");
+        }
+
+        // A session opened outside the brush modes builds no brush structures until Sculpt or Weight Paint is entered;
+        // brushes driven by code still work (the structures are built when first asked for).
+        [Test]
+        public void BrushStructuresWaitForABrushMode()
+        {
+            var modeBefore = MixerSceneTool.Mode;
+            try
+            {
+                MixerSceneTool.Mode = MixerMode.None;
+                var target = MixerSession.Edit(renderer);
+                Assert.That(target.Prewarmed, Is.False, "opened in Object mode");
+                MixerSceneTool.Mode = MixerMode.Sculpt;
+                Assert.That(target.Prewarmed, Is.True, "Sculpt starts them");
+                var edit = MixerSceneTool.StrokeBetween(target, Brushes.Named("Inflate"), new Vector3(0.3f, 0.5f, 0f), new Vector3(0.3f, 0.6f, 0f), 3, 0.2f, 1f, Vector3.forward);
+                Assert.That(edit, Is.Not.Null);
+            }
+            finally
+            {
+                MixerSceneTool.Mode = MixerMode.None;
+                MixerSceneTool.Mode = modeBefore;
+            }
+        }
+
+        // Listeners learn what changed: a session starting, a stroke's geometry, a layer, a group, the coarse event each time.
+        [Test]
+        public void SessionEventsSayWhatChanged()
+        {
+            var seen = new List<(EditTarget target, SessionChange change)>();
+            int coarse = 0;
+            System.Action<EditTarget, SessionChange> edited = (t, c) => seen.Add((t, c));
+            System.Action changed = () => coarse++;
+            MixerSession.Edited += edited;
+            MixerSession.Changed += changed;
+            try
+            {
+                var target = MixerSession.Edit(renderer);
+                Assert.That(seen.Last().change, Is.EqualTo(SessionChange.Sessions));
+                Assert.That(seen.Last().target, Is.SameAs(target));
+                MixerSceneTool.StrokeBetween(target, Brushes.Named("Inflate"), new Vector3(0.3f, 0.5f, 0f), new Vector3(0.3f, 0.6f, 0f), 3, 0.2f, 1f, Vector3.forward);
+                Assert.That(seen.Last().change, Is.EqualTo(SessionChange.Geometry), "a stroke moved vertices, nothing else");
+                MixerSession.SetLayer(target, "Wide", createIfMissing: false);
+                Assert.That(seen.Last().change & SessionChange.Layer, Is.EqualTo(SessionChange.Layer));
+                MixerSession.AddGroup(target, "Belt");
+                Assert.That(seen.Last().change, Is.EqualTo(SessionChange.Groups));
+                MixerSession.Revert(target);
+                Assert.That(seen.Last().change, Is.EqualTo(SessionChange.Sessions));
+                Assert.That(coarse, Is.EqualTo(seen.Count), "the coarse event follows every typed one");
+            }
+            finally
+            {
+                MixerSession.Edited -= edited;
+                MixerSession.Changed -= changed;
+            }
+        }
+
+        // The commit writes the shapes from buffers it reuses: an edited shape with an in-between gets the frames FramesOf
+        // describes (with their normals turned), and an untouched shape its source's frames exactly.
+        [Test]
+        public void ACommitBuildWritesTheFramesFramesOfDescribes()
+        {
+            var deltas = new Vector3[mesh.vertexCount];
+            var half = new Vector3[mesh.vertexCount];
+            var vertices = mesh.vertices;
+            for (int v = 0; v < deltas.Length; v++) if (vertices[v].y < 0.5f) { deltas[v] = new Vector3(0f, 0f, 0.2f); half[v] = new Vector3(0f, 0f, 0.05f); }
+            mesh.AddBlendShapeFrame("Kick", 50f, half, null, null);
+            mesh.AddBlendShapeFrame("Kick", 100f, deltas, null, null);
+            var target = MixerSession.Edit(renderer);
+            MixerSession.SetLayer(target, "Kick", createIfMissing: false);
+            MixerSceneTool.StrokeBetween(target, Brushes.Named("Inflate"), new Vector3(0.3f, 0.2f, 0f), new Vector3(0.3f, 0.3f, 0f), 3, 0.2f, 1f, Vector3.forward);
+            var doc = target.Document;
+            var built = MeshBuilder.Build(target);
+            try
+            {
+                Assert.That(built.blendShapeCount, Is.EqualTo(2));
+                int kick = built.GetBlendShapeIndex("Kick");
+                var expected = MeshBuilder.FramesOf(doc, doc.ShapeSource, "Kick");
+                Assert.That(built.GetBlendShapeFrameCount(kick), Is.EqualTo(expected.Count));
+                Assert.That(expected.Count, Is.EqualTo(2));
+                var got = new Vector3[mesh.vertexCount];
+                var gotNormals = new Vector3[mesh.vertexCount];
+                var baseNormals = MeshBuilder.WeldedNormals(doc.Positions, doc);
+                for (int f = 0; f < expected.Count; f++)
+                {
+                    built.GetBlendShapeFrameVertices(kick, f, got, gotNormals, null);
+                    Assert.That(built.GetBlendShapeFrameWeight(kick, f), Is.EqualTo(expected[f].weight));
+                    Assert.That(MaxDistance(got, expected[f].deltas), Is.LessThan(1e-6f), "frame " + f);
+                    var shaped = new Vector3[mesh.vertexCount];
+                    for (int v = 0; v < shaped.Length; v++) shaped[v] = doc.Positions[v] + expected[f].deltas[v];
+                    var normals = MeshBuilder.WeldedNormals(shaped, doc);
+                    for (int v = 0; v < normals.Length; v++) normals[v] -= baseNormals[v];
+                    Assert.That(MaxDistance(gotNormals, normals), Is.LessThan(1e-5f), "normals of frame " + f);
+                }
+                int wide = built.GetBlendShapeIndex("Wide"), source = doc.ShapeSource.GetBlendShapeIndex("Wide");
+                var sourceDeltas = new Vector3[mesh.vertexCount];
+                var sourceNormals = new Vector3[mesh.vertexCount];
+                built.GetBlendShapeFrameVertices(wide, 0, got, gotNormals, null);
+                doc.ShapeSource.GetBlendShapeFrameVertices(source, 0, sourceDeltas, sourceNormals, null);
+                Assert.That(MaxDistance(got, sourceDeltas), Is.EqualTo(0f), "an untouched shape is copied as it is");
+                Assert.That(MaxDistance(gotNormals, sourceNormals), Is.EqualTo(0f));
+            }
+            finally { Object.DestroyImmediate(built); }
+        }
+
+        // The flush uploads only the pages that changed: after strokes, an undo, a layer switch and a shape at half weight,
+        // the working mesh still holds exactly what the document shows, everywhere.
+        [Test]
+        public void ThePagedFlushLeavesTheWorkingMeshEqualToTheDocument()
+        {
+            var target = MixerSession.Edit(renderer);
+            void Same(string when)
+            {
+                target.Flush();
+                Assert.That(MaxDistance(target.Working.vertices, target.Display), Is.LessThan(1e-7f), "positions " + when);
+                Assert.That(MaxDistance(target.Working.normals, target.Document.Normals), Is.LessThan(1e-7f), "normals " + when);
+                var expected = new Vector3[target.Document.VertexCount];
+                target.Document.DisplayPositions(expected);
+                Assert.That(MaxDistance(target.Display, expected), Is.LessThan(1e-7f), "the shown positions are the document's " + when);
+            }
+            Same("at the start");
+            MixerSceneTool.StrokeBetween(target, Brushes.Named("Inflate"), new Vector3(0.3f, 0.5f, 0f), new Vector3(0.3f, 0.6f, 0f), 3, 0.2f, 1f, Vector3.forward);
+            Same("after a stroke");
+            Undo.PerformUndo();
+            Same("after an undo");
+            MixerSession.SetLayer(target, "Wide", createIfMissing: false);
+            Same("on another layer");
+            MixerSceneTool.StrokeBetween(target, Brushes.Named("Grab"), new Vector3(0.3f, 2f, 0f), new Vector3(0.5f, 2f, 0f), 3, 0.25f, 1f, Vector3.forward);
+            Same("after a stroke on the layer");
+            MixerSession.SetLayerWeight(target, 0.5f);
+            Same("with the layer at half weight");
+            MixerSession.SetLayer(target, null, false);
+            Same("back on the base");
+        }
     }
 
     internal static class MixerTestHooks

@@ -23,13 +23,15 @@ namespace Orbiters.Mixer.Editor
         /// <summary>
         /// Brings a target's world picture, uploads and overlay up to date after entries changed its document. Entries
         /// undone or redone by <see cref="MixerHistory"/> leave this to it (once per target, however many steps a jump
-        /// took); an entry undone directly (a cancelled stroke) refreshes at once.
+        /// took); an entry undone directly (a cancelled stroke) refreshes at once. The world picture follows the vertices
+        /// the entries moved (<see cref="EditTarget.NoteWorldMoved"/>), all of it only when the pose, the bind poses or
+        /// the weights changed: undoing a stroke costs what the stroke touched.
         /// </summary>
         public static void Refresh(EditTarget target)
         {
             target.FlushBindposes();
             target.FlushWeights(force: true);
-            target.AfterEdit(Array.Empty<int>(), fullRefresh: true);
+            target.CatchUpWorld();
             target.GroupsChanged();
         }
 
@@ -59,7 +61,7 @@ namespace Orbiters.Mixer.Editor
             Apply(Before);
             if (NormalIndices == null || NormalsBefore == null) { Target.RefreshNormals(Indices); return; }
             var doc = Target.Document;
-            for (int i = 0; i < NormalIndices.Length; i++) { doc.Normals[NormalIndices[i]] = NormalsBefore[i]; doc.Dirty.Add(NormalIndices[i]); }
+            for (int i = 0; i < NormalIndices.Length; i++) { doc.Normals[NormalIndices[i]] = NormalsBefore[i]; doc.UnflushedPages.Add(NormalIndices[i]); }
         }
 
         public override void Redo()
@@ -74,11 +76,11 @@ namespace Orbiters.Mixer.Editor
             if (Layer != null && !doc.HasShape(Layer)) doc.RestoreShape(Layer, null);
             bool switched = doc.Layer != Layer;
             doc.Layer = Layer;
-            for (int i = 0; i < Indices.Length; i++) doc.SetLayerPosition(Layer, Indices[i], positions[i]);
+            doc.SetLayerPositions(Layer, Indices, positions);
             doc.MarkEdited(Indices);
             // The step was made on another layer: show that one, with the renderer's weights to match.
             if (switched) Target.AfterLayerChange();
-            else RefreshUnlessBatched();
+            else { Target.NoteWorldMoved(Indices); RefreshUnlessBatched(); }
         }
     }
 
@@ -251,7 +253,8 @@ namespace Orbiters.Mixer.Editor
             if (indices.Count == 0) return null;
             var doc = target.Document;
             var now = new Vector3[indices.Count];
-            for (int i = 0; i < now.Length; i++) now[i] = doc.GetLayerPosition(layer, indices[i]);
+            var view = doc.View(layer);
+            for (int i = 0; i < now.Length; i++) now[i] = view[indices[i]];
             return new PositionEdit { Target = target, Label = Label, Layer = layer, Indices = indices.ToArray(), Before = before.ToArray(), After = now, NormalIndices = normalIndices.ToArray(), NormalsBefore = normalsBefore.ToArray() };
         }
     }

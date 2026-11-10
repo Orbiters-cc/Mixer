@@ -33,7 +33,8 @@ namespace Orbiters.Mixer.Editor
         private const string BootedKey = "Orbiters.Mixer.Booted";
         private static readonly TimeSpan RecordLife = TimeSpan.FromDays(14);
 
-        private static readonly HashSet<string> pendingRestore = new HashSet<string>();
+        // Sessions a script reload is about to restore (from SessionState), parsed once.
+        private static readonly List<PendingSession> pendingRestore = new List<PendingSession>();
         private static readonly List<Record> waiting = new List<Record>();
         // Sessions an undo moved their renderer off (by record id): kept whole, history included, for the redo.
         private static readonly Dictionary<string, EditTarget> parkedTargets = new Dictionary<string, EditTarget>();
@@ -46,26 +47,47 @@ namespace Orbiters.Mixer.Editor
         private static bool recoverDue;
         private static bool repairAfterRestore;
 
+        /// <summary>What a waiting session waits for.</summary>
+        private enum Waits
+        {
+            /// <summary>Its object was deleted, or an undo moved its renderer off its working mesh: Undo or Redo may bring it back.</summary>
+            Parked,
+            /// <summary>Play, or its scene closed: it comes back when Play stops or the scene opens again.</summary>
+            Suspended,
+            /// <summary>From the recovery file: an editor that crashed or quit had it open.</summary>
+            Recovered,
+        }
+
         /// <summary>A session waiting to come back.</summary>
         private sealed class Record
         {
-            /// <summary>'p' parked (its object was deleted; Undo may bring it back), 's' suspended (Play, its scene closed), 'f' from the recovery file (a crash, a restart).</summary>
-            public char Kind;
+            public Waits Kind;
             public string Id, Original, Layer = "", Held = "", Path = "";
             public int Renderer;
             /// <summary>A parked session's working mesh, kept alive (instance id; 0 for none): the renderer showing it again brings the session back.</summary>
             public int Working;
             public long Time;
 
-            public string Line => string.Join("\t", Kind.ToString(), Clean(Id), Clean(Original), Clean(Layer), Clean(Held), Renderer.ToString(CultureInfo.InvariantCulture), Time.ToString(CultureInfo.InvariantCulture), Clean(Path), Working.ToString(CultureInfo.InvariantCulture));
+            // The kinds as one letter, as the session state and the recovery file have always held them.
+            private static char LetterOf(Waits kind) => kind == Waits.Parked ? 'p' : kind == Waits.Suspended ? 's' : 'f';
+
+            public string Line => string.Join("\t", LetterOf(Kind).ToString(), Clean(Id), Clean(Original), Clean(Layer), Clean(Held), Renderer.ToString(CultureInfo.InvariantCulture), Time.ToString(CultureInfo.InvariantCulture), Clean(Path), Working.ToString(CultureInfo.InvariantCulture));
 
             public static Record Parse(string line)
             {
                 var p = line.Split('\t');
                 if (p.Length < 7 || p[0].Length != 1) return null;
+                Waits kind;
+                switch (p[0][0])
+                {
+                    case 'p': kind = Waits.Parked; break;
+                    case 's': kind = Waits.Suspended; break;
+                    case 'f': kind = Waits.Recovered; break;
+                    default: return null;
+                }
                 return new Record
                 {
-                    Kind = p[0][0], Id = p[1], Original = p[2], Layer = p[3], Held = p[4],
+                    Kind = kind, Id = p[1], Original = p[2], Layer = p[3], Held = p[4],
                     Renderer = int.TryParse(p[5], NumberStyles.Integer, CultureInfo.InvariantCulture, out int r) ? r : 0,
                     Time = long.TryParse(p[6], NumberStyles.Integer, CultureInfo.InvariantCulture, out long t) ? t : 0,
                     Path = p.Length > 7 ? p[7] : "",
@@ -74,6 +96,38 @@ namespace Orbiters.Mixer.Editor
             }
 
             private static string Clean(string s) => (s ?? "").Replace('\t', ' ').Replace('\n', ' ').Replace('\r', ' ');
+        }
+
+        /// <summary>
+        /// A live session as a script reload keeps it (<see cref="StateLine"/>): its id, working mesh, original, layer,
+        /// held weights, the fingerprint of the original it started from, and its renderer's instance id.
+        /// </summary>
+        internal sealed class PendingSession
+        {
+            public string Line, Id, Original, Layer, Held;
+            public int Working, Renderer;
+            public long Fingerprint;
+            public bool HasFingerprint;
+
+            public static PendingSession Parse(string line)
+            {
+                var parts = line.Split('\t');
+                if (parts.Length < 3) return null;
+                var s = new PendingSession { Line = line, Id = parts[0], Original = parts[2] };
+                int.TryParse(parts[1], out s.Working);
+                s.Layer = parts.Length > 3 && parts[3].Length > 0 ? parts[3] : null;
+                s.Held = parts.Length > 4 ? parts[4] : "";
+                s.HasFingerprint = parts.Length > 5 && long.TryParse(parts[5], NumberStyles.Integer, CultureInfo.InvariantCulture, out s.Fingerprint);
+                s.Renderer = parts.Length > 6 && int.TryParse(parts[6], NumberStyles.Integer, CultureInfo.InvariantCulture, out int instance) ? instance : 0;
+                return s;
+            }
+        }
+
+        private static void AddPending(string line)
+        {
+            foreach (var p in pendingRestore) if (p.Line == line) return;
+            var parsed = PendingSession.Parse(line);
+            if (parsed != null) pendingRestore.Add(parsed);
         }
 
         private sealed class SaveStash
@@ -194,14 +248,14 @@ namespace Orbiters.Mixer.Editor
             bool redo = t.Renderer != null && MixerHistory.HasRedo(t);
             if (!workingAlive || (!keep && !redo))
             {
-                if (keep) AddWaiting(RecordOf(t, 'p'));
+                if (keep) AddWaiting(RecordOf(t, Waits.Parked));
                 EndSession(t, t.Original, deleteAutosave: !keep);
                 // Only the working mesh went (another tool destroyed it): the renderer gets the original and the session
                 // comes back on a new working copy at once.
                 if (keep && t.Renderer != null) { MixerMeshGuard.Repair(); recoverDue = true; }
                 return;
             }
-            var record = RecordOf(t, 'p');
+            var record = RecordOf(t, Waits.Parked);
             record.Working = t.Working.GetInstanceID();
             AddWaiting(record);
             MixerLinkService.ReleaseForUnity(t);
@@ -217,7 +271,7 @@ namespace Orbiters.Mixer.Editor
             }
             targets.Remove(t);
             SaveState();
-            Changed?.Invoke();
+            Raise(null, SessionChange.Sessions);
         }
 
         // A parked session goes on where it was: its working mesh, layer, history.
@@ -250,14 +304,14 @@ namespace Orbiters.Mixer.Editor
                 kept.Show(kept.Working);
                 Resume(kept, renderer);
                 SaveState();
-                Changed?.Invoke();
+                Raise(null, SessionChange.Sessions);
                 return kept;
             }
             // After a script reload only its record and working mesh are left: the session comes back from its autosave
             // (its history is gone with the reload), with the bind poses Unity's Undo left (it undid the session's start).
             string id = null;
             int rendererId = renderer.GetInstanceID();
-            foreach (var r in waiting.Where(w => w.Kind == 'p' && w.Working != 0 && !parkedTargets.ContainsKey(w.Id)).ToList())
+            foreach (var r in waiting.Where(w => w.Kind == Waits.Parked && w.Working != 0 && !parkedTargets.ContainsKey(w.Id)).ToList())
             {
                 if (r.Renderer != rendererId && r.Id != (id ?? (id = SceneGraphExporter.IdOf(renderer.gameObject)))) continue;
                 var original = SceneGraphExporter.Resolve(r.Original) as Mesh;
@@ -269,7 +323,7 @@ namespace Orbiters.Mixer.Editor
                 if (!restored) { Revert(opened); return null; }
                 ArmatureEdit.SyncFromHolder(opened);
                 SaveState();
-                Changed?.Invoke();
+                Raise(null, SessionChange.Sessions);
                 return opened;
             }
             return null;
@@ -288,11 +342,7 @@ namespace Orbiters.Mixer.Editor
             foreach (var kept in parkedTargets.Values) if (kept.Working == working) return true;
             int id = working.GetInstanceID();
             foreach (var r in waiting) if (r.Working == id) return true;
-            foreach (string line in pendingRestore)
-            {
-                var parts = line.Split('\t');
-                if (parts.Length > 1 && int.TryParse(parts[1], out int pending) && pending == id) return true;
-            }
+            foreach (var pending in pendingRestore) if (pending.Working == id) return true;
             return false;
         }
 
@@ -341,15 +391,24 @@ namespace Orbiters.Mixer.Editor
             {
                 var lines = new List<string>();
                 long now = DateTime.UtcNow.Ticks;
-                foreach (var t in targets) if (t.Alive) { var r = RecordOf(t, 'f'); r.Time = now; lines.Add(r.Line); }
-                foreach (var r in waiting) if (r.Kind != 'p') lines.Add(r.Line);
+                foreach (var t in targets) if (t.Alive) { var r = RecordOf(t, Waits.Recovered); r.Time = now; lines.Add(r.Line); }
+                foreach (var r in waiting) if (r.Kind != Waits.Parked) lines.Add(r.Line);
                 if (lines.Count == 0 && !File.Exists(RecoveryFile)) return;
                 Orbiters.Toolkit.Editor.LiveLink.LiveLinkServer.WriteAtomically(RecoveryFile, string.Join("\n", lines));
+                recoveryWarned = false;
             }
-            catch (Exception) { }
+            catch (Exception e)
+            {
+                // The only thing that brings sessions back after a crash: said once, until a write works again.
+                if (recoveryWarned) return;
+                recoveryWarned = true;
+                Debug.LogWarning("[Mixer] The list of sessions to bring back after a crash could not be written (" + e.Message + "): the autosaves are kept, but a restart may not reopen them.");
+            }
         }
 
-        private static Record RecordOf(EditTarget t, char kind) => new Record
+        private static bool recoveryWarned;
+
+        private static Record RecordOf(EditTarget t, Waits kind) => new Record
         {
             Kind = kind, Id = t.Id, Original = t.OriginalId, Layer = t.Document.Layer ?? "", Held = HeldText(t.HeldWeights),
             Renderer = t.RendererId, Time = DateTime.UtcNow.Ticks, Path = PathOf(t.Renderer),
@@ -364,7 +423,7 @@ namespace Orbiters.Mixer.Editor
             }
             waiting.Add(record);
             // Deleted objects' sessions are kept for a while only: the newest few.
-            var parked = waiting.Where(r => r.Kind == 'p').OrderByDescending(r => r.Time).Skip(32).ToList();
+            var parked = waiting.Where(r => r.Kind == Waits.Parked).OrderByDescending(r => r.Time).Skip(32).ToList();
             foreach (var r in parked) Drop(r);
         }
 
@@ -396,7 +455,7 @@ namespace Orbiters.Mixer.Editor
         private static void LoadState()
         {
             foreach (string line in SessionState.GetString(StateKey, "").Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries))
-                pendingRestore.Add(line);
+                AddPending(line);
             foreach (string line in SessionState.GetString(WaitingKey, "").Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries))
             {
                 var r = Record.Parse(line);
@@ -425,7 +484,7 @@ namespace Orbiters.Mixer.Editor
                         if (r == null) continue;
                         // Instance ids belong to the editor that wrote them: an object found by one now would be another.
                         if (r.Time < oldest || IsInstanceId(r.Id) || IsInstanceId(r.Original)) { MixerAutosave.Delete(r.Id); continue; }
-                        r.Kind = 'f';
+                        r.Kind = Waits.Recovered;
                         r.Renderer = 0;
                         if (!waiting.Any(w => w.Id == r.Id)) waiting.Add(r);
                     }
@@ -441,9 +500,9 @@ namespace Orbiters.Mixer.Editor
             restoring = true;
             try
             {
-                foreach (string line in pendingRestore)
+                foreach (var pending in pendingRestore)
                 {
-                    try { RestoreLine(line); }
+                    try { Restore(pending); }
                     catch (Exception e) { Debug.LogException(e); }
                 }
             }
@@ -452,23 +511,19 @@ namespace Orbiters.Mixer.Editor
                 pendingRestore.Clear();
                 restoring = false;
                 SaveState();
-                Changed?.Invoke();
+                Raise(null, SessionChange.Sessions);
             }
         }
 
         private static bool IsInstanceId(string id) => id != null && id.StartsWith("InstanceId-", StringComparison.Ordinal);
 
-        private static void RestoreLine(string line)
+        private static void Restore(PendingSession pending)
         {
-            var parts = line.Split('\t');
-            if (parts.Length < 3) return;
-            int rendererId = parts.Length > 6 && int.TryParse(parts[6], NumberStyles.Integer, CultureInfo.InvariantCulture, out int instance) ? instance : 0;
-            var renderer = RendererOf(parts[0], rendererId, null);
+            var renderer = RendererOf(pending.Id, pending.Renderer, null);
             if (renderer == null || TargetOf(renderer) != null) return;
-            int.TryParse(parts[1], out int workingId);
-            var working = workingId != 0 ? EditorUtility.InstanceIDToObject(workingId) as Mesh : null;
+            var working = pending.Working != 0 ? EditorUtility.InstanceIDToObject(pending.Working) as Mesh : null;
             var shown = MeshOf(renderer);
-            var original = SceneGraphExporter.Resolve(parts[2]) as Mesh;
+            var original = SceneGraphExporter.Resolve(pending.Original) as Mesh;
             if (original == null)
             {
                 // Nothing to rebuild the session from. Its working mesh stays shown (no scene saves it); editing the
@@ -477,12 +532,10 @@ namespace Orbiters.Mixer.Editor
                     Debug.LogWarning("[Mixer] The mesh '" + renderer.name + "' was being edited on is gone (an FBX reimported with the mesh renamed or removed?): its uncommitted edits cannot come back. It shows Mixer's working copy, which scenes do not save: edit and commit it in Mixer to keep that, or give the renderer a mesh.");
                 return;
             }
-            string layer = parts.Length > 3 && parts[3].Length > 0 ? parts[3] : null;
-            string held = parts.Length > 4 ? parts[4] : "";
             if (shown != working && shown != original)
             {
                 // The renderer moved on to another mesh meanwhile: nothing of the session applies to it.
-                MixerAutosave.Delete(parts[0]);
+                MixerAutosave.Delete(pending.Id);
                 if (working != null) { MixerMeshGuard.Released(working, original); Object.DestroyImmediate(working); }
                 return;
             }
@@ -492,16 +545,16 @@ namespace Orbiters.Mixer.Editor
             if (working != null)
             {
                 long fingerprint = MixerAutosave.FingerprintOf(original);
-                bool sameVersion = parts.Length > 5 && long.TryParse(parts[5], NumberStyles.Integer, CultureInfo.InvariantCulture, out long started) && started == fingerprint
+                bool sameVersion = pending.HasFingerprint && pending.Fingerprint == fingerprint
                     && working.vertexCount == original.vertexCount && working.blendShapeCount == original.blendShapeCount;
-                if (!sameVersion || (MixerAutosave.Exists(parts[0]) && !MixerAutosave.Fits(parts[0], original.vertexCount, fingerprint)))
+                if (!sameVersion || (MixerAutosave.Exists(pending.Id) && !MixerAutosave.Fits(pending.Id, original.vertexCount, fingerprint)))
                 {
                     MixerMeshGuard.Released(working, original);
                     Object.DestroyImmediate(working);
                     working = null;
                 }
             }
-            Open(renderer, original, working, layer, held, boneCorrection: false, out _);
+            Open(renderer, original, working, pending.Layer, pending.Held, boneCorrection: false, out _);
         }
 
         /// <summary>A session for the renderer from its autosave: the mesh it had, its working copy (or a new one), the edits, the held weights.</summary>
@@ -594,7 +647,7 @@ namespace Orbiters.Mixer.Editor
                         }
                         if (parkedTargets.TryGetValue(r.Id, out var stale)) { parkedTargets.Remove(r.Id); MixerHistory.Forget(stale); ArmatureEdit.Forget(stale); }
                         // Only Play, a scene file and a crash leave the bones placed for the original bind poses.
-                        bool correct = r.Kind != 'p';
+                        bool correct = r.Kind != Waits.Parked;
                         var opened = Open(renderer, original, parked, r.Layer.Length > 0 ? r.Layer : null, r.Held, correct, out bool restored);
                         // The autosave does not fit the mesh any more (reimported): there is nothing to bring back.
                         if (!restored) { Revert(opened); continue; }
@@ -615,10 +668,10 @@ namespace Orbiters.Mixer.Editor
                 restoring = false;
                 SaveState();
             }
-            if (resumed.Count > 0 && back.Count == 0) Changed?.Invoke();
+            if (resumed.Count > 0 && back.Count == 0) Raise(null, SessionChange.Sessions);
             if (back.Count == 0) return;
             Say("Mixer brought back the edits of " + string.Join(", ", back.Select(b => b.target.Name)) + " that were not committed (commit or revert them).", false);
-            Changed?.Invoke();
+            Raise(null, SessionChange.Sessions);
         }
 
         // A renderer by the session's object id, else its instance id (an undone delete), else its place in the hierarchy.
@@ -685,14 +738,14 @@ namespace Orbiters.Mixer.Editor
                         TrimAddedBones(t);
                         NotePreviewed(t.Renderer);
                     }
-                    if (keep) AddWaiting(RecordOf(t, 's'));
+                    if (keep) AddWaiting(RecordOf(t, Waits.Suspended));
                     // Unity's undo goes on across Play (a bone move from before can be undone after it), not across closing
                     // a scene: only Play's sessions keep their bind-pose holder.
                     EndSession(t, t.Original, deleteAutosave: !keep, notify: false, keepHolder: keep && prepareScene);
                 }
                 catch (Exception e) { Debug.LogException(e); }
             }
-            Changed?.Invoke();
+            Raise(null, SessionChange.Sessions);
         }
 
         private static void TrimAddedBones(EditTarget t)
@@ -738,7 +791,7 @@ namespace Orbiters.Mixer.Editor
         private static void OnUndoRedo()
         {
             // With a deleted object's session waiting, the object may be back under an undo: every renderer is checked.
-            MixerMeshGuard.Repair(everywhere: waiting.Any(r => r.Kind == 'p'));
+            MixerMeshGuard.Repair(everywhere: waiting.Any(r => r.Kind == Waits.Parked));
             // An undo went past the start of a session (its renderer shows the mesh it had before): the session waits,
             // and a redo brings it back.
             foreach (var t in targets.ToList()) if (t.Alive && stashes.Count == 0 && t.Shown != t.Working) Gone(t);
@@ -795,7 +848,7 @@ namespace Orbiters.Mixer.Editor
             MixerLinkService.ClaimForUnity(target);
             NotePreviewed(renderer);
             Say("The copy " + renderer.name + " keeps " + source.Name + "'s Mixer edits in a session of its own.", false);
-            Changed?.Invoke();
+            Raise(null, SessionChange.Sessions);
             return true;
         }
 
@@ -908,7 +961,7 @@ namespace Orbiters.Mixer.Editor
                 ArmatureEdit.DropForReload(pair.Value);
             }
             whileReloading?.Invoke();
-            foreach (string line in lines) pendingRestore.Add(line);
+            foreach (string line in lines) AddPending(line);
             repairAfterRestore = true;
             if (waiting.Count > 0) recoverDue = true;
             Tick();
