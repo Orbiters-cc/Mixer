@@ -67,6 +67,11 @@ namespace Orbiters.Mixer.Editor
                 if (layer.IsNew && source.GetBlendShapeIndex(layer.Name) >= 0) rebuildShapes = true;
                 if (rebuildShapes) break;
             }
+            // Unity has no way to change or remove one shape of a mesh: when an existing shape changed, every shape is
+            // added again in order (the cost of each AddBlendShapeFrame grows with the shapes before it). What a commit
+            // can save is everything around those calls: the frame buffers are made once for the whole build, not three
+            // per shape (500 shapes on a 90k-vertex body were 1.6 GB of short-lived arrays).
+            var buffers = new ShapeBuffers(doc.VertexCount);
             Vector3[] weldedBase = null;
             Vector3[] WeldedBase() => weldedBase ?? (weldedBase = WeldedNormals(doc.Positions, doc));
             var added = new HashSet<string>();
@@ -82,7 +87,7 @@ namespace Orbiters.Mixer.Editor
                         string name = names[i];
                         if (!added.Add(name)) continue;
                         if (progress && i % 8 == 0) EditorUtility.DisplayProgressBar("Mixer", "Writing the blendshapes of " + mesh.name + " (" + i + " of " + names.Count + ")", i / (float)names.Count);
-                        AddShape(mesh, source, doc, name, WeldedBase);
+                        AddShape(mesh, source, doc, name, WeldedBase, buffers);
                     }
                 }
                 finally { if (progress) EditorUtility.ClearProgressBar(); }
@@ -91,35 +96,76 @@ namespace Orbiters.Mixer.Editor
             {
                 for (int i = 0; i < mesh.blendShapeCount; i++) added.Add(mesh.GetBlendShapeName(i));
                 foreach (string name in doc.ShapeOrder)
-                    if (doc.ShapeEdits.TryGetValue(name, out var layer) && layer.IsNew && added.Add(name)) AddShape(mesh, source, doc, name, WeldedBase);
+                    if (doc.ShapeEdits.TryGetValue(name, out var layer) && layer.IsNew && added.Add(name)) AddShape(mesh, source, doc, name, WeldedBase, buffers);
             }
             mesh.RecalculateBounds();
             return mesh;
         }
 
-        private static void AddShape(Mesh mesh, Mesh source, MeshDocument doc, string name, Func<Vector3[]> weldedBase)
+        // What writing the shapes works in, made once per build: a frame's deltas, normals and tangents, and the shaped
+        // surface and its welded normals for an edited frame.
+        private sealed class ShapeBuffers
+        {
+            public readonly Vector3[] Deltas, Normals, Tangents, Frame, Last, Shaped, FaceSum, Welded;
+
+            public ShapeBuffers(int count)
+            {
+                Deltas = new Vector3[count]; Normals = new Vector3[count]; Tangents = new Vector3[count];
+                Frame = new Vector3[count]; Last = new Vector3[count];
+                Shaped = new Vector3[count]; FaceSum = new Vector3[count]; Welded = new Vector3[count];
+            }
+        }
+
+        private static void AddShape(Mesh mesh, Mesh source, MeshDocument doc, string name, Func<Vector3[]> weldedBase, ShapeBuffers buffers)
         {
             doc.ShapeEdits.TryGetValue(name, out var layer);
             string from = layer != null ? layer.Source : name;
             bool edited = layer != null && (layer.Edited || (layer.IsNew && from == null));
-            if (!edited && from != null && source.GetBlendShapeIndex(from) >= 0) CopyShape(source, mesh, from, name);
-            else
-                foreach (var (weight, deltas) in FramesOf(doc, source, name))
-                    mesh.AddBlendShapeFrame(name, weight, deltas, NormalDeltas(doc, deltas, weldedBase()), null);
+            if (!edited && from != null && source.GetBlendShapeIndex(from) >= 0) { CopyShape(source, mesh, from, name, buffers); return; }
+            // As FramesOf makes them, one frame at a time in the build's buffers.
+            from = layer != null ? layer.Source : (doc.DeletedShapes.Contains(name) ? null : name);
+            int index = from != null ? source.GetBlendShapeIndex(from) : -1;
+            int count = index >= 0 ? source.GetBlendShapeFrameCount(index) : 0;
+            edited = layer != null && (layer.Edited || (layer.IsNew && index < 0));
+            if (!edited)
+            {
+                for (int f = 0; f < count; f++)
+                {
+                    source.GetBlendShapeFrameVertices(index, f, buffers.Frame, null, null);
+                    mesh.AddBlendShapeFrame(name, source.GetBlendShapeFrameWeight(index, f), buffers.Frame, NormalDeltas(doc, buffers.Frame, weldedBase, buffers), null);
+                }
+                return;
+            }
+            if (count <= 1)
+            {
+                mesh.AddBlendShapeFrame(name, count == 1 ? source.GetBlendShapeFrameWeight(index, 0) : 100f, layer.Deltas, NormalDeltas(doc, layer.Deltas, weldedBase, buffers), null);
+                return;
+            }
+            source.GetBlendShapeFrameVertices(index, count - 1, buffers.Last, null, null);
+            float lastWeight = source.GetBlendShapeFrameWeight(index, count - 1);
+            for (int f = 0; f < count - 1; f++)
+            {
+                float weight = source.GetBlendShapeFrameWeight(index, f);
+                var frame = buffers.Frame;
+                source.GetBlendShapeFrameVertices(index, f, frame, null, null);
+                float share = Mathf.Abs(lastWeight) > 1e-6f ? weight / lastWeight : 0f;
+                for (int v = 0; v < frame.Length; v++) frame[v] += (layer.Deltas[v] - buffers.Last[v]) * share;
+                mesh.AddBlendShapeFrame(name, weight, frame, NormalDeltas(doc, frame, weldedBase, buffers), null);
+            }
+            mesh.AddBlendShapeFrame(name, lastWeight, layer.Deltas, NormalDeltas(doc, layer.Deltas, weldedBase, buffers), null);
         }
 
         // The original's frames as they are (deltas, normals, tangents), under a name of the commit's.
-        private static void CopyShape(Mesh source, Mesh mesh, string from, string name)
+        private static void CopyShape(Mesh source, Mesh mesh, string from, string name, ShapeBuffers buffers)
         {
             int index = source.GetBlendShapeIndex(from);
             if (index < 0) return;
             int frames = source.GetBlendShapeFrameCount(index);
-            int count = source.vertexCount;
-            var d = new Vector3[count]; var n = new Vector3[count]; var t = new Vector3[count];
+            if (source.vertexCount != buffers.Deltas.Length) return;
             for (int f = 0; f < frames; f++)
             {
-                source.GetBlendShapeFrameVertices(index, f, d, n, t);
-                mesh.AddBlendShapeFrame(name, source.GetBlendShapeFrameWeight(index, f), d, n, t);
+                source.GetBlendShapeFrameVertices(index, f, buffers.Deltas, buffers.Normals, buffers.Tangents);
+                mesh.AddBlendShapeFrame(name, source.GetBlendShapeFrameWeight(index, f), buffers.Deltas, buffers.Normals, buffers.Tangents);
             }
         }
 
@@ -173,16 +219,18 @@ namespace Orbiters.Mixer.Editor
         /// the same way, so only the sculpt shows (not the difference between authored and recomputed normals, nor
         /// UV seams). Null when the frame moves nothing.
         /// </summary>
-        private static Vector3[] NormalDeltas(MeshDocument doc, Vector3[] deltas, Vector3[] weldedBase)
+        // In the build's buffers (Welded holds the result until the next frame: AddBlendShapeFrame copies what it gets).
+        private static Vector3[] NormalDeltas(MeshDocument doc, Vector3[] deltas, Func<Vector3[]> weldedBase, ShapeBuffers buffers)
         {
             int count = deltas.Length;
             bool any = false;
             for (int v = 0; v < count && !any; v++) any = deltas[v].sqrMagnitude > 0f;
             if (!any) return null;
-            var shaped = new Vector3[count];
+            var baseNormals = weldedBase();
+            var shaped = buffers.Shaped;
             for (int v = 0; v < count; v++) shaped[v] = doc.Positions[v] + deltas[v];
-            var normals = WeldedNormals(shaped, doc);
-            for (int v = 0; v < count; v++) normals[v] -= weldedBase[v];
+            var normals = WeldedNormals(shaped, doc, buffers.FaceSum, buffers.Welded);
+            for (int v = 0; v < count; v++) normals[v] -= baseNormals[v];
             return normals;
         }
 
@@ -190,17 +238,21 @@ namespace Orbiters.Mixer.Editor
         /// Area-weighted vertex normals, shared by the vertices <see cref="MeshDocument.NormalWeld"/> welds (UV seams
         /// don't show; hard edges and the two sides of a double-sided sheet keep their own).
         /// </summary>
-        internal static Vector3[] WeldedNormals(Vector3[] positions, MeshDocument doc)
+        internal static Vector3[] WeldedNormals(Vector3[] positions, MeshDocument doc) =>
+            WeldedNormals(positions, doc, new Vector3[positions.Length], new Vector3[positions.Length]);
+
+        // Into result, with faceSum as the work array (both as long as positions, cleared here).
+        private static Vector3[] WeldedNormals(Vector3[] positions, MeshDocument doc, Vector3[] faceSum, Vector3[] result)
         {
             var tris = doc.Triangles;
-            var faceSum = new Vector3[positions.Length];
+            Array.Clear(faceSum, 0, positions.Length);
+            Array.Clear(result, 0, positions.Length);
             for (int t = 0; t + 2 < tris.Length; t += 3)
             {
                 int a = tris[t], b = tris[t + 1], c = tris[t + 2];
                 var n = Vector3.Cross(positions[b] - positions[a], positions[c] - positions[a]);
                 faceSum[a] += n; faceSum[b] += n; faceSum[c] += n;
             }
-            var result = new Vector3[positions.Length];
             var members = doc.NormalWeld.Members;
             for (int w = 0; w < members.Length; w++)
             {
@@ -231,9 +283,8 @@ namespace Orbiters.Mixer.Editor
             mesh.RecalculateTangents();
             var after = mesh.tangents;
             if (before == null || after == null || before.Length != after.Length) return;
-            var keep = (Vector4[])before.Clone();
-            foreach (int v in ring) if (v >= 0 && v < keep.Length) keep[v] = after[v];
-            mesh.tangents = keep;
+            foreach (int v in ring) if (v >= 0 && v < before.Length) before[v] = after[v];
+            mesh.tangents = before;
         }
     }
 }

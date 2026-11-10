@@ -238,6 +238,54 @@ namespace Orbiters.Mixer.Editor.Tests
             Assert.That(MaxDistance(before, target.Working.normals), Is.LessThan(1e-4f), "and the working mesh shows them");
         }
 
+        // The commit writes the shapes from buffers it reuses: an edited shape with an in-between gets the frames FramesOf
+        // describes (with their normals turned), and an untouched shape its source's frames exactly.
+        [Test]
+        public void ACommitBuildWritesTheFramesFramesOfDescribes()
+        {
+            var deltas = new Vector3[mesh.vertexCount];
+            var half = new Vector3[mesh.vertexCount];
+            var vertices = mesh.vertices;
+            for (int v = 0; v < deltas.Length; v++) if (vertices[v].y < 0.5f) { deltas[v] = new Vector3(0f, 0f, 0.2f); half[v] = new Vector3(0f, 0f, 0.05f); }
+            mesh.AddBlendShapeFrame("Kick", 50f, half, null, null);
+            mesh.AddBlendShapeFrame("Kick", 100f, deltas, null, null);
+            var target = MixerSession.Edit(renderer);
+            MixerSession.SetLayer(target, "Kick", createIfMissing: false);
+            MixerSceneTool.StrokeBetween(target, Brushes.Named("Inflate"), new Vector3(0.3f, 0.2f, 0f), new Vector3(0.3f, 0.3f, 0f), 3, 0.2f, 1f, Vector3.forward);
+            var doc = target.Document;
+            var built = MeshBuilder.Build(target);
+            try
+            {
+                Assert.That(built.blendShapeCount, Is.EqualTo(2));
+                int kick = built.GetBlendShapeIndex("Kick");
+                var expected = MeshBuilder.FramesOf(doc, doc.ShapeSource, "Kick");
+                Assert.That(built.GetBlendShapeFrameCount(kick), Is.EqualTo(expected.Count));
+                Assert.That(expected.Count, Is.EqualTo(2));
+                var got = new Vector3[mesh.vertexCount];
+                var gotNormals = new Vector3[mesh.vertexCount];
+                var baseNormals = MeshBuilder.WeldedNormals(doc.Positions, doc);
+                for (int f = 0; f < expected.Count; f++)
+                {
+                    built.GetBlendShapeFrameVertices(kick, f, got, gotNormals, null);
+                    Assert.That(built.GetBlendShapeFrameWeight(kick, f), Is.EqualTo(expected[f].weight));
+                    Assert.That(MaxDistance(got, expected[f].deltas), Is.LessThan(1e-6f), "frame " + f);
+                    var shaped = new Vector3[mesh.vertexCount];
+                    for (int v = 0; v < shaped.Length; v++) shaped[v] = doc.Positions[v] + expected[f].deltas[v];
+                    var normals = MeshBuilder.WeldedNormals(shaped, doc);
+                    for (int v = 0; v < normals.Length; v++) normals[v] -= baseNormals[v];
+                    Assert.That(MaxDistance(gotNormals, normals), Is.LessThan(1e-5f), "normals of frame " + f);
+                }
+                int wide = built.GetBlendShapeIndex("Wide"), source = doc.ShapeSource.GetBlendShapeIndex("Wide");
+                var sourceDeltas = new Vector3[mesh.vertexCount];
+                var sourceNormals = new Vector3[mesh.vertexCount];
+                built.GetBlendShapeFrameVertices(wide, 0, got, gotNormals, null);
+                doc.ShapeSource.GetBlendShapeFrameVertices(source, 0, sourceDeltas, sourceNormals, null);
+                Assert.That(MaxDistance(got, sourceDeltas), Is.EqualTo(0f), "an untouched shape is copied as it is");
+                Assert.That(MaxDistance(gotNormals, sourceNormals), Is.EqualTo(0f));
+            }
+            finally { Object.DestroyImmediate(built); }
+        }
+
         // The flush uploads only the pages that changed: after strokes, an undo, a layer switch and a shape at half weight,
         // the working mesh still holds exactly what the document shows, everywhere.
         [Test]
