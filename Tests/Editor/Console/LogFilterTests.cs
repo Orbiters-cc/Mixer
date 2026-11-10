@@ -371,6 +371,41 @@ namespace Orbiters.Logger.Editor.Tests
             Assert.IsNotNull(runner.Request(store, new FilterSpec(), null, store.FirstTime, store.LastTime, 10, allowAsync: true), "plain small passes stay in place");
         }
 
+        [Test]
+        public void ASearchOutOfTimeGoesOnInSlicesInsteadOfMissing()
+        {
+            var store = new LogStore();
+            for (int i = 0; i < 3000; i++)
+            {
+                store.Add(TimeSpan.TicksPerSecond + i, (i % 3 == 0 ? "Player " : "Other ") + i, Stack, LogVariant.Log);
+            }
+
+            var spec = new FilterSpec { Query = new LogQuery("pl(a)+yer", true, false, false) };
+            var full = Run(store, spec);
+            Assert.IsFalse(full.SearchPending);
+            long saved = FilterState.SearchBudgetMs;
+            try
+            {
+                FilterState.SearchBudgetMs = 0;
+                var partial = Run(store, spec);
+                Assert.IsTrue(partial.SearchPending, "nothing could be tested in time");
+                Assert.Less(partial.RowCount, full.RowCount, "and nothing was taken for a miss either");
+                for (int slice = 0; partial.SearchPending && slice < 10_000; slice++)
+                {
+                    Assert.IsTrue(partial.Extend(store, store.Sources.All));
+                }
+
+                Assert.IsFalse(partial.SearchPending);
+                Assert.AreEqual(full.RowCount, partial.RowCount);
+                Assert.AreEqual(full.Covered, partial.Covered);
+                Assert.AreEqual(0, partial.SearchTimeouts);
+            }
+            finally
+            {
+                FilterState.SearchBudgetMs = saved;
+            }
+        }
+
         private static int Sum(int[] values)
         {
             int total = 0;

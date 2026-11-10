@@ -18,6 +18,7 @@ namespace Orbiters.Logger.Editor
         // Compiled expressions by pattern and options: typing back to an earlier pattern, or toggling an option, reuses one.
         private static readonly Dictionary<(string, RegexOptions), Regex> compiled = new Dictionary<(string, RegexOptions), Regex>();
         private Regex compiledRegex;
+        private Regex foregroundRegex;
         private int timeouts;
 
         public LogQuery(string text, bool useRegex, bool matchCase, bool includeStack)
@@ -55,8 +56,6 @@ namespace Orbiters.Logger.Editor
 
         /// <summary>Texts a pass could not test because the expression took too long on them (counted as no match).</summary>
         public int Timeouts => Volatile.Read(ref timeouts);
-
-        internal void CountTimeout() => Interlocked.Increment(ref timeouts);
 
         /// <summary>
         /// Search results of <paramref name="previous"/> (per text id: 0 untested, 1 no match, 2 match) that still hold
@@ -170,6 +169,51 @@ namespace Orbiters.Logger.Editor
             }
 
             return Matches(text, Regex);
+        }
+
+        /// <summary>
+        /// The expression for the caller's (editor's) thread: interpreted, with a short timeout, so one slow text costs a
+        /// frame at most. Null for plain text.
+        /// </summary>
+        public Regex ForegroundRegex
+        {
+            get
+            {
+                if (Regex == null)
+                {
+                    return null;
+                }
+
+                var ready = Volatile.Read(ref foregroundRegex);
+                if (ready == null)
+                {
+                    ready = new Regex(Text, Regex.Options, TimeSpan.FromMilliseconds(25));
+                    Volatile.Write(ref foregroundRegex, ready);
+                }
+
+                return ready;
+            }
+        }
+
+        /// <summary><see cref="Matches(string, Regex)"/>, saying whether the expression ran out of time (then it is no match).</summary>
+        public bool TryMatch(string text, Regex regex, out bool timedOut)
+        {
+            timedOut = false;
+            if (regex == null || string.IsNullOrEmpty(text))
+            {
+                return Matches(text, regex);
+            }
+
+            try
+            {
+                return regex.IsMatch(text);
+            }
+            catch (RegexMatchTimeoutException)
+            {
+                Interlocked.Increment(ref timeouts);
+                timedOut = true;
+                return false;
+            }
         }
 
         /// <summary><see cref="Matches(string)"/> with the expression of <see cref="RegexFor"/>.</summary>

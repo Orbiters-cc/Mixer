@@ -127,10 +127,11 @@ namespace Orbiters.Logger.Editor
         private const int MaxSparkGroups = 50_000;
         // Messages a worker pass searches on several cores (fewer are not worth the hand-off).
         private const int ParallelSearchAbove = 20_000;
-        // What one pass may spend on a regular expression in all (each text also has its own timeout): past it, the texts
-        // left are not tested (counted in LogQuery.Timeouts, not remembered as misses), so a pathological pattern
-        // typed or saved with the window can't keep a worker busy for minutes.
-        private const long SearchBudgetMs = 10_000;
+        // What one pass may spend on a regular expression in all (each text also has its own timeout): past it, the
+        // messages left stay untested (not misses) and Extend tests them a slice at a time while the status says
+        // "Searching…", so a pathological pattern typed or saved with the window can't keep a worker busy for minutes.
+        // Settable for tests.
+        internal static long SearchBudgetMs = 10_000;
         private const byte BaseBit = 1;
         private const byte LevelBit = 2;
         private const byte SourceBit = 4;
@@ -174,6 +175,18 @@ namespace Orbiters.Logger.Editor
         private byte[] textMatch = new byte[0];
         private Regex regex;
         private long searchDeadline;
+        // Messages from here on may not be tested yet (a pass that ran out of time): the occurrences after the first of
+        // theirs wait (Covered stops there) until Extend tests them, a slice at a time.
+        private int firstUnknown;
+        private int searchTimeouts;
+        // What one Extend (on the caller's thread) may spend on testing texts before it leaves the rest for the next one.
+        private const double ExtendBudgetMs = 6d;
+
+        /// <summary>Messages are left to test: the list is still filling in (a slice per Extend).</summary>
+        public bool SearchPending { get; private set; }
+
+        /// <summary>Texts the search could not decide (the expression took too long on them): left out of the results.</summary>
+        public int SearchTimeouts => Volatile.Read(ref searchTimeouts);
         private byte[] messagePass = new byte[0];
         private bool[] groupMuted = new bool[0];
         private int groupsKnown;
@@ -241,6 +254,7 @@ namespace Orbiters.Logger.Editor
                 }
             }
 
+            state.FindUnknown(view.MessageCount, 0);
             int from = 0;
             int step = 1 << 18;
             while (from < view.Count)
@@ -251,11 +265,16 @@ namespace Orbiters.Logger.Editor
                 }
 
                 int to = Math.Min(view.Count, from + step);
-                state.Scan(view, from, to);
-                from = to;
+                int stop = state.Scan(view, from, to);
+                from = stop;
+                if (stop < to)
+                {
+                    // An occurrence of a message not tested yet: Extend goes on from here.
+                    break;
+                }
             }
 
-            state.Covered = view.Count;
+            state.Covered = from;
             state.searchDeadline = 0L;
             state.SortGroups(view);
             state.Milliseconds = clock.Elapsed.TotalMilliseconds;
@@ -274,7 +293,7 @@ namespace Orbiters.Logger.Editor
             }
 
             var view = store.View();
-            if (view.Count == Covered && view.MessageCount <= messagePass.Length && (messagePass.Length == 0 || view.MessageCount == 0 || (messagePass[view.MessageCount - 1] & KnownBit) != 0))
+            if (view.Count == Covered && firstUnknown >= view.MessageCount)
             {
                 return true;
             }
@@ -288,13 +307,29 @@ namespace Orbiters.Logger.Editor
             PrepareSources(sources);
             Grow(view.MessageCount, view.GroupCount);
             UpdateMutes(view);
-            for (int m = 0; m < view.MessageCount; m++)
+            // Only messages not tested yet, within a budget: a flood of new logs or a slow expression never stalls the
+            // caller (the editor's thread); the rest waits for the next Extend.
+            var query = Spec.Query;
+            var foreground = regex;
+            regex = query.ForegroundRegex;
+            searchDeadline = query.IsEmpty ? 0L : Stopwatch.GetTimestamp() + (long)(ExtendBudgetMs * Stopwatch.Frequency / 1000d);
+            try
             {
-                if ((messagePass[m] & KnownBit) == 0)
+                for (int m = firstUnknown; m < view.MessageCount; m++)
                 {
-                    messagePass[m] = Pass(ref view.Messages[m], textCount);
+                    if ((messagePass[m] & KnownBit) == 0)
+                    {
+                        messagePass[m] = Pass(ref view.Messages[m], textCount);
+                    }
                 }
             }
+            finally
+            {
+                regex = foreground;
+                searchDeadline = 0L;
+            }
+
+            FindUnknown(view.MessageCount, firstUnknown);
 
             if (Sparks != null && view.GroupCount > SparkGroups)
             {
@@ -312,8 +347,7 @@ namespace Orbiters.Logger.Editor
 
             if (Covered < view.Count)
             {
-                Scan(view, Covered, view.Count);
-                Covered = view.Count;
+                Covered = Scan(view, Covered, view.Count);
             }
 
             return true;
@@ -380,13 +414,19 @@ namespace Orbiters.Logger.Editor
             var query = Spec.Query;
             if (!query.IsEmpty)
             {
-                bool found = TextMatches(message.Text, query, textCount);
-                if (!found && query.IncludeStack && message.Stack > 0)
+                byte found = TextMatches(message.Text, query, textCount);
+                if (found == Miss && query.IncludeStack && message.Stack > 0)
                 {
                     found = TextMatches(message.Stack, query, textCount);
                 }
 
-                if (!found)
+                if (found == Untested)
+                {
+                    // Out of time: not a miss, tested by a later Extend.
+                    return 0;
+                }
+
+                if (found != Hit)
                 {
                     return KnownBit;
                 }
@@ -406,27 +446,50 @@ namespace Orbiters.Logger.Editor
             return bits;
         }
 
-        private bool TextMatches(int text, LogQuery query, int textCount)
+        private const byte Untested = 0;
+        private const byte Miss = 1;
+        private const byte Hit = 2;
+
+        // Hit, Miss, or Untested when the pass's time is up (then nothing is remembered).
+        private byte TextMatches(int text, LogQuery query, int textCount)
         {
             if (text <= 0 || text >= textCount)
             {
-                return false;
+                return Miss;
             }
 
             byte known = textMatch[text];
-            if (known == 0)
+            if (known == Untested)
             {
                 if (searchDeadline != 0L && Stopwatch.GetTimestamp() > searchDeadline)
                 {
-                    query.CountTimeout();
-                    return false;
+                    return Untested;
                 }
 
-                known = query.Matches(Texts.Plain(text), regex) ? (byte)2 : (byte)1;
+                known = query.TryMatch(Texts.Plain(text), regex, out bool timedOut) ? Hit : Miss;
+                if (timedOut)
+                {
+                    // Undecided, and said so in the status; remembered as a miss so it isn't retried at every tick.
+                    Interlocked.Increment(ref searchTimeouts);
+                }
+
                 textMatch[text] = known;
             }
 
-            return known == 2;
+            return known;
+        }
+
+        // The first message from `from` on not tested yet.
+        private void FindUnknown(int messageCount, int from)
+        {
+            int m = Math.Max(0, from);
+            while (m < messageCount && (messagePass[m] & KnownBit) != 0)
+            {
+                m++;
+            }
+
+            firstUnknown = m;
+            SearchPending = m < messageCount;
         }
 
         // Fills the search results of every message's texts on several cores; the serial pass then only reads them.
@@ -455,7 +518,7 @@ namespace Orbiters.Logger.Editor
                         continue;
                     }
 
-                    if (!TextMatches(message.Text, query, textCount) && query.IncludeStack && message.Stack > 0)
+                    if (TextMatches(message.Text, query, textCount) == Miss && query.IncludeStack && message.Stack > 0)
                     {
                         TextMatches(message.Stack, query, textCount);
                     }
@@ -464,7 +527,8 @@ namespace Orbiters.Logger.Editor
             return result.IsCompleted && !cancelled();
         }
 
-        private void Scan(StoreView view, int from, int to)
+        // Adds occurrences from `from`; returns where it stopped: `to`, or the first occurrence of a message not tested yet.
+        private int Scan(StoreView view, int from, int to)
         {
             var times = view.Times;
             var owners = view.Owners;
@@ -488,6 +552,12 @@ namespace Orbiters.Logger.Editor
 
                 int m = owners[i];
                 byte pass = messagePass[m];
+                if ((pass & KnownBit) == 0)
+                {
+                    to = i;
+                    break;
+                }
+
                 if ((pass & BaseBit) == 0)
                 {
                     continue;
@@ -563,6 +633,8 @@ namespace Orbiters.Logger.Editor
             {
                 GroupOrderDirty = true;
             }
+
+            return to;
         }
 
         /// <summary>Puts group rows in the chosen order (first seen needs nothing: groups arrive in that order).</summary>

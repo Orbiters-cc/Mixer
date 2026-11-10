@@ -426,8 +426,9 @@ namespace Orbiters.Logger.Editor
                     RefilterInvalidated();
                 }
             }
-            else if (store.Version != seenVersion)
+            else if (store.Version != seenVersion || state.SearchPending)
             {
+                // New logs, or a search that goes on a slice at a time.
                 Catchup(store, now);
             }
 
