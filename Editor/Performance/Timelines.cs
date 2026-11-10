@@ -19,7 +19,6 @@ namespace Orbiters.Mixer.Editor.Performance
             public bool IsAvatarParameter;
             public readonly List<double> Times = new List<double>();
             public readonly List<float> Values = new List<float>();
-            public readonly List<ParameterKind> Kinds = new List<ParameterKind>();
 
             /// <summary>Index of the last change at or before <paramref name="seconds"/>; -1 before the first.</summary>
             public int IndexAt(double seconds)
@@ -87,7 +86,6 @@ namespace Orbiters.Mixer.Editor.Performance
                 }
                 track.Times.Add(c.TimeNs * 1e-9);
                 track.Values.Add(c.AsFloat);
-                track.Kinds.Add(c.Kind);
             }
             foreach (var a in session.Parameters.Avatars) timeline.Avatars.Add((a.TimeNs * 1e-9, a.Id));
             return timeline;

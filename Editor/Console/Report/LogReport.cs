@@ -104,7 +104,7 @@ namespace Orbiters.Logger.Editor
             var counts = new int[store.MessageCount];
             var first = new long[store.MessageCount];
             var last = new long[store.MessageCount];
-            for (int occurrence = 0; occurrence < store.Count; occurrence++)
+            for (int occurrence = store.FirstId; occurrence < store.EndId; occurrence++)
             {
                 int message = store.MessageAt(occurrence);
                 long time = store.TimeAt(occurrence);
@@ -213,15 +213,15 @@ namespace Orbiters.Logger.Editor
                 var last = new long[view.MessageCount];
                 using (var writer = context.OpenText("logs/logs.txt", "Every log of the session, oldest first (stack traces in messages.txt)"))
                 {
-                    writer.Line("# " + LoggerUi.Plural(view.Count, "log") + " from " + Stamp(view.Times[0]) + " to " + Stamp(view.Times[view.Count - 1]) +
+                    writer.Line("# " + LoggerUi.Plural(view.Count, "log") + " from " + Stamp(view.TimeAt(view.First)) + " to " + Stamp(view.TimeAt(view.End - 1)) +
                                 ". ~ marks a time read back from Unity's console (to the second).");
                     writer.Line();
                     var memo = new LineMemo(context.Privacy);
                     var line = new StringBuilder(256);
-                    for (int i = 0; i < view.Count; i++)
+                    for (int i = view.First; i < view.End; i++)
                     {
-                        int id = view.Owners[i];
-                        long time = view.Times[i];
+                        int id = view.OwnerAt(i);
+                        long time = view.TimeAt(i);
                         if (counts[id]++ == 0)
                         {
                             first[id] = time;
@@ -230,7 +230,7 @@ namespace Orbiters.Logger.Editor
                         last[id] = time;
                         ref var message = ref view.Messages[id];
                         line.Clear();
-                        line.Append(((OccurrenceFlags)view.Flags[i] & OccurrenceFlags.ApproximateTime) != 0 ? "~ " : "  ");
+                        line.Append(((OccurrenceFlags)view.FlagsAt(i) & OccurrenceFlags.ApproximateTime) != 0 ? "~ " : "  ");
                         line.Append(LevelTag(message.Variant)).Append("  ");
                         line.Append(SourceName(snapshot, id)).Append("  ");
                         AppendIndented(line, view.Texts.Plain(message.Text), "    ");
@@ -238,7 +238,7 @@ namespace Orbiters.Logger.Editor
                         written++;
                         if ((i & 0x3FFF) == 0)
                         {
-                            progress?.Invoke(0.75f * i / view.Count);
+                            progress?.Invoke(0.75f * (i - view.First) / view.Count);
                         }
                     }
                 }

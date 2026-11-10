@@ -574,7 +574,7 @@ namespace Orbiters.Logger.Editor
         /// <summary>
         /// Reads rows between <see cref="Open"/> and <see cref="Dispose"/>, like Unity's console window does each repaint.
         /// </summary>
-        public sealed class Reader : IDisposable
+        public sealed class Reader : IConsoleRows
         {
             private readonly object entry;
             private bool open;

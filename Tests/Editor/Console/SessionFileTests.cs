@@ -75,10 +75,11 @@ namespace Orbiters.Logger.Editor.Tests
         private static void AssertSame(LogStore expected, LogStore actual)
         {
             Assert.AreEqual(expected.Count, actual.Count);
+            Assert.AreEqual(expected.FirstId, actual.FirstId, "ids are kept");
             Assert.AreEqual(expected.MessageCount, actual.MessageCount);
             Assert.AreEqual(expected.GroupCount, actual.GroupCount);
             Assert.AreEqual(expected.Grouping, actual.Grouping);
-            for (int i = 0; i < expected.Count; i++)
+            for (int i = expected.FirstId; i < expected.EndId; i++)
             {
                 Assert.AreEqual(expected.TimeAt(i), actual.TimeAt(i));
                 Assert.AreEqual(expected.FlagsAt(i), actual.FlagsAt(i));
@@ -260,7 +261,7 @@ namespace Orbiters.Logger.Editor.Tests
             var loaded = Load();
             AssertSame(store, loaded);
             Assert.AreEqual(1001, loaded.Count);
-            Assert.AreEqual(2, loaded.Message(loaded.MessageAt(1000)).Count);
+            Assert.AreEqual(2, loaded.Message(loaded.MessageAt(loaded.EndId - 1)).Count);
 
             // A trim that keeps every message keeps the texts' files and rewrites the occurrences only.
             texts = loaded.Texts.Generation;
@@ -327,12 +328,12 @@ namespace Orbiters.Logger.Editor.Tests
             var session = Fresh();
             var loaded = Load(session);
             long generation = loaded.Texts.Generation;
-            int newest = loaded.Message(loaded.MessageAt(loaded.Count - 1)).Text;
+            int newest = loaded.Message(loaded.MessageAt(loaded.EndId - 1)).Text;
             loaded.Trim(500);
             Assert.AreEqual(500, loaded.Count, "the trim itself happened");
             Assert.AreEqual(generation, loaded.Texts.Generation, "the compaction was dropped");
             Assert.IsTrue(loaded.Texts.Faulted, "the store must start over");
-            Assert.AreEqual(newest, loaded.Message(loaded.MessageAt(loaded.Count - 1)).Text, "ids still name the old table");
+            Assert.AreEqual(newest, loaded.Message(loaded.MessageAt(loaded.EndId - 1)).Text, "ids still name the old table");
             Assert.IsFalse(loaded.Texts.IsLoaded(newest), "and the placeholder was never kept");
             session.Close();
         }
@@ -505,6 +506,46 @@ namespace Orbiters.Logger.Editor.Tests
             loaded.KeepWithinTextBudget();
             Assert.LessOrEqual(loaded.Texts.TotalChars, loaded.MaxTextChars);
             Assert.Less(loaded.Count, 3000);
+        }
+
+        // Stripped copies read back lazily (a search, any thread) never take the table past the ceiling: past it they are
+        // made again when asked for instead of kept, and still read right.
+        [Test]
+        public void AStrippedCopyBurstNeverPassesTheCeiling()
+        {
+            var store = new LogStore();
+            for (int i = 0; i < 3000; i++)
+            {
+                store.Add(100 + i, "<b>Rich text log number " + i + " with some padding</b>", string.Empty, LogVariant.Log);
+            }
+
+            saving.Save(store, Info(), Process, Start);
+            var loaded = Load();
+            loaded.MaxTextChars = loaded.Texts.TotalChars + 1000;
+            for (int i = 0; i < loaded.MessageCount; i++)
+            {
+                int text = loaded.Message(i).Text;
+                Assert.AreEqual("Rich text log number " + i + " with some padding", loaded.Texts.Plain(text));
+                Assert.AreEqual("Rich text log number " + i + " with some padding", loaded.Texts.Plain(text), "asked again");
+                Assert.LessOrEqual(loaded.Texts.TotalChars, loaded.TextCeiling, "after text " + i);
+            }
+
+            Assert.Greater(loaded.Texts.TotalChars, loaded.MaxTextChars, "copies were kept up to the ceiling");
+        }
+
+        // Whatever the budget, one log fits it: its texts are cut to a 32nd of the budget.
+        [Test]
+        public void OneLogFitsTheSmallestBudget()
+        {
+            var store = new LogStore { MaxTextChars = 1 };
+            string text = "<b>" + new string('t', LogStore.MaxTextLength) + "</b>";
+            string stack = new string('s', LogStore.MaxTextLength);
+            int id = store.Add(100, text, stack, LogVariant.Log);
+            Assert.AreEqual(1, store.Count);
+            Assert.IsTrue(store.Contains(id), "the newest log stays");
+            Assert.LessOrEqual(store.Texts.TotalChars, store.MaxTextChars);
+            StringAssert.EndsWith(" more characters left out by the Mixer console]", store.Texts[store.Message(store.MessageAt(id)).Text]);
+            Assert.LessOrEqual(store.Texts[store.Message(store.MessageAt(id)).Stack].Length, store.TextLimit);
         }
 
         [Test]

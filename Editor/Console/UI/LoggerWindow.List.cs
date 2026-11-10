@@ -185,7 +185,7 @@ namespace Orbiters.Logger.Editor
 
             int key = grouped ? state.GroupRows[index] : state.Rows[index];
             int occurrence = grouped ? state.GroupLast[key] : key;
-            if (occurrence < 0 || occurrence >= store.Count)
+            if (!store.Contains(occurrence))
             {
                 return;
             }
@@ -279,28 +279,7 @@ namespace Orbiters.Logger.Editor
             return RichText.Highlight(plain, ranges, MarkColor);
         }
 
-        private int ExplanationOf(int messageId)
-        {
-            var store = Store;
-            ref var message = ref store.Message(messageId);
-            if (message.Explanation == -2 || explanationVersion != LogExplanations.Version)
-            {
-                if (explanationVersion != LogExplanations.Version)
-                {
-                    explanationVersion = LogExplanations.Version;
-                    for (int i = 0; i < store.MessageCount; i++)
-                    {
-                        store.Message(i).Explanation = -2;
-                    }
-                }
-
-                message.Explanation = LogExplanations.Match(store.Texts.Plain(message.Text), store.Texts[message.Stack], message.Level);
-            }
-
-            return message.Explanation;
-        }
-
-        private int explanationVersion = -1;
+        private int ExplanationOf(int messageId) => ExplanationIndex.Of(Store, messageId);
 
         private void UpdateListChrome()
         {
@@ -499,32 +478,6 @@ namespace Orbiters.Logger.Editor
                 detailsDirty = true;
                 chromeDirty = true;
             }
-        }
-
-        private void ShiftSelection(int offset)
-        {
-            if (selection.Count == 0 && cursor < 0)
-            {
-                return;
-            }
-
-            var shifted = new List<int>(selection.Count);
-            foreach (int key in selection)
-            {
-                if (key + offset >= 0)
-                {
-                    shifted.Add(key + offset);
-                }
-            }
-
-            selection.Clear();
-            foreach (int key in shifted)
-            {
-                selection.Add(key);
-            }
-
-            cursor = cursor >= 0 && cursor + offset >= 0 ? cursor + offset : -1;
-            anchor = anchor >= 0 && anchor + offset >= 0 ? anchor + offset : -1;
         }
 
         private void SelectAll()
@@ -758,10 +711,10 @@ namespace Orbiters.Logger.Editor
             if (grouped)
             {
                 int occurrence = state.GroupLast[key];
-                return occurrence >= 0 && occurrence < store.Count ? store.MessageAt(occurrence) : -1;
+                return store.Contains(occurrence) ? store.MessageAt(occurrence) : -1;
             }
 
-            return key >= 0 && key < store.Count ? store.MessageAt(key) : -1;
+            return store.Contains(key) ? store.MessageAt(key) : -1;
         }
 
         private void Copy(bool withStack)
@@ -829,36 +782,9 @@ namespace Orbiters.Logger.Editor
 
             var store = Store;
             ref var message = ref store.Message(messageId);
-            if (!OpenFile(store.Texts[message.File], message.Line, message.Column))
+            if (!SourceFiles.Open(store.Texts[message.File], message.Line, message.Column))
             {
                 ShowToast("No source file for this log", error: true);
-            }
-        }
-
-        internal static bool OpenFile(string path, int line, int column = 0)
-        {
-            if (string.IsNullOrEmpty(path))
-            {
-                return false;
-            }
-
-            try
-            {
-                if (path.StartsWith("Assets/", StringComparison.Ordinal) || path.StartsWith("Packages/", StringComparison.Ordinal))
-                {
-                    var asset = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(path);
-                    if (asset != null && AssetDatabase.OpenAsset(asset, Math.Max(1, line), Math.Max(0, column)))
-                    {
-                        return true;
-                    }
-                }
-
-                string full = Path.GetFullPath(path);
-                return File.Exists(full) && InternalEditorUtility.OpenFileAtLineExternal(full, Math.Max(1, line), Math.Max(0, column));
-            }
-            catch (Exception)
-            {
-                return false;
             }
         }
 

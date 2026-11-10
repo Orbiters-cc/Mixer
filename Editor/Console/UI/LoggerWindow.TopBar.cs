@@ -220,7 +220,7 @@ namespace Orbiters.Logger.Editor
 
             // Keep looking at the same log: its group, or the group's newest log.
             int focusKey = -1;
-            if (cursor >= 0 && state != null)
+            if (cursor >= 0 && state != null && (grouped || Store.Contains(cursor)))
             {
                 focusKey = value ? Store.Message(Store.MessageAt(cursor)).Group : state.GroupLast[cursor];
             }

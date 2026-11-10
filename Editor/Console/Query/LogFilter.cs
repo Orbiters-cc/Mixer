@@ -52,7 +52,7 @@ namespace Orbiters.Logger.Editor
         /// </summary>
         public HiddenBy WhatHides(LogStore store, int occurrence)
         {
-            if (store == null || occurrence < 0 || occurrence >= store.Count || (store.FlagsAt(occurrence) & LogStore.Superseded) != 0)
+            if (store == null || !store.Contains(occurrence) || (store.FlagsAt(occurrence) & LogStore.Superseded) != 0)
             {
                 return HiddenBy.Gone;
             }
@@ -143,6 +143,9 @@ namespace Orbiters.Logger.Editor
         public int Epoch;
         public int MessagesVersion;
         public TextTable Texts;
+        /// <summary>The store's first occurrence id when the pass ran: a trim or history put in front needs a new pass.</summary>
+        public int FirstId;
+        /// <summary>Occurrences with an id below this one are counted.</summary>
         public int Covered;
         public double Milliseconds;
 
@@ -215,9 +218,11 @@ namespace Orbiters.Logger.Editor
                 Epoch = view.Epoch,
                 MessagesVersion = view.MessagesVersion,
                 Texts = view.Texts,
+                FirstId = view.First,
+                Covered = view.First,
                 ChartFrom = chartFrom,
                 ChartTo = Math.Max(chartTo, chartFrom + TimeSpan.TicksPerSecond),
-                ChartClips = view.Count > 0 && chartFrom > view.Times[0],
+                ChartClips = view.Count > 0 && chartFrom > view.TimeAt(view.First),
                 Buckets = Math.Max(0, buckets)
             };
 
@@ -269,16 +274,17 @@ namespace Orbiters.Logger.Editor
             }
 
             state.FindUnknown(view.MessageCount, 0);
-            int from = 0;
+            int from = view.First;
             int step = 1 << 18;
-            while (from < view.Count)
+            while (from < view.End)
             {
                 if (cancelled != null && cancelled())
                 {
                     return null;
                 }
 
-                int to = Math.Min(view.Count, from + step);
+                // From the distance left: ids near the top of the range would overflow from + step.
+                int to = view.End - from <= step ? view.End : from + step;
                 int stop = state.Scan(view, from, to);
                 from = stop;
                 if (stop < to)
@@ -301,13 +307,13 @@ namespace Orbiters.Logger.Editor
         /// <summary>Adds what the store received since the last pass (main thread). False when a full pass is needed.</summary>
         public bool Extend(LogStore store, IReadOnlyList<LogSource> sources)
         {
-            if (store.Epoch != Epoch || store.MessagesVersion != MessagesVersion || !ReferenceEquals(store.Texts, Texts))
+            if (store.Epoch != Epoch || store.MessagesVersion != MessagesVersion || !ReferenceEquals(store.Texts, Texts) || store.FirstId != FirstId)
             {
                 return false;
             }
 
             var view = store.View();
-            if (view.Count == Covered && firstUnknown >= view.MessageCount)
+            if (view.End == Covered && firstUnknown >= view.MessageCount)
             {
                 return true;
             }
@@ -370,9 +376,9 @@ namespace Orbiters.Logger.Editor
                 }
             }
 
-            if (Covered < view.Count)
+            if (Covered < view.End)
             {
-                Covered = Scan(view, Covered, view.Count);
+                Covered = Scan(view, Covered, view.End);
             }
 
             return true;
@@ -570,9 +576,31 @@ namespace Orbiters.Logger.Editor
         // Adds occurrences from `from`; returns where it stopped: `to`, or the first occurrence of a message not tested yet.
         private int Scan(StoreView view, int from, int to)
         {
-            var times = view.Times;
-            var owners = view.Owners;
-            var flags = view.Flags;
+            int id = from;
+            while (id < to)
+            {
+                int run = view.Run(id, to, out int chunk, out int offset);
+                int stop = ScanRun(view, view.TimeChunks[chunk], view.OwnerChunks[chunk], view.FlagChunks[chunk], id - offset, offset, offset + run);
+                if (stop < offset + run)
+                {
+                    to = id - offset + stop;
+                    break;
+                }
+
+                id += run;
+            }
+
+            if (Spec.Sort != GroupSort.FirstSeen && to > from)
+            {
+                GroupOrderDirty = true;
+            }
+
+            return to;
+        }
+
+        // The slots [from, to) of one chunk, whose slot 0 is occurrence idBase; returns the slot it stopped at.
+        private int ScanRun(StoreView view, long[] times, int[] owners, byte[] flags, int idBase, int from, int to)
+        {
             var messages = view.Messages;
             long brushFrom = Spec.HasRange ? Spec.From : long.MinValue;
             long brushTo = Spec.HasRange ? Spec.To : long.MaxValue;
@@ -648,11 +676,12 @@ namespace Orbiters.Logger.Editor
                     Array.Resize(ref Rows, Rows.Length * 2);
                 }
 
-                Rows[RowCount++] = i;
+                int id = idBase + i;
+                Rows[RowCount++] = id;
                 int group = message.Group;
                 if (GroupCount[group]++ == 0)
                 {
-                    GroupFirst[group] = i;
+                    GroupFirst[group] = id;
                     if (GroupRowCount == GroupRows.Length)
                     {
                         Array.Resize(ref GroupRows, GroupRows.Length * 2);
@@ -666,12 +695,7 @@ namespace Orbiters.Logger.Editor
                     GroupOrderDirty = true;
                 }
 
-                GroupLast[group] = i;
-            }
-
-            if (Spec.Sort != GroupSort.FirstSeen && to > from)
-            {
-                GroupOrderDirty = true;
+                GroupLast[group] = id;
             }
 
             return to;
@@ -737,11 +761,12 @@ namespace Orbiters.Logger.Editor
                 Epoch = view.Epoch,
                 MessagesVersion = view.MessagesVersion,
                 Texts = view.Texts,
+                FirstId = view.First,
                 From = chartFrom,
                 To = Math.Max(chartTo, chartFrom + TimeSpan.TicksPerSecond),
-                Clips = view.Count > 0 && chartFrom > view.Times[0],
+                Clips = view.Count > 0 && chartFrom > view.TimeAt(view.First),
                 Buckets = Math.Max(1, buckets),
-                Covered = Math.Min(view.Count, Covered)
+                Covered = Math.Min(view.End, Covered)
             };
             pass.Timeline = new int[3 * pass.Buckets];
             if (Sparks != null)
@@ -753,14 +778,17 @@ namespace Orbiters.Logger.Editor
             }
 
             var passes = messagePass;
-            for (int from = 0; from < pass.Covered; from += 1 << 18)
+            for (int from = view.First; from < pass.Covered;)
             {
                 if (cancelled != null && cancelled())
                 {
                     return null;
                 }
 
-                ChartScan(view, passes, pass, from, Math.Min(pass.Covered, from + (1 << 18)));
+                // From the distance left: ids near the top of the range would overflow from + step.
+                int to = pass.Covered - from <= 1 << 18 ? pass.Covered : from + (1 << 18);
+                ChartScan(view, passes, pass, from, to);
+                from = to;
             }
 
             return pass;
@@ -775,7 +803,7 @@ namespace Orbiters.Logger.Editor
         {
             spareSparks = null;
             if (pass == null || pass.Epoch != Epoch || pass.MessagesVersion != MessagesVersion || !ReferenceEquals(pass.Texts, Texts) ||
-                view.Epoch != Epoch || pass.Covered > Covered || Timeline == null)
+                pass.FirstId != FirstId || view.Epoch != Epoch || view.First != FirstId || pass.Covered > Covered || Timeline == null)
             {
                 return false;
             }
@@ -808,9 +836,16 @@ namespace Orbiters.Logger.Editor
         // The chart half of Scan, by the same rules.
         private static void ChartScan(StoreView view, byte[] passes, ChartPass pass, int from, int to)
         {
-            var times = view.Times;
-            var owners = view.Owners;
-            var flags = view.Flags;
+            for (int id = from; id < to;)
+            {
+                int run = view.Run(id, to, out int chunk, out int offset);
+                ChartRun(view, view.TimeChunks[chunk], view.OwnerChunks[chunk], view.FlagChunks[chunk], passes, pass, offset, offset + run);
+                id += run;
+            }
+        }
+
+        private static void ChartRun(StoreView view, long[] times, int[] owners, byte[] flags, byte[] passes, ChartPass pass, int from, int to)
+        {
             var messages = view.Messages;
             long chartFrom = pass.From;
             long span = Math.Max(1L, pass.To - pass.From);
@@ -876,6 +911,7 @@ namespace Orbiters.Logger.Editor
         public int Epoch;
         public int MessagesVersion;
         public TextTable Texts;
+        public int FirstId;
         public long From;
         public long To;
         public bool Clips;

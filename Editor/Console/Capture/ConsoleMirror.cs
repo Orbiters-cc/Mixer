@@ -26,6 +26,9 @@ namespace Orbiters.Logger.Editor
 
         private readonly List<Pending> pending = new List<Pending>();
         private int pendingStart;
+        // The store and id epoch the pending occurrence ids belong to.
+        private LogStore pendingStore;
+        private int pendingIds;
         private int rows;
         private int previousTotal;
 
@@ -44,8 +47,9 @@ namespace Orbiters.Logger.Editor
         /// Remembers a log received live, to match it with its console row. It waits from when it was filed, not when
         /// it was logged: after the editor was busy for minutes, queued logs are old but their rows are still to come.
         /// </summary>
-        public void Track(int occurrence, string condition, LogLevel level)
+        public void Track(LogStore store, int occurrence, string condition, LogLevel level)
         {
+            Follow(store);
             pending.Add(new Pending { Occurrence = occurrence, Condition = condition ?? string.Empty, Level = level, Time = DateTime.UtcNow.Ticks });
             if (pending.Count - pendingStart > MaxPending)
             {
@@ -55,23 +59,14 @@ namespace Orbiters.Logger.Editor
             Compact();
         }
 
-        /// <summary>Occurrence ids moved (history merged in front, oldest logs trimmed): pending matches follow them.</summary>
-        public void Shift(int offset)
-        {
-            for (int i = pendingStart; i < pending.Count; i++)
-            {
-                var entry = pending[i];
-                entry.Occurrence += offset;
-                pending[i] = entry;
-            }
-        }
-
         public void Tick(LogStore store, long now, double budgetMs, Action<UnityConsoleRow, LogVariant> compileRow)
         {
             if (!UnityConsole.Available)
             {
                 return;
             }
+
+            Follow(store);
 
             int total = UnityConsole.Total();
             if (total < rows)
@@ -151,23 +146,14 @@ namespace Orbiters.Logger.Editor
                     continue;
                 }
 
-                if (candidate.Occurrence >= 0 && candidate.Occurrence < store.Count)
+                if (store.Contains(candidate.Occurrence))
                 {
                     if (row.InstanceId != 0)
                     {
                         store.SetContext(candidate.Occurrence, row.InstanceId);
                     }
 
-                    ref var message = ref store.Message(store.MessageAt(candidate.Occurrence));
-                    if (message.File == 0 && !string.IsNullOrEmpty(row.File))
-                    {
-                        message.File = store.Texts.Intern(StackTraces.NormalizePath(row.File));
-                        message.Line = row.Line;
-                        if (message.Callsite == 0)
-                        {
-                            message.Callsite = store.Texts.Intern(StackTraces.FileName(row.File) + (row.Line > 0 ? ":" + row.Line : string.Empty));
-                        }
-                    }
+                    store.SetFileIfUnknown(store.MessageAt(candidate.Occurrence), row.File, row.Line);
                 }
 
                 // Usually the oldest pending log. Others before the match came from the same burst: they keep waiting.
@@ -189,6 +175,18 @@ namespace Orbiters.Logger.Editor
             if (row.InstanceId != 0)
             {
                 store.SetContext(occurrence, row.InstanceId);
+            }
+        }
+
+        // Occurrence ids stay through trims and history; only a new store, a clear or a renumbering changes them.
+        private void Follow(LogStore store)
+        {
+            if (!ReferenceEquals(store, pendingStore) || store.IdEpoch != pendingIds)
+            {
+                pendingStore = store;
+                pendingIds = store.IdEpoch;
+                pending.Clear();
+                pendingStart = 0;
             }
         }
 

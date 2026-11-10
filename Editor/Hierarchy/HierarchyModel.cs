@@ -75,6 +75,12 @@ namespace Orbiters.Mixer.Editor
         /// </summary>
         internal int PictureRevision;
         internal void ForgetComponents() => components = null;
+        /// <summary>The components as last read, or null (not read since they were forgotten).</summary>
+        internal Component[] KnownComponents => components;
+        /// <summary>The change (HierarchyModel's epoch) after which the cheap facts (name, activity, children) and the
+        /// heavy ones (components, prefab state, own mesh) were last checked: each is checked once per change, when the
+        /// row is first walked or listed after it.</summary>
+        internal int CheckedEpoch, FactsEpoch;
     }
 
     /// <summary>What the rows need after changes (<see cref="HierarchyModel.Apply"/>).</summary>
@@ -100,6 +106,16 @@ namespace Orbiters.Mixer.Editor
     /// The rows of the hierarchy from the loaded scenes (or the open prefab stage), and in Play mode the
     /// DontDestroyOnLoad objects, with Unity's own expanded state when a Unity Hierarchy exists (read and written
     /// through its internals) and Mixer's own otherwise. Objects' and scenes' folds are kept apart.
+    /// <para>
+    /// Rows are kept from one refresh to the next with their facts. <see cref="Apply"/> makes stale what Unity's change
+    /// events name (object changes carry ids; hierarchyChanged, Undo/Redo and whole-scene changes carry none and make
+    /// every kept row stale). <see cref="RefreshAfterChange"/>, the refresh that follows any editor change, re-validates
+    /// what the original window's rebuild read: names, activity and children of every object walked, and components,
+    /// prefab state and own mesh of every row listed, each once per change (rows folded at that moment when first shown). <see cref="Refresh"/>, the refresh that follows the user's input in
+    /// the window (a keystroke, a fold, a filter), uses the kept facts: nothing in the scene changed by typing. So an edit
+    /// that raises no Unity event at all (a script's change without Undo when no hierarchyChanged follows) shows at the
+    /// next change-caused refresh, exactly as on the original window, which also rebuilt only on events.
+    /// </para>
     /// </summary>
     internal sealed class HierarchyModel
     {
@@ -168,8 +184,39 @@ namespace Orbiters.Mixer.Editor
         /// </summary>
         public void Refresh(HierarchyFilter filter)
         {
+            using (RefreshMarker.Auto()) RefreshRows(filter, false);
+        }
+
+        /// <summary>
+        /// Lists the rows again after the editor changed something (a change event, Undo or Redo, a scene or prefab stage,
+        /// a script reload, an edit made from the window). It starts a new epoch: every object walked (now or, folded or
+        /// not searched now, when first walked later) reads again its name, whether it is active and its children (each
+        /// scene's roots too, in Unity's order), and every row listed its components, prefab state and own mesh; so the rows
+        /// show what a rebuild from scratch would. A search that reads components, kinds or prefab state reads them for
+        /// every object it walks, once per epoch.
+        /// </summary>
+        public void RefreshAfterChange(HierarchyFilter filter)
+        {
+            using (RefreshMarker.Auto()) RefreshRows(filter, true);
+        }
+
+        // Counts the editor changes that were followed by a refresh (RefreshAfterChange). A row walked or listed checks its
+        // facts once per epoch: those walked or listed in that refresh then, the others (folded, not searched) when they
+        // are first walked or listed later, by any refresh. So no row shows facts older than the last change.
+        private int epoch = 1;
+        // Each scene's roots were last checked against Unity's at this epoch.
+        private readonly Dictionary<int, int> rootsEpoch = new Dictionary<int, int>();
+
+        // Measured in the profiler (and with OrbitersEditorHost-style timings) as "Mixer.HierarchyRefresh".
+        private static readonly Unity.Profiling.ProfilerMarker RefreshMarker = new Unity.Profiling.ProfilerMarker("Mixer.HierarchyRefresh");
+
+        private void RefreshRows(HierarchyFilter filter, bool change)
+        {
             if (!loaded) LoadExpanded();
             NeedsRefresh = false;
+            if (change) epoch++;
+            // A search that reads components, kinds or prefab state checks them for every object it walks.
+            validatesFacts = filter.Any && FilterReadsFacts(filter);
             if (linkStale) RefreshLinkState();
             Rows.Clear();
             var stage = PrefabStageUtility.GetCurrentPrefabStage();
@@ -221,9 +268,20 @@ namespace Orbiters.Mixer.Editor
 
         private List<HierarchyRow> RootsOf(Scene scene)
         {
-            if (sceneRoots.TryGetValue(scene.handle, out var roots)) return roots;
+            // Roots made, removed, moved between scenes or reordered by a script raise no event: the kept list is checked
+            // against Unity's, in Unity's order, at every refresh (one array per scene).
+            if (sceneRoots.TryGetValue(scene.handle, out var roots) && rootsEpoch.TryGetValue(scene.handle, out int at) && at == epoch) return roots;
+            rootsEpoch[scene.handle] = epoch;
+            var now = scene.GetRootGameObjects();
+            if (roots != null)
+            {
+                bool same = roots.Count == now.Length;
+                for (int i = 0; same && i < now.Length; i++) same = ReferenceEquals(roots[i].Object, now[i]);
+                if (same) return roots;
+                revision++;
+            }
             roots = new List<HierarchyRow>();
-            foreach (var go in scene.GetRootGameObjects())
+            foreach (var go in now)
             {
                 var node = NodeOf(go);
                 node.Parent = null;
@@ -279,8 +337,29 @@ namespace Orbiters.Mixer.Editor
                 return;
             }
             if ((go.hideFlags & HideFlags.HideInHierarchy) != 0) return;
-            if (node.FactsStale) RefreshFacts(node);
-            if (node.ActiveStale) { node.Active = go.activeInHierarchy; node.ActiveStale = false; }
+            if (node.FactsStale || validatesFacts && node.FactsEpoch != epoch) RefreshFacts(node);
+            if (node.CheckedEpoch != epoch)
+            {
+                node.CheckedEpoch = epoch;
+                // Once per change, when the object is first walked after it: what a script can change without any change
+                // event (its name, whether it is active, its children and their order). Input after that reads none.
+                string name = go.name;
+                if (name != node.Name) { node.Name = name; revision++; }
+                node.ActiveStale = true;
+                if (!node.ChildrenStale && node.Children != null && ChildrenDiffer(node)) { revision++; MarkCachedUp(node, Mark.Meshes | Mark.Tools | Mark.Picture); }
+            }
+            if (node.ActiveStale)
+            {
+                bool active = go.activeInHierarchy;
+                node.ActiveStale = false;
+                if (active != node.Active)
+                {
+                    // The Inactive filter reads it (a narrowed search is not reused) and the pictures above show it.
+                    node.Active = active;
+                    revision++;
+                    MarkCachedUp(node, Mark.Picture);
+                }
+            }
             if (node.VisibilityStale)
             {
                 node.Hidden = SceneVisibilityManager.instance.IsHidden(go);
@@ -303,23 +382,81 @@ namespace Orbiters.Mixer.Editor
         }
 
         // The facts of one object that only a change of the object itself changes.
+        private bool validatesFacts;
+
+        // Whether a search reads facts beyond names: types (t:, c:), kinds, prefab or missing state.
+        private static bool FilterReadsFacts(HierarchyFilter filter)
+        {
+            if (filter.Meshes || filter.Skinned || filter.Lights || filter.Cameras || filter.Prefabs || filter.Missing || filter.Inactive) return true;
+            var pattern = filter.Pattern;
+            if (pattern == null || pattern.IsRegex || pattern.IsEmpty) return false;
+            foreach (string token in pattern.Text.Split(' '))
+                if (token.StartsWith("t:", StringComparison.OrdinalIgnoreCase) || token.StartsWith("c:", StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
+        // The facts of one object that only a change of the object itself changes, read at most once per pass. What
+        // changed makes its avatar tools be asked again and a narrowed search not be reused.
         private void RefreshFacts(HierarchyRow node)
         {
+            if (!node.FactsStale && node.FactsEpoch == epoch) return;
+            node.FactsEpoch = epoch;
             var go = node.Object;
-            node.Name = go.name;
-            node.PrefabInstance = PrefabUtility.IsPartOfPrefabInstance(go);
-            node.PrefabRoot = PrefabUtility.IsAnyPrefabInstanceRoot(go);
-            node.PrefabMissing = PrefabUtility.IsPrefabAssetMissing(go);
-            node.MissingScript = GameObjectUtility.GetMonoBehavioursWithMissingScriptCount(go) > 0;
-            node.VrchatAvatar = HierarchyAvatars.IsVrchatAvatar(go);
-            node.Light = go.GetComponent<Light>();
-            node.AvatarRoot = HierarchyAvatars.IsAvatarRoot(go);
+            string name = go.name;
+            bool prefabInstance = PrefabUtility.IsPartOfPrefabInstance(go);
+            bool prefabRoot = PrefabUtility.IsAnyPrefabInstanceRoot(go);
+            bool prefabMissing = PrefabUtility.IsPrefabAssetMissing(go);
+            bool missingScript = GameObjectUtility.GetMonoBehavioursWithMissingScriptCount(go) > 0;
+            bool vrchat = HierarchyAvatars.IsVrchatAvatar(go);
+            var light = go.GetComponent<Light>();
+            bool avatarRoot = HierarchyAvatars.IsAvatarRoot(go);
+            var before = node.KnownComponents;
             node.ForgetComponents();
+            var components = node.Components;
+            bool same = !node.FactsStale && name == node.Name && prefabInstance == node.PrefabInstance && prefabRoot == node.PrefabRoot
+                        && prefabMissing == node.PrefabMissing && missingScript == node.MissingScript && vrchat == node.VrchatAvatar
+                        && ReferenceEquals(light, node.Light) && avatarRoot == node.AvatarRoot && SameComponents(before, components);
+            node.Name = name;
+            node.PrefabInstance = prefabInstance;
+            node.PrefabRoot = prefabRoot;
+            node.PrefabMissing = prefabMissing;
+            node.MissingScript = missingScript;
+            node.VrchatAvatar = vrchat;
+            node.Light = light;
+            node.AvatarRoot = avatarRoot;
             node.FactsStale = false;
+            if (same) return;
             node.ToolsStale = true;
             node.ActiveStale = true;
-            node.VisibilityStale = true;
+            node.OwnMeshStale = true;
+            MarkCachedUp(node, Mark.Meshes | Mark.Picture);
             revision++;
+        }
+
+        private static bool SameComponents(Component[] before, Component[] now)
+        {
+            if (before == null || before.Length != now.Length) return false;
+            for (int i = 0; i < now.Length; i++) if (!ReferenceEquals(before[i], now[i])) return false;
+            return true;
+        }
+
+        // Whether the object's shown children are no longer the ones listed (made, removed or moved by a script without
+        // Undo): its list is made stale.
+        private static bool ChildrenDiffer(HierarchyRow node)
+        {
+            var t = node.Object.transform;
+            var listed = node.Children;
+            int shown = 0;
+            for (int i = 0; i < t.childCount; i++)
+            {
+                var child = t.GetChild(i).gameObject;
+                if ((child.hideFlags & HideFlags.HideInHierarchy) != 0) continue;
+                if (shown >= listed.Count || listed[shown].InstanceId != child.GetInstanceID()) { node.ChildrenStale = true; return true; }
+                shown++;
+            }
+            if (shown == listed.Count) return false;
+            node.ChildrenStale = true;
+            return true;
         }
 
         private void EnsureChildren(HierarchyRow node)
@@ -350,14 +487,7 @@ namespace Orbiters.Mixer.Editor
             var go = node.Object;
             if (go != null)
             {
-                if (node.OwnMeshStale)
-                {
-                    var t = go.transform;
-                    node.OwnMesh = t.TryGetComponent<SkinnedMeshRenderer>(out var skinned) && skinned.sharedMesh != null
-                                   || t.TryGetComponent<MeshFilter>(out var meshFilter) && meshFilter.sharedMesh != null && t.TryGetComponent<MeshRenderer>(out _);
-                    node.OwnMeshStale = false;
-                }
-                has = node.OwnMesh;
+                has = OwnMeshOf(node);
                 if (!has)
                 {
                     EnsureChildren(node);
@@ -371,11 +501,31 @@ namespace Orbiters.Mixer.Editor
             return has;
         }
 
+        private static bool OwnMeshOf(HierarchyRow node)
+        {
+            if (!node.OwnMeshStale) return node.OwnMesh;
+            var t = node.Object.transform;
+            node.OwnMesh = t.TryGetComponent<SkinnedMeshRenderer>(out var skinned) && skinned.sharedMesh != null
+                           || t.TryGetComponent<MeshFilter>(out var meshFilter) && meshFilter.sharedMesh != null && t.TryGetComponent<MeshRenderer>(out _);
+            node.OwnMeshStale = false;
+            return node.OwnMesh;
+        }
+
         // The rows kept: their meshes below, avatars and bones, and what the avatar tools say of them.
         private void Finish()
         {
             indexOf.Clear();
             int objects = 0;
+            // Every row listed reads its components, prefab state and own mesh again once per change.
+            foreach (var row in Rows)
+                {
+                    if (row.IsScene || row.Object == null || row.FactsEpoch == epoch) continue;
+                    RefreshFacts(row);
+                    bool own = row.OwnMesh;
+                    row.OwnMeshStale = true;
+                    if (OwnMeshOf(row) != own) MarkCachedUp(row, Mark.Meshes | Mark.Tools | Mark.Picture);
+                }
+
             // Every avatar shown is scanned first, so a row knows it is a bone whatever comes first.
             foreach (var row in Rows)
                 if (!row.IsScene && row.AvatarRoot) Avatars.Scan(row.Object);
@@ -808,7 +958,26 @@ namespace Orbiters.Mixer.Editor
                 string what = Differs(Rows[i], fresh.Rows[i]);
                 if (what != null) differences.Add("row " + i + " (" + fresh.Rows[i].Name + "): " + what);
             }
+            if (differences.Count > 0)
+            {
+                differences.Add("kept: " + Describe(Rows));
+                differences.Add("from scratch: " + Describe(fresh.Rows));
+            }
             return differences;
+        }
+
+        // Every row as "name (depth, scene)" (at most 300), for a failure that reads without replaying.
+        private static string Describe(List<HierarchyRow> rows)
+        {
+            var text = new System.Text.StringBuilder();
+            for (int i = 0; i < rows.Count && i < 300; i++)
+            {
+                var row = rows[i];
+                if (i > 0) text.Append(" | ");
+                text.Append(i).Append(' ').Append(row.IsScene ? "[scene] " : "").Append(row.Name).Append(" (").Append(row.Depth).Append(", ")
+                    .Append(row.Scene.IsValid() ? row.Scene.name : "?").Append(row.Match ? "" : ", dim").Append(')');
+            }
+            return text.ToString();
         }
 
         private static string Differs(HierarchyRow a, HierarchyRow b)

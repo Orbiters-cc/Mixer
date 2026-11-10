@@ -13,10 +13,11 @@ namespace Orbiters.Mixer.Editor.Tests
     /// Whole strokes through the Burst kernels against the same strokes through the managed steps they replaced, on two
     /// sessions of the same mesh placed alike: several dabs along a path, a radius that ends on a vertex, symmetry on,
     /// one brush after another, so every dab gathers from the world picture the earlier ones left and the brushes read
-    /// it. The document's positions, the world picture and the normals must stay the same, exactly on a static mesh
-    /// (the move places a vertex through the renderer's transform as MultiplyPoint3x4 does), within a stated bound on a
-    /// skinned one (the blended matrix is formed as SkinningMap does it, but Mono and Burst may round a sum's last bit
-    /// differently; a dab feeds the next, so the bound covers the whole run).
+    /// it. The document's positions, the world picture and the normals must stay the same to rounding: the kernels round
+    /// every step to single precision where Mono evaluates in double (see <see cref="StrokeKernels"/>), the world picture
+    /// a brush reads may differ by a float step of the coordinates, and a dab feeds the next. The bound is absolute and
+    /// scales with the mesh: per dab a few steps (16 Epsilon) of its largest coordinate, summed over the dabs. It is far
+    /// below anything a brush does (a dab moves millimetres) and would fail on any wrong vertex or move.
     /// </summary>
     public sealed class MixerStrokeReplayTests
     {
@@ -88,7 +89,7 @@ namespace Orbiters.Mixer.Editor.Tests
             AssetDatabase.CreateAsset(mesh, Folder + "/Static.asset");
             var burst = StaticSession(mesh);
             var managed = StaticSession(mesh);
-            Replay(burst, managed, 0f);
+            Replay(burst, managed);
         }
 
         [Test]
@@ -100,14 +101,18 @@ namespace Orbiters.Mixer.Editor.Tests
             var burst = SkinnedSession(mesh);
             var managed = SkinnedSession(mesh);
             Assert.That(burst.Skin.Skinned, Is.True);
-            // 24 dabs of up to a few centimetres on a 2 m cylinder: 1e-5 m (ten micrometres) for the whole run.
-            Replay(burst, managed, 1e-5f);
+            Replay(burst, managed);
         }
 
+        private const float Epsilon = 1.1920929e-7f;
+
         // Four brushes in turn, six dabs each along the side of the cylinder, symmetry on, on both sessions; compared after
-        // every stroke. bound 0: exactly equal.
-        private static void Replay(EditTarget burst, EditTarget managed, float bound)
+        // every stroke, within a bound that grows with the dabs made so far.
+        private static void Replay(EditTarget burst, EditTarget managed)
         {
+            float scale = 0f;
+            foreach (var p in burst.World) scale = Mathf.Max(scale, Mathf.Max(Mathf.Abs(p.x), Mathf.Max(Mathf.Abs(p.y), Mathf.Abs(p.z))));
+            int dabs = 0;
             Assert.That(burst.World, Is.EqualTo(managed.World), "both sessions start alike");
             var reference = new ManagedStroke(managed);
             var world = (Vector3[])burst.World.Clone();
@@ -128,11 +133,16 @@ namespace Orbiters.Mixer.Editor.Tests
                     stroke.Dab(path[i], Normal(path[i]), false);
                     reference.Dab(path[i], Normal(path[i]));
                 }
-                Assert.That(stroke.End(false), Is.Not.Null, name + " moved something");
+                var edit = stroke.End(false);
+                Assert.That(edit, Is.Not.Null, name + " moved something");
                 reference.End();
+                dabs += path.Length;
+                float bound = dabs * 16f * Epsilon * scale;
                 Compare(burst.Document.Positions, managed.Document.Positions, bound, name + ": positions");
-                Compare(burst.World, managed.World, bound * 4f, name + ": world picture");
-                Compare(burst.Document.Normals, managed.Document.Normals, bound > 0f ? 1e-3f : 0f, name + ": normals");
+                // The world picture is the positions through the transform or the skin (scale up to 1.5) plus its own steps.
+                Compare(burst.World, managed.World, 2f * bound, name + ": world picture");
+                // A normal turns by about the positions' difference over an edge (the shortest is ~0.08 m here): unit vectors.
+                Compare(burst.Document.Normals, managed.Document.Normals, 2f * bound / 0.08f + 16f * Epsilon, name + ": normals");
             }
         }
 
@@ -146,10 +156,9 @@ namespace Orbiters.Mixer.Editor.Tests
             for (int v = 0; v < actual.Length; v++)
             {
                 float d = Vector3.Distance(actual[v], expected[v]);
-                if (bound == 0f && MeshDocument.Differs(actual[v], expected[v])) Assert.Fail(what + " differ at vertex " + v + ": " + actual[v].ToString("R") + " against " + expected[v].ToString("R"));
                 if (d > worst) { worst = d; at = v; }
             }
-            if (bound > 0f) Assert.That(worst, Is.LessThanOrEqualTo(bound), what + ": the largest difference, at vertex " + at);
+            Assert.That(worst, Is.LessThanOrEqualTo(bound), what + ": the largest difference, at vertex " + at);
         }
 
         /// <summary>A sculpt stroke as SculptStroke stepped it before the kernels: managed gather, brush, mirror, move.</summary>

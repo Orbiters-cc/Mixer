@@ -246,17 +246,16 @@ namespace Orbiters.Mixer.Editor
                 RebuildWorld();
                 return;
             }
-            var skin = Skin;
-            var shown = Document.ShownView();
-            for (int i = 0; i < moved.Count; i++)
-            {
-                int v = moved[i];
-                var p = shown[v];
-                if (shapeOffset != null) p += shapeOffset[v];
-                World[v] = skin.PointToWorld(v, p);
-            }
+            // Placed by the stroke kernels' own code (StrokeKernels.Place), so the world picture never mixes two ways of
+            // placing a vertex.
+            placed.Clear();
+            for (int i = 0; i < moved.Count; i++) { int v = moved[i]; if ((uint)v < (uint)World.Length) placed.Add(v); }
+            var deltas = Document.ShownDeltas(out float weight);
+            StrokeKernels.Place(placed.Items, placed.Count, Document.Positions, deltas, weight, shapeOffset, World, Skin);
             bvh?.RefitVertices(moved, Document.Neighbors);
         }
+
+        private readonly IndexList placed = new IndexList();
 
         // Vertices undo or redo moved, for the world picture to follow once (CatchUpWorld), each once.
         private readonly List<int> worldMoved = new List<int>();

@@ -31,6 +31,8 @@ namespace Orbiters.Logger.Editor
         private readonly int fileCount;
         private volatile bool faulted;
         private long totalChars;
+        // Marks a stripped copy that was not kept (the cache limit): Plain strips again each time it is asked.
+        private static readonly string NotKept = new string('\0', 1);
         // The last few strings interned, by reference: a flood of one log hands the same instances again (see LogCapture).
         private readonly string[] recentTexts = new string[4];
         private readonly int[] recentIds = new int[4];
@@ -93,6 +95,12 @@ namespace Orbiters.Logger.Editor
         /// <summary>The length of every text together: what the table keeps alive.</summary>
         public long TotalChars => Interlocked.Read(ref totalChars);
 
+        /// <summary>
+        /// The most characters a stripped copy read back lazily may bring the table to: past it the copy is made again
+        /// each time it is asked for instead of kept (the store's ceiling).
+        /// </summary>
+        internal long CacheLimit { get; set; } = long.MaxValue;
+
         public string this[int id] => id > 0 && id < count ? Raw(id) : string.Empty;
 
         /// <summary>The text without rich text tags (what search and copies use).</summary>
@@ -104,7 +112,8 @@ namespace Orbiters.Logger.Editor
             }
 
             string text = Raw(id);
-            return Volatile.Read(ref plain[id]) ?? text;
+            string stripped = Volatile.Read(ref Volatile.Read(ref plain)[id]);
+            return ReferenceEquals(stripped, NotKept) ? RichText.StripOrNull(text) ?? text : stripped ?? text;
         }
 
         /// <summary>The stable hash of a text (<see cref="Hash"/>), as saved with the session.</summary>
@@ -113,7 +122,36 @@ namespace Orbiters.Logger.Editor
         /// <summary>True when the text is in memory (not waiting in the session file).</summary>
         internal bool IsLoaded(int id) => id >= 0 && id < count && Volatile.Read(ref raw[id]) != null;
 
-        public int Intern(string text)
+        /// <summary>A text's length without reading it back from the session file (any thread).</summary>
+        internal int LengthOf(int id)
+        {
+            if (id <= 0 || id >= count)
+            {
+                return 0;
+            }
+
+            string text = Volatile.Read(ref Volatile.Read(ref raw)[id]);
+            return text != null ? text.Length : file != null && id < fileCount ? lengths[id] : 0;
+        }
+
+        public int Intern(string text) => Add(text, null, true);
+
+        /// <summary>
+        /// A text of <paramref name="source"/> in this table, sharing its strings (the text and its stripped copy) instead
+        /// of making new ones: a compaction's table holds no character the store's table doesn't already hold.
+        /// </summary>
+        internal int InternCopy(TextTable source, int id)
+        {
+            if (id <= 0 || id >= source.Count)
+            {
+                return 0;
+            }
+
+            string text = source.Raw(id);
+            return Add(text, Volatile.Read(ref Volatile.Read(ref source.plain)[id]), false);
+        }
+
+        private int Add(string text, string stripped, bool strip)
         {
             if (string.IsNullOrEmpty(text))
             {
@@ -154,7 +192,7 @@ namespace Orbiters.Logger.Editor
 
             id = count;
             raw[id] = text;
-            plain[id] = RichText.StripOrNull(text);
+            plain[id] = strip ? RichText.StripOrNull(text) : stripped;
             hashes[id] = hash;
             if ((count + 1) * 2 > slots.Length)
             {
@@ -162,7 +200,7 @@ namespace Orbiters.Logger.Editor
             }
 
             Insert(id, hash);
-            Interlocked.Add(ref totalChars, text.Length + (plain[id]?.Length ?? 0));
+            Interlocked.Add(ref totalChars, text.Length + (ReferenceEquals(plain[id], NotKept) ? 0 : plain[id]?.Length ?? 0));
             Volatile.Write(ref count, id + 1);
             Remember(text, id);
             return id;
@@ -299,8 +337,16 @@ namespace Orbiters.Logger.Editor
                 string stripped = RichText.StripOrNull(text);
                 if (stripped != null)
                 {
-                    // The stripped copy read back is kept too (the file's size only counts the raw texts).
-                    Interlocked.Add(ref totalChars, stripped.Length);
+                    // The stripped copy read back is kept too (the file's size only counts the raw texts), unless that
+                    // passes the cache limit: then it is made again when asked for, and the table never grows past it.
+                    if (Interlocked.Read(ref totalChars) + stripped.Length > CacheLimit)
+                    {
+                        stripped = NotKept;
+                    }
+                    else
+                    {
+                        Interlocked.Add(ref totalChars, stripped.Length);
+                    }
                 }
 
                 Volatile.Write(ref plainItems[id], stripped);

@@ -264,7 +264,7 @@ namespace Orbiters.Logger.Editor
             BuildSteps.AddTo(profile, BuildSteps.Take(start));
             Reset();
             Stop();
-            LogCapture.Inject(profile.Message(), profile.Format(), LogType.Log);
+            LogCapture.Inject(profile, LogType.Log);
         }
     }
 }

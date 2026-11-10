@@ -309,7 +309,7 @@ namespace Orbiters.Logger.Editor
         private void ShowLog(int occurrence, string noun)
         {
             var store = Store;
-            if (store == null || state == null || occurrence < 0 || occurrence >= store.Count)
+            if (store == null || state == null || !store.Contains(occurrence))
             {
                 return;
             }
@@ -352,59 +352,13 @@ namespace Orbiters.Logger.Editor
             }
         }
 
-        /// <summary>The newest error in the log (an exception, an assert, a compile error still standing), or -1.</summary>
-        internal static int LatestError(LogStore store)
-        {
-            if (store == null)
-            {
-                return -1;
-            }
-
-            for (int occurrence = store.Count - 1, seen = 0; occurrence >= 0 && seen < 1_000_000; occurrence--, seen++)
-            {
-                var message = store.Message(store.MessageAt(occurrence));
-                if (message.Level == LogLevel.Error && !message.Resolved && (store.FlagsAt(occurrence) & LogStore.Superseded) == 0)
-                {
-                    return occurrence;
-                }
-            }
-
-            return -1;
-        }
-
-        /// <summary>
-        /// The error a tool's "Check Console for more details" means: where a VRChat upload failed
-        /// (<see cref="SdkUploadErrors"/>) when it was logged with the newest error (within a few minutes of it), else the
-        /// newest error.
-        /// </summary>
-        internal static int ErrorToShow(LogStore store)
-        {
-            int latest = LatestError(store);
-            if (latest < 0)
-            {
-                return -1;
-            }
-
-            long since = store.TimeAt(latest) - TimeSpan.TicksPerMinute * 5;
-            for (int occurrence = store.Count - 1, seen = 0; occurrence >= 0 && seen < 20_000 && store.TimeAt(occurrence) >= since; occurrence--, seen++)
-            {
-                var message = store.Message(store.MessageAt(occurrence));
-                if (message.Level == LogLevel.Error && store.Texts[message.Text].StartsWith(SdkUploadErrors.Prefix, StringComparison.Ordinal))
-                {
-                    return occurrence;
-                }
-            }
-
-            return latest;
-        }
-
         /// <summary>
         /// Shows <see cref="ErrorToShow"/>, selected (what a tool's "Check Console for more details" means). A window
         /// whose list isn't built yet shows it once it is.
         /// </summary>
         internal void ShowLatestError()
         {
-            int occurrence = ErrorToShow(Store);
+            int occurrence = LogQueries.ErrorToShow(Store);
             if (occurrence < 0)
             {
                 return;

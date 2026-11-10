@@ -82,17 +82,17 @@ namespace Orbiters.Logger.Editor.Tests
         public void TheLatestErrorIsTheNewestErrorStillStanding()
         {
             var store = new LogStore();
-            Assert.AreEqual(-1, LoggerWindow.LatestError(store));
+            Assert.AreEqual(-1, LogQueries.LatestError(store));
             store.Add(1, "Building avatar", string.Empty, LogVariant.Log);
             int failed = store.Add(2, "Error building Player because scripts have compile errors in the editor", string.Empty, LogVariant.Error);
             store.Add(3, "Something minor", string.Empty, LogVariant.Warning);
-            Assert.AreEqual(failed, LoggerWindow.LatestError(store));
+            Assert.AreEqual(failed, LogQueries.LatestError(store));
             int exception = store.Add(4, "NullReferenceException: Object reference not set", "at A.B ()", LogVariant.Exception);
-            Assert.AreEqual(exception, LoggerWindow.LatestError(store));
+            Assert.AreEqual(exception, LogQueries.LatestError(store));
             int compile = store.AddCompile(5, "Assets/A.cs(1,1): error CS1002: ; expected", true, store.AssemblyId("Assembly-CSharp"), "Assets/A.cs", 1, 1);
-            Assert.AreEqual(compile, LoggerWindow.LatestError(store));
+            Assert.AreEqual(compile, LogQueries.LatestError(store));
             store.ResolveCompile(-1, errorsOnly: true);
-            Assert.AreEqual(exception, LoggerWindow.LatestError(store), "a compile error no longer reported");
+            Assert.AreEqual(exception, LogQueries.LatestError(store), "a compile error no longer reported");
         }
 
         // The SDK wraps what failed in an UploadException that has only its message: the inner one says where.
@@ -123,10 +123,10 @@ namespace Orbiters.Logger.Editor.Tests
             store.Add(System.DateTime.UtcNow.Ticks, "Building avatar", string.Empty, LogVariant.Log);
             int where = store.Add(System.DateTime.UtcNow.Ticks, text, string.Empty, LogVariant.Error);
             int sdk = store.Add(System.DateTime.UtcNow.Ticks, "Upload Failed: Object reference not set to an instance of an object", string.Empty, LogVariant.Error);
-            Assert.AreEqual(sdk, LoggerWindow.LatestError(store));
-            Assert.AreEqual(where, LoggerWindow.ErrorToShow(store));
+            Assert.AreEqual(sdk, LogQueries.LatestError(store));
+            Assert.AreEqual(where, LogQueries.ErrorToShow(store));
             int later = store.Add(System.DateTime.UtcNow.Ticks + System.TimeSpan.TicksPerHour, "Another failure an hour later", string.Empty, LogVariant.Error);
-            Assert.AreEqual(later, LoggerWindow.ErrorToShow(store), "an old upload's log is not what a new error means");
+            Assert.AreEqual(later, LogQueries.ErrorToShow(store), "an old upload's log is not what a new error means");
         }
     }
 }

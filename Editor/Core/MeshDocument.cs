@@ -535,6 +535,13 @@ namespace Orbiters.Mixer.Editor
         /// <summary>The positions shown: the active layer at <see cref="LayerWeight"/>.</summary>
         public LayerView ShownView() => View(Layer, LayerWeight);
 
+        /// <summary>What <see cref="ShownView"/> reads, for a kernel: the shown layer's deltas (null: the base alone) and weight.</summary>
+        public Vector3[] ShownDeltas(out float weight)
+        {
+            weight = LayerWeight;
+            return Layer != null && ShapeEdits.TryGetValue(Layer, out var layer) ? layer.Deltas : null;
+        }
+
         public readonly struct LayerView
         {
             private readonly Vector3[] positions, deltas;

@@ -9,8 +9,10 @@ namespace Orbiters.Mixer.Editor.Tests
     /// <summary>
     /// The stroke kernels on the flat topology against the managed loops they replaced (kept here, as they were): the
     /// gather under the brush, the move into the document and the world picture, the normals around what moved, and the
-    /// welds made by refining the position weld. Every comparison is exact unless it says otherwise: the kernels repeat
-    /// the managed code operation for operation.
+    /// welds made by refining the position weld. The kernels repeat the managed code operation for operation, but Mono
+    /// evaluates float expressions in double precision where Burst rounds every step to single (see
+    /// <see cref="StrokeKernels"/>): floats are compared within bounds worked out from the arithmetic below, and what must
+    /// not depend on rounding is exact (which vertices, in which order, counts, marks, topology, a single addition).
     /// </summary>
     public sealed class MixerStrokeKernelTests
     {
@@ -102,6 +104,20 @@ namespace Orbiters.Mixer.Editor.Tests
             }
         }
 
+        // One float step at 1 (single precision).
+        private const float Epsilon = 1.1920929e-7f;
+
+        // The largest coordinate magnitude: what one rounding of a coordinate can be off by is Epsilon times it.
+        private static float Scale(Vector3[] points)
+        {
+            float m = 0f;
+            foreach (var p in points) m = Mathf.Max(m, Mathf.Max(Mathf.Abs(p.x), Mathf.Max(Mathf.Abs(p.y), Mathf.Abs(p.z))));
+            return m;
+        }
+
+        private static void AssertNear(Vector3 actual, Vector3 expected, float bound, string what) =>
+            Assert.That(Vector3.Distance(actual, expected), Is.LessThanOrEqualTo(bound), what + ": " + actual.ToString("R") + " against " + expected.ToString("R"));
+
         private static void AssertSame(Vector3 actual, Vector3 expected, string what)
         {
             Assert.That(actual.x, Is.EqualTo(expected.x), what + " x");
@@ -182,10 +198,8 @@ namespace Orbiters.Mixer.Editor.Tests
                             mark++;
                             OldGather(bvh, triangles, n, world, mask, oldMarks, mark, center, radius, falloff, ignoreMask, welded, weights);
                             int count = StrokeKernels.Gather(bvh, triangles, n, world, mask, newMarks, mark, center, radius, falloff, ignoreMask, gotWelded, gotWeights);
-                            Assert.That(count, Is.EqualTo(welded.Count), "as many at radius " + radius);
-                            CollectionAssert.AreEqual(welded, gotWelded.Take(count).ToArray(), "the same welded vertices in the same order");
-                            CollectionAssert.AreEqual(weights, gotWeights.Take(count).ToArray(), "the same weights");
-                            CollectionAssert.AreEqual(oldMarks, newMarks, "the same marks left");
+                            CompareGather(n, world, center, radius, falloff, welded, weights, gotWelded, gotWeights, count, "radius " + radius + (ignoreMask ? " without mask" : ""));
+                            CollectionAssert.AreEqual(oldMarks, newMarks, "the same marks left: every triangle the BVH gave was visited");
                             checkedAny += count;
                         }
                     }
@@ -195,10 +209,39 @@ namespace Orbiters.Mixer.Editor.Tests
                 mark++;
                 OldGather(bvh, triangles, n, world, null, oldMarks, mark, world[40], 0.3f, falloff, false, welded, weights);
                 int unmasked = StrokeKernels.Gather(bvh, triangles, n, world, null, newMarks, mark, world[40], 0.3f, falloff, false, gotWelded, gotWeights);
-                CollectionAssert.AreEqual(weights, gotWeights.Take(unmasked).ToArray());
+                CompareGather(n, world, world[40], 0.3f, falloff, welded, weights, gotWelded, gotWeights, unmasked, "no mask");
                 for (float t = -0.5f; t <= 1.5f; t += 0.03125f) Assert.That(Brush.Curve(falloff, t), Is.EqualTo(OldCurve(falloff, t)), "the curve at " + t);
             }
             finally { Object.DestroyImmediate(mesh); }
+        }
+
+        // The kernel's gather against the managed one. A distance is worked out from coordinate differences: each
+        // coordinate may round differently by Epsilon times the largest coordinate (Scale), so the normalized distance t
+        // may differ by delta = 4 * Epsilon * Scale / radius (the margin covers the squares and the root). Vertices whose
+        // distance lies within delta of the radius may be in one gather and not the other; every other vertex must be in
+        // both, in the same order. A weight may differ by what the falloff changes over [t - delta, t + delta] (the curves
+        // are monotonic, so its ends bound it) times the mask's hold, plus a few steps of the weight itself.
+        private static void CompareGather(MeshNeighbors n, Vector3[] world, Vector3 center, float radius, Falloff falloff, List<int> welded, List<float> weights,
+            int[] gotWelded, float[] gotWeights, int count, string what)
+        {
+            float delta = 4f * Epsilon * Mathf.Max(Scale(world), center.magnitude) / radius;
+            bool OnTheEdge(int w)
+            {
+                float t = Vector3.Distance(world[n.Representative[w]], center) / radius;
+                return Mathf.Abs(t - 1f) <= delta;
+            }
+            var expected = new List<(int w, float weight)>();
+            for (int i = 0; i < welded.Count; i++) if (!OnTheEdge(welded[i])) expected.Add((welded[i], weights[i]));
+            var actual = new List<(int w, float weight)>();
+            for (int i = 0; i < count; i++) if (!OnTheEdge(gotWelded[i])) actual.Add((gotWelded[i], gotWeights[i]));
+            CollectionAssert.AreEqual(expected.Select(e => e.w).ToArray(), actual.Select(a => a.w).ToArray(), what + ": the same welded vertices in the same order (those on the brush's edge apart)");
+            Assert.That(count, Is.EqualTo(welded.Count).Within(welded.Count - expected.Count), what + ": as many, give or take those on the edge");
+            for (int i = 0; i < expected.Count; i++)
+            {
+                float t = Vector3.Distance(world[n.Representative[expected[i].w]], center) / radius;
+                float spread = Mathf.Abs(OldCurve(falloff, t - delta) - OldCurve(falloff, t + delta)) + 4f * Epsilon * expected[i].weight;
+                Assert.That(actual[i].weight, Is.EqualTo(expected[i].weight).Within(spread), what + ": the weight of welded vertex " + expected[i].w);
+            }
         }
 
         // ---- Move ---------------------------------------------------------------------------------------------------
@@ -261,8 +304,9 @@ namespace Orbiters.Mixer.Editor.Tests
                     {
                         AssertSame(layerNew[v], layerOld[v], "layer " + v);
                         AssertSame(displayNew[v], displayOld[v], "shown " + v);
-                        // The kernel blends the matrix and applies it as the managed code did; Mono and Burst may still round
-                        // the last bit of a sum differently: within a few float steps of the coordinates (about 1e-6 here).
+                        // The layer and the shown positions are one addition each: one rounding, the same on both runtimes
+                        // (exact above). The world position blends the matrix and applies it as the managed code did, in
+                        // single precision rather than Mono's double: within a few float steps of the coordinates (~1e-6 here).
                         Assert.That(Vector3.Distance(worldNew[v], worldOld[v]), Is.LessThan(2e-6f), (skinned ? "skinned " : "static ") + "world " + v);
                     }
                 }
@@ -290,7 +334,12 @@ namespace Orbiters.Mixer.Editor.Tests
                 var flat = FlatWeld.Of(weld);
                 var before = new Vector3[weld.WeldedCount];
                 StrokeKernels.FaceNormals(flat, triangles, original, before);
-                for (int w = 0; w < weld.WeldedCount; w++) AssertSame(before[w], OldFaceNormal(w, weld, triangles, original), "face normal of " + w);
+                // A face normal is a sum of cross products of edges normalized by its length. An edge's components may round
+                // differently by Epsilon times the coordinates (Scale), a relative error of Epsilon * Scale / shortest edge in
+                // each cross product: the unit normal may be off by a small multiple of that in any component, also one that
+                // is near zero (where the relative difference looks large). 16 covers the products, sums and the root.
+                float bound = 16f * Epsilon * Scale(original) / ShortestEdge(original, triangles);
+                for (int w = 0; w < weld.WeldedCount; w++) AssertNear(before[w], OldFaceNormal(w, weld, triangles, original), bound, "face normal of " + w);
 
                 // Some vertices moved, one triangle squashed to nothing (a zero face normal), the rest where they were.
                 var display = (Vector3[])original.Clone();
@@ -301,7 +350,10 @@ namespace Orbiters.Mixer.Editor.Tests
                 var actual = new Vector3[display.Length];
                 for (int w = 0; w < weld.WeldedCount; w++) OldTurn(w, weld, triangles, display, before, originalNormals, expected);
                 StrokeKernels.Turn(flat, triangles, null, weld.WeldedCount, display, before, originalNormals, actual);
-                for (int v = 0; v < display.Length; v++) AssertSame(actual[v], expected[v], "every normal, " + v);
+                // The turned normal adds the face normal's change to a unit normal and normalizes: twice the face normal's
+                // bound (now and before), for the moved mesh's own scale and edges.
+                float turnBound = 2f * 16f * Epsilon * Scale(display) / ShortestEdge(display, triangles, skipDegenerate: true) + 4f * Epsilon;
+                for (int v = 0; v < display.Length; v++) AssertNear(actual[v], expected[v], turnBound, "every normal, " + v);
 
                 // A ring: only its members are written.
                 var ring = new[] { 5, 9, 2, weld.WeldedCount - 1 };
@@ -309,8 +361,94 @@ namespace Orbiters.Mixer.Editor.Tests
                 var ringActual = new Vector3[display.Length];
                 foreach (int w in ring) OldTurn(w, weld, triangles, display, before, originalNormals, ringExpected);
                 StrokeKernels.Turn(flat, triangles, ring, ring.Length, display, before, originalNormals, ringActual);
-                for (int v = 0; v < display.Length; v++) AssertSame(ringActual[v], ringExpected[v], "ring normal " + v);
+                for (int v = 0; v < display.Length; v++) AssertNear(ringActual[v], ringExpected[v], turnBound, "ring normal " + v);
                 Assert.That(ringActual.Count(x => x != Vector3.zero), Is.EqualTo(ring.Sum(w => weld.MembersOf(w).Length)), "nothing outside the ring");
+            }
+            finally { Object.DestroyImmediate(mesh); }
+        }
+
+        private static float ShortestEdge(Vector3[] positions, int[] triangles, bool skipDegenerate = false)
+        {
+            float shortest = float.MaxValue;
+            for (int t = 0; t + 2 < triangles.Length; t += 3)
+                for (int k = 0; k < 3; k++)
+                {
+                    float d = Vector3.Distance(positions[triangles[t + k]], positions[triangles[t + (k + 1) % 3]]);
+                    if (d > 0f || !skipDegenerate) shortest = Mathf.Min(shortest, d > 0f ? d : float.MaxValue);
+                }
+            return shortest;
+        }
+
+        // ---- Burst with itself --------------------------------------------------------------------------------------
+
+        // The kernels give the same bits whatever the number of workers: each element is computed on its own, in a fixed
+        // order. Run twice, and on one thread against the job workers, on a mesh large enough to be split.
+        [Test]
+        public void TheKernelsGiveTheSameBitsEveryTimeAndOnAnyNumberOfWorkers()
+        {
+            var mesh = MixerCoreTestsFixtures.Cylinder(64, 48, 0.3f, 2f);
+            try
+            {
+                var original = mesh.vertices;
+                var triangles = mesh.triangles;
+                var normals = mesh.normals;
+                var position = MeshNeighbors.Build(original, triangles, 1e-5f);
+                var weld = position.Refine(original, triangles, 1e-5f, normals, 0.5f);
+                var flat = FlatWeld.Of(weld);
+                Assert.That(weld.WeldedCount, Is.GreaterThan(4 * 256), "large enough for the job workers");
+                var before = new Vector3[weld.WeldedCount];
+                var again = new Vector3[weld.WeldedCount];
+                StrokeKernels.FaceNormals(flat, triangles, original, before);
+                StrokeKernels.FaceNormals(flat, triangles, original, again);
+                for (int w = 0; w < before.Length; w++) AssertSame(again[w], before[w], "face normal " + w + " twice");
+                var display = (Vector3[])original.Clone();
+                for (int v = 0; v < display.Length; v += 2) display[v] += new Vector3(0.01f * Mathf.Sin(v), 0.005f, -0.01f * Mathf.Cos(v));
+                var spread = new Vector3[display.Length];
+                var single = new Vector3[display.Length];
+                StrokeKernels.Turn(flat, triangles, null, weld.WeldedCount, display, before, normals, spread);
+                StrokeKernels.Turn(flat, triangles, null, weld.WeldedCount, display, before, normals, single, parallel: false);
+                for (int v = 0; v < display.Length; v++) AssertSame(spread[v], single[v], "normal " + v + " on the workers and on one thread");
+
+                var root = new GameObject("MixerDeterminismFixture");
+                try
+                {
+                    root.transform.SetPositionAndRotation(new Vector3(1f, 2f, 3f), Quaternion.Euler(10f, 20f, 30f));
+                    var renderer = root.AddComponent<MeshRenderer>();
+                    var doc = new MeshDocument(mesh);
+                    var map = SkinningMap.For(renderer, mesh, doc);
+                    var n = doc.Neighbors;
+                    var moveOf = new Vector3[n.WeldedCount];
+                    for (int w = 0; w < moveOf.Length; w++) moveOf[w] = new Vector3(Mathf.Sin(w), Mathf.Cos(w * 0.7f), 0.3f) * 0.01f;
+                    var vertices = new IndexList();
+                    for (int w = 0; w < n.WeldedCount; w++) foreach (int v in n.MembersOf(w)) vertices.Add(v);
+                    var results = new List<(Vector3[] layer, Vector3[] display, Vector3[] world)>();
+                    foreach (bool parallel in new[] { true, false, true })
+                    {
+                        var layer = (Vector3[])doc.Positions.Clone();
+                        var shown = (Vector3[])doc.Positions.Clone();
+                        var world = new Vector3[doc.VertexCount];
+                        StrokeKernels.Move(vertices.Items, vertices.Count, n.Weld, moveOf, layer, shown, null, world, map, parallel);
+                        results.Add((layer, shown, world));
+                    }
+                    for (int k = 1; k < results.Count; k++)
+                        for (int v = 0; v < doc.VertexCount; v++)
+                        {
+                            AssertSame(results[k].layer[v], results[0].layer[v], "layer " + v + ", run " + k);
+                            AssertSame(results[k].world[v], results[0].world[v], "world " + v + ", run " + k);
+                        }
+
+                    var bvh = MeshBvh.Build(results[0].world, triangles);
+                    var marks = new int[n.WeldedCount];
+                    var a = (new int[n.WeldedCount], new float[n.WeldedCount]);
+                    var b = (new int[n.WeldedCount], new float[n.WeldedCount]);
+                    int first = StrokeKernels.Gather(bvh, triangles, n, results[0].world, null, marks, 1, results[0].world[500], 0.4f, Falloff.Smooth, false, a.Item1, a.Item2);
+                    int second = StrokeKernels.Gather(bvh, triangles, n, results[0].world, null, marks, 2, results[0].world[500], 0.4f, Falloff.Smooth, false, b.Item1, b.Item2);
+                    Assert.That(second, Is.EqualTo(first));
+                    Assert.That(first, Is.GreaterThan(10));
+                    CollectionAssert.AreEqual(a.Item1.Take(first).ToArray(), b.Item1.Take(second).ToArray(), "the same gather twice");
+                    CollectionAssert.AreEqual(a.Item2.Take(first).ToArray(), b.Item2.Take(second).ToArray(), "with the same weights, bit for bit");
+                }
+                finally { Object.DestroyImmediate(root); }
             }
             finally { Object.DestroyImmediate(mesh); }
         }

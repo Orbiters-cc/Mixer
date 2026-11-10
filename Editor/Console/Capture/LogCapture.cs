@@ -43,8 +43,10 @@ namespace Orbiters.Logger.Editor
             public readonly LogType Type;
             public readonly bool Background;
             public readonly bool Injected;
+            /// <summary>A timing's measured profile (its text form is <see cref="Stack"/>), or null.</summary>
+            public readonly TimingProfile Timing;
 
-            public RawLog(long time, SharedText condition, SharedText stack, LogType type, bool background, bool injected)
+            public RawLog(long time, SharedText condition, SharedText stack, LogType type, bool background, bool injected, TimingProfile timing)
             {
                 Time = time;
                 Condition = condition;
@@ -52,6 +54,7 @@ namespace Orbiters.Logger.Editor
                 Type = type;
                 Background = background;
                 Injected = injected;
+                Timing = timing;
             }
         }
 
@@ -84,7 +87,7 @@ namespace Orbiters.Logger.Editor
             }
             catch (Exception)
             {
-                Store = Store ?? new LogStore();
+                Store = Store ?? NewStore();
             }
 
             EditorApplication.update += Update;
@@ -143,8 +146,8 @@ namespace Orbiters.Logger.Editor
                 Store.AddEvent(now, SessionEventKind.DomainReload);
                 if (info.HistoryTo > info.HistoryFrom && info.HistoryFrom >= 0)
                 {
-                    history = new ConsoleHistory(info.HistoryFrom, info.HistoryTo, ConsoleHistory.Placement.Before, now,
-                        (info.HistoryTo - 1, info.HistoryAnchor));
+                    // The range left, read again from its first row with the time state the import started from.
+                    history = ConsoleHistory.Resume(info);
                 }
 
                 // Logs Unity received while scripts reloaded, before the Mixer console listened again. Read a slice per
@@ -157,7 +160,7 @@ namespace Orbiters.Logger.Editor
             }
             else
             {
-                Attach(new LogStore());
+                Attach(NewStore());
                 if (unityRows > 0)
                 {
                     // Read a slice per editor update, never here: a project opening waits for this constructor.
@@ -168,12 +171,16 @@ namespace Orbiters.Logger.Editor
             mirror.Reset(unityRows);
         }
 
+        // Ids from LogStore.HistoryRoom: Unity's console history goes in front without renumbering anything.
+        private static LogStore NewStore() => new LogStore(LogStore.HistoryRoom);
+
         private static void Attach(LogStore store)
         {
             Store = store;
             Store.MaxOccurrences = EditorPrefs.GetInt(MaxLogsPref, LogStore.DefaultMaxOccurrences);
             Store.SetGrouping((GroupingMode)EditorPrefs.GetInt(GroupingPref, (int)GroupingMode.SameText));
-            Store.Shifted += mirror.Shift;
+            // Compactions are prepared on a worker and land in Update a few milliseconds at a time.
+            Store.CompactInBackground = true;
         }
 
         // Any thread. Must stay fast and never throw or log: no lock, two interlocked counters, one queue write.
@@ -181,7 +188,7 @@ namespace Orbiters.Logger.Editor
         {
             try
             {
-                Enqueue(condition, stackTrace, type, injected: false);
+                Enqueue(condition, stackTrace, type, injected: false, timing: null);
             }
             catch (Exception)
             {
@@ -189,7 +196,7 @@ namespace Orbiters.Logger.Editor
             }
         }
 
-        private static void Enqueue(string condition, string stack, LogType type, bool injected)
+        private static void Enqueue(string condition, string stack, LogType type, bool injected, TimingProfile timing)
         {
             long time = DateTime.UtcNow.Ticks;
             if (Interlocked.Increment(ref queued) > MaxQueued)
@@ -208,14 +215,26 @@ namespace Orbiters.Logger.Editor
                 return;
             }
 
-            queue.Enqueue(new RawLog(time, sharedCondition, sharedStack, type, Thread.CurrentThread.ManagedThreadId != mainThread, injected));
+            queue.Enqueue(new RawLog(time, sharedCondition, sharedStack, type, Thread.CurrentThread.ManagedThreadId != mainThread, injected, timing));
         }
 
         /// <summary>
         /// Files a log that never goes through Unity's console (another tool's activity, such as Mixer Git's commands).
         /// Any thread.
         /// </summary>
-        internal static void Inject(string condition, string stack, LogType type) => Enqueue(condition, stack, type, injected: true);
+        internal static void Inject(string condition, string stack, LogType type) => Enqueue(condition, stack, type, injected: true, timing: null);
+
+        /// <summary>
+        /// Files a timing (never sent to Unity's console) as the log of its text form, with the measured profile kept as
+        /// it is (<see cref="LogStore.AddTiming"/>). Any thread.
+        /// </summary>
+        internal static void Inject(TimingProfile profile, LogType type)
+        {
+            if (profile != null)
+            {
+                Enqueue(profile.Message(), profile.Format(), type, injected: true, timing: profile);
+            }
+        }
 
         private static void Update()
         {
@@ -234,6 +253,7 @@ namespace Orbiters.Logger.Editor
                 }
 
                 Drain(6d);
+                Store.StepMaintenance();
                 // Texts read back lazily (a search over a restored session) add stripped copies while no log arrives.
                 Store.KeepWithinTextBudget();
                 if (history != null && history.Step(Store, ImportBudget()))
@@ -367,11 +387,17 @@ namespace Orbiters.Logger.Editor
                 return;
             }
 
+            if (raw.Timing != null)
+            {
+                Store.AddTiming(raw.Time, raw.Timing, variant, raw.Background ? OccurrenceFlags.BackgroundThread : OccurrenceFlags.None);
+                return;
+            }
+
             int occurrence = Store.Add(raw.Time, condition, stack, variant, raw.Background ? OccurrenceFlags.BackgroundThread : OccurrenceFlags.None);
             if (!raw.Injected)
             {
                 // Only logs Unity also shows wait for their console row.
-                mirror.Track(occurrence, condition, LogVariants.Level(variant));
+                mirror.Track(Store, occurrence, condition, LogVariants.Level(variant));
             }
         }
 
@@ -436,7 +462,7 @@ namespace Orbiters.Logger.Editor
                     {
                         if (Store.HasActiveCompileMessage(text, out int existing) && Store.Message(existing).Assembly == 0)
                         {
-                            Store.Message(existing).Assembly = assembly;
+                            Store.SetAssembly(existing, assembly);
                         }
 
                         continue;
@@ -514,6 +540,8 @@ namespace Orbiters.Logger.Editor
             try
             {
                 Drain(0d);
+                // A compaction being prepared ends with this domain: the store is saved as it is.
+                Store.StopMaintenance();
                 int unityRows = UnityConsole.Total();
                 var info = new SnapshotInfo
                 {
@@ -522,9 +550,7 @@ namespace Orbiters.Logger.Editor
                 };
                 if (history != null && history.Prepends && !history.Finished)
                 {
-                    info.HistoryFrom = history.From;
-                    info.HistoryTo = history.To;
-                    info.HistoryAnchor = history.EndAnchor;
+                    history.SaveTo(info, history.EndAnchor);
                 }
 
                 LogSnapshot.Save(Store, info);
@@ -562,7 +588,7 @@ namespace Orbiters.Logger.Editor
         public static void RebuildFromUnityConsole()
         {
             Drain(0d);
-            var store = new LogStore();
+            var store = NewStore();
             Attach(store);
             long now = Now;
             int unityRows = UnityConsole.Total();

@@ -186,6 +186,23 @@ namespace Orbiters.Logger.Editor.Tests
             Assert.AreEqual(2000, kept.TotalMilliseconds, 0.01);
             int plain = store.Intern("Not a timing", "Timings: is only a prefix in a stack", LogVariant.Log);
             Assert.IsNull(store.TimingOf(plain), "only messages filed as timings have a profile");
+
+            // Filed with its measured profile: the same message, text, stack and source as the log of its text form (every
+            // export as on master), the profile kept as it is instead of parsed back.
+            var measured = new TimingProfile { Kind = TimingKind.PlayMode, TotalMilliseconds = 1234 };
+            measured.Parts.Add(new TimingPart("Mixer", "Startup code", "MixerSession", 300));
+            var typed = new LogStore();
+            int filed = typed.MessageAt(typed.AddTiming(100, measured, LogVariant.Log, OccurrenceFlags.BackgroundThread));
+            Assert.AreSame(measured, typed.TimingOf(filed));
+            var asText = new LogStore();
+            int parsed = asText.MessageAt(asText.Add(100, measured.Message(), measured.Format(), LogVariant.Log, OccurrenceFlags.BackgroundThread));
+            Assert.AreEqual(asText.Texts[asText.Message(parsed).Text], typed.Texts[typed.Message(filed).Text]);
+            Assert.AreEqual(asText.Texts[asText.Message(parsed).Stack], typed.Texts[typed.Message(filed).Stack]);
+            Assert.AreEqual(asText.Texts[asText.Message(parsed).Callsite], typed.Texts[typed.Message(filed).Callsite]);
+            Assert.AreEqual(asText.SourceOf(parsed).Name, typed.SourceOf(filed).Name);
+            Assert.AreEqual(asText.Message(parsed).Flags, typed.Message(filed).Flags);
+            Assert.AreEqual(asText.FlagsAt(asText.FirstId), typed.FlagsAt(typed.FirstId));
+            Assert.AreEqual(filed, typed.MessageAt(typed.Add(200, measured.Message(), measured.Format(), LogVariant.Log)), "the log of its text form is the same message");
         }
 
         [Test]

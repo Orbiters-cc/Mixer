@@ -431,7 +431,7 @@ namespace Orbiters.Logger.Editor.VRChat
                     profile.Parts.Add(new TimingPart("VRChat SDK", "Upload", "Uploading to VRChat", Ms(current.UploadStarted, current.UploadEnded)));
                 }
 
-                LogCapture.Inject(profile.Message(), profile.Format(), current.Failed ? LogType.Warning : LogType.Log);
+                LogCapture.Inject(profile, current.Failed ? LogType.Warning : LogType.Log);
             }
             catch (Exception)
             {
