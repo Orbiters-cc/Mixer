@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using NUnit.Framework;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -144,6 +145,168 @@ namespace Orbiters.Mixer.Editor.Tests
                 Assert.That(uploader.Partial, Is.False);
                 Assert.That(uploader.LastUploaded, Is.EqualTo(count));
                 Assert.That(mesh.vertices[10], Is.EqualTo(new Vector3(5f, 5f, 5f)));
+            }
+            finally { Object.DestroyImmediate(mesh); }
+        }
+
+        // ---- Influence slots --------------------------------------------------------------------------------------
+
+        // The influences as the document kept them before the slots: a list per vertex, edited as SetBoneWeight and
+        // SetInfluences did then. The slots must give the same influences after the same edits.
+        private sealed class InfluenceLists
+        {
+            public readonly List<MeshDocument.Influence>[] Lists;
+
+            public InfluenceLists(Mesh mesh)
+            {
+                var perVertex = mesh.GetBonesPerVertex().ToArray();
+                var weights = mesh.GetAllBoneWeights().ToArray();
+                Lists = new List<MeshDocument.Influence>[mesh.vertexCount];
+                int cursor = 0;
+                for (int v = 0; v < Lists.Length; v++)
+                {
+                    Lists[v] = new List<MeshDocument.Influence>();
+                    for (int k = 0; k < perVertex[v]; k++) { var bw = weights[cursor + k]; if (bw.weight > 0f) Lists[v].Add(new MeshDocument.Influence(bw.boneIndex, bw.weight)); }
+                    cursor += perVertex[v];
+                }
+            }
+
+            public void SetBoneWeight(int v, int bone, float weight, bool normalize)
+            {
+                var list = Lists[v];
+                var strongest = Strongest(list);
+                weight = Mathf.Clamp01(weight);
+                int index = -1;
+                float others = 0f;
+                for (int i = 0; i < list.Count; i++) { if (list[i].Bone == bone) index = i; else others += list[i].Weight; }
+                if (normalize)
+                {
+                    if (others > 1e-6f)
+                    {
+                        float scale = (1f - weight) / others;
+                        for (int i = 0; i < list.Count; i++) if (list[i].Bone != bone) list[i] = new MeshDocument.Influence(list[i].Bone, list[i].Weight * scale);
+                    }
+                    else weight = 1f;
+                }
+                if (index >= 0) list[index] = new MeshDocument.Influence(bone, weight); else if (weight > 0f) list.Add(new MeshDocument.Influence(bone, weight));
+                for (int i = list.Count - 1; i >= 0; i--) if (list[i].Weight < 0.001f) list.RemoveAt(i);
+                if (list.Count == 0 && strongest.Weight > 0f) list.Add(strongest);
+            }
+
+            public void SetInfluences(int v, MeshDocument.Influence[] influences)
+            {
+                var list = Lists[v];
+                var strongest = Strongest(list);
+                list.Clear();
+                list.AddRange(influences);
+                if (list.Count == 0 && strongest.Weight > 0f) list.Add(strongest);
+            }
+
+            private static MeshDocument.Influence Strongest(List<MeshDocument.Influence> list)
+            {
+                var best = default(MeshDocument.Influence);
+                foreach (var i in list) if (i.Weight > best.Weight) best = i;
+                return best;
+            }
+        }
+
+        private static void SameInfluences(MeshDocument doc, InfluenceLists lists, int v)
+        {
+            var expected = lists.Lists[v];
+            Assert.That(doc.InfluenceCount(v), Is.EqualTo(expected.Count), "influences of vertex " + v);
+            for (int i = 0; i < expected.Count; i++)
+            {
+                var got = doc.InfluenceAt(v, i);
+                if (i > 0) Assert.That(got.Weight, Is.LessThanOrEqualTo(doc.InfluenceAt(v, i - 1).Weight), "strongest first");
+                Assert.That(doc.BoneWeight(v, expected[i].Bone), Is.EqualTo(expected[i].Weight).Within(1e-6f), "bone " + expected[i].Bone + " of vertex " + v);
+            }
+        }
+
+        [Test]
+        public void InfluenceSlotsEditLikeTheListsDid()
+        {
+            var mesh = MixerCoreTestsFixtures.Cylinder(8, 6, 0.3f, 2f);
+            try
+            {
+                var doc = new MeshDocument(mesh);
+                var lists = new InfluenceLists(mesh);
+                Assert.That(doc.InfluencesLoaded, Is.False);
+                for (int v = 0; v < mesh.vertexCount; v++) SameInfluences(doc, lists, v);
+                var random = new System.Random(7);
+                for (int step = 0; step < 2000; step++)
+                {
+                    int v = random.Next(mesh.vertexCount);
+                    if (random.Next(10) == 0)
+                    {
+                        // Up to 9 influences: more than the slots the cylinder needed (it grows them).
+                        var set = new MeshDocument.Influence[random.Next(10)];
+                        for (int i = 0; i < set.Length; i++) set[i] = new MeshDocument.Influence(i + random.Next(2) * 9, (float)random.NextDouble());
+                        doc.SetInfluences(v, set);
+                        lists.SetInfluences(v, set);
+                    }
+                    else
+                    {
+                        int bone = random.Next(6);
+                        float weight = random.Next(5) == 0 ? 0f : (float)random.NextDouble();
+                        bool normalize = random.Next(3) != 0;
+                        doc.SetBoneWeight(v, bone, weight, normalize);
+                        lists.SetBoneWeight(v, bone, weight, normalize);
+                    }
+                    SameInfluences(doc, lists, v);
+                }
+                for (int v = 0; v < mesh.vertexCount; v++) SameInfluences(doc, lists, v);
+                Assert.That(doc.InfluenceSlots, Is.GreaterThanOrEqualTo(9), "the slots grew for nine influences");
+            }
+            finally { Object.DestroyImmediate(mesh); }
+        }
+
+        [Test]
+        public void PackedBoneWeightsAreTheListsNormalized()
+        {
+            var mesh = MixerCoreTestsFixtures.Cylinder(8, 6, 0.3f, 2f);
+            try
+            {
+                var doc = new MeshDocument(mesh);
+                var lists = new InfluenceLists(mesh);
+                doc.SetInfluences(3, new MeshDocument.Influence[0]);
+                lists.SetInfluences(3, new MeshDocument.Influence[0]);
+                doc.SetInfluences(5, new[] { new MeshDocument.Influence(1, 0.2f), new MeshDocument.Influence(0, 0.6f) });
+                lists.SetInfluences(5, new[] { new MeshDocument.Influence(1, 0.2f), new MeshDocument.Influence(0, 0.6f) });
+                doc.BuildBoneWeights(out var perVertex, out var packed);
+                try
+                {
+                    int cursor = 0;
+                    for (int v = 0; v < mesh.vertexCount; v++)
+                    {
+                        var list = lists.Lists[v];
+                        if (list.Count == 0)
+                        {
+                            Assert.That(perVertex[v], Is.EqualTo(1), "a vertex without bones gets one");
+                            Assert.That(packed[cursor].boneIndex, Is.EqualTo(0));
+                            Assert.That(packed[cursor].weight, Is.EqualTo(1f));
+                            cursor++;
+                            continue;
+                        }
+                        float sum = 0f;
+                        foreach (var i in list) sum += i.Weight;
+                        Assert.That(perVertex[v], Is.EqualTo(list.Count));
+                        float packedSum = 0f;
+                        for (int k = 0; k < list.Count; k++, cursor++)
+                        {
+                            var bw = packed[cursor];
+                            if (k > 0) Assert.That(bw.weight, Is.LessThanOrEqualTo(packed[cursor - 1].weight), "strongest first");
+                            var match = list.Find(i => i.Bone == bw.boneIndex);
+                            Assert.That(bw.weight, Is.EqualTo(match.Weight / sum).Within(1e-6f));
+                            packedSum += bw.weight;
+                        }
+                        Assert.That(packedSum, Is.EqualTo(1f).Within(1e-5f));
+                    }
+                    Assert.That(cursor, Is.EqualTo(packed.Length));
+                }
+                finally { perVertex.Dispose(); packed.Dispose(); }
+                doc.CopyBoneWeights(out var counts, out var raw);
+                Assert.That(counts[3], Is.EqualTo(lists.Lists[3].Count), "the link's copy is not filled in");
+                Assert.That(raw[counts.Take(5).Sum(c => (int)c)].weight, Is.EqualTo(0.6f), "nor normalized");
             }
             finally { Object.DestroyImmediate(mesh); }
         }

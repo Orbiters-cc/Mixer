@@ -228,7 +228,7 @@ namespace Orbiters.Mixer.Editor
                     foreach (var pair in g.Weights) { idx[i] = pair.Key; w[i] = pair.Value; i++; }
                     s.Groups.Add((g.Name, idx, w));
                 }
-                if (doc.Influences != null) foreach (int v in doc.WeightEdited) s.Influences.Add((v, doc.Influences[v].ToArray()));
+                if (doc.InfluencesLoaded) foreach (int v in doc.WeightEdited) s.Influences.Add((v, doc.InfluenceArray(v)));
                 // Rest-pose edits: the bones stay moved in the scene through a reload, so their bind poses must come back too.
                 s.BindPoses = doc.BindPosesEdited && doc.BindPoses != null ? (Matrix4x4[])doc.BindPoses.Clone() : new Matrix4x4[0];
                 var added = new List<string>();

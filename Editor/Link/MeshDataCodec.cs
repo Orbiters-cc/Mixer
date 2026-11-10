@@ -293,7 +293,7 @@ namespace Orbiters.Mixer.Editor
             {
                 s.BoneNames = new string[skinned.bones.Length];
                 for (int i = 0; i < s.BoneNames.Length; i++) s.BoneNames[i] = BoneName(skinned.bones[i]);
-                s.Influences = doc.EnsureInfluences();
+                doc.CopyBoneWeights(out s.BonesPerVertex, out s.BoneWeights);
                 s.BindPoses = (Matrix4x4[])doc.BindPoses.Clone();
             }
             var buffer = new Vector3[doc.VertexCount];

@@ -51,7 +51,7 @@ namespace Orbiters.Mixer.Editor
             if (doc.HasSkin)
             {
                 mesh.bindposes = doc.BindPoses;
-                if (doc.Influences != null && doc.WeightEdited.Count > 0)
+                if (doc.InfluencesLoaded && doc.WeightEdited.Count > 0)
                 {
                     doc.BuildBoneWeights(out var perVertex, out var weights);
                     try { mesh.SetBoneWeights(perVertex, weights); }

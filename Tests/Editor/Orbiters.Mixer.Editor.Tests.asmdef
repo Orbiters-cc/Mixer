@@ -6,7 +6,10 @@
     "Orbiters.Mixer.Editor",
     "Orbiters.Toolkit",
     "Orbiters.Toolkit.Editor",
-    "Orbiters.Mixer.Brand.Editor"
+    "Orbiters.Mixer.Brand.Editor",
+    "Unity.Burst",
+    "Unity.Collections",
+    "Unity.Mathematics"
   ],
   "includePlatforms": [
     "Editor"

@@ -43,7 +43,7 @@ namespace Orbiters.Mixer.Editor
     /// Everything read from the original is read when the document is made (or from <see cref="ShapeSource"/>, a copy
     /// taken then), so an FBX reimported during the session changes nothing under the edits.
     /// </summary>
-    internal sealed class MeshDocument
+    internal sealed partial class MeshDocument
     {
         public readonly Mesh Original;
         /// <summary>
@@ -108,8 +108,6 @@ namespace Orbiters.Mixer.Editor
         public bool BoundsDirty;
         /// <summary>Per-vertex mask (0: free, 1: held still), null until painted.</summary>
         public float[] Mask;
-        /// <summary>Bone influences per vertex, loaded from the original the first time weights are edited; null before.</summary>
-        public List<Influence>[] Influences;
         /// <summary>Vertices whose influences differ from the original's.</summary>
         public readonly HashSet<int> WeightEdited = new HashSet<int>();
         /// <summary>The working mesh needs the influences uploaded.</summary>
@@ -122,159 +120,6 @@ namespace Orbiters.Mixer.Editor
         /// <summary>Bones the original has (more on the renderer are leaf bones added in this session).</summary>
         public int OriginalBoneCount => OriginalBindPoses.Length;
         public bool HasSkin => BoneCount > 0;
-
-        public struct Influence
-        {
-            public int Bone;
-            public float Weight;
-            public Influence(int bone, float weight) { Bone = bone; Weight = weight; }
-        }
-
-        // Copies of the original's bone weights taken when the document is made: the original can be reimported or
-        // replaced during a session, and Unity's arrays are views into the mesh's memory.
-        private readonly byte[] originalPerVertex;
-        private readonly BoneWeight1[] originalWeights;
-        private readonly int[] originalStart;
-
-        /// <summary>The influences, read from the original on first use.</summary>
-        public List<Influence>[] EnsureInfluences()
-        {
-            if (Influences != null) return Influences;
-            Influences = new List<Influence>[VertexCount];
-            for (int v = 0; v < VertexCount; v++)
-            {
-                int start = originalStart != null ? originalStart[v] : 0, end = originalStart != null ? originalStart[v + 1] : 0;
-                var list = new List<Influence>(Math.Max(1, end - start));
-                for (int k = start; k < end; k++) { var bw = originalWeights[k]; if (bw.weight > 0f) list.Add(new Influence(bw.boneIndex, bw.weight)); }
-                Influences[v] = list;
-            }
-            return Influences;
-        }
-
-        public float BoneWeight(int v, int bone)
-        {
-            var list = Influences != null ? Influences[v] : null;
-            if (list == null) return OriginalBoneWeight(v, bone);
-            for (int i = 0; i < list.Count; i++) if (list[i].Bone == bone) return list[i].Weight;
-            return 0f;
-        }
-
-        private float OriginalBoneWeight(int v, int bone)
-        {
-            if (originalStart == null) return 0f;
-            for (int k = originalStart[v]; k < originalStart[v + 1]; k++) if (originalWeights[k].boneIndex == bone) return originalWeights[k].weight;
-            return 0f;
-        }
-
-        /// <summary>Whether a vertex's influences are the original's (same bones, same weights within a millionth).</summary>
-        public bool InfluencesAreOriginal(int v)
-        {
-            if (Influences == null) return true;
-            var list = Influences[v];
-            int start = originalStart != null ? originalStart[v] : 0, end = originalStart != null ? originalStart[v + 1] : 0;
-            int count = 0;
-            for (int k = start; k < end; k++)
-            {
-                var bw = originalWeights[k];
-                if (bw.weight <= 0f) continue;
-                count++;
-                bool found = false;
-                for (int i = 0; i < list.Count && !found; i++) found = list[i].Bone == bw.boneIndex && Mathf.Abs(list[i].Weight - bw.weight) < 1e-6f;
-                if (!found) return false;
-            }
-            return count == list.Count;
-        }
-
-        /// <summary>
-        /// Sets a bone's weight on a vertex. With <paramref name="normalize"/> the other bones are scaled so the sum stays 1
-        /// (when they had any weight; a lone bone goes to 1). Weights under a thousandth are dropped; a vertex is never left
-        /// without a bone (see <see cref="KeepABone"/>).
-        /// </summary>
-        public void SetBoneWeight(int v, int bone, float weight, bool normalize)
-        {
-            var list = EnsureInfluences()[v];
-            var strongest = Strongest(list);
-            weight = Mathf.Clamp01(weight);
-            int index = -1;
-            float others = 0f;
-            for (int i = 0; i < list.Count; i++) { if (list[i].Bone == bone) index = i; else others += list[i].Weight; }
-            if (normalize)
-            {
-                if (others > 1e-6f)
-                {
-                    float scale = (1f - weight) / others;
-                    for (int i = 0; i < list.Count; i++) if (list[i].Bone != bone) list[i] = new Influence(list[i].Bone, list[i].Weight * scale);
-                }
-                else weight = 1f;
-            }
-            if (index >= 0) list[index] = new Influence(bone, weight); else if (weight > 0f) list.Add(new Influence(bone, weight));
-            for (int i = list.Count - 1; i >= 0; i--) if (list[i].Weight < 0.001f) list.RemoveAt(i);
-            KeepABone(list, strongest);
-            list.Sort(ByWeightDescending);
-            WeightEdited.Add(v);
-            WeightsDirty = true;
-        }
-
-        /// <summary>Sets a vertex's influences (an undo, Blender, an autosave); an empty list keeps a bone (see <see cref="KeepABone"/>).</summary>
-        public void SetInfluences(int v, Influence[] influences)
-        {
-            var list = EnsureInfluences()[v];
-            var strongest = Strongest(list);
-            list.Clear();
-            list.AddRange(influences);
-            KeepABone(list, strongest);
-            // Unity reads the strongest first (and keeps only the first four at the usual quality): Blender's order is any.
-            list.Sort(ByWeightDescending);
-            WeightEdited.Add(v);
-            WeightsDirty = true;
-        }
-
-        // Unity skins every vertex by some bone: one left with none would be committed on the first bone (the root or the
-        // hips) and spike when the avatar moves. A change that would take a vertex's last bone away (painting it to 0 with
-        // Normalize off, Blender sending the vertex without groups) leaves it the bone that weighed most on it before, as
-        // it was: alone, that bone moves the vertex fully, as before the change.
-        private static void KeepABone(List<Influence> list, Influence strongest)
-        {
-            if (list.Count == 0 && strongest.Weight > 0f) list.Add(strongest);
-        }
-
-        private static Influence Strongest(List<Influence> list)
-        {
-            var best = default(Influence);
-            for (int i = 0; i < list.Count; i++) if (list[i].Weight > best.Weight) best = list[i];
-            return best;
-        }
-
-        private static readonly Comparison<Influence> ByWeightDescending = (a, b) => b.Weight.CompareTo(a.Weight);
-
-        /// <summary>The influences as Unity's arrays (sorted by weight within a vertex), for the working mesh or the commit.</summary>
-        public void BuildBoneWeights(out NativeArray<byte> perVertex, out NativeArray<BoneWeight1> weights)
-        {
-            var lists = EnsureInfluences();
-            int total = 0;
-            for (int v = 0; v < VertexCount; v++) total += Math.Max(1, Math.Min(255, lists[v].Count));
-            perVertex = new NativeArray<byte>(VertexCount, Allocator.Temp);
-            weights = new NativeArray<BoneWeight1>(total, Allocator.Temp);
-            int cursor = 0;
-            for (int v = 0; v < VertexCount; v++)
-            {
-                var list = lists[v];
-                if (list.Count == 0)
-                {
-                    // Unity needs at least one influence per vertex: one the original had without any (edits never empty
-                    // a vertex, see KeepABone) gets the first bone at full weight.
-                    perVertex[v] = 1;
-                    weights[cursor++] = new BoneWeight1 { boneIndex = 0, weight = 1f };
-                    continue;
-                }
-                int count = Math.Min(255, list.Count);
-                float sum = 0f;
-                for (int i = 0; i < count; i++) sum += list[i].Weight;
-                perVertex[v] = (byte)count;
-                for (int i = 0; i < count; i++)
-                    weights[cursor++] = new BoneWeight1 { boneIndex = list[i].Bone, weight = sum > 0f ? list[i].Weight / sum : 1f / count };
-            }
-        }
 
         /// <summary>The named group, or null.</summary>
         public VertexGroup Group(string name)
