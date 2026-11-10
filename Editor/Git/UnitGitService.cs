@@ -334,7 +334,7 @@ namespace Orbiters.UnitGit.Editor
             untracked = new List<string>();
             ignored = new List<string>();
             // What the target has and HEAD has not: the only files a checkout writes where Git tracks nothing yet.
-            GitCommandResult incoming = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "diff-tree", "-r", "-z", "--name-only", "--no-renames", "--diff-filter=A", "HEAD", target, "--");
+            GitCommandResult incoming = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "diff-tree", "--no-textconv", "-r", "-z", "--name-only", "--no-renames", "--diff-filter=A", "HEAD", target, "--");
             if (!incoming.Success) return incoming;
             List<string> paths = SplitNul(incoming.StandardOutput);
             if (paths.Count == 0) return incoming;
@@ -732,6 +732,7 @@ namespace Orbiters.UnitGit.Editor
                 "-c",
                 "core.quotePath=true",
                 "show",
+                "--no-textconv",
                 "--no-ext-diff",
                 "--name-status",
                 "-M",
@@ -767,7 +768,7 @@ namespace Orbiters.UnitGit.Editor
                 .Where(hash => !string.IsNullOrWhiteSpace(hash) && !hash.Trim().StartsWith("-", StringComparison.Ordinal))
                 .Select(hash => hash.Trim()).Distinct(StringComparer.Ordinal).ToList();
             if (hashes.Count == 0) return found;
-            string[] options = { "log", "--no-walk=unsorted", "-z", "--no-ext-diff", "--name-status", "-M", "--cc",
+            string[] options = { "log", "--no-walk=unsorted", "-z", "--no-ext-diff", "--no-textconv", "--name-status", "-M", "--cc",
                 "--date=format-local:%m/%d/%Y %I:%M %p", "--pretty=format:" + CommitDetailsFormat() };
             GitCommandResult result = RunWithList(GitAccess.Read, null, DefaultTimeoutMilliseconds, hashes, false, options.Concat(new[] { "--stdin" }).ToArray(), options, new[] { "--" });
             if (!result.Success) return found;
@@ -871,7 +872,7 @@ namespace Orbiters.UnitGit.Editor
             // cancel it rather than leave an operation with nothing to resolve.
             // Both reads must have answered (a reload stops them at once): unless both say so, the operation stays for the user.
             GitCommandResult unmerged = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "ls-files", "-u");
-            GitCommandResult index = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "diff", "--cached", "--quiet");
+            GitCommandResult index = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "diff", "--no-textconv", "--cached", "--quiet");
             bool conflicted = !unmerged.Success || unmerged.StandardOutput.Trim().Length > 0;
             bool staged = index.ExitCode != 0; // 1: something staged; an interrupted or failed read is not 0 either
             if (conflicted || staged)
@@ -1214,7 +1215,7 @@ namespace Orbiters.UnitGit.Editor
             }
             else
             {
-                GitCommandResult commit = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "show", "-s", "--format=%h%x1f%p%x1f%P", hash);
+                GitCommandResult commit = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "show", "--no-textconv", "-s", "--format=%h%x1f%p%x1f%P", hash);
                 string[] fields = (SplitLines(commit.StandardOutput).FirstOrDefault(line => line.IndexOf(FieldSeparator) >= 0) ?? string.Empty)
                     .Split(FieldSeparator);
                 if (!commit.Success || fields.Length < 3)
@@ -1281,8 +1282,8 @@ namespace Orbiters.UnitGit.Editor
         {
             // git show compares a root commit with nothing; git diff compares any other one with its first parent, merges too.
             var args = parents.Length == 0
-                ? new List<string> { "--literal-pathspecs", "show", "--no-ext-diff", "-M", context, "--format=" }
-                : new List<string> { "--literal-pathspecs", "diff", "--no-ext-diff", "-M", context };
+                ? new List<string> { "--literal-pathspecs", "show", "--no-ext-diff", "--no-textconv", "-M", context, "--format=" }
+                : new List<string> { "--literal-pathspecs", "diff", "--no-ext-diff", "--no-textconv", "-M", context };
             args.AddRange(WhitespaceArguments(whitespace));
             if (parents.Length == 0)
             {
@@ -1310,7 +1311,7 @@ namespace Orbiters.UnitGit.Editor
 
         private static string[] DiffArguments(UnitGitWhitespace whitespace, string context, bool cached, string path)
         {
-            var args = new List<string> { "--literal-pathspecs", "diff" };
+            var args = new List<string> { "--literal-pathspecs", "diff", "--no-textconv" };
             if (cached)
             {
                 args.Add("--cached");
@@ -1341,7 +1342,7 @@ namespace Orbiters.UnitGit.Editor
 
         private string FindRenameSource(string parent, string hash, string path)
         {
-            GitCommandResult renames = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "-c", "core.quotePath=true", "diff", "--no-ext-diff",
+            GitCommandResult renames = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "-c", "core.quotePath=true", "diff", "--no-ext-diff", "--no-textconv",
                 "--name-status", "-M", "--diff-filter=R", parent, hash);
             if (!renames.Success)
             {

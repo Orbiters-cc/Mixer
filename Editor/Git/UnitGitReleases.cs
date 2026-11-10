@@ -743,12 +743,12 @@ namespace Orbiters.UnitGit.Editor
         {
             if (UnitGitService.FitsCommandLine(paths))
             {
-                var diffArgs = new List<string> { "diff", "--cached", "--quiet", "--exit-code", "--" };
+                var diffArgs = new List<string> { "diff", "--no-textconv", "--cached", "--quiet", "--exit-code", "--" };
                 diffArgs.AddRange(paths);
                 return index.Run(GitAccess.Read, diffArgs.ToArray());
             }
 
-            GitCommandResult names = index.Run(GitAccess.Read, "diff", "--cached", "--name-only", "--no-renames", "-z");
+            GitCommandResult names = index.Run(GitAccess.Read, "diff", "--no-textconv", "--cached", "--name-only", "--no-renames", "-z");
             if (!names.Success) return names;
             var wanted = new HashSet<string>(paths, StringComparer.Ordinal);
             bool changed = names.StandardOutput.Split('\0').Any(path => path.Length > 0 &&

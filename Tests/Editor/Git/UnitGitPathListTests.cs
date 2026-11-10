@@ -48,7 +48,7 @@ namespace Orbiters.UnitGit.Editor.Tests
                     Assert.That(included, Is.EqualTo(paths.Where(path => !path.EndsWith(".ignored")).ToArray()));
                     GitCommandResult add = index.RunForPaths(included, "add");
                     Assert.That(add.Success, Is.True, add.Message);
-                    string staged = index.Run(GitAccess.Read, "diff", "--cached", "--name-only", "-z").StandardOutput;
+                    string staged = index.Run(GitAccess.Read, "diff", "--no-textconv", "--cached", "--name-only", "-z").StandardOutput;
                     Assert.That(staged.Split('\0').Count(path => path.Length > 0), Is.EqualTo(included.Length));
                 }
 

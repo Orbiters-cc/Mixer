@@ -109,7 +109,16 @@ namespace Orbiters.UnitGit.Editor
             "merge-file"
         };
 
-        private static readonly string[] WritingOptions = { "--output", "--ext-diff", "--textconv", "--open-files-in-pager", "-O" };
+        private static readonly string[] WritingOptions = { "--output", "--ext-diff", "--textconv", "--filters", "--open-files-in-pager", "-O" };
+
+        // Commands that can turn a blob into text for a patch or a listing run the user's textconv driver unless told not to,
+        // and a driver with cachetextconv writes refs/notes/textconv/<driver>: a read that writes. They must say --no-textconv.
+        private static readonly HashSet<string> TextconvVerbs = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "diff", "diff-tree", "diff-index", "diff-files", "show"
+        };
+
+        private static readonly string[] PatchOptions = { "-p", "-u", "--patch", "--cc", "--stat", "--numstat", "--word-diff" };
 
         /// <summary>
         /// The guard behind each call's declared access: true only for the exact read-only shapes Mixer Git builds (a verb
@@ -134,7 +143,12 @@ namespace Orbiters.UnitGit.Editor
             string verb = arguments[at];
             var rest = arguments.Skip(at + 1).Select(argument => argument ?? string.Empty).ToList();
             if (ReadOnlyVerbs.Contains(verb))
-                return !rest.Any(argument => WritingOptions.Any(option => argument == option || argument.StartsWith(option + "=", StringComparison.Ordinal)));
+            {
+                if (rest.Any(argument => WritingOptions.Any(option => argument == option || argument.StartsWith(option + "=", StringComparison.Ordinal))))
+                    return false;
+                bool textconv = TextconvVerbs.Contains(verb) || (verb == "log" && rest.Any(argument => PatchOptions.Contains(argument)));
+                return !textconv || rest.Contains("--no-textconv");
+            }
 
             bool Only(IEnumerable<string> tokens, params string[] allowed) => tokens.All(token => allowed.Contains(token));
             var options = rest.Where(argument => argument.StartsWith("-", StringComparison.Ordinal)).ToList();
@@ -145,7 +159,8 @@ namespace Orbiters.UnitGit.Editor
                     // "stash list [--format=...]", "stash show [--name-status] [-z] [<stash>]".
                     if (rest.Count == 0) return false;
                     if (rest[0] == "list") return rest.Skip(1).All(token => token.StartsWith("--format=", StringComparison.Ordinal));
-                    if (rest[0] == "show") return Only(rest.Skip(1).Where(token => token.StartsWith("-", StringComparison.Ordinal)), "--name-status", "-z", "-M", "-p") &&
+                    if (rest[0] == "show") return rest.Contains("--no-textconv") &&
+                                                  Only(rest.Skip(1).Where(token => token.StartsWith("-", StringComparison.Ordinal)), "--no-textconv", "--name-status", "-z", "-M", "-p") &&
                                                   rest.Skip(1).Count(token => !token.StartsWith("-", StringComparison.Ordinal)) <= 1;
                     return false;
                 case "config":

@@ -54,12 +54,23 @@ namespace Orbiters.UnitGit.Editor
         /// </summary>
         internal static readonly string[] EncodingArguments = { "-c", "i18n.logOutputEncoding=UTF-8", "-c", "i18n.commitEncoding=UTF-8" };
 
-        internal static ProcessStartInfo StartInfo(string workingDirectory, IList<string> arguments, IDictionary<string, string> environment, bool input)
+        /// <summary>
+        /// Put before a read's arguments: a read starts no file-system monitor (core.fsmonitor can name a hook program).
+        /// What a read still runs of the user's configuration: status and a diff against the work tree run the clean filter
+        /// of a file whose attributes name one (filter.*.clean, Git LFS's included) to compare it, as every Git client does;
+        /// that runs the user's own filter and writes nothing. Textconv is refused by every read that could run it
+        /// (--no-textconv, required by UnitGitWriteGate.KnownRead). No pager runs: GIT_PAGER is cat, and the output is a pipe.
+        /// </summary>
+        internal static readonly string[] ReadArguments = { "-c", "core.fsmonitor=false" };
+
+        internal static ProcessStartInfo StartInfo(string workingDirectory, IList<string> arguments, IDictionary<string, string> environment, bool input,
+            bool read = false)
         {
             var start = new ProcessStartInfo
             {
                 FileName = "git",
-                Arguments = string.Join(" ", EncodingArguments.Concat(arguments).Select(UnitGitService.EscapeArgument).ToArray()),
+                Arguments = string.Join(" ", EncodingArguments.Concat(read ? ReadArguments : Array.Empty<string>()).Concat(arguments)
+                    .Select(UnitGitService.EscapeArgument).ToArray()),
                 WorkingDirectory = Directory.Exists(workingDirectory) ? workingDirectory : Directory.GetCurrentDirectory(),
                 UseShellExecute = false,
                 RedirectStandardInput = true,
@@ -71,6 +82,7 @@ namespace Orbiters.UnitGit.Editor
             };
             if (input) EditorProcessRunner.UseCleanInput(start);
             start.EnvironmentVariables["GIT_TERMINAL_PROMPT"] = "0";
+            start.EnvironmentVariables["GIT_PAGER"] = "cat";
             // Reads (a refresh's status) must not take the index lock: a commit or a staging starting meanwhile would fail on it.
             start.EnvironmentVariables["GIT_OPTIONAL_LOCKS"] = "0";
             if (environment != null)
@@ -87,7 +99,7 @@ namespace Orbiters.UnitGit.Editor
                 throw new InvalidOperationException("Git's input would start with a byte order mark on this system.");
             return EditorProcessRunner.Run(new EditorProcessRequest
             {
-                StartInfo = StartInfo(request.WorkingDirectory, request.Arguments, request.Environment, request.Input != null),
+                StartInfo = StartInfo(request.WorkingDirectory, request.Arguments, request.Environment, request.Input != null, !request.Write),
                 TimeoutMilliseconds = request.TimeoutMilliseconds,
                 Cancelled = request.Cancelled,
                 Input = request.Input,
@@ -104,7 +116,8 @@ namespace Orbiters.UnitGit.Editor
         /// </summary>
         internal static EditorLiveProcess StartLive(string workingDirectory, IList<string> arguments, IDictionary<string, string> environment, bool input)
         {
-            return EditorLiveProcess.Start(StartInfo(workingDirectory, arguments, environment, input));
+            // Kept for one operation: a cat-file --batch or a log, reads both.
+            return EditorLiveProcess.Start(StartInfo(workingDirectory, arguments, environment, input, true));
         }
 
         /// <summary>UTF-8 text without a leading byte order mark, as the runner decodes Git's output.</summary>
