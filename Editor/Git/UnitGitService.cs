@@ -373,7 +373,9 @@ namespace Orbiters.UnitGit.Editor
             if (UnitGitObjects.IsStable(name))
             {
                 var bytes = new MemoryStream();
-                UnitGitObjects.Answer answer = UnitGitObjects.For(ProjectRoot).Read(name, bytes, out string type, out _);
+                UnitGitObjects.Answer answer;
+                string type;
+                using (var objects = UnitGitObjects.Open(ProjectRoot)) answer = objects.Read(name, bytes, out type, out _);
                 if (answer == UnitGitObjects.Answer.Found)
                     return type == "blob" ? UnitGitRunner.Decode(bytes.GetBuffer(), (int)bytes.Length) : null;
                 if (answer == UnitGitObjects.Answer.Missing) return null;
@@ -603,7 +605,8 @@ namespace Orbiters.UnitGit.Editor
                 UnitGitObjects.Answer answer;
                 string type;
                 using (var file = File.Create(destination))
-                    answer = UnitGitObjects.For(ProjectRoot).Read(revisionPath, file, out type, out _);
+                using (var objects = UnitGitObjects.Open(ProjectRoot))
+                    answer = objects.Read(revisionPath, file, out type, out _);
                 if (answer == UnitGitObjects.Answer.Found && type == "blob") return true;
                 File.Delete(destination);
                 if (answer != UnitGitObjects.Answer.Failed) return false;
@@ -1265,7 +1268,9 @@ namespace Orbiters.UnitGit.Editor
         // A committed file's size, from the kept-alive object reader when it can answer (0 when unknown).
         private long CommittedSize(string name)
         {
-            UnitGitObjects.Answer answer = UnitGitObjects.For(ProjectRoot).Describe(name, out _, out long size);
+            UnitGitObjects.Answer answer;
+            long size;
+            using (var objects = UnitGitObjects.Open(ProjectRoot)) answer = objects.Describe(name, out _, out size);
             if (answer == UnitGitObjects.Answer.Found) return size;
             if (answer == UnitGitObjects.Answer.Missing) return 0;
             GitCommandResult read = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "--literal-pathspecs", "cat-file", "-s", name);

@@ -118,8 +118,6 @@ namespace Orbiters.UnitGit.Editor.Tests
 
         public void Dispose()
         {
-            // A kept-alive reader runs in the folder: Windows deletes no folder a process works in.
-            UnitGitObjects.Stop(Root);
             DeleteTempFolder(Root);
         }
     }

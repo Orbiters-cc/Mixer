@@ -139,12 +139,12 @@ namespace Orbiters.UnitGit.Editor.Tests
                 UnitGitSnapshot all = repo.Git.BuildSnapshot(new UnitGitSnapshotRequest { History = history, HistoryLimit = 100, Previous = more, HistoryOnly = true });
                 Assert.That(all.Commits.Count, Is.EqualTo(45));
                 Assert.That(all.HasMoreCommits, Is.False);
-                Assert.That(history.ProcessesStarted, Is.EqualTo(1), "One git log for all three pages.");
+                Assert.That(history.ProcessesStarted, Is.EqualTo(3), "One git log per page, each starting after the last commit read (nothing outlives a read).");
                 Assert.That(Hashes(all.Commits), Is.EqualTo(Hashes(repo.Git.GetCommits(string.Empty, 1000))));
 
                 UnitGitSnapshot found = repo.Git.BuildSnapshot(new UnitGitSnapshotRequest { History = history, LogSearch = "ancient needle" });
                 Assert.That(found.Commits.Single().Subject, Is.EqualTo("ancient needle"));
-                Assert.That(history.ProcessesStarted, Is.EqualTo(2), "A search is one more git log, read to its end once.");
+                Assert.That(history.ProcessesStarted, Is.EqualTo(4), "A search is one more git log, read to its end once.");
             }
         }
 
@@ -159,7 +159,7 @@ namespace Orbiters.UnitGit.Editor.Tests
                 int before = EditorProcessRunner.ActiveCount;
                 var history = new UnitGitHistory();
                 repo.Git.BuildSnapshot(new UnitGitSnapshotRequest { History = history, HistoryLimit = 5 });
-                Assert.That(EditorProcessRunner.ActiveCount, Is.EqualTo(before + 1), "The history waits for more rows.");
+                Assert.That(EditorProcessRunner.ActiveCount, Is.EqualTo(before), "No Git process outlives the read.");
                 history.Dispose();
                 Assert.That(EditorProcessRunner.ActiveCount, Is.EqualTo(before));
                 Assert.That(history.Read(repo.Root, "k", new[] { "--all", "--" }, string.Empty, 5, null, out _, out _).Success, Is.False,

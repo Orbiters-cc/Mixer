@@ -133,7 +133,7 @@ namespace Orbiters.UnitGit.Editor.Tests
                 foreach (string name in OddNames) repo.Write(name, "content of " + name + "\n");
                 File.WriteAllBytes(repo.Full("Assets/binary.bin"), new byte[] { 0, 1, 2, 255, 10, 13, 0 });
                 string hash = repo.Commit("files");
-                var objects = UnitGitObjects.For(repo.Root);
+                using var objects = UnitGitObjects.Open(repo.Root);
                 foreach (string name in OddNames)
                 {
                     var bytes = new MemoryStream();

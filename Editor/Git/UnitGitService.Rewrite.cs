@@ -66,7 +66,16 @@ namespace Orbiters.UnitGit.Editor
             return RewriteHeadHistory(commitHashes, message, true, expected);
         }
 
+        // One object reader for the whole rewrite (raw commits, the check of the written copies), stopped and waited for
+        // when it returns, whatever the path.
         private GitCommandResult RewriteHeadHistory(IList<string> commitHashes, string message, bool squash, UnitGitHeadState expected)
+        {
+            using (UnitGitObjects objects = UnitGitObjects.Open(ProjectRoot))
+                return RewriteHeadHistory(commitHashes, message, squash, expected, objects);
+        }
+
+        private GitCommandResult RewriteHeadHistory(IList<string> commitHashes, string message, bool squash, UnitGitHeadState expected,
+            UnitGitObjects objects)
         {
             GitCommandResult branchResult = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "symbolic-ref", "--quiet", "HEAD");
             if (!branchResult.Success)
@@ -179,7 +188,7 @@ namespace Orbiters.UnitGit.Editor
                 }
             }
 
-            GitCommandResult raw = ReadRawCommits(replaced, infos);
+            GitCommandResult raw = ReadRawCommits(replaced, infos, objects);
             if (!raw.Success)
             {
                 return raw;
@@ -289,7 +298,7 @@ namespace Orbiters.UnitGit.Editor
             GitCommandResult written = stream.Enabled ? WriteThroughFastImport(stream, plan) : WriteThroughCommitTree(plan);
             if (written.Success)
             {
-                written = CheckWrittenCopies(plan);
+                written = CheckWrittenCopies(plan, objects);
             }
 
             if (!written.Success)
@@ -562,9 +571,8 @@ namespace Orbiters.UnitGit.Editor
         /// newest selected one) may differ. Any other difference stops the rewrite: no ref moves, the unreferenced objects
         /// are left to Git's garbage collection, and the commit and the part are named.
         /// </summary>
-        private GitCommandResult CheckWrittenCopies(IList<PlannedCommit> plan)
+        private GitCommandResult CheckWrittenCopies(IList<PlannedCommit> plan, UnitGitObjects objects)
         {
-            UnitGitObjects objects = UnitGitObjects.For(ProjectRoot);
             var bytes = new MemoryStream();
             foreach (PlannedCommit commit in plan)
             {
@@ -653,9 +661,8 @@ namespace Orbiters.UnitGit.Editor
 
         // Each commit's stored bytes, through the kept-alive cat-file (else a cat-file of its own): its headers, and its
         // message as stored.
-        private GitCommandResult ReadRawCommits(IList<string> hashes, IDictionary<string, CommitRewriteInfo> infos)
+        private GitCommandResult ReadRawCommits(IList<string> hashes, IDictionary<string, CommitRewriteInfo> infos, UnitGitObjects objects)
         {
-            UnitGitObjects objects = UnitGitObjects.For(ProjectRoot);
             var bytes = new MemoryStream();
             foreach (string hash in hashes)
             {

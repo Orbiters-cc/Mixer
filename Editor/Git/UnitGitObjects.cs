@@ -10,50 +10,33 @@ using Orbiters.Toolkit.Editor.Processes;
 namespace Orbiters.UnitGit.Editor
 {
     /// <summary>
-    /// Git objects (file versions, commits, trees) read through one kept-alive <c>git cat-file --batch</c> per repository
-    /// instead of one process per object. Only names that start with a full object id are asked this way
-    /// (<see cref="IsStable"/>): their answer can never change, while a long-lived process may keep an old index or HEAD.
-    /// Everything else, and anything the batch process fails on, goes through a process of its own. The processes stop after
-    /// a minute and a half unused, and at reload and quit.
+    /// Git objects (file versions, commits, trees) read through one <c>git cat-file --batch</c> (and --batch-check) for the
+    /// length of one operation, instead of one process per object. The caller opens it for its operation and disposes it at
+    /// the end, on every path: its processes are then stopped and waited for, so none outlives the operation (on Windows a
+    /// running Git keeps the repository's folder and the pack files it maps from being moved or deleted). Only names that
+    /// start with a full object id are asked this way (<see cref="IsStable"/>); anything else, and anything the batch
+    /// process fails on, goes through a process of its own.
     /// </summary>
-    internal sealed class UnitGitObjects
+    internal sealed class UnitGitObjects : IDisposable
     {
         private const int RequestTimeoutMilliseconds = 30000;
-        private const int IdleMilliseconds = 90000;
         private static readonly Regex StableName = new Regex(@"^(?:[0-9a-f]{40}|[0-9a-f]{64})(?:[\^~][0-9]*)*(?::|$)", RegexOptions.Compiled);
-        private static readonly object Sync = new object();
-        private static readonly Dictionary<string, UnitGitObjects> ByRoot = new Dictionary<string, UnitGitObjects>(StringComparer.OrdinalIgnoreCase);
-        private static Timer idleTimer;
 
         private readonly string root;
         private readonly object gate = new object();
         private readonly MemoryStream header = new MemoryStream();
         private EditorLiveProcess contents, info;
-        private long lastUse;
-
-        static UnitGitObjects()
-        {
-            EditorProcessRunner.OnStopping(StopAll);
-        }
+        private bool disposed;
 
         private UnitGitObjects(string root)
         {
             this.root = root;
         }
 
-        /// <summary>The reader of the repository at <paramref name="projectRoot"/>.</summary>
-        internal static UnitGitObjects For(string projectRoot)
+        /// <summary>A reader of the repository at <paramref name="projectRoot"/> for one operation: dispose it at its end.</summary>
+        internal static UnitGitObjects Open(string projectRoot)
         {
-            string key = Path.GetFullPath(projectRoot ?? string.Empty);
-            lock (Sync)
-            {
-                if (!ByRoot.TryGetValue(key, out UnitGitObjects objects))
-                {
-                    ByRoot[key] = objects = new UnitGitObjects(key);
-                    if (idleTimer == null) idleTimer = new Timer(_ => StopIdle(), null, IdleMilliseconds / 3, IdleMilliseconds / 3);
-                }
-                return objects;
-            }
+            return new UnitGitObjects(Path.GetFullPath(projectRoot ?? string.Empty));
         }
 
         /// <summary>
@@ -99,7 +82,7 @@ namespace Orbiters.UnitGit.Editor
             if (!IsStable(name)) return Answer.Failed;
             lock (gate)
             {
-                Interlocked.Exchange(ref lastUse, Stopwatch.GetTimestamp());
+                if (disposed) return Answer.Failed;
                 EditorLiveProcess process = withContents ? contents : info;
                 bool fresh = false;
                 if (process == null || process.IsDisposed || process.HasExited)
@@ -172,63 +155,15 @@ namespace Orbiters.UnitGit.Editor
             return null;
         }
 
-        private void Stop(bool onlyIdle)
+        /// <summary>Stops the processes and waits for them to end.</summary>
+        public void Dispose()
         {
-            if (!Monitor.TryEnter(gate)) return; // in use: not idle
-            try
+            lock (gate)
             {
-                double idle = (Stopwatch.GetTimestamp() - Interlocked.Read(ref lastUse)) * 1000d / Stopwatch.Frequency;
-                if (onlyIdle && idle < IdleMilliseconds) return;
+                disposed = true;
                 contents?.Dispose();
                 info?.Dispose();
                 contents = info = null;
-            }
-            finally
-            {
-                Monitor.Exit(gate);
-            }
-        }
-
-        /// <summary>Stops the readers of this repository now (before its folder is deleted or moved: they work in it).</summary>
-        internal static void Stop(string projectRoot)
-        {
-            string key = Path.GetFullPath(projectRoot ?? string.Empty);
-            UnitGitObjects objects;
-            lock (Sync)
-            {
-                if (!ByRoot.TryGetValue(key, out objects)) return;
-                ByRoot.Remove(key);
-            }
-            lock (objects.gate)
-            {
-                objects.contents?.Dispose();
-                objects.info?.Dispose();
-                objects.contents = objects.info = null;
-            }
-        }
-
-        private static void StopIdle()
-        {
-            UnitGitObjects[] all;
-            lock (Sync) all = new List<UnitGitObjects>(ByRoot.Values).ToArray();
-            foreach (UnitGitObjects objects in all) objects.Stop(true);
-        }
-
-        private static void StopAll()
-        {
-            UnitGitObjects[] all;
-            lock (Sync)
-            {
-                all = new List<UnitGitObjects>(ByRoot.Values).ToArray();
-                ByRoot.Clear();
-                idleTimer?.Dispose();
-                idleTimer = null;
-            }
-            // The lifetime stops the processes themselves right after; this only drops the references.
-            foreach (UnitGitObjects objects in all)
-            {
-                objects.contents = null;
-                objects.info = null;
             }
         }
     }
