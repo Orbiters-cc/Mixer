@@ -81,13 +81,26 @@ namespace Orbiters.Logger.Editor
         private int next;
         private int published;
         private bool verified;
+        private bool borrowed;
+        // Anchors came from a saved state: an empty one means it could not be read then.
+        private bool resumed;
+        // Both ends of the range, read from the console at the first slice (or given by Resume) and checked at every one.
+        private int endHash;
+        private int startHash;
+        private int startRow;
+        private bool ends;
+        private string endText;
+        // The row the measure last counted, and its hash: still there at the next slice, or another console.
+        private int lastMeasured = -1;
+        private int lastMeasuredHash;
         private int lastRead = -1;
         private int lastReadHash;
         private int lastSeconds = -1;
         private long lastTicks;
         private int dayOffset;
         // The measure: signatures seen (hashes), what they and the rows cost, and the day state counted back from now.
-        private HashSet<long> measuredSignatures;
+        // Each signature met and the cost counted for it (the largest of its rows' so far).
+        private Dictionary<long, long> measuredSignatures;
         private long measuredChars;
         private int measuredRows;
         private int measureNext;
@@ -146,13 +159,14 @@ namespace Orbiters.Logger.Editor
 
                 foreach (var (row, text) in anchors)
                 {
-                    if (row == to - 1)
+                    if (row == to - 1 && !string.IsNullOrEmpty(text))
                     {
                         return text;
                     }
                 }
 
-                return string.Empty;
+                // As read at the first slice (a fresh import's own anchor may have been unreadable as it started).
+                return endText ?? string.Empty;
             }
         }
 
@@ -199,6 +213,7 @@ namespace Orbiters.Logger.Editor
             history.startSeconds = (int)anchor.TimeOfDay.TotalSeconds;
             history.anchorIsRowDay = info.HistoryAnchorIsRowDay;
             history.firstAnchor = info.HistoryFirstAnchor;
+            history.resumed = true;
             if (info.HistoryMeasured)
             {
                 // Measured before the reload: the range starts at the first row that fit then.
@@ -251,8 +266,16 @@ namespace Orbiters.Logger.Editor
                 return Publish(store, budgetMs, clock);
             }
 
-            // Held until the import ends (Finish), unless a Unity Console window may show the borrowed settings.
-            bool changed = Source.TakeAll();
+            // Borrowed once for the whole import and given back once (Finish, a failure, LogCapture before a domain reload):
+            // every borrow and give-back makes Unity filter its whole console again. A Unity Console window shown meanwhile
+            // shows every entry with timestamps until the import ends.
+            bool changed = false;
+            if (!borrowed)
+            {
+                changed = Source.TakeAll();
+                borrowed = true;
+            }
+
             try
             {
                 // Changing the console's filters costs Unity a pass over its entries: take bigger slices then.
@@ -291,18 +314,13 @@ namespace Orbiters.Logger.Editor
                 Error = exception;
                 return Finish(store, failed: true);
             }
-            finally
-            {
-                if (!Finished && Source.WindowMayShow)
-                {
-                    Source.ReleaseAll();
-                }
-            }
-
             return false;
         }
 
-        // The console still holds the rows this import reads: at least `to`, its anchors, and the last row read at its index.
+        // The console still holds the rows this import reads: at least `to`; the anchors it was given (an anchor that
+        // could not be read, empty, fails rather than matching anything; a fresh import's own end anchor may be empty,
+        // when Unity's console didn't show every entry as it started); both ends of the range as they were at the first
+        // slice; and the last row measured or read at its index.
         private bool SameConsole(IConsoleRows reader)
         {
             if (reader == null || reader.Count < to)
@@ -314,25 +332,35 @@ namespace Orbiters.Logger.Editor
             {
                 foreach (var (row, text) in anchors)
                 {
-                    if (row >= 0 && !string.IsNullOrEmpty(text) && !string.Equals(TextOf(reader, row, out _), text, StringComparison.Ordinal))
+                    if (row < 0)
+                    {
+                        continue;
+                    }
+
+                    if (string.IsNullOrEmpty(text) ? resumed : !string.Equals(TextOf(reader, row, out _), text, StringComparison.Ordinal))
                     {
                         return false;
                     }
                 }
 
                 verified = true;
-                return true;
             }
 
-            foreach (var (row, text) in anchors)
+            if (!ends)
             {
-                if (row >= 0 && !string.IsNullOrEmpty(text) && !string.Equals(TextOf(reader, row, out _), text, StringComparison.Ordinal))
-                {
-                    return false;
-                }
+                startRow = from;
+                startHash = RowHash(reader, startRow);
+                endHash = RowHash(reader, to - 1);
+                endText = TextOf(reader, to - 1, out _);
+                ends = true;
+            }
+            else if (RowHash(reader, startRow) != startHash || RowHash(reader, to - 1) != endHash)
+            {
+                return false;
             }
 
-            return lastRead < 0 || RowHash(reader, lastRead) == lastReadHash;
+            return (lastRead < 0 || RowHash(reader, lastRead) == lastReadHash) &&
+                   (lastMeasured < 0 || RowHash(reader, lastMeasured) == lastMeasuredHash);
         }
 
         private static string TextOf(IConsoleRows reader, int row, out int mode)
@@ -348,7 +376,8 @@ namespace Orbiters.Logger.Editor
         {
             if (measuredSignatures == null)
             {
-                measuredSignatures = new HashSet<long>();
+                // Sized once from the rows (bounded): it never rehashes while measuring.
+                measuredSignatures = new Dictionary<long, long>(Math.Min(to - from, 1 << 20));
                 measureNext = to;
                 var now = Now;
                 measuredDay = now.Date;
@@ -357,7 +386,6 @@ namespace Orbiters.Logger.Editor
             long margin = store.MaxTextChars / 8;
             long charRoom = store.MaxTextChars - margin - store.Texts.TotalChars;
             long rowRoom = store.MaxOccurrences - store.MaxOccurrences / 8 - (long)store.Total;
-            int limit = store.TextLimit;
             int nowSeconds = (int)Now.TimeOfDay.TotalSeconds;
             long chars = 0;
             bool first = true;
@@ -377,35 +405,37 @@ namespace Orbiters.Logger.Editor
                     text = lines;
                 }
 
-                long cost = 0;
                 var variant = UnityConsole.VariantOf(mode);
                 long signature = ((long)TextTable.Hash(text) << 8) ^ (long)variant;
-                if (!measuredSignatures.Contains(signature))
+                // Going back, a signature's last row met is the oldest in the range so far: the one the forward import
+                // would keep for it if the range started here. Its cost replaces what was counted when it is more (the
+                // largest is kept: conservative).
+                long cost;
+                if (reader.TryRead(row, out var entry))
                 {
-                    long condition = text.Length;
-                    long stack = 0;
-                    if (reader.TryRead(row, out var entry))
-                    {
-                        condition = entry.Condition?.Length ?? 0;
-                        stack = LogVariants.IsCompile(variant) ? 0 : entry.Stack.Length;
-                    }
-
-                    // Its texts and their stripped copies, as the store cuts them, and a little for what it derives.
-                    cost = 2 * (Math.Min(condition, limit) + Math.Min(stack, limit)) + 64;
-                    chars += condition + stack;
+                    string stack = LogVariants.IsCompile(variant) ? string.Empty : entry.Stack;
+                    cost = store.InternCost(entry.Condition, stack, entry.File);
+                    chars += (entry.Condition?.Length ?? 0) + (long)stack.Length;
+                }
+                else
+                {
+                    cost = store.InternCost(text, string.Empty, null);
+                    chars += text.Length;
                 }
 
-                if (measuredChars + cost > charRoom || measuredRows + 1 > rowRoom)
+                measuredSignatures.TryGetValue(signature, out long counted);
+                long extra = Math.Max(0, cost - counted);
+                if (measuredChars + extra > charRoom || measuredRows + 1 > rowRoom)
                 {
                     // This row and the older ones don't fit: the import starts after it.
                     StartAt(measureNext, reader);
                     return;
                 }
 
-                if (cost > 0)
+                if (extra > 0)
                 {
-                    measuredSignatures.Add(signature);
-                    measuredChars += cost;
+                    measuredSignatures[signature] = counted + extra;
+                    measuredChars += extra;
                 }
 
                 measuredRows++;
@@ -426,6 +456,8 @@ namespace Orbiters.Logger.Editor
                 }
 
                 measureNext = row;
+                lastMeasured = row;
+                lastMeasuredHash = TextTable.Hash(lines) ^ mode;
             }
 
             StartAt(from, reader);
@@ -471,7 +503,13 @@ namespace Orbiters.Logger.Editor
 
         private bool Publish(LogStore store, double budgetMs, Stopwatch clock)
         {
-            Source.ReleaseAll();
+            if (borrowed)
+            {
+                // Unity's console is not read any more.
+                Source.ReleaseAll();
+                borrowed = false;
+            }
+
             bool first = true;
             while (store.StagedCount > 0)
             {
@@ -581,6 +619,7 @@ namespace Orbiters.Logger.Editor
             Finished = true;
             Failed = failed;
             Source.ReleaseAll();
+            borrowed = false;
             if (failed && placement == Placement.Before)
             {
                 // Rows already in front stay; staged ones go (their console is gone or changed).

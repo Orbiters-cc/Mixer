@@ -440,13 +440,13 @@ namespace Orbiters.Logger.Editor.Tests
             // Now: shortly after the last row (the console's rows crossed midnight).
             import.Now = EditorStart.Date.AddDays(1).AddSeconds(seconds + 60);
 
-            // Where it should start: the newest rows whose texts (and stripped copies) fit the budget less an eighth.
+            // Where it should start: the newest rows whose cost (the store's own InternCost) fits the budget less an eighth.
             long room = store.MaxTextChars - store.MaxTextChars / 8 - store.Texts.TotalChars;
             long used = 0;
             int expected = rows.Count;
-            while (expected > 0 && used + 2 * rows[expected - 1].Condition.Length + 64 <= room)
+            while (expected > 0 && used + store.InternCost(rows[expected - 1].Condition, string.Empty, null) <= room)
             {
-                used += 2 * rows[expected - 1].Condition.Length + 64;
+                used += store.InternCost(rows[expected - 1].Condition, string.Empty, null);
                 expected--;
             }
 
@@ -477,6 +477,73 @@ namespace Orbiters.Logger.Editor.Tests
                 Assert.AreEqual(whole.TimeAt(whole.FirstId + expected + k), store.TimeAt(store.FirstId + k), "row " + (expected + k));
                 Assert.AreEqual(rows[expected + k].Condition, store.Texts[store.Message(store.MessageAt(store.FirstId + k)).Text]);
             }
+        }
+
+        // Old long messages followed by newer short ones sharing their first two lines: the import keeps the oldest row
+        // of each (the long one), so the measure must count that one, not the newest it meets first.
+        [Test]
+        public void TheMeasureCountsTheRowTheImportKeeps()
+        {
+            var rows = new List<Row>();
+            int seconds = 36000;
+            for (int k = 0; k < 30; k++)
+            {
+                rows.Add(new Row { Condition = "Sig " + k + " first\nSig " + k + " second\n" + new string('x', 8000), Seconds = seconds++ });
+            }
+
+            for (int i = 0; i < 600; i++)
+            {
+                rows.Add(i % 2 == 0
+                    ? new Row { Condition = "Sig " + (i / 2 % 30) + " first\nSig " + (i / 2 % 30) + " second\nshort " + i, Seconds = seconds++ }
+                    : new Row { Condition = "Filler " + i + " " + new string('f', 400), Seconds = seconds++ });
+            }
+
+            var store = new LogStore(LogStore.HistoryRoom) { MaxTextChars = 1 << 18, CompactInBackground = true };
+            var import = NewImport(rows, 0, rows.Count);
+            import.Now = EditorStart.Date.AddDays(1).AddHours(12);
+            int compactions = store.CompactionsStarted;
+            int updates = 0;
+            while (!import.Step(store, 0.05d))
+            {
+                Assert.LessOrEqual(store.Texts.TotalChars, store.TextCeiling, "after update " + updates);
+                Assert.Less(++updates, 100_000);
+            }
+
+            Assert.IsFalse(import.Failed);
+            Assert.AreEqual(compactions, store.CompactionsStarted, "no compaction started");
+            Assert.LessOrEqual(store.Texts.TotalChars, store.MaxTextChars, "within the budget: nothing to trim");
+            Assert.AreEqual(rows.Count - import.From, store.Count, "every row read is in the store");
+        }
+
+        // A console cleared and refilled to the same count, ending with the same row, between two slices of a fresh import
+        // (no Resume): the import fails cleanly, while measuring and while reading.
+        [Test]
+        public void AConsoleRefilledWithTheSameCountAndLastRowFails([Values(false, true)] bool reading)
+        {
+            var console = RandomConsole(11);
+            var source = new Source(console);
+            var store = new LogStore(LogStore.HistoryRoom);
+            var import = new ConsoleHistory(0, console.Count, ConsoleHistory.Placement.Before, 1000) { Source = source, EditorStart = EditorStart };
+            int updates = reading ? console.Count + 10 : 10;
+            for (int update = 0; update < updates; update++)
+            {
+                Assert.IsFalse(import.Step(store, 0d));
+            }
+
+            Assert.AreEqual(reading, store.StagedCount > 0, reading ? "rows are being read" : "still measuring");
+            var other = RandomConsole(12);
+            while (other.Count < console.Count)
+            {
+                other.AddRange(RandomConsole(13 + other.Count));
+            }
+
+            other = other.GetRange(0, console.Count);
+            other[other.Count - 1] = console[console.Count - 1];
+            source.RowList = other;
+            Assert.IsTrue(import.Step(store, 1e9));
+            Assert.IsTrue(import.Failed, "another console's rows are never combined with these");
+            Assert.AreEqual(0, store.StagedCount);
+            Assert.AreEqual(0, store.Count);
         }
 
         // Live logs flooding during an over-budget import: the safety net (trim, synchronous compaction) keeps the ceiling,

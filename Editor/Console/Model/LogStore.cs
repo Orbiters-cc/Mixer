@@ -393,6 +393,21 @@ namespace Orbiters.Logger.Editor
             return Append(time, Intern(condition, stack, variant), occurrenceFlags);
         }
 
+        /// <summary>
+        /// At most what interning a new message with these texts adds to <see cref="Texts"/> (the history import's measure
+        /// uses it, so the two cannot drift apart): the text and the stack as <see cref="Intern"/> cuts them and their
+        /// stripped copies, the group key and its copy (never longer than the text), and the derived file and call-site
+        /// texts with their copies (a path and a "method · file:line" taken from the file given or from the stack, never
+        /// longer than the longer of the two, plus a line number and separators).
+        /// </summary>
+        internal long InternCost(string condition, string stack, string file)
+        {
+            long text = Math.Min(condition?.Length ?? 0, TextLimit);
+            long frames = Math.Min(stack?.Length ?? 0, TextLimit);
+            long path = Math.Min(file?.Length ?? 0, TextLimit);
+            return 2 * text + 2 * frames + 2 * text + 4 * (Math.Max(path, frames) + 32);
+        }
+
         /// <summary>The id of the message with this text, stack trace and type, created when new.</summary>
         public int Intern(string condition, string stack, LogVariant variant, int assembly = 0, string file = null, int line = 0, int column = 0)
         {
