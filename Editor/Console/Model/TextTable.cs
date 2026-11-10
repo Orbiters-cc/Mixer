@@ -122,6 +122,18 @@ namespace Orbiters.Logger.Editor
         /// <summary>True when the text is in memory (not waiting in the session file).</summary>
         internal bool IsLoaded(int id) => id >= 0 && id < count && Volatile.Read(ref raw[id]) != null;
 
+        /// <summary>A text's length without reading it back from the session file (any thread).</summary>
+        internal int LengthOf(int id)
+        {
+            if (id <= 0 || id >= count)
+            {
+                return 0;
+            }
+
+            string text = Volatile.Read(ref Volatile.Read(ref raw)[id]);
+            return text != null ? text.Length : file != null && id < fileCount ? lengths[id] : 0;
+        }
+
         public int Intern(string text) => Add(text, null, true);
 
         /// <summary>

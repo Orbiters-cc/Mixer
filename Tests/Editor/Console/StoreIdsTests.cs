@@ -445,6 +445,48 @@ namespace Orbiters.Logger.Editor.Tests
             AssertSameLogs(reference, store);
         }
 
+        // Ten late messages of 100,000 characters: no landing step copies more than its character budget (checked before
+        // each adoption, the last one included), and the compaction still lands over several steps.
+        [Test]
+        public void LargeLateMessagesNeverPassTheLandingsCharacterBudget()
+        {
+            var reference = new LogStore(LogStore.HistoryRoom) { AllowCompaction = false };
+            var store = new LogStore(LogStore.HistoryRoom) { CompactInBackground = true };
+            Fill(reference);
+            Fill(store);
+            reference.Trim(1000);
+            store.Trim(1000);
+            store.WaitForCompactionWorker();
+            string large = new string('L', 100_000);
+            for (int i = 0; i < 10; i++)
+            {
+                reference.Add(300_000 + i, "Late " + i + " " + large, string.Empty, LogVariant.Log);
+                store.Add(300_000 + i, "Late " + i + " " + large, string.Empty, LogVariant.Log);
+            }
+
+            int steps = 0;
+            while (store.Compacting)
+            {
+                // The editor's update, without waiting for the worker first: a landing attempt each time it is idle.
+                store.StepMaintenance();
+                Assert.LessOrEqual(store.LastLandingChars, LogStore.LandingChars, "step " + steps);
+                if (steps == 0)
+                {
+                    Assert.IsTrue(store.Compacting, "a million characters don't fit one landing");
+                    Assert.GreaterOrEqual(store.LastLandingChars, 100_000, "what fits is adopted (and stays adopted)");
+                }
+
+                if (store.Compacting)
+                {
+                    store.WaitForCompactionWorker();
+                }
+
+                Assert.Less(++steps, 1000);
+            }
+
+            AssertSameLogs(reference, store);
+        }
+
         // The budget never depends on a compaction in the background: a flood of distinct logs whose compactions keep being
         // cancelled (count trims) or overtaken holds at most TextCeiling characters at any time.
         [Test]
