@@ -13,9 +13,11 @@ namespace Orbiters.Logger.Editor
     /// textindex-G.bin  [offset int64][hash int32] per text id from 1, appended
     /// times-R.bin      int64 per occurrence, appended                                    (R = LogStore.RowsGeneration)
     /// owners-R.bin     int32 per occurrence, appended
-    /// head.bin         everything else (rewritten), with how much of each file is valid: written last, atomically
+    /// head-N.bin       everything else (rewritten), with how much of each file is valid: written last, under a new
+    ///                  number (a new file moved into place), the older head deleted after it
     /// </code>
-    /// A save that stops half way leaves the previous head, which ignores the longer tails (they are cut at the next save).
+    /// Only the newest head counts. A save that stops half way leaves the previous head, which ignores the longer tails
+    /// (they are cut at the next save). Nothing is ever replaced in place, so no file system can lose a committed head.
     /// A new generation starts new files; the head names the ones it uses and the others are deleted after it. Texts are
     /// read lazily: a row, the details or a search reads the ones it needs (<see cref="TextTable.Restore"/>).
     /// <para>
@@ -26,10 +28,14 @@ namespace Orbiters.Logger.Editor
     internal sealed class SessionFile
     {
         private const int Magic = 0x53474F4C; // "LOGS"
-        private const int FormatVersion = 2;
-        private const int IndexRecord = sizeof(long) + sizeof(int);
+        private const int FormatVersion = 3;
+        // A text's offset, hash and length.
+        private const int IndexRecord = sizeof(long) + sizeof(int) + sizeof(int);
         private const int ChunkBytes = 1 << 20;
-        private const string HeadName = "head.bin";
+        // A head is a few hundred bytes per message: one this big is damaged (or not ours).
+        private const long MaxHeadBytes = 1L << 30;
+        private const int MessageRecord = 12 * sizeof(int) + 2;
+        private const int GroupRecord = 6 * sizeof(int) + 1;
 
         private readonly string directory;
         // What the files hold, as of the last head this domain wrote or read.
@@ -38,6 +44,7 @@ namespace Orbiters.Logger.Editor
         private long textBytes;
         private long rowsGeneration;
         private int rowsSaved;
+        private int headNumber;
         private SessionTextFile textFile;
 
         public SessionFile(string directory)
@@ -45,7 +52,28 @@ namespace Orbiters.Logger.Editor
             this.directory = directory;
         }
 
-        private string HeadPath => Path.Combine(directory, HeadName);
+        private string HeadPath(int number) => Path.Combine(directory, "head-" + number.ToString("D10") + ".bin");
+
+        // The newest head's number, 0 when there is none.
+        private int NewestHead()
+        {
+            int newest = 0;
+            if (!System.IO.Directory.Exists(directory))
+            {
+                return 0;
+            }
+
+            foreach (string path in System.IO.Directory.GetFiles(directory, "head-*.bin"))
+            {
+                string name = Path.GetFileNameWithoutExtension(path);
+                if (int.TryParse(name.Substring(5), out int number) && number > newest)
+                {
+                    newest = number;
+                }
+            }
+
+            return newest;
+        }
         private string TextsPath(long generation) => Path.Combine(directory, "texts-" + generation.ToString("x16") + ".bin");
         private string IndexPath(long generation) => Path.Combine(directory, "textindex-" + generation.ToString("x16") + ".bin");
         private string TimesPath(long generation) => Path.Combine(directory, "times-" + generation.ToString("x16") + ".bin");
@@ -75,15 +103,19 @@ namespace Orbiters.Logger.Editor
 
             SaveRows(store, count);
 
-            string head = HeadPath;
-            string temporary = head + ".tmp";
+            // A new name, moved into place once whole: the previous head stays until then (and if anything fails).
+            int number = Math.Max(headNumber, NewestHead()) + 1;
+            string temporary = Path.Combine(directory, "head.tmp");
             using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16))
             using (var writer = new BinaryWriter(stream))
             {
                 WriteHead(writer, store, info, processId, editorStart, textCount, count);
+                writer.Flush();
+                stream.Flush(true);
             }
 
-            Replace(temporary, head);
+            File.Move(temporary, HeadPath(number));
+            headNumber = number;
             DeleteOthers();
         }
 
@@ -92,6 +124,12 @@ namespace Orbiters.Logger.Editor
             if (textsSaved > textCount)
             {
                 throw new InvalidDataException("the text table shrank");
+            }
+
+            if (texts.Faulted)
+            {
+                // A text could not be read back: never save the placeholder as if it were the log.
+                throw new InvalidDataException("a text could not be read back");
             }
 
             using (var data = OpenAppend(TextsPath(textGeneration), textBytes))
@@ -119,6 +157,7 @@ namespace Orbiters.Logger.Editor
 
                     WriteLong(record, 0, offset);
                     WriteInt(record, 8, texts.HashAt(id));
+                    WriteInt(record, 12, text.Length);
                     index.Write(record, 0, IndexRecord);
                     offset += length + 4;
                 }
@@ -271,7 +310,8 @@ namespace Orbiters.Logger.Editor
             textGeneration = rowsGeneration = 0;
             textsSaved = rowsSaved = 0;
             textBytes = 0;
-            if (!File.Exists(HeadPath))
+            headNumber = NewestHead();
+            if (headNumber == 0)
             {
                 return null;
             }
@@ -305,7 +345,14 @@ namespace Orbiters.Logger.Editor
         {
             info = null;
             problem = null;
-            using (var reader = new BinaryReader(new MemoryStream(File.ReadAllBytes(HeadPath))))
+            string headPath = HeadPath(headNumber);
+            if (new FileInfo(headPath).Length > MaxHeadBytes)
+            {
+                problem = "the head is too big";
+                return null;
+            }
+
+            using (var reader = new BinaryReader(new MemoryStream(File.ReadAllBytes(headPath))))
             {
                 if (reader.ReadInt32() != Magic || reader.ReadInt32() != FormatVersion)
                 {
@@ -323,10 +370,10 @@ namespace Orbiters.Logger.Editor
                 var loaded = new SnapshotInfo
                 {
                     UnityRows = reader.ReadInt32(),
-                    UnityAnchor = reader.ReadString(),
+                    UnityAnchor = ReadText(reader),
                     HistoryFrom = reader.ReadInt32(),
                     HistoryTo = reader.ReadInt32(),
-                    HistoryAnchor = reader.ReadString()
+                    HistoryAnchor = ReadText(reader)
                 };
                 var grouping = (GroupingMode)reader.ReadByte();
                 int maxOccurrences = reader.ReadInt32();
@@ -335,22 +382,37 @@ namespace Orbiters.Logger.Editor
                 long bytes = reader.ReadInt64();
                 long rows = reader.ReadInt64();
                 int count = reader.ReadInt32();
-                if (textCount < 1 || bytes < 0 || count < 0)
+                // Every count is checked against the bytes that must hold it before anything is allocated for it.
+                if (textCount < 1 || bytes < 0 || count < 0 || !Fits(reader, count, 1) ||
+                    FileLength(IndexPath(texts)) < (textCount - 1L) * IndexRecord || FileLength(TextsPath(texts)) < bytes ||
+                    FileLength(TimesPath(rows)) < (long)count * sizeof(long) || FileLength(OwnersPath(rows)) < (long)count * sizeof(int))
                 {
-                    problem = "bad counts";
+                    problem = "the files are shorter than the head says";
                     return null;
                 }
 
                 var store = new LogStore(64) { MaxOccurrences = maxOccurrences };
                 int sourceCount = reader.ReadInt32();
+                if (!Fits(reader, sourceCount, 2))
+                {
+                    problem = "bad source count";
+                    return null;
+                }
+
                 for (int i = 0; i < sourceCount; i++)
                 {
-                    string key = reader.ReadString();
-                    store.Sources.Restore(key, reader.ReadString());
+                    string key = ReadText(reader);
+                    store.Sources.Restore(key, ReadText(reader));
                 }
 
                 int messageCount = reader.ReadInt32();
-                var messages = new LogMessage[Math.Max(256, messageCount + messageCount / 4)];
+                if (!Fits(reader, messageCount, MessageRecord))
+                {
+                    problem = "bad message count";
+                    return null;
+                }
+
+                var messages = new LogMessage[Capacity(messageCount, 256)];
                 for (int i = 0; i < messageCount; i++)
                 {
                     messages[i] = new LogMessage
@@ -374,7 +436,13 @@ namespace Orbiters.Logger.Editor
                 }
 
                 int groupCount = reader.ReadInt32();
-                var groups = new LogGroup[Math.Max(256, groupCount + groupCount / 4)];
+                if (!Fits(reader, groupCount, GroupRecord))
+                {
+                    problem = "bad group count";
+                    return null;
+                }
+
+                var groups = new LogGroup[Capacity(groupCount, 256)];
                 for (int i = 0; i < groupCount; i++)
                 {
                     groups[i] = new LogGroup
@@ -389,7 +457,13 @@ namespace Orbiters.Logger.Editor
                     };
                 }
 
-                int capacity = Math.Max(4096, count + count / 4);
+                if (!Fits(reader, count, 1))
+                {
+                    problem = "bad occurrence count";
+                    return null;
+                }
+
+                int capacity = Capacity(count, 4096);
                 var flags = new byte[capacity];
                 if (reader.Read(flags, 0, count) != count)
                 {
@@ -397,6 +471,12 @@ namespace Orbiters.Logger.Editor
                 }
 
                 int contextCount = reader.ReadInt32();
+                if (!Fits(reader, contextCount, 8))
+                {
+                    problem = "bad context count";
+                    return null;
+                }
+
                 var contexts = new Dictionary<int, int>(Math.Max(0, contextCount));
                 for (int i = 0; i < contextCount; i++)
                 {
@@ -405,6 +485,12 @@ namespace Orbiters.Logger.Editor
                 }
 
                 int eventCount = reader.ReadInt32();
+                if (!Fits(reader, eventCount, 9))
+                {
+                    problem = "bad event count";
+                    return null;
+                }
+
                 var events = new List<SessionEvent>(Math.Max(0, eventCount));
                 for (int i = 0; i < eventCount; i++)
                 {
@@ -449,7 +535,8 @@ namespace Orbiters.Logger.Editor
 
                 var offsets = new long[textCount];
                 var hashes = new int[textCount];
-                if (!ReadIndex(IndexPath(texts), offsets, hashes, textCount, bytes))
+                var lengths = new int[textCount];
+                if (!ReadIndex(IndexPath(texts), offsets, hashes, lengths, textCount, bytes))
                 {
                     file.Close();
                     problem = "the texts' index is incomplete";
@@ -457,7 +544,7 @@ namespace Orbiters.Logger.Editor
                 }
 
                 // Each text is its length (4 bytes) and two bytes per UTF-16 unit.
-                var table = TextTable.Restore(texts, textCount, (bytes - 4L * (textCount - 1)) / 2, hashes, offsets, file);
+                var table = TextTable.Restore(texts, textCount, (bytes - 4L * (textCount - 1)) / 2, hashes, offsets, lengths, file);
                 store.Restore(table, rows, times, owners, flags, count, messages, messageCount, groups, groupCount, grouping, contexts, events);
 
                 textFile = file;
@@ -523,6 +610,52 @@ namespace Orbiters.Logger.Editor
 
         private static bool IsText(int id, int textCount) => (uint)id < (uint)textCount;
 
+        // Whether `count` records of `recordBytes` each can still be in the head.
+        private static bool Fits(BinaryReader reader, long count, long recordBytes) =>
+            count >= 0 && count <= (reader.BaseStream.Length - reader.BaseStream.Position) / Math.Max(1L, recordBytes);
+
+        // Room for a quarter more, without overflowing.
+        private static int Capacity(int count, int minimum) => (int)Math.Max(minimum, Math.Min(int.MaxValue - 64L, count + (long)count / 4));
+
+        private static long FileLength(string path)
+        {
+            try
+            {
+                return File.Exists(path) ? new FileInfo(path).Length : 0L;
+            }
+            catch (Exception)
+            {
+                return 0L;
+            }
+        }
+
+        // BinaryWriter's string format, with its length checked against the head before anything is allocated.
+        private static string ReadText(BinaryReader reader)
+        {
+            int length = 0;
+            for (int shift = 0; ; shift += 7)
+            {
+                if (shift > 28)
+                {
+                    throw new InvalidDataException("bad text length");
+                }
+
+                byte part = reader.ReadByte();
+                length |= (part & 0x7F) << shift;
+                if ((part & 0x80) == 0)
+                {
+                    break;
+                }
+            }
+
+            if (!Fits(reader, length, 1))
+            {
+                throw new InvalidDataException("bad text length");
+            }
+
+            return System.Text.Encoding.UTF8.GetString(reader.ReadBytes(length));
+        }
+
         private static string CheckRows(int[] owners, int count, LogMessage[] messages, int messageCount)
         {
             for (int i = 0; i < count; i++)
@@ -536,7 +669,8 @@ namespace Orbiters.Logger.Editor
             return null;
         }
 
-        private static bool ReadIndex(string path, long[] offsets, int[] hashes, int textCount, long bytes)
+        // Every record must start where the one before ends, and the last end where the texts file's valid part does.
+        private static bool ReadIndex(string path, long[] offsets, int[] hashes, int[] lengths, int textCount, long bytes)
         {
             long length = (long)(textCount - 1) * IndexRecord;
             var data = new byte[Math.Max(0, length)];
@@ -545,22 +679,28 @@ namespace Orbiters.Logger.Editor
                 return false;
             }
 
-            long previous = -1;
+            long next = 0;
             for (int id = 1; id < textCount; id++)
             {
                 int at = (id - 1) * IndexRecord;
                 long offset = BitConverter.ToInt64(data, at);
-                if (offset <= previous || offset + 4 > bytes)
+                int textLength = BitConverter.ToInt32(data, at + 12);
+                if (offset != next || textLength < 0)
                 {
                     return false;
                 }
 
                 offsets[id] = offset;
                 hashes[id] = BitConverter.ToInt32(data, at + 8);
-                previous = offset;
+                lengths[id] = textLength;
+                next = offset + 4 + 2L * textLength;
+                if (next > bytes)
+                {
+                    return false;
+                }
             }
 
-            return true;
+            return next == bytes;
         }
 
         // The first `bytes` of the file into the array; false when the file is shorter.
@@ -628,39 +768,12 @@ namespace Orbiters.Logger.Editor
             WriteInt(buffer, at + 4, (int)(value >> 32));
         }
 
-        private static void Replace(string source, string destination)
-        {
-            if (File.Exists(destination))
-            {
-                try
-                {
-                    // Atomic on NTFS: a reader sees the old head or the new one, never half of one.
-                    File.Replace(source, destination, null);
-                    return;
-                }
-                catch (PlatformNotSupportedException)
-                {
-                }
-                catch (IOException)
-                {
-                    // A file system without it: the old head goes first, so a stop in between finds no head at all.
-                }
-
-                File.Delete(destination);
-                File.Move(source, destination);
-            }
-            else
-            {
-                File.Move(source, destination);
-            }
-        }
-
         // Files of earlier generations. One still open (a worker reading an old table) goes at a later save.
         private void DeleteOthers()
         {
             var keep = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
             {
-                HeadName,
+                Path.GetFileName(HeadPath(headNumber)),
                 Path.GetFileName(TextsPath(textGeneration)),
                 Path.GetFileName(IndexPath(textGeneration)),
                 Path.GetFileName(TimesPath(rowsGeneration)),
@@ -700,10 +813,12 @@ namespace Orbiters.Logger.Editor
             textBytes = 0;
             try
             {
-                if (File.Exists(HeadPath))
+                foreach (string head in System.IO.Directory.Exists(directory) ? System.IO.Directory.GetFiles(directory, "head-*.bin") : new string[0])
                 {
-                    File.Delete(HeadPath);
+                    File.Delete(head);
                 }
+
+                headNumber = 0;
 
                 if (System.IO.Directory.Exists(directory))
                 {
@@ -757,8 +872,11 @@ namespace Orbiters.Logger.Editor
         /// <summary>Texts that could not be read back (shown empty).</summary>
         public int Failures { get; private set; }
 
-        /// <summary>The text at <paramref name="offset"/>, or null when it can't be read. Callers hold the lock.</summary>
-        public string Read(long offset)
+        /// <summary>
+        /// The text at <paramref name="offset"/>, or null when it can't be read or its record is not the
+        /// <paramref name="expected"/> length the index gives. Callers hold the lock.
+        /// </summary>
+        public string Read(long offset, int expected)
         {
             try
             {
@@ -777,7 +895,7 @@ namespace Orbiters.Logger.Editor
 
                 int length = BitConverter.ToInt32(buffer, 0);
                 long bytes = (long)length * 2;
-                if (length < 0 || offset + 4 + bytes > valid)
+                if (length != expected || length < 0 || offset + 4 + bytes > valid)
                 {
                     Failures++;
                     return null;

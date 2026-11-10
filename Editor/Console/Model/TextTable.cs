@@ -27,21 +27,24 @@ namespace Orbiters.Logger.Editor
         // Texts still in the session file: ids below fileCount whose raw entry is null.
         private readonly SessionTextFile file;
         private readonly long[] offsets;
+        private readonly int[] lengths;
         private readonly int fileCount;
+        private volatile bool faulted;
         private long totalChars;
         // The last few strings interned, by reference: a flood of one log hands the same instances again (see LogCapture).
         private readonly string[] recentTexts = new string[4];
         private readonly int[] recentIds = new int[4];
         private int recentNext;
 
-        public TextTable(int capacity = 1024) : this(NewGeneration(), Math.Max(capacity, 16), null, null, 0)
+        public TextTable(int capacity = 1024) : this(NewGeneration(), Math.Max(capacity, 16), null, null, null, 0)
         {
             raw[0] = string.Empty;
             count = 1;
         }
 
-        private TextTable(long generation, int capacity, SessionTextFile file, long[] offsets, int fileCount)
+        private TextTable(long generation, int capacity, SessionTextFile file, long[] offsets, int[] lengths, int fileCount)
         {
+            this.lengths = lengths;
             Generation = generation;
             raw = new string[capacity];
             plain = new string[capacity];
@@ -56,9 +59,11 @@ namespace Orbiters.Logger.Editor
         /// A table whose first <paramref name="textCount"/> texts are in a session file: <paramref name="textHashes"/>
         /// and <paramref name="textOffsets"/> by id (index 0 unused).
         /// </summary>
-        internal static TextTable Restore(long generation, int textCount, long textChars, int[] textHashes, long[] textOffsets, SessionTextFile source)
+        internal static TextTable Restore(long generation, int textCount, long textChars, int[] textHashes, long[] textOffsets, int[] textLengths,
+            SessionTextFile source)
         {
-            var table = new TextTable(generation, Math.Max(16, textCount + textCount / 4), source, textOffsets, textCount);
+            var table = new TextTable(generation, (int)Math.Max(16, Math.Min(int.MaxValue - 64L, textCount + (long)textCount / 4)), source, textOffsets,
+                textLengths, textCount);
             table.raw[0] = string.Empty;
             Array.Copy(textHashes, table.hashes, textCount);
             for (int id = 1; id < textCount; id++)
@@ -75,6 +80,15 @@ namespace Orbiters.Logger.Editor
         public long Generation { get; }
 
         public int Count => count;
+
+        /// <summary>
+        /// A text could not be read back from the session file (damaged since it was loaded): it reads as a placeholder,
+        /// never cached, and the store must start over (LogCapture does, and says so).
+        /// </summary>
+        public bool Faulted => faulted;
+
+        /// <summary>What a text that could not be read back shows.</summary>
+        internal const string Unreadable = "[This log's text could not be read back after the script reload]";
 
         /// <summary>The length of every text together: what the table keeps alive.</summary>
         public long TotalChars => totalChars;
@@ -272,7 +286,14 @@ namespace Orbiters.Logger.Editor
                     return text;
                 }
 
-                text = file.Read(offsets[id]) ?? string.Empty;
+                text = file.Read(offsets[id], lengths[id]);
+                if (text == null || Hash(text) != hashes[id])
+                {
+                    // Damaged on disk: not cached, so nothing ever takes the placeholder for the log.
+                    faulted = true;
+                    return Unreadable;
+                }
+
                 // The plain text first: a reader that sees the raw text sees its plain text too.
                 var plainItems = Volatile.Read(ref plain);
                 Volatile.Write(ref plainItems[id], RichText.StripOrNull(text));

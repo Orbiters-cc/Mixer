@@ -255,6 +255,13 @@ namespace Orbiters.Logger.Editor
 
             try
             {
+                if (Store.Texts.Faulted)
+                {
+                    // The session file was damaged after it was read back: never show placeholders as logs.
+                    Debug.LogWarning("[Mixer console] Some logs from before the script reload could not be read back: the Mixer console starts again from Unity's console.");
+                    RebuildFromUnityConsole();
+                }
+
                 Drain(6d);
                 if (history != null && history.Step(Store, ImportBudget()))
                 {

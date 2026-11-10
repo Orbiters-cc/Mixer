@@ -185,7 +185,7 @@ namespace Orbiters.Logger.Editor.Tests
             Assert.IsNotNull(problem, "a cut texts file is a problem to report");
             File.WriteAllBytes(texts, whole);
 
-            string head = Path.Combine(folder, "head.bin");
+            string head = Directory.GetFiles(folder, "head-*.bin")[0];
             byte[] headBytes = File.ReadAllBytes(head);
             File.WriteAllBytes(head, Cut(headBytes, 3));
             Assert.IsNull(Fresh().Load(Process, Start, out _, out problem));
@@ -271,6 +271,71 @@ namespace Orbiters.Logger.Editor.Tests
             next.Save(loaded, Info(), Process, Start);
             next.Close();
             AssertSame(loaded, Load(Fresh()));
+        }
+
+        [Test]
+        public void ADamagedTextIsNeverTakenForALog()
+        {
+            var store = new LogStore();
+            store.Add(100, "First text", string.Empty, LogVariant.Log);
+            store.Add(200, "Second text", string.Empty, LogVariant.Log);
+            saving.Save(store, Info(), Process, Start);
+            saving.Close();
+
+            // The same length, other bytes: the second text's length prefix, then (separately) one of its characters.
+            string texts = Directory.GetFiles(folder, "texts-*.bin")[0];
+            byte[] whole = File.ReadAllBytes(texts);
+            int second = 4 + "First text".Length * 2;
+            foreach (int at in new[] { second, second + 6 })
+            {
+                var damaged = (byte[])whole.Clone();
+                damaged[at] ^= 0x5A;
+                File.WriteAllBytes(texts, damaged);
+                var session = Fresh();
+                var loaded = Load(session);
+                Assert.AreEqual("First text", loaded.Texts[loaded.Message(loaded.MessageAt(0)).Text]);
+                int text = loaded.Message(loaded.MessageAt(1)).Text;
+                Assert.AreEqual(TextTable.Unreadable, loaded.Texts[text]);
+                Assert.IsTrue(loaded.Texts.Faulted, "the store must start over");
+                Assert.IsFalse(loaded.Texts.IsLoaded(text), "the placeholder is never cached");
+                Assert.Throws<InvalidDataException>(() => session.Save(loaded, Info(), Process, Start), "and never saved");
+                session.Close();
+            }
+        }
+
+        [Test]
+        public void HugeCountsInADamagedHeadAllocateNothing()
+        {
+            var store = new LogStore();
+            store.Add(100, "First", string.Empty, LogVariant.Log);
+            saving.Save(store, Info(), Process, Start);
+            saving.Close();
+            string head = Directory.GetFiles(folder, "head-*.bin")[0];
+            byte[] bytes = File.ReadAllBytes(head);
+            // Every 4-byte field in turn set to a huge count: the load refuses, quickly, without running out of memory.
+            for (int at = 8; at + 4 <= bytes.Length; at += 4)
+            {
+                var damaged = (byte[])bytes.Clone();
+                BitConverter.GetBytes(400_000_000).CopyTo(damaged, at);
+                File.WriteAllBytes(head, damaged);
+                var watch = System.Diagnostics.Stopwatch.StartNew();
+                Fresh().Load(Process, Start, out _, out _);
+                Assert.Less(watch.ElapsedMilliseconds, 2000, "field at " + at);
+            }
+        }
+
+        [Test]
+        public void ANewHeadNeverReplacesTheOldOneInPlace()
+        {
+            var store = new LogStore();
+            store.Add(100, "First", string.Empty, LogVariant.Log);
+            saving.Save(store, Info(), Process, Start);
+            store.Add(200, "Second", string.Empty, LogVariant.Log);
+            saving.Save(store, Info(), Process, Start);
+            var heads = Directory.GetFiles(folder, "head-*.bin");
+            Assert.AreEqual(1, heads.Length, "the older head goes once the new one is in place");
+            StringAssert.EndsWith("head-0000000002.bin", heads[0]);
+            Assert.AreEqual(2, Load().Count);
         }
 
         [Test]

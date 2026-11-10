@@ -786,9 +786,10 @@ namespace Orbiters.Logger.Editor
         /// </summary>
         private bool CompactIfMostlyDead()
         {
-            if (pins > 0)
+            if (pins > 0 || Texts.Faulted)
             {
-                // An import holds message ids that have no occurrence yet.
+                // An import holds message ids that have no occurrence yet; or a text could not be read back, and copying
+                // it would keep its placeholder as if it were the log (LogCapture starts over instead).
                 return false;
             }
 
