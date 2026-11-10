@@ -282,6 +282,8 @@ namespace Orbiters.Logger.Editor
                     string path = CachePath(url);
                     Directory.CreateDirectory(Path.GetDirectoryName(path));
                     File.WriteAllText(path, json);
+                    // The revision beside it, so asking again never parses the whole copy.
+                    File.WriteAllText(RevisionPath(path), UnityEngine.JsonUtility.FromJson<ExplanationFile>(json)?.revision ?? string.Empty);
                     LogExplanations.SetRemote(entries);
                 }
                 else
@@ -300,13 +302,14 @@ namespace Orbiters.Logger.Editor
             }
         }
 
-        // The copy kept for the server in use, or none (the Mixer console's own list until the server answers).
+        // The copy kept for the server in use, or none (the Mixer console's own list until the server answers). Read
+        // with the Mixer console's own list when an explanation is first asked for, not here (every script reload).
         private static void LoadCache()
         {
             try
             {
                 string path = CachePath(Endpoint());
-                LogExplanations.SetRemote(File.Exists(path) ? KnownLogs.Parse(File.ReadAllText(path)) : null);
+                LogExplanations.SetRemoteFile(File.Exists(path) ? path : null);
             }
             catch (Exception)
             {
@@ -314,24 +317,22 @@ namespace Orbiters.Logger.Editor
             }
         }
 
+        // The revision of the kept copy, from the line saved beside it (none: the server sends its whole list).
         private static string CachedRevision(string url)
         {
             try
             {
-                string path = CachePath(url);
-                if (!File.Exists(path))
-                {
-                    return null;
-                }
-
-                var file = UnityEngine.JsonUtility.FromJson<ExplanationFile>(File.ReadAllText(path));
-                return file?.revision;
+                string path = RevisionPath(CachePath(url));
+                return File.Exists(path) && File.Exists(CachePath(url)) ? File.ReadAllText(path).Trim() : null;
             }
             catch (Exception)
             {
                 return null;
             }
         }
+
+        private static string RevisionPath(string cachePath) => Path.ChangeExtension(cachePath, ".revision");
+
 
         // One copy per server (production and a local development server keep their own), shared by every project.
         private static string CachePath(string url)

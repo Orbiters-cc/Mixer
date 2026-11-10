@@ -94,21 +94,23 @@ namespace Orbiters.Logger.Editor
             }
 
             Hooked.RemoveWhere(root => root.panel == null);
-            if (!ConsoleReplacement.Enabled)
-            {
-                return;
-            }
-
+            bool replace = ConsoleReplacement.Enabled;
             foreach (var type in types)
             {
                 foreach (var found in Resources.FindObjectsOfTypeAll(type))
                 {
                     if (found is EditorWindow window && window != null)
                     {
-                        Hook(window.rootVisualElement);
+                        // An SDK panel is open: uploads can start from it, so where they fail is reported from now on.
+                        SdkUploadErrors.EnsureHooked();
+                        if (replace)
+                        {
+                            Hook(window.rootVisualElement);
+                        }
                     }
                 }
             }
+
         }
 
         private static void Hook(VisualElement root)

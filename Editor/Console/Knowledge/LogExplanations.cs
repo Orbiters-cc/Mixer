@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Text.RegularExpressions;
 using System.Threading;
 
@@ -175,6 +176,8 @@ namespace Orbiters.Logger.Editor
         private static readonly List<LogExplanation> custom = new List<LogExplanation>();
         private static List<LogExplanation> local;
         private static List<LogExplanation> remote = new List<LogExplanation>();
+        // The kept copy of the server's list, read with the Mixer console's own on first use, not at every reload.
+        private static string remoteFile;
         private static readonly object gate = new object();
         // {name} in a text; names that start with a digit are numbered groups, left alone.
         private static readonly Regex Placeholder = new Regex(@"\{([^{}\d\s][^{}\s]*)\}", RegexOptions.CultureInvariant);
@@ -197,7 +200,25 @@ namespace Orbiters.Logger.Editor
             {
                 custom.RemoveAll(e => e.Id == explanation.Id);
                 custom.Add(explanation);
-                Rebuild();
+                RebuildIfLoaded();
+            }
+        }
+
+        /// <summary>
+        /// The server's list kept at <paramref name="path"/> (none when null): read and merged the first time an
+        /// explanation is asked for, so starting the editor parses nothing.
+        /// </summary>
+        internal static void SetRemoteFile(string path)
+        {
+            lock (gate)
+            {
+                remoteFile = path;
+                remote = new List<LogExplanation>();
+                if (local != null)
+                {
+                    ReadRemoteFile();
+                    Rebuild();
+                }
             }
         }
 
@@ -212,8 +233,9 @@ namespace Orbiters.Logger.Editor
 
             lock (gate)
             {
+                remoteFile = null;
                 remote = list;
-                Rebuild();
+                RebuildIfLoaded();
             }
         }
 
@@ -235,6 +257,7 @@ namespace Orbiters.Logger.Editor
             {
                 lock (gate)
                 {
+                    EnsureLoaded();
                     return remote.Count;
                 }
             }
@@ -346,17 +369,49 @@ namespace Orbiters.Logger.Editor
             }
 
             local = new List<LogExplanation>(KnownLogs.Load());
+            ReadRemoteFile();
             Rebuild();
+        }
+
+        private static void ReadRemoteFile()
+        {
+            string path = remoteFile;
+            remoteFile = null;
+            if (path == null)
+            {
+                return;
+            }
+
+            try
+            {
+                if (File.Exists(path))
+                {
+                    remote = new List<LogExplanation>(KnownLogs.Parse(File.ReadAllText(path)));
+                    foreach (var explanation in remote)
+                    {
+                        explanation.Origin = ExplanationOrigin.Remote;
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                // No usable copy: the Mixer console's own list until the server answers.
+            }
+        }
+
+        // Nothing to merge before the first use: EnsureLoaded builds the list then.
+        private static void RebuildIfLoaded()
+        {
+            if (local != null)
+            {
+                Rebuild();
+            }
         }
 
         // Package explanations first, then the ones bound to a tool's stack trace, then by priority, each group in the
         // order of its list (the server's order before the Mixer console's own).
         private static void Rebuild()
         {
-            if (local == null)
-            {
-                local = new List<LogExplanation>(KnownLogs.Load());
-            }
 
             var merged = new List<LogExplanation>(custom.Count + remote.Count + local.Count);
             var ids = new HashSet<string>(StringComparer.Ordinal);

@@ -565,7 +565,8 @@ namespace Orbiters.Logger.Editor
             }
 
             var profile = new TimingProfile { Kind = TimingKind.ScriptReload, TotalMilliseconds = total };
-            sources?.Index();
+            // The type index (a GetTypes sweep of every loaded assembly) is built by the first lookup that needs it: a
+            // tree of engine steps only, the usual one without measuring by package, never builds it.
             Attribute(root, profile, sources);
             AddEngineParts(root, profile);
             return profile;

@@ -214,29 +214,63 @@ namespace Orbiters.Mixer.Editor.Performance
 
         public float Get(string name) => values.TryGetValue(name, out float v) ? v : 0f;
 
+        // A parameter's place in each layer that has it: its hash and that layer's type.
+        private struct Binding
+        {
+            public AnimatorControllerPlayable Playable;
+            public int Hash;
+            public AnimatorControllerParameterType Type;
+        }
+
+        // By name, resolved on the first Set (the layers never change once built): one lookup per change instead of one
+        // per layer, and the animator is written by hash, not by name.
+        private readonly Dictionary<string, Binding[]> bindings = new Dictionary<string, Binding[]>();
+
+        private Binding[] BindingsOf(string name)
+        {
+            if (bindings.TryGetValue(name, out var found))
+            {
+                return found;
+            }
+
+            var list = new List<Binding>();
+            int hash = Animator.StringToHash(name);
+            foreach (var layer in layers)
+            {
+                if (layer.Parameters.TryGetValue(name, out var type))
+                {
+                    list.Add(new Binding { Playable = layer.Playable, Hash = hash, Type = type });
+                }
+            }
+
+            found = list.ToArray();
+            bindings[name] = found;
+            return found;
+        }
+
         /// <summary>Sets a parameter on every layer that has it, converted to that layer's type.</summary>
         public void Set(string name, float value)
         {
             values[name] = value;
-            foreach (var layer in layers)
+            foreach (var binding in BindingsOf(name))
             {
-                if (!layer.Parameters.TryGetValue(name, out var type)) continue;
-                switch (type)
+                switch (binding.Type)
                 {
                     case AnimatorControllerParameterType.Float:
-                        layer.Playable.SetFloat(name, value);
+                        binding.Playable.SetFloat(binding.Hash, value);
                         break;
                     case AnimatorControllerParameterType.Int:
-                        layer.Playable.SetInteger(name, (int)value);
+                        binding.Playable.SetInteger(binding.Hash, (int)value);
                         break;
                     case AnimatorControllerParameterType.Bool:
-                        layer.Playable.SetBool(name, Mathf.Abs(value) > 1e-6f);
+                        binding.Playable.SetBool(binding.Hash, Mathf.Abs(value) > 1e-6f);
                         break;
                     case AnimatorControllerParameterType.Trigger:
-                        if (Mathf.Abs(value) > 1e-6f) layer.Playable.SetTrigger(name);
+                        if (Mathf.Abs(value) > 1e-6f) binding.Playable.SetTrigger(binding.Hash);
                         break;
                 }
             }
+
             if (name == "Seated")
                 foreach (var layer in layers)
                     if (layer.Type == AnimLayerType.Sitting && layer.Playable.IsValid())

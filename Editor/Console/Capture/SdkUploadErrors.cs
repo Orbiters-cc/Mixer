@@ -14,9 +14,9 @@ namespace Orbiters.Logger.Editor
     /// first-chance exceptions to catch it earlier). A Harmony prefix on the builders' private <c>HandleUploadError</c>,
     /// which every failure goes through, logs it once as an error with the whole exception (inner ones too), and that log
     /// is what "Check Console for more details" shows. Found by name through reflection, Harmony included (it ships with
-    /// the VRChat SDK): without the SDK, Harmony or the method, nothing is hooked.
+    /// the VRChat SDK): without the SDK, Harmony or the method, nothing is hooked. Hooked the first time an SDK panel
+    /// is seen (uploads start from it), not at every script reload (<see cref="EnsureHooked"/>).
     /// </summary>
-    [InitializeOnLoad]
     internal static class SdkUploadErrors
     {
         /// <summary>How the log starts (what <see cref="LoggerWindow.ErrorToShow"/> looks for).</summary>
@@ -34,13 +34,20 @@ namespace Orbiters.Logger.Editor
         // Exceptions already logged: the same one goes through the builder more than once (rethrown and handled again).
         private static readonly ConditionalWeakTable<Exception, object> Logged = new ConditionalWeakTable<Exception, object>();
 
-        static SdkUploadErrors()
+        private static bool tried;
+
+        /// <summary>
+        /// Patches the SDK's builders, once per domain: called when an SDK control panel is found (ConsoleLinks), before
+        /// any upload can start from it. Cheap after the first call.
+        /// </summary>
+        internal static void EnsureHooked()
         {
-            if (Application.isBatchMode)
+            if (tried || Application.isBatchMode)
             {
                 return;
             }
 
+            tried = true;
             try
             {
                 Hook();
@@ -50,6 +57,7 @@ namespace Orbiters.Logger.Editor
                 // Another Harmony or SDK than this was written for: uploads keep the SDK's own message only.
             }
         }
+
 
         /// <summary>The builders' methods that are hooked now (tests and diagnostics).</summary>
         internal static int Hooked { get; private set; }

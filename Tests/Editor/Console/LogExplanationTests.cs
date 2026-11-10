@@ -135,6 +135,37 @@ namespace Orbiters.Logger.Editor.Tests
             }
         }
 
+        // The server's kept list is no longer parsed at every script reload: it is read with the Mixer console's own
+        // list on first use, and must match exactly what the parsed list gave.
+        [Test]
+        public void TheServersKeptListReadOnFirstUseMatchesTheParsedOne()
+        {
+            const string json = @"{ ""revision"": ""r7"", ""explanations"": [
+                { ""id"": ""tests.kept-copy"", ""needle"": ""kept copy needle"", ""severity"": ""warning"", ""source"": ""Tests"", ""title"": ""From the kept copy"" } ] }";
+            string path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "mixer-explanations-" + System.Guid.NewGuid().ToString("N") + ".json");
+            try
+            {
+                System.IO.File.WriteAllText(path, json);
+                LogExplanations.SetRemote(KnownLogs.Parse(json));
+                int parsed = LogExplanations.Match("A log with the kept copy needle", "", LogLevel.Warning);
+                int parsedCount = LogExplanations.Count;
+                LogExplanations.SetRemoteFile(path);
+                int read = LogExplanations.Match("A log with the kept copy needle", "", LogLevel.Warning);
+                Assert.AreEqual(parsed, read);
+                Assert.AreEqual("From the kept copy", LogExplanations.Get(read).Title);
+                Assert.AreEqual(parsedCount, LogExplanations.Count);
+                Assert.AreEqual(1, LogExplanations.RemoteCount);
+
+                LogExplanations.SetRemoteFile(null);
+                Assert.AreEqual(0, LogExplanations.RemoteCount, "no kept copy: the Mixer console's own list only");
+            }
+            finally
+            {
+                LogExplanations.SetRemote(null);
+                System.IO.File.Delete(path);
+            }
+        }
+
         [Test]
         public void NoExplanationNamesTheFormerXRayGizmosPackage()
         {
