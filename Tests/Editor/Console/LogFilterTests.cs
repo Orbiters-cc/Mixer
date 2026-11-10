@@ -226,8 +226,8 @@ namespace Orbiters.Logger.Editor.Tests
             var store = new LogStore();
             var failed = new TimingProfile { Kind = TimingKind.AvatarUpload, TotalMilliseconds = 146000, Subject = "Rexouium", Outcome = "upload failed" };
             var uploaded = new TimingProfile { Kind = TimingKind.AvatarUpload, TotalMilliseconds = 131000, Subject = "Rexouium" };
-            int failedAt = store.Add(TimeSpan.TicksPerSecond * 10, failed.Message(), failed.Format(), LogVariant.Warning);
-            int uploadedAt = store.Add(TimeSpan.TicksPerSecond * 20, uploaded.Message(), uploaded.Format(), LogVariant.Log);
+            int failedAt = store.AddTiming(TimeSpan.TicksPerSecond * 10, failed, LogVariant.Warning);
+            int uploadedAt = store.AddTiming(TimeSpan.TicksPerSecond * 20, uploaded, LogVariant.Log);
             var warningsAndErrors = new FilterSpec { LevelMask = (1 << (int)LogLevel.Warning) | (1 << (int)LogLevel.Error) };
             Assert.AreEqual(HiddenBy.None, warningsAndErrors.WhatHides(store, failedAt));
             Assert.AreEqual(HiddenBy.Level, warningsAndErrors.WhatHides(store, uploadedAt));

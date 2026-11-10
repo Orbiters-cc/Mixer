@@ -43,8 +43,12 @@ namespace Orbiters.Logger.Editor
             public readonly LogType Type;
             public readonly bool Background;
             public readonly bool Injected;
+            /// <summary>What an injected log carries: a timing's profile, or a command's output in <see cref="Stack"/>.</summary>
+            public readonly MessageFlags Kind;
+            public readonly TimingProfile Timing;
 
-            public RawLog(long time, SharedText condition, SharedText stack, LogType type, bool background, bool injected)
+            public RawLog(long time, SharedText condition, SharedText stack, LogType type, bool background, bool injected, MessageFlags kind,
+                TimingProfile timing)
             {
                 Time = time;
                 Condition = condition;
@@ -52,6 +56,8 @@ namespace Orbiters.Logger.Editor
                 Type = type;
                 Background = background;
                 Injected = injected;
+                Kind = kind;
+                Timing = timing;
             }
         }
 
@@ -185,7 +191,7 @@ namespace Orbiters.Logger.Editor
         {
             try
             {
-                Enqueue(condition, stackTrace, type, injected: false);
+                Enqueue(condition, stackTrace, type, MessageFlags.None, null);
             }
             catch (Exception)
             {
@@ -193,7 +199,7 @@ namespace Orbiters.Logger.Editor
             }
         }
 
-        private static void Enqueue(string condition, string stack, LogType type, bool injected)
+        private static void Enqueue(string condition, string stack, LogType type, MessageFlags kind, TimingProfile timing, bool injected = false)
         {
             long time = DateTime.UtcNow.Ticks;
             if (Interlocked.Increment(ref queued) > MaxQueued)
@@ -212,14 +218,29 @@ namespace Orbiters.Logger.Editor
                 return;
             }
 
-            queue.Enqueue(new RawLog(time, sharedCondition, sharedStack, type, Thread.CurrentThread.ManagedThreadId != mainThread, injected));
+            queue.Enqueue(new RawLog(time, sharedCondition, sharedStack, type, Thread.CurrentThread.ManagedThreadId != mainThread, injected, kind, timing));
         }
 
         /// <summary>
-        /// Files a log that never goes through Unity's console (another tool's activity, such as Mixer Git's commands).
+        /// Files a timing (a script reload, Play Mode, an avatar build or upload), which never goes through Unity's
+        /// console. The profile is kept as it is; its text form only serves copies, searches, the report and reloads.
         /// Any thread.
         /// </summary>
-        internal static void Inject(string condition, string stack, LogType type) => Enqueue(condition, stack, type, injected: true);
+        internal static void Inject(TimingProfile profile, LogType type)
+        {
+            if (profile != null)
+            {
+                Enqueue(profile.Message(), profile.Format(), type, MessageFlags.Timing, profile, injected: true);
+            }
+        }
+
+        /// <summary>
+        /// Files a command another tool ran (Mixer Git's), never sent to Unity's console: <paramref name="condition"/> is
+        /// the command and its result (one message), <paramref name="output"/> what this run printed (kept with it only).
+        /// Any thread.
+        /// </summary>
+        internal static void InjectOutput(string condition, string output, LogType type) =>
+            Enqueue(condition, output, type, MessageFlags.Output, null, injected: true);
 
         private static void Update()
         {
@@ -372,7 +393,20 @@ namespace Orbiters.Logger.Editor
                 return;
             }
 
+            if (raw.Kind == MessageFlags.Timing && raw.Timing != null)
+            {
+                Store.AddTiming(raw.Time, raw.Timing, variant);
+                return;
+            }
+
+            if (raw.Kind == MessageFlags.Output)
+            {
+                Store.AddOutput(raw.Time, condition, stack, variant);
+                return;
+            }
+
             int occurrence = Store.Add(raw.Time, condition, stack, variant, raw.Background ? OccurrenceFlags.BackgroundThread : OccurrenceFlags.None);
+
             if (!raw.Injected)
             {
                 // Only logs Unity also shows wait for their console row.

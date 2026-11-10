@@ -67,8 +67,9 @@ namespace Orbiters.Logger.Editor.UnitGit
             Refresh();
         }
 
-        // Each Git command Mixer Git runs becomes a log: the command and its result as the message, what it printed as
-        // the output. Not sent to Unity's console. Called on the thread that ran the command.
+        // Each Git command Mixer Git runs becomes a log: the command and its result as the message (runs of one command
+        // with one result are one message), how long it took and what it printed kept with that run. Not sent to Unity's
+        // console. Called on the thread that ran the command.
         private static void OnCommand(UnitGitCommandRecord record)
         {
             if (record == null)
@@ -78,7 +79,7 @@ namespace Orbiters.Logger.Editor.UnitGit
 
             string result = record.TimedOut ? "timed out" : record.ExitCode == 0 ? "ok" : "exit " + record.ExitCode;
             string condition = "[Mixer Git] " + record.CommandLine + "  →  " + result;
-            var output = new StringBuilder(LogStoreOutputPrefix);
+            var output = new StringBuilder();
             output.Append(record.Milliseconds.ToString("0", CultureInfo.InvariantCulture)).Append(" ms in ").Append(record.WorkingDirectory).Append('\n');
             Append(output, record.StandardOutput);
             if (!string.IsNullOrWhiteSpace(record.StandardError))
@@ -88,10 +89,8 @@ namespace Orbiters.Logger.Editor.UnitGit
             }
 
             var type = record.TimedOut ? UnityEngine.LogType.Error : record.ExitCode == 0 ? UnityEngine.LogType.Log : UnityEngine.LogType.Warning;
-            LogCapture.Inject(condition, output.ToString(), type);
+            LogCapture.InjectOutput(condition, output.ToString(), type);
         }
-
-        private const string LogStoreOutputPrefix = StackTraces.OutputPrefix;
         private const int MaxOutput = 4000;
 
         private static void Append(StringBuilder builder, string text)

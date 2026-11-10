@@ -356,7 +356,7 @@ namespace Orbiters.Logger.Editor
                 return;
             }
 
-            LogCapture.Inject(profile.Message(), profile.Format(), LogType.Log);
+            LogCapture.Inject(profile, LogType.Log);
         }
 
         /// <summary>

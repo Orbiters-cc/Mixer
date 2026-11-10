@@ -134,6 +134,14 @@ namespace Orbiters.Logger.Editor
                 profiles[pair.Key] = pair.Value;
             }
 
+            var outputs = PayloadPairs();
+            payloads.Clear();
+            payloadOrder.Clear();
+            foreach (var pair in outputs)
+            {
+                SetPayload(pair.Key, prepared.PayloadText(pair.Key, pair.Value));
+            }
+
             Texts = prepared.Texts;
             messages = prepared.Messages;
             messageCount = prepared.MessageCount;
@@ -171,6 +179,9 @@ namespace Orbiters.Logger.Editor
             private readonly int chunkBase;
             private readonly int first;
             private readonly List<int> patches = new List<int>();
+            // The outputs kept when it started (occurrence, old text id), and their texts in the new table once copied.
+            private readonly List<KeyValuePair<int, int>> outputs;
+            private readonly Dictionary<int, KeyValuePair<int, int>> copiedOutputs = new Dictionary<int, KeyValuePair<int, int>>();
             // Old message id + 1 -> new message id + 1 (0: not seen yet).
             private int[] map = new int[1024];
             private int[][] owners;
@@ -189,6 +200,7 @@ namespace Orbiters.Logger.Editor
                 first = store.first;
                 done = first;
                 owners = new int[store.ownerChunks.Length][];
+                outputs = store.PayloadPairs();
                 Texts = new TextTable(Math.Max(1024, OldTexts.Count - store.zeroCount));
                 Messages = new LogMessage[Math.Max(256, store.messageCount - store.zeroCount)];
                 MessageIndex = new Dictionary<MessageKey, int>(Math.Max(16, store.messageCount - store.zeroCount));
@@ -245,6 +257,14 @@ namespace Orbiters.Logger.Editor
             /// </summary>
             public void CatchUp()
             {
+                if (copiedOutputs.Count == 0)
+                {
+                    foreach (var pair in outputs)
+                    {
+                        copiedOutputs[pair.Key] = new KeyValuePair<int, int>(pair.Value, Copy(pair.Value));
+                    }
+                }
+
                 for (int round = 0; round < 64 && !cancelled; round++)
                 {
                     int to = Volatile.Read(ref store.end);
@@ -292,7 +312,12 @@ namespace Orbiters.Logger.Editor
                 }
             }
 
+            /// <summary>The new table's id of an output's text (copied by the worker, or now when it came since; main thread).</summary>
+            public int PayloadText(int occurrence, int oldText) =>
+                copiedOutputs.TryGetValue(occurrence, out var copied) && copied.Key == oldText ? copied.Value : Copy(oldText);
+
             /// <summary>The new id of an old message, -1 when it had no occurrence (it goes).</summary>
+
             public int NewId(int old) => old >= 0 && old < map.Length ? map[old] - 1 : -1;
 
             /// <summary>A message's later change, copied when the tables land (main thread).</summary>
@@ -359,7 +384,7 @@ namespace Orbiters.Logger.Editor
 
                 moved = MessageCount++;
                 Messages[moved] = message;
-                MessageIndex[new MessageKey(message.Text, message.Stack, message.Variant)] = moved;
+                MessageIndex[MessageKey.Of(message)] = moved;
                 map[old] = moved + 1;
                 return moved;
             }

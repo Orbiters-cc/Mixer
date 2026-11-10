@@ -41,8 +41,8 @@ namespace Orbiters.Logger.Editor
 
     /// <summary>
     /// How long a script reload, an entry into Play Mode or an avatar build or upload took, and which package took
-    /// what. A timing log carries one in its "stack trace" (see <see cref="Format"/>), so it is kept, copied and
-    /// searched like any other log.
+    /// what. Filed as it is (<see cref="LogStore.AddTiming"/>); its text form (<see cref="Format"/>) is the log's
+    /// "stack trace", so it is copied, searched, reported and saved across reloads like any other log.
     /// </summary>
     internal sealed class TimingProfile
     {

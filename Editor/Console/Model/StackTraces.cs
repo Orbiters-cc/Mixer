@@ -54,15 +54,11 @@ namespace Orbiters.Logger.Editor
             "UnityEngine.", "UnityEditor.", "UnityEditorInternal.", "Unity.", "System.", "Mono.", "Microsoft.", "(wrapper"
         };
 
-        /// <summary>Starts the "stack" of a log that carries a command's output instead (Mixer Git's commands).</summary>
-        internal const string OutputPrefix = "Output:\n";
-
-        public static bool IsOutput(string stack) => stack != null && stack.StartsWith(OutputPrefix, StringComparison.Ordinal);
-
         public static List<StackFrame> Parse(string stack)
         {
             var frames = new List<StackFrame>();
-            if (string.IsNullOrEmpty(stack) || IsOutput(stack))
+            if (string.IsNullOrEmpty(stack))
+
             {
                 return frames;
             }

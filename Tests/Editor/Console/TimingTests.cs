@@ -174,19 +174,105 @@ namespace Orbiters.Logger.Editor.Tests
             var profile = new TimingProfile { Kind = TimingKind.ScriptReload, TotalMilliseconds = 2000 };
             profile.Parts.Add(new TimingPart("VRCFury", "Startup methods", "VFInitHook.Init", 800));
             var store = new LogStore();
-            int id = store.Intern(profile.Message(), profile.Format(), LogVariant.Log);
+            int id = store.MessageAt(store.AddTiming(100, profile, LogVariant.Log));
             Assert.AreEqual(LogStore.TimingSource, store.SourceOf(id).Name);
             Assert.AreEqual("VRCFury 800 ms", store.Texts[store.Message(id).Callsite]);
 
-            // Kept by the store, parsed once for every window that shows it.
+            // The profile as measured, kept for every window; its text form is the stack (copies, search, report).
             Assert.IsTrue((store.Message(id).Flags & MessageFlags.Timing) != 0);
-            var kept = store.TimingOf(id);
-            Assert.IsNotNull(kept);
-            Assert.AreSame(kept, store.TimingOf(id));
-            Assert.AreEqual(2000, kept.TotalMilliseconds, 0.01);
+            Assert.AreSame(profile, store.TimingOf(id), "never formatted and parsed back");
+            Assert.AreEqual(profile.Format(), store.Texts[store.Message(id).Stack]);
             int plain = store.Intern("Not a timing", "Timings: is only a prefix in a stack", LogVariant.Log);
             Assert.IsNull(store.TimingOf(plain), "only messages filed as timings have a profile");
+            int lookalike = store.MessageAt(store.Add(200, profile.Message(), profile.Format(), LogVariant.Log));
+            Assert.AreNotEqual(id, lookalike, "a log whose text looks like a timing is not one (MXL-2)");
+            Assert.IsNull(store.TimingOf(lookalike));
+            Assert.AreNotEqual(LogStore.TimingSource, store.SourceOf(lookalike).Name);
+
+            // A store read back after a reload parses the text form once.
+            string folder = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "mixer-session-" + Guid.NewGuid().ToString("N"));
+            var session = new SessionFile(folder);
+            try
+            {
+                session.Save(store, new SnapshotInfo(), 1, 2);
+                session.Close();
+                var loaded = new SessionFile(folder).Load(1, 2, out _, out string problem);
+                Assert.IsNull(problem, problem);
+                var read = loaded.TimingOf(id);
+                Assert.IsNotNull(read);
+                Assert.AreSame(read, loaded.TimingOf(id));
+                Assert.AreEqual(2000, read.TotalMilliseconds, 0.01);
+                Assert.IsNull(loaded.TimingOf(lookalike));
+            }
+            finally
+            {
+                session.Close();
+            }
         }
+
+        [Test]
+        public void CommandOutputsStayWithTheirRunNotInTheMessage()
+        {
+            var store = new LogStore();
+            const string command = "[Mixer Git] git status --porcelain  →  ok";
+            int first = store.AddOutput(100, command, "12 ms in C:/Project\n M Assets/A.cs\n", LogVariant.Log);
+            int second = store.AddOutput(200, command, "15 ms in C:/Project\n", LogVariant.Log);
+            Assert.AreEqual(store.MessageAt(first), store.MessageAt(second), "one message for every run (MXL-41)");
+            ref var message = ref store.Message(store.MessageAt(first));
+            Assert.AreEqual(2, message.Count);
+            Assert.AreEqual(0, message.Stack, "the output is not part of the message");
+            Assert.IsTrue((message.Flags & MessageFlags.Output) != 0);
+            StringAssert.StartsWith("12 ms", store.OutputOf(first));
+            StringAssert.StartsWith("15 ms", store.OutputOf(second));
+            int plain = store.Add(300, command, string.Empty, LogVariant.Log);
+            Assert.AreNotEqual(store.MessageAt(first), store.MessageAt(plain), "a plain log with that text is another message");
+            Assert.IsNull(store.OutputOf(plain));
+
+            // Bounded: the oldest outputs go first.
+            for (int i = 0; i < LogStore.MaxPayloads + 10; i++)
+            {
+                store.AddOutput(1000 + i, command, i + " ms in C:/Project\n", LogVariant.Log);
+            }
+
+            Assert.IsNull(store.OutputOf(first));
+            Assert.AreEqual((LogStore.MaxPayloads + 9) + " ms in C:/Project\n", store.OutputOf(store.EndId - 1));
+
+            // They survive a trim of older logs, a compaction and a reload.
+            var mixed = new LogStore();
+            for (int i = 0; i < 3000; i++)
+            {
+                mixed.Add(i, "Distinct " + i, string.Empty, LogVariant.Log);
+            }
+
+            for (int i = 0; i < 100; i++)
+            {
+                mixed.AddOutput(5000 + i, command, i + " ms in C:/Project\n", LogVariant.Log);
+            }
+
+            long generation = mixed.Texts.Generation;
+            int newest = mixed.EndId - 1;
+            mixed.Trim(50);
+            Assert.AreNotEqual(generation, mixed.Texts.Generation, "compacted");
+            Assert.AreEqual("99 ms in C:/Project\n", mixed.OutputOf(newest));
+            Assert.IsNull(mixed.OutputOf(newest - 60), "trimmed with its log");
+            string expected = mixed.OutputOf(newest);
+            store = mixed;
+            string folder = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "mixer-session-" + Guid.NewGuid().ToString("N"));
+            var session = new SessionFile(folder);
+            try
+            {
+                session.Save(store, new SnapshotInfo(), 1, 2);
+                session.Close();
+                var loaded = new SessionFile(folder).Load(1, 2, out _, out string problem);
+                Assert.IsNull(problem, problem);
+                Assert.AreEqual(expected, loaded.OutputOf(newest));
+            }
+            finally
+            {
+                session.Close();
+            }
+        }
+
 
         [Test]
         public void BundleBuildLogReadsUnitysOwnTimings()
