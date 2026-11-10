@@ -45,7 +45,8 @@ namespace Orbiters.Mixer.Editor
         private Label footer;
         private MixerToasts toasts;
         // Not kept across a script reload (Unity keeps a window's private fields): the rows must be built again first.
-        [NonSerialized] private bool dirty = true, visible = true, built;
+        // dirty: list the rows again; rebind: only bind the rows shown again.
+        [NonSerialized] private bool dirty = true, rebind, visible = true, built;
         private int anchorId;
         // The row the keys step from: the one last clicked or stepped to (a range keeps the anchor as Unity's active object).
         private int cursorId;
@@ -58,9 +59,26 @@ namespace Orbiters.Mixer.Editor
         private double lastRebuild, lastPersist;
         private int persistedVersion = -1;
 
-        private static bool Compact => EditorPrefs.GetBool(CompactPref, false);
-        private static bool ShowComponents => EditorPrefs.GetBool(ComponentsPref, true);
-        private static bool ShowDots => EditorPrefs.GetBool(DotsPref, false);
+        // Read per row: kept here, read from EditorPrefs once per script session and written through.
+        private static bool? compact, showComponents, showDots;
+        private static bool Compact
+        {
+            get => compact ??= EditorPrefs.GetBool(CompactPref, false);
+            set { compact = value; EditorPrefs.SetBool(CompactPref, value); }
+        }
+        private static bool ShowComponents
+        {
+            get => showComponents ??= EditorPrefs.GetBool(ComponentsPref, true);
+            set { showComponents = value; EditorPrefs.SetBool(ComponentsPref, value); }
+        }
+        private static bool ShowDots
+        {
+            get => showDots ??= EditorPrefs.GetBool(DotsPref, false);
+            set { showDots = value; EditorPrefs.SetBool(DotsPref, value); }
+        }
+        // Each refresh is checked against rows built from scratch, the differences logged (a debugging switch).
+        private const string VerifyPref = "Orbiters.Mixer.Hierarchy.Verify";
+        [NonSerialized] private bool verify;
 
         [MenuItem(MixerInfo.HierarchyMenuPath, priority = 2001)]
         public static void Open()
@@ -73,59 +91,109 @@ namespace Orbiters.Mixer.Editor
         {
             titleContent = new GUIContent("Hierarchy", MixerLogo.TabIcon(), "Mixer Hierarchy");
             minSize = new Vector2(240f, 160f);
-            EditorApplication.hierarchyChanged += OnHierarchyChanged;
+            verify = EditorPrefs.GetBool(VerifyPref, false);
+            model.Forgotten += OnRowForgotten;
+            // Scene objects' changes (Undo and Redo, hierarchy changes) come once a frame through the Toolkit's bus.
+            EditorChangeBus.Changed += OnEditorChanges;
             EditorApplication.playModeStateChanged += OnPlayModeChanged;
             Selection.selectionChanged += OnSelectionChanged;
-            AvatarObjectTools.Changed += MarkDirty;
+            AvatarObjectTools.Changed += OnToolsChanged;
             Orbiters.Toolkit.Editor.Refit.CustomBases.Changed += OnCustomBaseChanged;
-            EditorSceneManager.sceneDirtied += OnSceneChanged;
-            EditorSceneManager.sceneSaved += OnSceneChanged;
+            EditorSceneManager.sceneDirtied += OnSceneDirtied;
+            EditorSceneManager.sceneSaved += OnSceneDirtied;
             EditorSceneManager.sceneOpened += OnSceneOpened;
-            EditorSceneManager.sceneClosed += OnSceneChanged;
+            EditorSceneManager.sceneClosed += OnSceneClosed;
             PrefabStage.prefabStageOpened += OnPrefabStage;
             PrefabStage.prefabStageClosing += OnPrefabStage;
-            MixerLinkService.Changed += MarkDirty;
-            MixerSession.Changed += MarkDirty;
-            HierarchyVrchat.Changed += MarkDirty;
+            SceneVisibilityManager.visibilityChanged += OnVisibilityChanged;
+            SceneVisibilityManager.pickingChanged += OnVisibilityChanged;
+            MixerLinkService.Changed += OnLinkChanged;
+            MixerSession.Edited += OnSessionEdited;
+            HierarchyVrchat.Changed += MarkRebind;
             BoneSubSelection.Changed += OnSubSelectionChanged;
-            Undo.undoRedoPerformed += MarkDirty;
             AnimationPathWatch.Changed += OnAnimationPaths;
             HookUnity();
         }
 
         private void OnDisable()
         {
-            EditorApplication.hierarchyChanged -= OnHierarchyChanged;
+            model.Forgotten -= OnRowForgotten;
+            EditorChangeBus.Changed -= OnEditorChanges;
             EditorApplication.playModeStateChanged -= OnPlayModeChanged;
             Selection.selectionChanged -= OnSelectionChanged;
-            AvatarObjectTools.Changed -= MarkDirty;
+            AvatarObjectTools.Changed -= OnToolsChanged;
             Orbiters.Toolkit.Editor.Refit.CustomBases.Changed -= OnCustomBaseChanged;
-            EditorSceneManager.sceneDirtied -= OnSceneChanged;
-            EditorSceneManager.sceneSaved -= OnSceneChanged;
+            EditorSceneManager.sceneDirtied -= OnSceneDirtied;
+            EditorSceneManager.sceneSaved -= OnSceneDirtied;
             EditorSceneManager.sceneOpened -= OnSceneOpened;
-            EditorSceneManager.sceneClosed -= OnSceneChanged;
+            EditorSceneManager.sceneClosed -= OnSceneClosed;
             PrefabStage.prefabStageOpened -= OnPrefabStage;
             PrefabStage.prefabStageClosing -= OnPrefabStage;
-            MixerLinkService.Changed -= MarkDirty;
-            MixerSession.Changed -= MarkDirty;
-            HierarchyVrchat.Changed -= MarkDirty;
+            SceneVisibilityManager.visibilityChanged -= OnVisibilityChanged;
+            SceneVisibilityManager.pickingChanged -= OnVisibilityChanged;
+            MixerLinkService.Changed -= OnLinkChanged;
+            MixerSession.Edited -= OnSessionEdited;
+            HierarchyVrchat.Changed -= MarkRebind;
             BoneSubSelection.Changed -= OnSubSelectionChanged;
-            Undo.undoRedoPerformed -= MarkDirty;
             AnimationPathWatch.Changed -= OnAnimationPaths;
             UnhookUnity();
             PersistExpanded(force: true);
+            ReleasePictures();
         }
 
         private void OnBecameVisible() { visible = true; MarkDirty(); }
         private void OnBecameInvisible() => visible = false;
         private void MarkDirty() => dirty = true;
-        private void OnHierarchyChanged() { model.Avatars.Clear(); MarkDirty(); }
-        private void OnSceneChanged(Scene _) => MarkDirty();
-        private void OnSceneOpened(Scene _, OpenSceneMode __) => MarkDirty();
-        private void OnPrefabStage(PrefabStage _) => MarkDirty();
+        private void MarkRebind() => rebind = true;
+
+        // What the editor changed this frame: the model makes stale what it touched (also while the window is hidden, so
+        // nothing is missed), and the rows follow at the next tick.
+        private void OnEditorChanges(EditorChanges changes)
+        {
+            var update = model.Apply(changes);
+            if (update == HierarchyUpdate.Rows) dirty = true;
+            else if (update == HierarchyUpdate.Rebind) rebind = true;
+        }
+
+        // A scene saved or changed: its header's " *" (the objects' own changes come through the bus).
+        private void OnSceneDirtied(Scene _) => rebind = true;
+        // Scenes, Play mode and Prefab Mode change which objects there are: every object is met again.
+        private void OnSceneOpened(Scene _, OpenSceneMode __) => ResetRows();
+        private void OnSceneClosed(Scene _) => ResetRows();
+        private void OnPrefabStage(PrefabStage _) => ResetRows();
+        private void OnPlayModeChanged(PlayModeStateChange _) => ResetRows();
+        private void ResetRows() { model.Reset(); MarkDirty(); }
+        private void OnVisibilityChanged() { model.VisibilityChanged(); MarkDirty(); }
+        private void OnToolsChanged() { model.ToolsChanged(); MarkDirty(); }
         // A custom base applied or reset: its name and update on the avatar's row.
-        private void OnCustomBaseChanged(Transform _) => MarkDirty();
-        private void OnPlayModeChanged(PlayModeStateChange _) => MarkDirty();
+        private void OnCustomBaseChanged(Transform _) { customBases.Clear(); model.ToolsChanged(); MarkDirty(); }
+        private void OnLinkChanged() { model.LinkChanged(); MarkDirty(); }
+
+        // Sessions began or ended: their renderers show a working copy (or the original again), which no change event
+        // tells. Strokes and other edits of a session change nothing the rows show.
+        private void OnSessionEdited(EditTarget target, SessionChange change)
+        {
+            if ((change & SessionChange.Sessions) == 0) return;
+            if (target != null) { if (target.Renderer != null) model.MeshSwapped(target.Renderer.transform); }
+            // The list of sessions changed as a whole: a session that ended no longer names its renderer.
+            else model.MarkAllStale();
+            MarkDirty();
+        }
+
+        // An edit made here, shown at the next tick: the rows shown are read again then, whether or not its change events
+        // (a frame later) came first.
+        private void MarkEdited()
+        {
+            model.ResyncShown();
+            MarkDirty();
+        }
+
+        // An edit made here: its change events come a frame later, so the rows shown are read again now.
+        private void RebuildAfterEdit()
+        {
+            model.ResyncShown();
+            RebuildNow();
+        }
 
         // A rename or move elsewhere (Unity's Hierarchy, another tool) broke animations: asked here too, once. Later: a change
         // made here is asked about by the change itself.
@@ -147,9 +215,10 @@ namespace Orbiters.Mixer.Editor
             menu.AddItem(new GUIContent("Open Unity's Hierarchy"), false, HierarchyReplacement.OpenUnityHierarchy);
             menu.AddItem(new GUIContent("Replace Unity's Hierarchy"), HierarchyReplacement.Enabled, () => HierarchyReplacement.SetEnabled(!HierarchyReplacement.Enabled));
             menu.AddSeparator("");
-            menu.AddItem(new GUIContent("Compact rows"), Compact, () => { EditorPrefs.SetBool(CompactPref, !Compact); ApplyDensity(); });
-            menu.AddItem(new GUIContent("Component icons"), ShowComponents, () => { EditorPrefs.SetBool(ComponentsPref, !ShowComponents); list.RefreshRows(); });
-            menu.AddItem(new GUIContent("Blender dots"), ShowDots, () => { EditorPrefs.SetBool(DotsPref, !ShowDots); list.RefreshRows(); });
+            menu.AddItem(new GUIContent("Compact rows"), Compact, () => { Compact = !Compact; ApplyDensity(); });
+            menu.AddItem(new GUIContent("Component icons"), ShowComponents, () => { ShowComponents = !ShowComponents; RefreshRows(); });
+            menu.AddItem(new GUIContent("Blender dots"), ShowDots, () => { ShowDots = !ShowDots; RefreshRows(); });
+
             AnimationRepath.AddWatchItem(menu);
             menu.AddSeparator("");
             menu.AddItem(new GUIContent("Expand all"), false, () => { foreach (var row in model.Rows.ToList()) if (row.Object != null && row.HasChildren) model.SetExpanded(row.InstanceId, true, true); RebuildNow(); });
@@ -178,6 +247,14 @@ namespace Orbiters.Mixer.Editor
             // Rows with a picture, a light or the armature's bones take two lines, a VRChat avatar three (one each in compact rows).
             list.SpanOf = index => Lines(model[index]);
             list.RegisterCallback<GeometryChangedEvent>(_ => OnWidthChanged());
+            // The list's pool grew (a taller window): rows of the old pool may still show items they no longer hold, at
+            // their old places, until every row is bound again (VirtualList maps items to item % pool).
+            list.Viewport.RegisterCallback<GeometryChangedEvent>(_ =>
+            {
+                if (list.Rows.Count == pooledRows) return;
+                pooledRows = list.Rows.Count;
+                RefreshRows();
+            });
             list.AddToClassList("mxh-list");
             root.Add(list);
             dragLine = MixerUi.Box("mxh-dragline", PickingMode.Ignore);
@@ -272,7 +349,7 @@ namespace Orbiters.Mixer.Editor
         {
             list.SetRowHeight(Compact ? CompactRowHeight : RowHeight);
             root.EnableInClassList("mxh-root--compact", Compact);
-            list.RefreshRows();
+            RefreshRows();
         }
 
         private void Tick()
@@ -281,7 +358,14 @@ namespace Orbiters.Mixer.Editor
             PersistExpanded(force: false);
             PollThumbnails();
             TickHooks();
-            if (!visible || !dirty) return;
+            if (!visible) return;
+            if (!dirty && model.NeedsRefresh) dirty = true;
+            if (!dirty)
+            {
+                // Only what the rows show changed (a light turned, a rank came, a scene saved).
+                if (rebind) RefreshRows();
+                return;
+            }
             // Hierarchy changes come in bursts (an import, a prefab apply): one rebuild per 60 ms is plenty.
             if (EditorApplication.timeSinceStartup - lastRebuild < 0.06) return;
             RebuildNow();
@@ -296,20 +380,32 @@ namespace Orbiters.Mixer.Editor
             Rebuild();
         }
 
+        // The rows listed again from the model's kept facts (only what changes made stale is read again), then bound once:
+        // the binds the item count's layout makes and the refresh's are one pass (BindRow skips the second).
         private void Rebuild()
         {
-            thumbnailKeys.Clear();
-            model.Rebuild(filter);
+            model.Refresh(filter);
+            if (verify) Verify();
+            bindGeneration++;
+            rebind = false;
             list.SetItemCount(model.Count, keepAtEnd: false);
             list.RefreshRows();
+            ReleaseUnusedPictures();
             // An expression found too slow while matching shows on the field.
             searchOptions?.ShowState();
             UpdateFooter();
         }
 
+        // The debugging net under the incremental model: the rows from scratch, compared.
+        private void Verify()
+        {
+            var differences = model.Verify(filter);
+            if (differences.Count > 0) Debug.LogWarning("[Mixer] The Hierarchy's kept rows differ from rows built from scratch:\n" + string.Join("\n", differences));
+        }
+
         private void UpdateFooter()
         {
-            int shown = model.Rows.Count(r => r.Object != null);
+            int shown = model.ObjectCount;
             int selected = Selection.gameObjects.Length;
             footer.text = (filter.Any ? shown + " matching" : shown + (shown == 1 ? " object shown" : " objects shown")) + (selected > 0 ? " · " + selected + " selected" : "")
                           + (MixerLinkService.Connected ? " · Blender linked" : "");
@@ -325,7 +421,6 @@ namespace Orbiters.Mixer.Editor
             RebuildNow();
             int index = model.IndexOf(go.GetInstanceID());
             if (index >= 0) list.Reveal(index);
-            list.RefreshRows();
         }
 
         // Only the rows' selected look changes: the rows themselves stay (a rectangle drag in the Scene view changes the
@@ -355,6 +450,8 @@ namespace Orbiters.Mixer.Editor
             if (!built) return;
             var bone = BoneSubSelection.Bone;
             RevealRow(bone != null ? bone.gameObject : null);
+            // The sub-selected look and its badge are bound with the row.
+            RefreshRows();
         }
 
         private void RevealRow(GameObject go)
@@ -363,8 +460,8 @@ namespace Orbiters.Mixer.Editor
             if (go != null && !go.scene.IsValid()) go = null;
             if (go != null && model.IndexOf(go.GetInstanceID()) < 0 && !filter.Any) { model.Reveal(go); RebuildNow(); }
             int index = go != null ? model.IndexOf(go.GetInstanceID()) : -1;
+            // Rows scrolled on screen are bound by the list; the selected look is the caller's (RefreshSelection).
             if (index >= 0) list.Reveal(index);
-            list.RefreshRows();
         }
 
         // ---- Expanded state across editor starts ---------------------------------------------------------------------
@@ -444,13 +541,13 @@ namespace Orbiters.Mixer.Editor
             var pick = MixerUi.Icon(IconGlyph.Lock, "Pickable in the Scene view (Alt+click: this object only)", null, evt =>
             {
                 var r = RowOf(row);
-                if (r?.Object != null) { SceneVisibilityManager.instance.TogglePicking(r.Object, !evt.altKey); RebuildNow(); }
+                if (r?.Object != null) { SceneVisibilityManager.instance.TogglePicking(r.Object, !evt.altKey); model.VisibilityChanged(); RebuildNow(); }
                 evt.StopPropagation();
             }, "mxh-row__pick");
             var eye = MixerUi.Icon(IconGlyph.Eye, "Visible in the Scene view (Alt+click: this object only)", null, evt =>
             {
                 var r = RowOf(row);
-                if (r?.Object != null) { SceneVisibilityManager.instance.ToggleVisibility(r.Object, !evt.altKey); RebuildNow(); }
+                if (r?.Object != null) { SceneVisibilityManager.instance.ToggleVisibility(r.Object, !evt.altKey); model.VisibilityChanged(); RebuildNow(); }
                 evt.StopPropagation();
             }, "mxh-row__eye");
             // At the end of the name's line, or at the row's right end on rows with a light's ball or a drop field.
@@ -474,6 +571,7 @@ namespace Orbiters.Mixer.Editor
                 if (evt.keyCode == KeyCode.Return || evt.keyCode == KeyCode.KeypadEnter) { CommitRename(row, rename, true); evt.StopPropagation(); }
                 else if (evt.keyCode == KeyCode.Escape) { CommitRename(row, rename, false); evt.StopPropagation(); }
             }, TrickleDown.TrickleDown);
+            RowView.Of(row);
             return row;
         }
 
@@ -488,20 +586,37 @@ namespace Orbiters.Mixer.Editor
             return false;
         }
 
+        // Counts the passes that bind every shown row (RefreshRows): a row bound once in a pass is not bound again in it.
+        [NonSerialized] private int bindGeneration;
+        [NonSerialized] private int pooledRows;
+
+        // Binds every shown row again, once.
+        private void RefreshRows()
+        {
+            if (list == null) return;
+            bindGeneration++;
+            rebind = false;
+            list.RefreshRows();
+        }
+
         private void BindRow(VisualElement element, int index)
         {
             var row = model[index];
             if (row == null) return;
-            var indent = element.Q<MixerIndent>(className: "mxh-row__indent");
-            var chevron = element.Q(className: "mxh-row__chevron");
-            var dot = element.Q(className: "mxh-row__dot");
-            var icon = element.Q<Image>(className: "mxh-row__icon");
-            var name = element.Q<Label>(className: "mxh-row__name");
-            var rename = element.Q<TextField>(className: "mxh-row__rename");
-            var badges = element.Q(className: "mxh-row__badges");
-            var components = element.Q(className: "mxh-row__components");
-            var pick = element.Q(className: "mxh-row__pick");
-            var eye = element.Q(className: "mxh-row__eye");
+            var view = ViewOf(element) ?? RowView.Of(element);
+            // The list binds a row when its item changes and again when every row is refreshed: once per pass is enough.
+            if (view.Generation == bindGeneration && view.Index == index && ReferenceEquals(view.Row, row)) return;
+            view.Generation = bindGeneration;
+            view.Index = index;
+            view.Row = row;
+            var indent = view.Indent;
+            var chevron = view.Chevron;
+            var dot = view.Dot;
+            var icon = view.Icon;
+            var name = view.Name;
+            var rename = view.Rename;
+            var pick = view.Pick;
+            var eye = view.Eye;
             // A guide under the fold arrow of each object above (the scene's own arrow excepted).
             indent.Set(Mathf.Max(0, row.Depth - 1) * 14f + (row.IsScene ? 0f : 4f), row.IsScene ? 0 : Mathf.Max(0, row.Depth - 1), 14f, 13f);
             chevron.style.visibility = row.HasChildren ? Visibility.Visible : Visibility.Hidden;
@@ -519,49 +634,50 @@ namespace Orbiters.Mixer.Editor
             element.EnableInClassList("mxh-row--excluded", row.Excluded);
             element.EnableInClassList("mxh-row--cut", !row.IsScene && IsCut(row.InstanceId));
             element.EnableInClassList("mxh-row--ping", pingId != 0 && !row.IsScene && row.InstanceId == pingId);
-            BindDecorations(element);
+            BindDecorations(view);
             name.text = row.IsScene ? row.Name + (row.Scene.isLoaded && row.Scene.isDirty ? " *" : "") + (row.Scene.isLoaded || row.IsDontDestroyOnLoad ? "" : " (not loaded)") : row.Name;
             name.EnableInClassList("mxh-row__name--active-scene", row.IsScene && row.Active);
             bool renaming = row.Object != null && row.InstanceId == renamingId;
             MixerUi.Show(name, !renaming);
             MixerUi.Show(rename, renaming);
             rename.userData = renaming ? (object)row.InstanceId : null;
-            badges.Clear();
-            components.Clear();
             bool tall = Tall(row);
             element.EnableInClassList("mxh-row--tall", tall);
-            BindRich(element, row, tall);
+            BindRich(view, element, row, tall);
             if (row.IsScene)
             {
+                HideBadges(view);
                 icon.image = EditorGUIUtility.IconContent("SceneAsset Icon").image;
                 MixerUi.Show(dot, false); MixerUi.Show(pick, false); MixerUi.Show(eye, false);
                 return;
             }
             // Unity's own icon of the object: a prefab, a model, a variant or a missing prefab as its Hierarchy shows them.
             icon.image = IconOf(row);
-            if (row.VrchatAvatar && !element.ClassListContains("mxh-row--picture"))
-            {
-                var logo = VRChatLogo.Create();
-                if (logo != null) { logo.tooltip = "A VRChat avatar (it has an avatar descriptor)"; logo.pickingMode = PickingMode.Position; logo.AddToClassList("mxh-row__vrchat"); badges.Add(logo); }
-            }
-            if (row.PrefabRoot) badges.Add(Badge("prefab", row.PrefabMissing ? "The prefab asset is missing" : "A prefab instance", "mxh-badge--prefab"));
-            if (row.MissingScript) badges.Add(Badge("missing script", "A component's script is missing", "mxh-badge--missing"));
-            if (subSelected) badges.Add(PaintsPicked()
-                ? Badge("painting", "The bone Weight Paint paints and poses; the mesh stays selected", "mxh-badge--mixer")
-                : Badge("posing", "Posed in Weight Paint; the painted mesh is not skinned to it", "mxh-badge--mixer"));
+            if (view.Logo != null) MixerUi.Show(view.Logo, row.VrchatAvatar && !element.ClassListContains("mxh-row--picture"));
+            MixerUi.Show(view.PrefabBadge, row.PrefabRoot);
+            if (row.PrefabRoot) view.PrefabBadge.tooltip = row.PrefabMissing ? "The prefab asset is missing" : "A prefab instance";
+            MixerUi.Show(view.MissingBadge, row.MissingScript);
+            bool painting = subSelected && PaintsPicked();
+            MixerUi.Show(view.PaintingBadge, subSelected && painting);
+            MixerUi.Show(view.PosingBadge, subSelected && !painting);
+            int shown = 0;
+            bool more = false;
             if (ShowComponents && row.Object != null && !row.VrchatAvatar)
             {
-                int shown = 0;
                 foreach (var component in row.Components)
                 {
                     if (component == null || component is Transform) continue;
-                    if (shown >= 4) { components.Add(MixerUi.Text("+", "mxh-row__more")); break; }
-                    var image = new Image { image = AssetPreview.GetMiniThumbnail(component), scaleMode = ScaleMode.ScaleToFit, tooltip = component.GetType().Name, pickingMode = PickingMode.Position };
-                    image.AddToClassList("mxh-row__component");
-                    components.Add(image);
+                    if (shown >= RowView.ComponentIcons) { more = true; break; }
+                    var image = view.ComponentIcon[shown];
+                    image.image = AssetPreview.GetMiniThumbnail(component);
+                    image.tooltip = component.GetType().Name;
+                    MixerUi.Show(image, true);
                     shown++;
                 }
             }
+            for (int i = shown; i < RowView.ComponentIcons; i++) { MixerUi.Show(view.ComponentIcon[i], false); view.ComponentIcon[i].image = null; }
+            MixerUi.Show(view.More, more);
+            view.ComponentsShown = shown + (more ? 1 : 0);
             MixerUi.Show(dot, ShowDots);
             dot.EnableInClassList("mxh-row__dot--excluded", row.Excluded);
             dot.EnableInClassList("mxh-row__dot--linked", !row.Excluded && MixerLinkService.Connected);
@@ -570,8 +686,8 @@ namespace Orbiters.Mixer.Editor
             MixerUi.Show(pick, true); MixerUi.Show(eye, true);
             pick.EnableInClassList("mxh-row__switch--off", row.PickingDisabled);
             eye.EnableInClassList("mxh-row__switch--off", row.Hidden);
-            var pickIcon = pick.Q<VectorIcon>(); if (pickIcon != null) pickIcon.Glyph = row.PickingDisabled ? IconGlyph.Lock : IconGlyph.Unlock;
-            var eyeIcon = eye.Q<VectorIcon>(); if (eyeIcon != null) eyeIcon.Glyph = row.Hidden ? IconGlyph.EyeOff : IconGlyph.Eye;
+            if (view.PickIcon != null) view.PickIcon.Glyph = row.PickingDisabled ? IconGlyph.Lock : IconGlyph.Unlock;
+            if (view.EyeIcon != null) view.EyeIcon.Glyph = row.Hidden ? IconGlyph.EyeOff : IconGlyph.Eye;
             if (renaming && rename.value != row.Name && !rename.focusController?.focusedElement?.Equals(rename.Q(TextField.textInputUssName)) == true)
             {
                 rename.SetValueWithoutNotify(row.Name);
@@ -579,7 +695,20 @@ namespace Orbiters.Mixer.Editor
             }
         }
 
+        private static void HideBadges(RowView view)
+        {
+            if (view.Logo != null) MixerUi.Show(view.Logo, false);
+            MixerUi.Show(view.PrefabBadge, false);
+            MixerUi.Show(view.MissingBadge, false);
+            MixerUi.Show(view.PaintingBadge, false);
+            MixerUi.Show(view.PosingBadge, false);
+            for (int i = 0; i < RowView.ComponentIcons; i++) MixerUi.Show(view.ComponentIcon[i], false);
+            MixerUi.Show(view.More, false);
+            view.ComponentsShown = 0;
+        }
+
         // Whether the sub-selected bone is the painted channel (else it is only posed).
+
         private static bool PaintsPicked()
         {
             var target = MixerSceneTool.FocusTarget ?? MixerSession.First;
@@ -619,7 +748,7 @@ namespace Orbiters.Mixer.Editor
             // Weight Paint: a plain click on a bone of the painted rig sub-selects it and the mesh stays selected (Shift
             // and Ctrl clicks still select in Unity). Nothing to drag then: a drag would move the selected mesh.
             bool plain = !evt.shiftKey && !evt.ctrlKey && !evt.commandKey;
-            if (plain && row.Object != null && BoneSubSelection.Pick(row.Object.transform)) { list.RefreshRows(); return; }
+            if (plain && row.Object != null && BoneSubSelection.Pick(row.Object.transform)) { RefreshRows(); return; }
             BoneSubSelection.Clear();
             if (evt.shiftKey && AnchorIndex() >= 0) Select(index, true, false);
             else if (evt.ctrlKey || evt.commandKey) Select(index, false, true);
@@ -714,8 +843,8 @@ namespace Orbiters.Mixer.Editor
                 case KeyCode.Backspace: if (evt.commandKey) { DeleteSelection(); evt.StopPropagation(); } break;
                 case KeyCode.F: if (!evt.ctrlKey) { if (BoneSubSelection.Bone != null) BoneSubSelection.Frame(); else SceneView.FrameLastActiveSceneView(); evt.StopPropagation(); } else { searchField.Q(TextField.textInputUssName)?.Focus(); evt.StopPropagation(); } break;
                 case KeyCode.D: if (command) { Duplicate(); evt.StopPropagation(); } break;
-                case KeyCode.A: if (command) { Selection.instanceIDs = model.Rows.Where(r => r.Object != null).Select(r => r.InstanceId).ToArray(); list.RefreshRows(); evt.StopPropagation(); } break;
-                case KeyCode.Escape: ForgetCut(); Selection.activeObject = null; list.RefreshRows(); evt.StopPropagation(); break;
+                case KeyCode.A: if (command) { Selection.instanceIDs = model.Rows.Where(r => r.Object != null).Select(r => r.InstanceId).ToArray(); RefreshRows(); evt.StopPropagation(); } break;
+                case KeyCode.Escape: ForgetCut(); Selection.activeObject = null; RefreshRows(); evt.StopPropagation(); break;
             }
         }
 
@@ -742,7 +871,7 @@ namespace Orbiters.Mixer.Editor
                 case "Copy": Copy(); break;
                 case "Cut": Cut(); break;
                 case "Paste": Paste(); break;
-                case "SelectAll": Selection.instanceIDs = model.Rows.Where(r => r.Object != null).Select(r => r.InstanceId).ToArray(); list.RefreshRows(); break;
+                case "SelectAll": Selection.instanceIDs = model.Rows.Where(r => r.Object != null).Select(r => r.InstanceId).ToArray(); RefreshRows(); break;
                 default: return;
             }
             evt.StopPropagation();
@@ -763,7 +892,7 @@ namespace Orbiters.Mixer.Editor
             if (go == null) { int index = CursorIndex(); go = index >= 0 ? model[index].Object : null; }
             if (go == null || model.IndexOf(go.GetInstanceID()) < 0) return;
             renamingId = go.GetInstanceID();
-            list.RefreshRows();
+            RefreshRows();
         }
 
         private void CommitRename(VisualElement rowElement, TextField field, bool apply)
@@ -782,7 +911,7 @@ namespace Orbiters.Mixer.Editor
                 EditorUtility.SetDirty(go);
                 AskRepath(captured);
             }
-            MarkDirty();
+            MarkEdited();
             root.Focus();
         }
 
@@ -797,14 +926,14 @@ namespace Orbiters.Mixer.Editor
             Undo.SetCurrentGroupName("Delete " + what);
             foreach (var go in objects) if (go != null) Undo.DestroyObjectImmediate(go);
             toasts.Show("Deleted " + what);
-            RebuildNow();
+            RebuildAfterEdit();
         }
 
         private void Duplicate()
         {
             if (Selection.gameObjects.Length == 0) return;
             Unsupported.DuplicateGameObjectsUsingPasteboard();
-            MarkDirty();
+            MarkEdited();
         }
 
         internal void Copy()
@@ -826,7 +955,7 @@ namespace Orbiters.Mixer.Editor
             Unsupported.CopyGameObjectsToPasteboard();
             SessionState.SetString(CutKey, string.Join(",", objects.Select(g => g.GetInstanceID())));
             toasts.Show("Cut " + (objects.Count == 1 ? objects[0].name : objects.Count + " objects") + ": Paste moves " + (objects.Count == 1 ? "it" : "them") + ".");
-            list.RefreshRows();
+            RefreshRows();
         }
 
         /// <summary>
@@ -843,7 +972,7 @@ namespace Orbiters.Mixer.Editor
                 if (asChildOf != null && asChildOf.scene.IsValid())
                     foreach (var pasted in Selection.gameObjects.Where(g => g != null && g.scene.IsValid() && g != asChildOf))
                         Undo.SetTransformParent(pasted.transform, asChildOf.transform, "Paste " + pasted.name);
-                MarkDirty();
+                MarkEdited();
                 return;
             }
             var anchor = asChildOf != null ? asChildOf : SceneParent();
@@ -877,11 +1006,23 @@ namespace Orbiters.Mixer.Editor
             return objects;
         }
 
+        // What Cut took, parsed once per value of the session key (read per row bind).
+        private static string cutText;
+        private static readonly HashSet<int> cutIds = new HashSet<int>();
+
         private static bool IsCut(int instanceId)
         {
             string cut = SessionState.GetString(CutKey, "");
-            return cut.Length > 0 && ("," + cut + ",").Contains("," + instanceId + ",");
+            if (!ReferenceEquals(cut, cutText) && cut != cutText)
+            {
+                cutText = cut;
+                cutIds.Clear();
+                foreach (string part in cut.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
+                    if (int.TryParse(part, out int id)) cutIds.Add(id);
+            }
+            return cutIds.Contains(instanceId);
         }
+
 
         internal static bool HasCut => CutObjects().Count > 0;
 
@@ -889,7 +1030,7 @@ namespace Orbiters.Mixer.Editor
         {
             if (SessionState.GetString(CutKey, "").Length == 0) return;
             SessionState.EraseString(CutKey);
-            list?.RefreshRows();
+            RefreshRows();
         }
 
         private void CreateEmpty(bool asChild, GameObject clicked = null)
@@ -901,7 +1042,7 @@ namespace Orbiters.Mixer.Editor
             if (parent != null && asChild) model.SetExpanded(parent.GetInstanceID(), true);
             Selection.activeGameObject = go;
             renamingId = go.GetInstanceID();
-            RebuildNow();
+            RebuildAfterEdit();
         }
 
         /// <summary>

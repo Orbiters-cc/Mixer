@@ -35,7 +35,7 @@ namespace Orbiters.Mixer.Editor
 
         private void OnViewportPointerDown(PointerDownEvent evt)
         {
-            if (evt.button == 0 && list.ItemAt(list.WorldToLocal(evt.position)) < 0) { Selection.activeObject = null; list.RefreshRows(); root.Focus(); }
+            if (evt.button == 0 && list.ItemAt(list.WorldToLocal(evt.position)) < 0) { Selection.activeObject = null; RefreshRows(); root.Focus(); }
         }
 
         private void OnViewportPointerMove(PointerMoveEvent evt)
@@ -156,7 +156,7 @@ namespace Orbiters.Mixer.Editor
                     foreach (var go in roots) { ToScene(go, target.Scene); if (go.transform.parent != null) Undo.SetTransformParent(go.transform, null, "Move to scene"); }
                 }
                 AskRepath(captured);
-                RebuildNow();
+                RebuildAfterEdit();
                 return;
             }
             var anchor = target.Object;
@@ -185,7 +185,7 @@ namespace Orbiters.Mixer.Editor
                 }
             }
             AskRepath(captured);
-            RebuildNow();
+            RebuildAfterEdit();
         }
 
         // Unity moves only scene roots to another scene: a child leaves its parent first.
@@ -230,7 +230,7 @@ namespace Orbiters.Mixer.Editor
             }
             if (made.Count > 0) Selection.objects = made.ToArray();
             dropRow = -1;
-            RebuildNow();
+            RebuildAfterEdit();
         }
 
         // ---- Scenes -------------------------------------------------------------------------------------------------
@@ -276,10 +276,10 @@ namespace Orbiters.Mixer.Editor
                 menu.AppendAction("Save Scene", _ => EditorSceneManager.SaveScene(scene), scene.isLoaded && scene.isDirty && !playing ? normal : disabled);
                 menu.AppendSeparator();
                 if (!scene.isLoaded)
-                    menu.AppendAction("Load Scene", _ => { EditorSceneManager.OpenScene(scene.path, OpenSceneMode.Additive); RebuildNow(); }, !playing && !string.IsNullOrEmpty(scene.path) ? normal : disabled);
+                    menu.AppendAction("Load Scene", _ => { EditorSceneManager.OpenScene(scene.path, OpenSceneMode.Additive); RebuildAfterEdit(); }, !playing && !string.IsNullOrEmpty(scene.path) ? normal : disabled);
                 else
-                    menu.AppendAction("Unload Scene", _ => { CloseScene(scene, false); RebuildNow(); }, !playing && SceneManager.sceneCount > 1 && !string.IsNullOrEmpty(scene.path) ? normal : disabled);
-                menu.AppendAction("Remove Scene", _ => { CloseScene(scene, true); RebuildNow(); }, !playing && SceneManager.sceneCount > 1 ? normal : disabled);
+                    menu.AppendAction("Unload Scene", _ => { CloseScene(scene, false); RebuildAfterEdit(); }, !playing && SceneManager.sceneCount > 1 && !string.IsNullOrEmpty(scene.path) ? normal : disabled);
+                menu.AppendAction("Remove Scene", _ => { CloseScene(scene, true); RebuildAfterEdit(); }, !playing && SceneManager.sceneCount > 1 ? normal : disabled);
                 menu.AppendSeparator();
                 menu.AppendAction("Create Empty", _ =>
                 {
@@ -288,7 +288,7 @@ namespace Orbiters.Mixer.Editor
                     Place(go, null, scene);
                     Selection.activeGameObject = go;
                     renamingId = go.GetInstanceID();
-                    RebuildNow();
+                    RebuildAfterEdit();
                 }, scene.isLoaded ? normal : disabled);
                 return;
             }
@@ -301,7 +301,7 @@ namespace Orbiters.Mixer.Editor
             menu.AppendAction("3D Object/Plane", _ => CreatePrimitive(PrimitiveType.Plane));
             menu.AppendAction("Light/Directional Light", _ => CreateLight(LightType.Directional));
             menu.AppendAction("Light/Point Light", _ => CreateLight(LightType.Point));
-            menu.AppendAction("Camera", _ => { var go = new GameObject("Camera"); go.AddComponent<Camera>(); Undo.RegisterCreatedObjectUndo(go, "Create Camera"); Place(go, null); Selection.activeGameObject = go; RebuildNow(); });
+            menu.AppendAction("Camera", _ => { var go = new GameObject("Camera"); go.AddComponent<Camera>(); Undo.RegisterCreatedObjectUndo(go, "Create Camera"); Place(go, null); Selection.activeGameObject = go; RebuildAfterEdit(); });
             AppendGameObjectMenu(menu);
             if (go0 == null) return;
             menu.AppendSeparator();
@@ -314,7 +314,7 @@ namespace Orbiters.Mixer.Editor
             menu.AppendAction(HasCut ? "Paste as Child (move what was cut)" : "Paste as Child", _ => Paste(go0));
             // One state for the whole selection, from the clicked row (as Unity does), not a flip per object.
             bool activate = !go0.activeSelf;
-            menu.AppendAction(activate ? "Activate" : "Deactivate", _ => { foreach (var g in selected) { Undo.RecordObject(g, activate ? "Activate" : "Deactivate"); g.SetActive(activate); } RebuildNow(); });
+            menu.AppendAction(activate ? "Activate" : "Deactivate", _ => { foreach (var g in selected) { Undo.RecordObject(g, activate ? "Activate" : "Deactivate"); g.SetActive(activate); } RebuildAfterEdit(); });
             menu.AppendAction("Set as Default Parent", _ => EditorUtility.SetDefaultParentObject(go0), PrefabStageUtility.GetCurrentPrefabStage() == null ? DropdownMenuAction.Status.Normal : DropdownMenuAction.Status.Disabled);
             menu.AppendAction("Clear Default Parent", _ => EditorUtility.ClearDefaultParentObject());
             menu.AppendSeparator();
@@ -322,8 +322,8 @@ namespace Orbiters.Mixer.Editor
             {
                 menu.AppendAction("Prefab/Select Asset", _ => { var asset = PrefabUtility.GetCorrespondingObjectFromSource(go0); if (asset != null) { Selection.activeObject = asset; EditorGUIUtility.PingObject(asset); } });
                 menu.AppendAction("Prefab/Open Asset", _ => { var asset = PrefabUtility.GetCorrespondingObjectFromSource(go0); if (asset != null) AssetDatabase.OpenAsset(asset); });
-                menu.AppendAction("Prefab/Unpack", _ => { foreach (var g in selected) if (PrefabUtility.IsAnyPrefabInstanceRoot(g)) PrefabUtility.UnpackPrefabInstance(g, PrefabUnpackMode.OutermostRoot, InteractionMode.UserAction); RebuildNow(); });
-                menu.AppendAction("Prefab/Unpack Completely", _ => { foreach (var g in selected) if (PrefabUtility.IsAnyPrefabInstanceRoot(g)) PrefabUtility.UnpackPrefabInstance(g, PrefabUnpackMode.Completely, InteractionMode.UserAction); RebuildNow(); });
+                menu.AppendAction("Prefab/Unpack", _ => { foreach (var g in selected) if (PrefabUtility.IsAnyPrefabInstanceRoot(g)) PrefabUtility.UnpackPrefabInstance(g, PrefabUnpackMode.OutermostRoot, InteractionMode.UserAction); RebuildAfterEdit(); });
+                menu.AppendAction("Prefab/Unpack Completely", _ => { foreach (var g in selected) if (PrefabUtility.IsAnyPrefabInstanceRoot(g)) PrefabUtility.UnpackPrefabInstance(g, PrefabUnpackMode.Completely, InteractionMode.UserAction); RebuildAfterEdit(); });
             }
             menu.AppendAction("Properties…", _ => EditorUtility.OpenPropertyEditor(go0));
             menu.AppendSeparator();
@@ -390,7 +390,7 @@ namespace Orbiters.Mixer.Editor
             var parent = SceneParent();
             Place(go, parent != null ? parent.transform : null);
             Selection.activeGameObject = go;
-            RebuildNow();
+            RebuildAfterEdit();
         }
 
         private void CreateLight(LightType type)
@@ -400,7 +400,7 @@ namespace Orbiters.Mixer.Editor
             Undo.RegisterCreatedObjectUndo(go, "Create Light");
             Place(go, null);
             Selection.activeGameObject = go;
-            RebuildNow();
+            RebuildAfterEdit();
         }
 
         /// <summary>

@@ -653,7 +653,170 @@ namespace Orbiters.Mixer.Editor.Tests
             }
         }
 
+        /// <summary>
+        /// The net under the incremental model: random edits of the fixture (with Undo, and a few made by script without
+        /// it), one per editor frame, each reaching the model only through the editor's change events; after each one the
+        /// kept rows must equal rows built from scratch, also while searching and after Undo and Redo, prefab revert and
+        /// apply included. The seed is fixed so a failure repeats.
+        /// </summary>
+        [UnityTest]
+        public System.Collections.IEnumerator TheKeptRowsEqualRowsBuiltFromScratchAfterRandomEdits()
+        {
+            const string prefabPath = "Assets/__MixerHierarchyRandomEdits.prefab";
+            undoable = redoable = 0;
+            var model = new HierarchyModel();
+            var filter = new HierarchyFilter();
+            System.Action<Toolkit.Editor.EditorChanges> listen = changes => model.Apply(changes);
+            Toolkit.Editor.EditorChangeBus.Changed += listen;
+            GameObject instance = null;
+            try
+            {
+                // A prefab instance in the fixture, for apply and revert.
+                var source = new GameObject("Prefab source");
+                new GameObject("Prefab child").transform.SetParent(source.transform, false);
+                var prefab = PrefabUtility.SaveAsPrefabAsset(source, prefabPath);
+                Object.DestroyImmediate(source);
+                instance = (GameObject)PrefabUtility.InstantiatePrefab(prefab, scene);
+                instance.transform.SetParent(root.transform, false);
+                model.SetExpanded(root.GetInstanceID(), true, recursive: true);
+                model.Rebuild(filter);
+                var random = new System.Random(20261110);
+                int made = 0;
+                for (int step = 0; step < 80; step++)
+                {
+                    string what = RandomEdit(random, instance, ref made);
+                    // Unity publishes its change events with the next editor frame.
+                    yield return null;
+                    Toolkit.Editor.EditorChangeBus.Flush();
+                    // New objects open too, so every object of the fixture is a row.
+                    foreach (var t in root.GetComponentsInChildren<Transform>(true)) model.Expanded.Add(t.gameObject.GetInstanceID());
+                    filter.Pattern = step % 5 == 4 ? new Toolkit.Editor.SearchPattern(step % 10 == 4 ? "Made" : "Made 1", false, false) : Toolkit.Editor.SearchPattern.Empty;
+                    model.Refresh(filter);
+                    var differences = model.Verify(filter);
+                    Assert.That(differences, Is.Empty, "after step " + step + " (" + what + "): " + string.Join("; ", differences));
+                }
+            }
+            finally
+            {
+                Toolkit.Editor.EditorChangeBus.Changed -= listen;
+                AssetDatabase.DeleteAsset(prefabPath);
+            }
+        }
+
+        private int undoable, redoable;
+
+        // An edit that found nothing to do recorded no Undo step.
+        private string Nothing()
+        {
+            undoable--;
+            return "nothing";
+        }
+
+        private string RandomEdit(System.Random random, GameObject instance, ref int made)
+        {
+            var all = root.GetComponentsInChildren<Transform>(true).Where(t => t != root.transform).ToList();
+            Transform Pick() => all.Count > 0 ? all[random.Next(all.Count)] : root.transform;
+            int kind = random.Next(14);
+            // Undo and Redo only steps this test made: the user's own steps before it are never touched.
+            if (kind == 10 && undoable == 0 || kind == 11 && redoable == 0) return "nothing";
+            if (kind < 10) { Undo.IncrementCurrentGroup(); undoable++; redoable = 0; }
+            switch (kind)
+            {
+                case 0:
+                {
+                    var go = new GameObject("Made " + made++);
+                    Undo.RegisterCreatedObjectUndo(go, "Create");
+                    Undo.SetTransformParent(go.transform, Pick(), "Create");
+                    return "create";
+                }
+                case 1:
+                {
+                    var go = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+                    go.name = "Made " + made++;
+                    Undo.RegisterCreatedObjectUndo(go, "Create mesh");
+                    Undo.SetTransformParent(go.transform, Pick(), "Create mesh");
+                    return "create a mesh";
+                }
+                case 2:
+                {
+                    var t = Pick();
+                    if (PrefabUtility.IsPartOfPrefabInstance(t) || all.Count < 6) return Nothing();
+                    Undo.DestroyObjectImmediate(t.gameObject);
+                    return "delete";
+                }
+                case 3:
+                {
+                    var t = Pick();
+                    var to = Pick();
+                    if (to == t || to.IsChildOf(t) || PrefabUtility.IsPartOfPrefabInstance(t) && !PrefabUtility.IsOutermostPrefabInstanceRoot(t.gameObject)) return Nothing();
+                    Undo.SetTransformParent(t, to, "Reparent");
+                    return "reparent";
+                }
+                case 4:
+                {
+                    var t = Pick();
+                    if (PrefabUtility.IsPartOfPrefabInstance(t) && !PrefabUtility.IsOutermostPrefabInstanceRoot(t.gameObject)) return Nothing();
+                    Undo.SetSiblingIndex(t, random.Next(Mathf.Max(1, t.parent.childCount)), "Reorder");
+                    return "reorder";
+                }
+                case 5:
+                {
+                    var go = Pick().gameObject;
+                    Undo.RecordObject(go, "Rename");
+                    go.name = "Made " + made++;
+                    return "rename";
+                }
+                case 6:
+                {
+                    var go = Pick().gameObject;
+                    Undo.RecordObject(go, "Activate");
+                    go.SetActive(!go.activeSelf);
+                    return "activate";
+                }
+                case 7:
+                {
+                    var go = Pick().gameObject;
+                    if (go.GetComponent<Light>() != null) return Nothing();
+                    Undo.AddComponent<Light>(go);
+                    return "add a light";
+                }
+                case 8:
+                {
+                    var filterComponent = Pick().GetComponent<MeshFilter>();
+                    if (filterComponent == null) return Nothing();
+                    Undo.RecordObject(filterComponent, "No mesh");
+                    filterComponent.sharedMesh = null;
+                    return "take a mesh away";
+                }
+                case 9:
+                {
+                    var child = instance.transform.GetChild(0).gameObject;
+                    Undo.RecordObject(child, "Override");
+                    child.name = "Made " + made++;
+                    if (random.Next(2) == 0) { PrefabUtility.RevertPrefabInstance(instance, InteractionMode.UserAction); return "prefab revert"; }
+                    PrefabUtility.ApplyPrefabInstance(instance, InteractionMode.UserAction);
+                    return "prefab apply";
+                }
+                case 10: Undo.PerformUndo(); undoable--; redoable++; return "undo";
+                case 11: Undo.PerformRedo(); redoable--; undoable++; return "redo";
+                case 12:
+                {
+                    // A script's change without Undo: only hierarchyChanged tells it.
+                    var go = Pick().gameObject;
+                    go.name = "Made " + made++;
+                    return "rename without Undo";
+                }
+                default:
+                {
+                    var go = new GameObject("Made " + made++);
+                    go.transform.SetParent(Pick(), false);
+                    return "create without Undo";
+                }
+            }
+        }
+
         // A press and a release at a point, through the window's own event handling: IMGUI code (the decorations) reads
+
         // its mouse position only from events Unity hands the window itself.
         private static void Click(EditorWindow window, Vector2 point)
         {
