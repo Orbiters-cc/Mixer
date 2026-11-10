@@ -32,7 +32,7 @@ namespace Orbiters.UnitGit.Editor
         private int consumed; // commits Git printed and this read, matching the search or not
         private string lastConsumed = string.Empty; // the id of the last of them
         private bool resuming; // a new process after an idle stop: its first commit must be lastConsumed
-        private bool ended, withTrailers = true;
+        private bool ended;
         private volatile bool disposed;
         private long lastUse;
 
@@ -77,7 +77,6 @@ namespace Orbiters.UnitGit.Editor
                     lastConsumed = string.Empty;
                     resuming = false;
                     ended = false;
-                    withTrailers = UnitGitService.TrailersSupported != false;
                     key = historyKey;
                     root = projectRoot;
                     search = logSearch;
@@ -107,7 +106,7 @@ namespace Orbiters.UnitGit.Editor
             EditorLiveProcess live = process;
             if (live == null)
             {
-                var args = new List<string> { "log", "-z", "--pretty=format:" + UnitGitService.CommitLogFormat(withTrailers) };
+                var args = new List<string> { "log", "-z", "--pretty=format:" + UnitGitService.CommitLogFormat() };
                 // After an idle stop: from the last commit already read, which must come first again (else the history
                 // moved under the same refs signature, and it is read again from the top).
                 resuming = consumed > 0;
@@ -139,7 +138,6 @@ namespace Orbiters.UnitGit.Editor
                 }
                 consumed++;
                 lastConsumed = commit.FullHash;
-                if (UnitGitService.TrailersSupported == null && withTrailers) UnitGitService.TrailersSupported = true;
                 if (UnitGitService.MatchesSearch(commit, search)) commits.Add(commit);
                 return new GitCommandResult();
             }
@@ -162,16 +160,6 @@ namespace Orbiters.UnitGit.Editor
             {
                 ended = true;
                 return new GitCommandResult();
-            }
-
-            // Git too old for the release trailer placeholder: once, the same history without it (the field stays, empty).
-            if (consumed == 0 && withTrailers && UnitGitService.TrailersSupported != true)
-            {
-                withTrailers = false;
-                GitCommandResult retry = ReadNext(cancelled, log);
-                if (retry.Success) UnitGitService.TrailersSupported = false;
-                else withTrailers = true;
-                return retry;
             }
 
             return new GitCommandResult { ExitCode = exit == 0 ? 1 : exit, StandardError = string.IsNullOrWhiteSpace(error) ? "git log failed." : error };
