@@ -8,7 +8,8 @@
 // camera's image and converts the result to linear light once. Blending in linear light instead showed half-transparent
 // splats brighter (50 % white over black at 0.735, not 0.5): sparse far content and the edges of what was seen looked
 // hazier than trained. Pass 2, before them, draws the cloud's sky map wherever the camera drew nothing nearer than the
-// far plane, looked up by direction as Orbiters - N4N0's renderer does (sky_lookup.wgsl).
+// far plane, looked up by direction as Orbiters - N4N0's renderer does (sky_lookup.wgsl). Pass 3 draws what pass 0 draws
+// from the quads SplatProject.compute measured once per splat (SplatProjection.hlsl holds the maths for both).
 Shader "Hidden/Orbiters/Mixer/Splats"
 {
     SubShader
@@ -27,7 +28,7 @@ Shader "Hidden/Orbiters/Mixer/Splats"
             #pragma fragment frag
             #pragma target 4.5
             #include "UnityCG.cginc"
-            #include "SplatData.hlsl"
+            #include "SplatProjection.hlsl"
 
             StructuredBuffer<Splat> _Splats;
             // What the keyframes saw of each splat, where the cloud says (_HasSeen; else a placeholder).
@@ -44,31 +45,6 @@ Shader "Hidden/Orbiters/Mixer/Splats"
             // The sky's colour at the horizon, encoded sRGB: what fog and haze turn to.
             float4 _Horizon;
 
-            // How far a splat can be trusted, as Orbiters - N4N0's viewer judges it (common.wgsl `trust`), seen from the
-            // camera `towardEye` away (the cloud's own space, from the splat): RadSplat's thresholds on its largest weight,
-            // half as much seen in one keyframe, 0.2 less for each compass sector between the camera's and the nearest one
-            // a keyframe looked from (at most three), and none once the camera samples it four times as finely as the
-            // nearest keyframe did.
-            float Trust(float4 s, float3 towardEye, float focal)
-            {
-                float strength = smoothstep(0.001, 0.01, s.x);
-                float views = lerp(0.5, 1.0, saturate((s.y - 1.0) / 4.0));
-                uint eye = min((uint)(frac(atan2(towardEye.x, towardEye.z) / 6.283185307 + 1.0) * 16.0), 15u);
-                uint bits = (uint)s.z;
-                uint nearest = 3u;
-                for (uint k = 0u; k < 16u; k++)
-                {
-                    if ((bits & (1u << k)) != 0u)
-                    {
-                        uint d = max(eye, k) - min(eye, k);
-                        nearest = min(nearest, min(d, 16u - d));
-                    }
-                }
-                float side = 1.0 - 0.2 * nearest;
-                float finer = focal / max(length(towardEye), 1e-6) / max(s.w, 1e-6);
-                return strength * views * side * (1.0 - smoothstep(1.0, 4.0, finer));
-            }
-
             struct v2f
             {
                 float4 pos : SV_POSITION;
@@ -78,6 +54,7 @@ Shader "Hidden/Orbiters/Mixer/Splats"
 
             static const float2 Corners[6] = { float2(-1, -1), float2(1, -1), float2(1, 1), float2(-1, -1), float2(1, 1), float2(-1, 1) };
 
+            // Every corner projects its splat again (the pipelines without the compute pass).
             v2f vert(uint vid : SV_VertexID, uint iid : SV_InstanceID)
             {
                 v2f o;
@@ -87,111 +64,28 @@ Shader "Hidden/Orbiters/Mixer/Splats"
                 uint index = _Order[iid];
                 if (index >= _Count)
                     return o;
-                Splat s = _Splats[index];
-                // Encoded sRGB as captured, kept so: the blending happens on these values, as in training.
-                float4 color = SplatColor(s);
-                float3 cov0, cov1;
-                SplatCovariance(s, cov0, cov1);
-                // What the keyframes saw of it: largest weight (negative where unknown), keyframes, sector bits, finest
-                // sampling rate (pixels per metre); whether it is on the sky shell; metres beyond the depth frames' reach.
-                float4 seen = float4(-1.0, 0.0, 0.0, 0.0);
-                float beyond = 0.0;
-                bool sky = false;
-                if (_HasSeen != 0u)
-                {
-                    SplatSeen t = _Seen[index];
-                    seen = SplatSeenOf(t);
-                    beyond = SplatBeyondOf(t);
-                    sky = SplatIsSky(s);
-                }
-                float3 world = mul(_ObjectToWorld, float4(s.position, 1.0)).xyz;
-                float3 view = mul(UNITY_MATRIX_V, float4(world, 1.0)).xyz;
-                float z = -view.z;
-                if (z < 0.05)
-                    return o;
-                float4 clip = mul(UNITY_MATRIX_P, float4(view, 1.0));
-
-                // Covariance: object → view (Z forward), then the projection's Jacobian in pixels.
-                float3x3 sigma = float3x3(cov0.x, cov0.y, cov0.z, cov0.y, cov1.x, cov1.y, cov0.z, cov1.y, cov1.z);
-                float3x3 w = mul((float3x3)UNITY_MATRIX_V, (float3x3)_ObjectToWorld);
-                w[2] = -w[2];
-                float3x3 sc = mul(w, mul(sigma, transpose(w)));
                 float2 screen = _ScreenParams.xy;
-                float fx = UNITY_MATRIX_P[0][0] * screen.x * 0.5;
-                float fy = UNITY_MATRIX_P[1][1] * screen.y * 0.5;
-                float limx = 1.3 / abs(UNITY_MATRIX_P[0][0]);
-                float limy = 1.3 / abs(UNITY_MATRIX_P[1][1]);
-                float tx = clamp(view.x / z, -limx, limx) * z;
-                float ty = clamp(view.y / z, -limy, limy) * z;
-                float3x3 j = float3x3(fx / z, 0, -fx * tx / (z * z), 0, fy / z, -fy * ty / (z * z), 0, 0, 0);
-                // The eye inside what the splat draws: its Mahalanobis distance (in view space, where the eye is the
-                // origin) within the reach at this opacity.
-                float3 d = -float3(view.x, view.y, z);
-                float3 adj0 = float3(sc[1][1] * sc[2][2] - sc[1][2] * sc[1][2], sc[0][2] * sc[1][2] - sc[0][1] * sc[2][2], sc[0][1] * sc[1][2] - sc[0][2] * sc[1][1]);
-                float adj11 = sc[0][0] * sc[2][2] - sc[0][2] * sc[0][2];
-                float adj12 = sc[0][1] * sc[0][2] - sc[0][0] * sc[1][2];
-                float adj22 = sc[0][0] * sc[1][1] - sc[0][1] * sc[0][1];
-                float det3 = sc[0][0] * adj0.x + sc[0][1] * adj0.y + sc[0][2] * adj0.z;
-                float inside = adj0.x * d.x * d.x + adj11 * d.y * d.y + adj22 * d.z * d.z + 2.0 * (adj0.y * d.x * d.y + adj0.z * d.x * d.z + adj12 * d.y * d.z);
-                float3x3 cv = mul(j, mul(sc, transpose(j)));
-                // Mip-Splatting's 2D filter: a Gaussian of 0.1 px² widens the splat and its opacity scales by
-                // √(det A / det(A + filter)), so a splat smaller than a pixel fades as it shrinks instead of spreading at
-                // full opacity (the trainer fused its 3D filter into the scales and opacities already).
-                float detA = cv[0][0] * cv[1][1] - cv[0][1] * cv[0][1];
-                float a = cv[0][0] + 0.1;
-                float b = cv[0][1];
-                float c = cv[1][1] + 0.1;
-                float det = a * c - b * b;
-                color.a *= sqrt(max(detA, 1e-8) / det);
-                // Out to α = 1/255 at this opacity, never past 3.33 σ.
-                float extent = min(3.33, sqrt(2.0 * log(max(color.a * 255.0, 1.0))));
-                if (det3 > 0.0 && inside < extent * extent * det3)
+                SplatView v;
+                v.objectToWorld = _ObjectToWorld;
+                v.view = UNITY_MATRIX_V;
+                v.focal = float2(UNITY_MATRIX_P[0][0] * screen.x * 0.5, UNITY_MATRIX_P[1][1] * screen.y * 0.5);
+                v.limit = float2(1.3 / abs(UNITY_MATRIX_P[0][0]), 1.3 / abs(UNITY_MATRIX_P[1][1]));
+                v.screen = screen;
+                v.eyeInCloud = mul(_WorldToObject, float4(_WorldSpaceCameraPos, 1.0)).xyz;
+                v.confidence = _Confidence;
+                v.far = _Far;
+                v.horizon = _Horizon.rgb;
+                bool known = _HasSeen != 0u;
+                SplatFootprint f;
+                if (!SplatProject(_Splats[index], _Seen[known ? index : 0u], known, v, f))
                     return o;
-                color.a *= smoothstep(0.05, 0.2, length(view));
-                if (_Far.x > 0.5 && seen.x >= 0.0 && !sky)
-                {
-                    float past = beyond / _Far.y;
-                    if (_Far.x < 1.5)
-                        color.rgb = lerp(color.rgb, _Horizon.rgb, 1.0 - exp(-past));
-                    else
-                        color.a *= 1.0 - smoothstep(0.0, 1.0, past);
-                }
-                if (_Confidence.x > 0.0 && seen.x >= 0.0 && !sky)
-                {
-                    // The camera in the cloud's own space (where the sectors were measured), from the splat.
-                    float3 towardEye = mul(_WorldToObject, float4(_WorldSpaceCameraPos, 1.0)).xyz - s.position;
-                    float k = _Confidence.x * (1.0 - Trust(seen, towardEye, max(fx, fy)));
-                    if (_Confidence.y < 0.5)
-                        color.a *= 1.0 - k;
-                    else if (_Confidence.y < 1.5)
-                    {
-                        // Wider by a Gaussian of up to 16 px², its weight kept as the 2D filter keeps it.
-                        float before = det;
-                        a += k * 16.0;
-                        c += k * 16.0;
-                        det = a * c - b * b;
-                        color.a *= sqrt(before / det);
-                    }
-                    else
-                        color.rgb = lerp(color.rgb, _Horizon.rgb, k);
-                }
-                extent = min(3.33, sqrt(2.0 * log(max(color.a * 255.0, 1.0))));
-                if (extent <= 0.0)
-                    return o;
-                float mid = 0.5 * (a + c);
-                float r = sqrt(max(0.1, mid * mid - det));
-                float cap = min(1024.0, min(screen.x, screen.y)) / extent;
-                float l1 = min(mid + r, cap * cap);
-                float l2 = min(max(mid - r, 0.1), cap * cap);
-                float2 e1 = abs(b) > 1e-6 ? normalize(float2(b, mid + r - a)) : (a >= c ? float2(1, 0) : float2(0, 1));
-                float2 e2 = float2(-e1.y, e1.x);
-
+                float4 clip = mul(UNITY_MATRIX_P, float4(f.view, 1.0));
                 float2 corner = Corners[vid];
-                float2 offset = (corner.x * sqrt(l1) * e1 + corner.y * sqrt(l2) * e2) * extent;
+                float2 offset = corner.x * f.axis1 + corner.y * f.axis2;
                 clip.xy += offset * 2.0 / screen * clip.w;
                 o.pos = clip;
-                o.uv = corner * extent;
-                o.color = color;
+                o.uv = corner * f.extent;
+                o.color = f.color;
                 return o;
             }
 
@@ -321,6 +215,68 @@ Shader "Hidden/Orbiters/Mixer/Splats"
                 #else
                 return float4(ToLinear(sky), 1.0);
                 #endif
+            }
+            ENDCG
+        }
+        // 3: the splats into the accumulation target as pass 0 draws them, from the quads SplatProject.compute wrote for
+        // this camera (SplatRenderer.Pipeline.Cached): each corner only reads its splat's quad.
+        Pass
+        {
+            ZWrite Off
+            ZTest LEqual
+            Cull Off
+            Blend One OneMinusSrcAlpha
+
+            CGPROGRAM
+            #pragma vertex vert
+            #pragma fragment frag
+            #pragma target 4.5
+            #include "UnityCG.cginc"
+            #include "SplatProjection.hlsl"
+
+            StructuredBuffer<SplatQuad> _Quads;
+            // The pixels the quads were measured in (what the compute pass was given).
+            float4 _Screen;
+
+            struct v2f
+            {
+                float4 pos : SV_POSITION;
+                float2 uv : TEXCOORD0;
+                nointerpolation float4 color : TEXCOORD1;
+            };
+
+            static const float2 Corners[6] = { float2(-1, -1), float2(1, -1), float2(1, 1), float2(-1, -1), float2(1, 1), float2(-1, 1) };
+
+            v2f vert(uint vid : SV_VertexID, uint iid : SV_InstanceID)
+            {
+                v2f o;
+                o.pos = float4(0, 0, 2, 1);
+                o.uv = 0;
+                o.color = 0;
+                SplatQuad q = _Quads[iid];
+                if (!(q.extent > 0.0))
+                    return o;
+                float4 clip = mul(UNITY_MATRIX_P, float4(q.view, 1.0));
+                float2 corner = Corners[vid];
+                float2 axis2 = float2(-q.axis1.y, q.axis1.x) * (q.radius2 / max(length(q.axis1), 1e-6));
+                float2 offset = corner.x * q.axis1 + corner.y * axis2;
+                // The quads were measured with y up; the GPU's projection flips y where it renders into a texture
+                // (mirrored, the same ellipse comes out as pass 0 draws it there).
+                if (UNITY_MATRIX_P[1][1] < 0.0)
+                    offset.y = -offset.y;
+                clip.xy += offset * 2.0 / _Screen.xy * clip.w;
+                o.pos = clip;
+                o.uv = corner * q.extent;
+                o.color = float4(float3(q.rgb & 1023u, (q.rgb >> 10) & 1023u, (q.rgb >> 20) & 1023u) / 1023.0, q.alpha);
+                return o;
+            }
+
+            float4 frag(v2f i) : SV_Target
+            {
+                float alpha = min(0.99, i.color.a * exp(-0.5 * dot(i.uv, i.uv)));
+                if (alpha < 1.0 / 255.0)
+                    discard;
+                return float4(i.color.rgb * alpha, alpha);
             }
             ENDCG
         }
