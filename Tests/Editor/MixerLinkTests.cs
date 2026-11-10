@@ -929,7 +929,9 @@ namespace Orbiters.Mixer.Editor.Tests
                     MixerSession.NoteEdited(target, SessionChange.Geometry, layer, named);
                 }
                 Assert.That(host.DueVertexLists, Is.EqualTo(layers.Length), "a list per layer while its frame is due");
-                var frames = PositionsOf(blender.Pump(1.0, MixerLinkProtocol.FrameType.Positions)).ToList();
+                // Pumped for the whole second, not until the first positions frame: the five frames leave in one tick but may
+                // reach the socket in more than one read.
+                var frames = PositionsOf(blender.Pump(1.0)).ToList();
                 Assert.That(frames.Count, Is.GreaterThanOrEqualTo(layers.Length), "every layer's frame left");
                 Assert.That(frames[0].Shape, Is.Null, "the base first");
                 Assert.That(host.DueVertexLists, Is.EqualTo(0), "the lists went with their frames");
