@@ -121,7 +121,6 @@ namespace Orbiters.Logger.Editor.Tests
             Assert.AreEqual(0, emptied);
             AssertCountersMatchARecount(store, firstExact: false);
 
-
             foreach (var pair in remembered)
             {
                 if (!store.Contains(pair.Key))

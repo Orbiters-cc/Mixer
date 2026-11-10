@@ -333,7 +333,6 @@ namespace Orbiters.Logger.Editor
 
         private static string RevisionPath(string cachePath) => Path.ChangeExtension(cachePath, ".revision");
 
-
         // One copy per server (production and a local development server keep their own), shared by every project.
         private static string CachePath(string url)
         {

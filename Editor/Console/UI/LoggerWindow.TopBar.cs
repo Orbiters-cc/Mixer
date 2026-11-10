@@ -225,7 +225,6 @@ namespace Orbiters.Logger.Editor
                 focusKey = value ? Store.Message(Store.MessageAt(cursor)).Group : state.GroupLast[cursor];
             }
 
-
             grouped = value;
             viewToggle.Select(value ? 1 : 0);
             ClearSelection();

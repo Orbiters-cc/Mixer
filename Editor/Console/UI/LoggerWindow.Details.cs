@@ -269,7 +269,6 @@ namespace Orbiters.Logger.Editor
                     Card(main, "Output").Add(LongText.Build(output.TrimEnd(), "lg-details__output", MonoFont));
                 }
             }
-
             else if (message.Stack > 0)
             {
                 BuildStack(Card(main, "Stack trace"), store.Texts[message.Stack]);
@@ -436,7 +435,7 @@ namespace Orbiters.Logger.Editor
                 int line = frame.Line;
                 LoggerUi.Press(link, () =>
                 {
-                    if (!OpenFile(path, line, column))
+                    if (!SourceFiles.Open(path, line, column))
                     {
                         ShowToast("Can't open " + path, error: true);
                     }
@@ -602,7 +601,6 @@ namespace Orbiters.Logger.Editor
                 }
 
                 int end = Math.Min(source.Group(shown).Last + 1, source.EndId);
-
                 for (int i = scanned; i < end; i++)
                 {
                     if (source.Message(source.MessageAt(i)).Group != shown || (source.FlagsAt(i) & LogStore.Superseded) != 0)

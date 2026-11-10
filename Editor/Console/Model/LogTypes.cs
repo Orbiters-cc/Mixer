@@ -46,7 +46,6 @@ namespace Orbiters.Logger.Editor
         /// <summary>A timing log (<see cref="LogStore.AddTiming"/>): its stack is its profile's text form, the profile kept by the store.</summary>
         Timing = 4,
         /// <summary>A command's log (<see cref="LogStore.AddOutput"/>): each run's output is kept with its occurrence (<see cref="LogStore.OutputOf"/>).</summary>
-
         Output = 8
     }
 

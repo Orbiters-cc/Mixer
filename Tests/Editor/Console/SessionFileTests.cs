@@ -334,7 +334,6 @@ namespace Orbiters.Logger.Editor.Tests
             Assert.AreEqual(generation, loaded.Texts.Generation, "the compaction was dropped");
             Assert.IsTrue(loaded.Texts.Faulted, "the store must start over");
             Assert.AreEqual(newest, loaded.Message(loaded.MessageAt(loaded.EndId - 1)).Text, "ids still name the old table");
-
             Assert.IsFalse(loaded.Texts.IsLoaded(newest), "and the placeholder was never kept");
             session.Close();
         }

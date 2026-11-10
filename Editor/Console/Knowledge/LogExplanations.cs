@@ -412,7 +412,6 @@ namespace Orbiters.Logger.Editor
         // order of its list (the server's order before the Mixer console's own).
         private static void Rebuild()
         {
-
             var merged = new List<LogExplanation>(custom.Count + remote.Count + local.Count);
             var ids = new HashSet<string>(StringComparer.Ordinal);
             // The Mixer console's entries that say when they changed: a server's older copy of one gives way to it (at its place).

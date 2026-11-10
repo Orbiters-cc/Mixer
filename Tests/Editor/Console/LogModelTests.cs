@@ -566,7 +566,6 @@ namespace Orbiters.Logger.Editor.Tests
             Assert.AreEqual(3, store.Message(old).Count);
         }
 
-
         [Test]
         public void ConsoleTimestamps()
         {

@@ -737,7 +737,6 @@ namespace Orbiters.Logger.Editor
             }
 
             return store.Contains(key) ? store.MessageAt(key) : -1;
-
         }
 
         private void Copy(bool withStack)
@@ -784,7 +783,6 @@ namespace Orbiters.Logger.Editor
                     builder.Append('\n').Append(store.Texts[message.Stack].TrimEnd('\n', '\r'));
                 }
 
-
                 copied++;
             }
 
@@ -811,36 +809,9 @@ namespace Orbiters.Logger.Editor
 
             var store = Store;
             ref var message = ref store.Message(messageId);
-            if (!OpenFile(store.Texts[message.File], message.Line, message.Column))
+            if (!SourceFiles.Open(store.Texts[message.File], message.Line, message.Column))
             {
                 ShowToast("No source file for this log", error: true);
-            }
-        }
-
-        internal static bool OpenFile(string path, int line, int column = 0)
-        {
-            if (string.IsNullOrEmpty(path))
-            {
-                return false;
-            }
-
-            try
-            {
-                if (path.StartsWith("Assets/", StringComparison.Ordinal) || path.StartsWith("Packages/", StringComparison.Ordinal))
-                {
-                    var asset = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(path);
-                    if (asset != null && AssetDatabase.OpenAsset(asset, Math.Max(1, line), Math.Max(0, column)))
-                    {
-                        return true;
-                    }
-                }
-
-                string full = Path.GetFullPath(path);
-                return File.Exists(full) && InternalEditorUtility.OpenFileAtLineExternal(full, Math.Max(1, line), Math.Max(0, column));
-            }
-            catch (Exception)
-            {
-                return false;
             }
         }
 

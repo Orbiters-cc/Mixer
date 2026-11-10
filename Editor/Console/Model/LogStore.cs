@@ -527,7 +527,6 @@ namespace Orbiters.Logger.Editor
                 return;
             }
 
-
             var info = StackInfoOf(message.Stack, stack);
             message.Source = Sources.Resolve(message.Variant, condition, info.Source);
             if (info.HasCallsite)
@@ -1391,7 +1390,6 @@ namespace Orbiters.Logger.Editor
         internal int LowestIssuedId => lowestIssued;
 
         private void RecountGroups()
-
         {
             for (int i = 0; i < groupCount; i++)
             {
@@ -1487,7 +1485,6 @@ namespace Orbiters.Logger.Editor
         }
 
         internal List<KeyValuePair<int, int>> ContextPairs()
-
         {
             var pairs = new List<KeyValuePair<int, int>>();
             for (int c = 0; c < chunkCount; c++)
@@ -1547,7 +1544,6 @@ namespace Orbiters.Logger.Editor
             first = firstId;
             end = firstId + restoredCount;
             lowestIssued = Math.Min(lowestId, firstId);
-
             Grouping = grouping;
             messages = restoredMessages;
             messageCount = restoredMessageCount;
@@ -1598,7 +1594,6 @@ namespace Orbiters.Logger.Editor
             {
                 events.AddRange(restoredEvents);
             }
-
 
             Epoch++;
             IdEpoch++;

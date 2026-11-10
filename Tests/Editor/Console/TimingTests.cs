@@ -273,7 +273,6 @@ namespace Orbiters.Logger.Editor.Tests
             }
         }
 
-
         [Test]
         public void BundleBuildLogReadsUnitysOwnTimings()
         {

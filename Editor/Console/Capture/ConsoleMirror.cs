@@ -156,7 +156,6 @@ namespace Orbiters.Logger.Editor
                     store.SetFileIfUnknown(store.MessageAt(candidate.Occurrence), row.File, row.Line);
                 }
 
-
                 // Usually the oldest pending log. Others before the match came from the same burst: they keep waiting.
                 if (i == pendingStart)
                 {
@@ -192,7 +191,6 @@ namespace Orbiters.Logger.Editor
         }
 
         private void ExpirePending(long now)
-
         {
             while (pendingStart < pending.Count && now - pending[pendingStart].Time > PendingLifetime)
             {

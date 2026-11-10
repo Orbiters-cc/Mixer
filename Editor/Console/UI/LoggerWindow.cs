@@ -410,7 +410,6 @@ namespace Orbiters.Logger.Editor
             {
                 // Rows or counts no longer match the store (a trim, history in front, a regroup): never draw them,
                 // recompute (a pass already running gives its result). Selected logs keep their ids.
-
                 if (state != null || !runner.Busy)
                 {
                     RefilterInvalidated();

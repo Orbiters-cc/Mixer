@@ -317,7 +317,6 @@ namespace Orbiters.Logger.Editor
                 copiedOutputs.TryGetValue(occurrence, out var copied) && copied.Key == oldText ? copied.Value : Copy(oldText);
 
             /// <summary>The new id of an old message, -1 when it had no occurrence (it goes).</summary>
-
             public int NewId(int old) => old >= 0 && old < map.Length ? map[old] - 1 : -1;
 
             /// <summary>A message's later change, copied when the tables land (main thread).</summary>

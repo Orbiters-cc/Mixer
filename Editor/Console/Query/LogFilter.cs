@@ -909,7 +909,6 @@ namespace Orbiters.Logger.Editor
         public TextTable Texts;
         public int FirstId;
         public long From;
-
         public long To;
         public bool Clips;
         public int Buckets;

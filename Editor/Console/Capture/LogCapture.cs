@@ -406,7 +406,6 @@ namespace Orbiters.Logger.Editor
             }
 
             int occurrence = Store.Add(raw.Time, condition, stack, variant, raw.Background ? OccurrenceFlags.BackgroundThread : OccurrenceFlags.None);
-
             if (!raw.Injected)
             {
                 // Only logs Unity also shows wait for their console row.
@@ -605,7 +604,6 @@ namespace Orbiters.Logger.Editor
             Drain(0d);
             var store = NewStore();
             Attach(store);
-
             long now = Now;
             int unityRows = UnityConsole.Total();
             history = unityRows > 0

@@ -686,7 +686,6 @@ namespace Orbiters.Logger.Editor
  owners, flags, count, messages, messageCount, groups, groupCount, grouping, contexts,
                     outputs, events);
 
-
                 textFile = file;
                 textGeneration = texts;
                 textsSaved = textCount;
@@ -856,7 +855,6 @@ namespace Orbiters.Logger.Editor
 
             return true;
         }
-
 
         // Every record must start where the one before ends, and the last end where the texts file's valid part does.
         private static bool ReadIndex(string path, long[] offsets, int[] hashes, int[] lengths, int textCount, long bytes)

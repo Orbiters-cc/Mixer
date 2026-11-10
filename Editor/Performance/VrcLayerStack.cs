@@ -270,7 +270,6 @@ namespace Orbiters.Mixer.Editor.Performance
                         break;
                 }
             }
-
             if (name == "Seated")
                 foreach (var layer in layers)
                     if (layer.Type == AnimLayerType.Sitting && layer.Playable.IsValid())

@@ -58,7 +58,6 @@ namespace Orbiters.Logger.Editor
         {
             var frames = new List<StackFrame>();
             if (string.IsNullOrEmpty(stack))
-
             {
                 return frames;
             }

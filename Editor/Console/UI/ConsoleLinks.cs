@@ -110,7 +110,6 @@ namespace Orbiters.Logger.Editor
                     }
                 }
             }
-
         }
 
         private static void Hook(VisualElement root)

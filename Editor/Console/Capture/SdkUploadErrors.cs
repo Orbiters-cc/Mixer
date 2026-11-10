@@ -19,7 +19,7 @@ namespace Orbiters.Logger.Editor
     /// </summary>
     internal static class SdkUploadErrors
     {
-        /// <summary>How the log starts (what <see cref="LoggerWindow.ErrorToShow"/> looks for).</summary>
+        /// <summary>How the log starts (what <see cref="LogQueries.ErrorToShow"/> looks for).</summary>
         internal const string Prefix = "VRChat's SDK only shows the message; where it happened: ";
 
         private const string HarmonyId = "cc.orbiters.mixer.console.upload-errors";
@@ -57,7 +57,6 @@ namespace Orbiters.Logger.Editor
                 // Another Harmony or SDK than this was written for: uploads keep the SDK's own message only.
             }
         }
-
 
         /// <summary>The builders' methods that are hooked now (tests and diagnostics).</summary>
         internal static int Hooked { get; private set; }

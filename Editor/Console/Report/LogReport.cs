@@ -248,7 +248,6 @@ namespace Orbiters.Logger.Editor
                         {
                             progress?.Invoke(0.75f * (i - view.First) / view.Count);
                         }
-
                     }
                 }
 
@@ -288,7 +287,6 @@ namespace Orbiters.Logger.Editor
                     writer.Line(view.Texts.Plain(message.Text));
                     string stack = snapshot.Outputs.TryGetValue(id, out string output) ? output : view.Texts.Plain(message.Stack);
                     if (!string.IsNullOrWhiteSpace(stack))
-
                     {
                         writer.Line();
                         writer.Line(stack.TrimEnd());
