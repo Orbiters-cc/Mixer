@@ -400,6 +400,42 @@ namespace Orbiters.Mixer.Editor.Tests
             Assert.That(max, Is.EqualTo(new Vector3(2f, 5f, 3f)));
         }
 
+        // ---- Layer views ------------------------------------------------------------------------------------------
+
+        [Test]
+        public void ALayerViewReadsWhatThePerVertexAccessorsRead()
+        {
+            var mesh = MixerCoreTestsFixtures.Cylinder(8, 6, 0.3f, 2f);
+            try
+            {
+                var deltas = new Vector3[mesh.vertexCount];
+                for (int v = 0; v < deltas.Length; v++) deltas[v] = new Vector3(0.01f * v, 0f, 0f);
+                mesh.AddBlendShapeFrame("Lean", 100f, deltas, null, null);
+                var doc = new MeshDocument(mesh);
+                doc.Layer = "Lean";
+                doc.LayerWeight = 0.5f;
+                var shown = doc.ShownView();
+                var lean = doc.View("Lean");
+                var none = doc.View(null);
+                for (int v = 0; v < mesh.vertexCount; v++)
+                {
+                    Assert.That(shown[v], Is.EqualTo(doc.LayerPosition(v)));
+                    Assert.That(lean[v], Is.EqualTo(doc.GetLayerPosition("Lean", v)));
+                    Assert.That(none[v], Is.EqualTo(doc.Positions[v]));
+                }
+                var indices = new[] { 1, 5 };
+                doc.SetLayerPositions("Lean", indices, new[] { Vector3.one, Vector3.up });
+                Assert.That(doc.GetLayerPosition("Lean", 1), Is.EqualTo(Vector3.one));
+                Assert.That(doc.GetLayerPosition("Lean", 5), Is.EqualTo(Vector3.up));
+                Assert.That(doc.Shape("Lean").Edited, Is.True);
+                doc.SetLayerPositions(null, indices, new[] { Vector3.zero, Vector3.zero });
+                Assert.That(doc.Positions[5], Is.EqualTo(Vector3.zero));
+                Assert.That(doc.MovedBase.Contains(5), Is.True);
+                Assert.That(doc.Dirty.Any, Is.True);
+            }
+            finally { Object.DestroyImmediate(mesh); }
+        }
+
         // ---- The history's budget ---------------------------------------------------------------------------------
 
         private sealed class SizedEntry : HistoryEntry

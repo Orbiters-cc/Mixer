@@ -76,7 +76,7 @@ namespace Orbiters.Mixer.Editor
             if (Layer != null && !doc.HasShape(Layer)) doc.RestoreShape(Layer, null);
             bool switched = doc.Layer != Layer;
             doc.Layer = Layer;
-            for (int i = 0; i < Indices.Length; i++) doc.SetLayerPosition(Layer, Indices[i], positions[i]);
+            doc.SetLayerPositions(Layer, Indices, positions);
             doc.MarkEdited(Indices);
             // The step was made on another layer: show that one, with the renderer's weights to match.
             if (switched) Target.AfterLayerChange();
@@ -253,7 +253,8 @@ namespace Orbiters.Mixer.Editor
             if (indices.Count == 0) return null;
             var doc = target.Document;
             var now = new Vector3[indices.Count];
-            for (int i = 0; i < now.Length; i++) now[i] = doc.GetLayerPosition(layer, indices[i]);
+            var view = doc.View(layer);
+            for (int i = 0; i < now.Length; i++) now[i] = view[indices[i]];
             return new PositionEdit { Target = target, Label = Label, Layer = layer, Indices = indices.ToArray(), Before = before.ToArray(), After = now, NormalIndices = normalIndices.ToArray(), NormalsBefore = normalsBefore.ToArray() };
         }
     }

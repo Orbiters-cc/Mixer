@@ -517,6 +517,40 @@ namespace Orbiters.Mixer.Editor
             Dirty.Add(v);
         }
 
+        /// <summary>
+        /// The positions of a layer (null: the base) resolved once, for loops over many vertices (the per-vertex accessors
+        /// look the layer up by name at every call). Valid until the layer is replaced (created, renamed, deleted).
+        /// </summary>
+        public LayerView View(string layerName, float weight = 1f) =>
+            new LayerView(Positions, layerName != null && ShapeEdits.TryGetValue(layerName, out var layer) ? layer.Deltas : null, weight);
+
+        /// <summary>The positions shown: the active layer at <see cref="LayerWeight"/>.</summary>
+        public LayerView ShownView() => View(Layer, LayerWeight);
+
+        public readonly struct LayerView
+        {
+            private readonly Vector3[] positions, deltas;
+            private readonly float weight;
+
+            public LayerView(Vector3[] positions, Vector3[] deltas, float weight) { this.positions = positions; this.deltas = deltas; this.weight = weight; }
+
+            public Vector3 this[int v] => deltas == null ? positions[v] : weight == 1f ? positions[v] + deltas[v] : positions[v] + deltas[v] * weight;
+        }
+
+        /// <summary><see cref="SetLayerPosition"/> for many vertices, the layer looked up once.</summary>
+        public void SetLayerPositions(string layerName, int[] indices, Vector3[] positions)
+        {
+            if (layerName == null)
+            {
+                for (int i = 0; i < indices.Length; i++) { int v = indices[i]; Positions[v] = positions[i]; MovedBase.Add(v); Dirty.Add(v); }
+                return;
+            }
+            var layer = Shape(layerName, create: true);
+            layer.Edited = true;
+            var deltas = layer.Deltas;
+            for (int i = 0; i < indices.Length; i++) { int v = indices[i]; deltas[v] = positions[i] - Positions[v]; Dirty.Add(v); }
+        }
+
         public Vector3 GetLayerPosition(string layerName, int v)
         {
             var p = Positions[v];

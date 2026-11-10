@@ -345,9 +345,18 @@ namespace Orbiters.Mixer.Editor
                 foreach (var r in waiting) if (r.Kind != 'p') lines.Add(r.Line);
                 if (lines.Count == 0 && !File.Exists(RecoveryFile)) return;
                 Orbiters.Toolkit.Editor.LiveLink.LiveLinkServer.WriteAtomically(RecoveryFile, string.Join("\n", lines));
+                recoveryWarned = false;
             }
-            catch (Exception) { }
+            catch (Exception e)
+            {
+                // The only thing that brings sessions back after a crash: said once, until a write works again.
+                if (recoveryWarned) return;
+                recoveryWarned = true;
+                Debug.LogWarning("[Mixer] The list of sessions to bring back after a crash could not be written (" + e.Message + "): the autosaves are kept, but a restart may not reopen them.");
+            }
         }
+
+        private static bool recoveryWarned;
 
         private static Record RecordOf(EditTarget t, char kind) => new Record
         {

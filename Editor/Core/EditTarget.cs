@@ -247,10 +247,11 @@ namespace Orbiters.Mixer.Editor
                 return;
             }
             var skin = Skin;
+            var shown = Document.ShownView();
             for (int i = 0; i < moved.Count; i++)
             {
                 int v = moved[i];
-                var p = Document.LayerPosition(v);
+                var p = shown[v];
                 if (shapeOffset != null) p += shapeOffset[v];
                 World[v] = skin.PointToWorld(v, p);
             }
