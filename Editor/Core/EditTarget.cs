@@ -29,7 +29,7 @@ namespace Orbiters.Mixer.Editor
         /// <summary>World position of every vertex as shown (active layer + the other shapes' weights, skinned).</summary>
         public Vector3[] World;
         private readonly Vector3[] display;
-        private Vector3[] shapeOffset;
+        private Vector3[] shapeOffset, shapeFrame;
         private int shapeOffsetHash;
         private float[] savedWeight;
         private MirrorMap mirror;
@@ -124,8 +124,7 @@ namespace Orbiters.Mixer.Editor
         // A negative scale turns the front faces round in the world picture: raycasts and face normals follow.
         private bool Mirrored()
         {
-            var toWorld = Skin?.ToWorld;
-            float determinant = toWorld != null && toWorld.Length > 0 ? toWorld[0].determinant : Renderer != null ? Renderer.transform.localToWorldMatrix.determinant : 1f;
+            float determinant = Skin != null && Document.VertexCount > 0 ? Skin.BlendedMatrix(0).determinant : Renderer != null ? Renderer.transform.localToWorldMatrix.determinant : 1f;
             return determinant < 0f;
         }
 
@@ -142,7 +141,7 @@ namespace Orbiters.Mixer.Editor
             display = new Vector3[Document.VertexCount];
             DisplayAll();
             World = new Vector3[Document.VertexCount];
-            Skin = SkinningMap.For(renderer, working);
+            Skin = SkinningMap.For(renderer, working, Document);
             RebuildWorld();
             Prewarm();
         }
@@ -205,7 +204,8 @@ namespace Orbiters.Mixer.Editor
             if (shapeOffset == null) shapeOffset = new Vector3[Document.VertexCount];
             Array.Clear(shapeOffset, 0, shapeOffset.Length);
             if (skinned == null) return true;
-            var deltas = new Vector3[Document.VertexCount];
+            // One frame buffer for the session (V vertices: megabytes on a body), not one per refresh.
+            var deltas = shapeFrame ?? (shapeFrame = new Vector3[Document.VertexCount]);
             for (int i = 0; i < count; i++)
             {
                 float w = skinned.GetBlendShapeWeight(i) / 100f;
@@ -222,13 +222,7 @@ namespace Orbiters.Mixer.Editor
         private void RebuildWorld()
         {
             DisplayAll();
-            var toWorld = Skin.ToWorld;
-            for (int v = 0; v < World.Length; v++)
-            {
-                var p = display[v];
-                if (shapeOffset != null) p += shapeOffset[v];
-                World[v] = toWorld[v].MultiplyPoint3x4(p);
-            }
+            Skin.WorldOf(display, shapeOffset, World);
             bvh?.Refit();
         }
 
@@ -242,13 +236,13 @@ namespace Orbiters.Mixer.Editor
                 RebuildWorld();
                 return;
             }
-            var toWorld = Skin.ToWorld;
+            var skin = Skin;
             for (int i = 0; i < moved.Count; i++)
             {
                 int v = moved[i];
                 var p = Document.LayerPosition(v);
                 if (shapeOffset != null) p += shapeOffset[v];
-                World[v] = toWorld[v].MultiplyPoint3x4(p);
+                World[v] = skin.PointToWorld(v, p);
             }
             bvh?.RefitVertices(moved, Document.Neighbors);
         }
@@ -303,7 +297,7 @@ namespace Orbiters.Mixer.Editor
                 deltas = layer.Deltas;
             }
             var positions = doc.Positions;
-            var toWorld = Skin.ToWorld;
+            var skin = Skin;
             var offset = shapeOffset;
             var normalWeld = doc.NormalWeld.Weld;
             if (pendingStamp == null || pendingStamp.Length != doc.NormalWeld.WeldedCount) { pendingStamp = new int[doc.NormalWeld.WeldedCount]; pendingStampValue = 1; }
@@ -317,7 +311,7 @@ namespace Orbiters.Mixer.Editor
                     var p = display[v] + d;
                     display[v] = p;
                     if (offset != null) p += offset[v];
-                    World[v] = toWorld[v].MultiplyPoint3x4(p);
+                    World[v] = skin.PointToWorld(v, p);
                     moved.Add(v);
                     doc.UnflushedPages.Add(v);
                     int nw = normalWeld[v];
@@ -354,19 +348,11 @@ namespace Orbiters.Mixer.Editor
             Flush();
         }
 
-        // The working mesh's bounds from the shown positions: one pass over them, where Mesh.RecalculateBounds took ~27 ms
-        // on a 90k-vertex body with 500 shapes.
+        // The working mesh's bounds from the shown positions: one pass over them (a Burst job), where Mesh.RecalculateBounds
+        // took ~27 ms on a 90k-vertex body with 500 shapes.
         private void UpdateBounds()
         {
-            if (display.Length == 0) return;
-            Vector3 min = display[0], max = display[0];
-            for (int v = 1; v < display.Length; v++)
-            {
-                var p = display[v];
-                if (p.x < min.x) min.x = p.x; else if (p.x > max.x) max.x = p.x;
-                if (p.y < min.y) min.y = p.y; else if (p.y > max.y) max.y = p.y;
-                if (p.z < min.z) min.z = p.z; else if (p.z > max.z) max.z = p.z;
-            }
+            if (!MeshKernels.Bounds(display, out var min, out var max)) return;
             Working.bounds = new Bounds((min + max) * 0.5f, max - min);
             Document.BoundsDirty = false;
         }

@@ -310,5 +310,94 @@ namespace Orbiters.Mixer.Editor.Tests
             }
             finally { Object.DestroyImmediate(mesh); }
         }
+
+        // ---- Skinning on demand and the world picture's kernels ----------------------------------------------------
+
+        // The skinning as it was: a blended matrix per vertex from the document's weights, normalized, the renderer's
+        // transform for a vertex without weight; the world position through MultiplyPoint3x4.
+        private static Matrix4x4 OldBlend(MeshDocument doc, Matrix4x4[] boneMatrices, Matrix4x4 transform, int v)
+        {
+            var m = Matrix4x4.zero;
+            float total = 0f;
+            for (int i = 0; i < doc.InfluenceCount(v); i++)
+            {
+                var influence = doc.InfluenceAt(v, i);
+                if (influence.Bone < 0 || influence.Bone >= boneMatrices.Length || influence.Weight <= 0f) continue;
+                for (int k = 0; k < 16; k++) m[k] += boneMatrices[influence.Bone][k] * influence.Weight;
+                total += influence.Weight;
+            }
+            if (total <= 1e-6f) return transform;
+            if (Mathf.Abs(total - 1f) > 1e-4f) for (int k = 0; k < 16; k++) m[k] *= 1f / total;
+            return m;
+        }
+
+        [Test]
+        public void TheSkinJobMatchesThePerVertexMatricesItReplaced()
+        {
+            var mesh = MixerCoreTestsFixtures.Cylinder(8, 6, 0.3f, 2f);
+            var root = new GameObject("MixerSkinFixture");
+            try
+            {
+                root.transform.position = new Vector3(1f, 2f, 3f);
+                var lower = new GameObject("Lower").transform; lower.SetParent(root.transform, false);
+                var upper = new GameObject("Upper").transform; upper.SetParent(lower, false);
+                upper.localPosition = new Vector3(0f, 1f, 0f);
+                upper.localRotation = Quaternion.Euler(30f, 0f, 45f);
+                lower.localScale = new Vector3(1f, 1.5f, 1f);
+                var body = new GameObject("Body"); body.transform.SetParent(root.transform, false);
+                var renderer = body.AddComponent<SkinnedMeshRenderer>();
+                renderer.sharedMesh = mesh;
+                renderer.bones = new[] { lower, upper };
+                var doc = new MeshDocument(mesh);
+                // Weights the document changed: the map reads them where they are (one with three bones, one unnormalized).
+                doc.SetInfluences(10, new[] { new MeshDocument.Influence(0, 0.3f), new MeshDocument.Influence(1, 0.3f) });
+                doc.SetBoneWeight(20, 1, 0.8f, normalize: true);
+                var map = SkinningMap.For(renderer, mesh, doc);
+                Assert.That(map.Skinned, Is.True);
+                var bindposes = mesh.bindposes;
+                var boneMatrices = new[] { lower.localToWorldMatrix * bindposes[0], upper.localToWorldMatrix * bindposes[1] };
+                var transform = body.transform.localToWorldMatrix;
+                var positions = mesh.vertices;
+                var offset = new Vector3[positions.Length];
+                for (int v = 0; v < offset.Length; v++) offset[v] = new Vector3(0f, 0.01f * v, 0f);
+                var world = new Vector3[positions.Length];
+                map.WorldOf(positions, offset, world);
+                for (int v = 0; v < positions.Length; v++)
+                {
+                    var m = OldBlend(doc, boneMatrices, transform, v);
+                    var expected = m.MultiplyPoint3x4(positions[v] + offset[v]);
+                    Assert.That(Vector3.Distance(world[v], expected), Is.LessThan(1e-5f), "vertex " + v + " through the job");
+                    Assert.That(Vector3.Distance(map.PointToWorld(v, positions[v] + offset[v]), expected), Is.LessThan(1e-5f), "vertex " + v + " on demand");
+                    var direction = new Vector3(0.2f, -0.1f, 0.3f);
+                    Assert.That(Vector3.Distance(map.ToMeshVector(v, map.VectorToWorld(v, direction)), direction), Is.LessThan(1e-4f), "a move goes back to mesh space");
+                }
+                // A pose change is seen; the same pose is not.
+                Assert.That(map.Refresh(renderer, mesh), Is.False);
+                upper.localRotation = Quaternion.Euler(0f, 90f, 0f);
+                Assert.That(map.Refresh(renderer, mesh), Is.True);
+                // Without bones (a static mesh's case) the renderer's transform alone.
+                renderer.bones = new Transform[0];
+                map.MarkStale();
+                Assert.That(map.Refresh(renderer, mesh), Is.True);
+                Assert.That(map.Skinned, Is.False);
+                map.WorldOf(positions, null, world);
+                for (int v = 0; v < positions.Length; v++) Assert.That(Vector3.Distance(world[v], transform.MultiplyPoint3x4(positions[v])), Is.LessThan(1e-5f));
+            }
+            finally
+            {
+                Object.DestroyImmediate(root);
+                Object.DestroyImmediate(mesh);
+            }
+        }
+
+        [Test]
+        public void TheBoundsKernelIsTheSmallestBox()
+        {
+            Assert.That(MeshKernels.Bounds(new Vector3[0], out _, out _), Is.False);
+            var points = new[] { new Vector3(1f, -2f, 3f), new Vector3(-4f, 5f, 0.5f), new Vector3(2f, 0f, -6f) };
+            Assert.That(MeshKernels.Bounds(points, out var min, out var max), Is.True);
+            Assert.That(min, Is.EqualTo(new Vector3(-4f, -2f, -6f)));
+            Assert.That(max, Is.EqualTo(new Vector3(2f, 5f, 3f)));
+        }
     }
 }

@@ -65,7 +65,7 @@ namespace Orbiters.Mixer.Editor
             var world = ctx.Target.World;
             var normals = ctx.Document.Normals;
             var rep = ctx.Document.Neighbors.Representative;
-            var toWorld = ctx.Target.Skin.ToWorld;
+            var skin = ctx.Target.Skin;
             center = Vector3.zero; normal = Vector3.zero;
             float total = 0f;
             for (int i = 0; i < ctx.Welded.Count; i++)
@@ -73,7 +73,7 @@ namespace Orbiters.Mixer.Editor
                 int v = rep[ctx.Welded[i]];
                 float w = ctx.Weight[i];
                 center += world[v] * w;
-                normal += toWorld[v].MultiplyVector(normals[v]) * w;
+                normal += skin.VectorToWorld(v, normals[v]) * w;
                 total += w;
             }
             if (total > 0f) center /= total;
@@ -83,7 +83,7 @@ namespace Orbiters.Mixer.Editor
         protected static Vector3 WorldNormal(BrushContext ctx, int welded)
         {
             int v = ctx.Document.Neighbors.Representative[welded];
-            var n = ctx.Target.Skin.ToWorld[v].MultiplyVector(ctx.Document.Normals[v]);
+            var n = ctx.Target.Skin.VectorToWorld(v, ctx.Document.Normals[v]);
             return n.sqrMagnitude > 1e-12f ? n.normalized : ctx.Normal;
         }
     }
