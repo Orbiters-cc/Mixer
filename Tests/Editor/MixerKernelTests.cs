@@ -390,6 +390,81 @@ namespace Orbiters.Mixer.Editor.Tests
             }
         }
 
+        // The skinning as the old map did it from what the working mesh holds: its uploaded influences, each vertex's
+        // valid ones normalized, the renderer's transform when none is valid.
+        private static Vector3 SkinnedByTheMesh(Mesh mesh, Matrix4x4[] boneMatrices, Matrix4x4 transform, int v, Vector3 p, byte[] perVertex, int[] start, BoneWeight1[] weights)
+        {
+            var m = Matrix4x4.zero;
+            float total = 0f;
+            for (int k = 0; k < perVertex[v]; k++)
+            {
+                var bw = weights[start[v] + k];
+                if (bw.boneIndex < 0 || bw.boneIndex >= boneMatrices.Length || bw.weight <= 0f) continue;
+                for (int i = 0; i < 16; i++) m[i] += boneMatrices[bw.boneIndex][i] * bw.weight;
+                total += bw.weight;
+            }
+            if (total <= 1e-6f) m = transform;
+            else if (Mathf.Abs(total - 1f) > 1e-4f) for (int i = 0; i < 16; i++) m[i] *= 1f / total;
+            return m.MultiplyPoint3x4(p);
+        }
+
+        // The world picture is what Unity skins once the weights are uploaded, also for the vertices where the
+        // document's raw influences and the uploaded ones differ: none (bone 0 at full weight), all at 0, a sum just off 1.
+        [Test]
+        public void TheWorldPictureFollowsTheUploadedWeights()
+        {
+            var mesh = MixerCoreTestsFixtures.Cylinder(8, 6, 0.3f, 2f);
+            var root = new GameObject("MixerUploadedSkinFixture");
+            try
+            {
+                var lower = new GameObject("Lower").transform; lower.SetParent(root.transform, false);
+                var upper = new GameObject("Upper").transform; upper.SetParent(lower, false);
+                lower.localPosition = new Vector3(0.4f, 0f, 0f);
+                lower.localRotation = Quaternion.Euler(0f, 0f, 20f);
+                upper.localPosition = new Vector3(0f, 1f, 0f);
+                upper.localRotation = Quaternion.Euler(30f, 0f, 45f);
+                var body = new GameObject("Body"); body.transform.SetParent(root.transform, false);
+                body.transform.localPosition = new Vector3(-1f, 0.5f, 0f);
+                var renderer = body.AddComponent<SkinnedMeshRenderer>();
+                renderer.sharedMesh = mesh;
+                renderer.bones = new[] { lower, upper };
+                var doc = new MeshDocument(mesh);
+                doc.SetInfluences(10, new[] { new MeshDocument.Influence(0, 0.3f), new MeshDocument.Influence(1, 0.3f) });
+                doc.SetInfluences(11, new[] { new MeshDocument.Influence(1, 0f) });
+                doc.SetInfluences(12, new[] { new MeshDocument.Influence(1, 0f) });
+                doc.SetInfluences(12, new MeshDocument.Influence[0]);
+                Assert.That(doc.InfluenceCount(12), Is.EqualTo(0), "a vertex without influences");
+                doc.SetInfluences(13, new[] { new MeshDocument.Influence(0, 0.49997f), new MeshDocument.Influence(1, 0.5f) });
+                doc.BuildBoneWeights(out var packed, out var packedWeights);
+                try { mesh.SetBoneWeights(packed, packedWeights); }
+                finally { packed.Dispose(); packedWeights.Dispose(); }
+                var perVertex = mesh.GetBonesPerVertex().ToArray();
+                var stored = mesh.GetAllBoneWeights().ToArray();
+                var start = new int[perVertex.Length + 1];
+                for (int v = 0; v < perVertex.Length; v++) start[v + 1] = start[v] + perVertex[v];
+                Assert.That(perVertex[12], Is.EqualTo(1), "Unity got one influence for it");
+
+                var map = SkinningMap.For(renderer, mesh, doc);
+                var bindposes = mesh.bindposes;
+                var boneMatrices = new[] { lower.localToWorldMatrix * bindposes[0], upper.localToWorldMatrix * bindposes[1] };
+                var transform = body.transform.localToWorldMatrix;
+                var positions = mesh.vertices;
+                var world = new Vector3[positions.Length];
+                map.WorldOf(positions, null, world);
+                for (int v = 0; v < positions.Length; v++)
+                {
+                    var expected = SkinnedByTheMesh(mesh, boneMatrices, transform, v, positions[v], perVertex, start, stored);
+                    Assert.That(Vector3.Distance(world[v], expected), Is.LessThan(1e-5f), "vertex " + v + " through the job");
+                    Assert.That(Vector3.Distance(map.PointToWorld(v, positions[v]), expected), Is.LessThan(1e-5f), "vertex " + v + " on demand");
+                }
+            }
+            finally
+            {
+                Object.DestroyImmediate(root);
+                Object.DestroyImmediate(mesh);
+            }
+        }
+
         [Test]
         public void TheBoundsKernelIsTheSmallestBox()
         {

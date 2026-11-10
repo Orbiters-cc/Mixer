@@ -100,17 +100,29 @@ namespace Orbiters.Mixer.Editor
             return true;
         }
 
-        /// <summary>The matrix that takes vertex <paramref name="v"/> from mesh space to the world: its bones' blended by its weights.</summary>
+        /// <summary>
+        /// The matrix that takes vertex <paramref name="v"/> from mesh space to the world: its bones' blended by its
+        /// effective weights (<see cref="InfluenceKernels"/>: what Unity skins it with once uploaded).
+        /// </summary>
         public Matrix4x4 BlendedMatrix(int v)
         {
             if (!skinned) return transformMatrix;
             document.InfluenceArrays(out var bones, out var weights, out var counts, out int slots);
             var m = Matrix4x4.zero;
             float total = 0f;
-            for (int k = 0, at = v * slots, n = counts[v]; k < n; k++, at++)
+            int n = counts[v], at = v * slots;
+            if (n == 0)
             {
-                int bone = bones[at];
-                float w = weights[at];
+                // No influence: bone 0 at full weight, as the upload gives it.
+                if (boneMatrices.Length == 0) return transformMatrix;
+                return boneMatrices[0];
+            }
+            float sum = 0f;
+            for (int k = 0; k < n; k++) sum += weights[at + k];
+            for (int k = 0; k < n; k++)
+            {
+                int bone = bones[at + k];
+                float w = InfluenceKernels.Effective(weights[at + k], sum, n);
                 if (bone < 0 || bone >= boneMatrices.Length || w <= 0f) continue;
                 Accumulate(ref m, boneMatrices[bone], w);
                 total += w;

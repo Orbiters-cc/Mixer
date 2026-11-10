@@ -18,9 +18,10 @@ namespace Orbiters.Mixer.Editor
         private const int Batch = 2048;
 
         /// <summary>
-        /// world[v] = the vertex's bones' matrices blended by its normalized weights, applied to positions[v] (+ offset[v]):
-        /// linear blend skinning, as <see cref="SkinningMap.BlendedMatrix"/> blends for one vertex. A vertex without a
-        /// valid weight follows <paramref name="fallback"/> (the renderer's transform).
+        /// world[v] = the vertex's bones' matrices blended by its effective weights (<see cref="InfluenceKernels"/>, what
+        /// the upload gives Unity), applied to positions[v] (+ offset[v]): linear blend skinning, as
+        /// <see cref="SkinningMap.BlendedMatrix"/> blends for one vertex. A vertex whose bones are all outside the
+        /// renderer's follows <paramref name="fallback"/> (the renderer's transform).
         /// </summary>
         public static void Skin(Vector3[] positions, Vector3[] offset, Matrix4x4[] boneMatrices, Matrix4x4 fallback,
             int[] bones, float[] weights, byte[] counts, int slots, Vector3[] world)
@@ -92,13 +93,21 @@ namespace Orbiters.Mixer.Editor
             {
                 var p = new float4(Positions[v], 1f);
                 if (Offset != null) p.xyz += Offset[v];
+                int at = v * Slots, n = Counts[v];
+                if (n == 0)
+                {
+                    // No influence: bone 0 at full weight, as the upload gives it (InfluenceKernels).
+                    World[v] = math.mul(BoneCount > 0 ? Bones[0] : Fallback, p).xyz;
+                    return;
+                }
+                float raw = 0f;
+                for (int k = 0; k < n; k++) raw += WeightOf[at + k];
                 float3 sum = float3.zero;
                 float total = 0f;
-                int at = v * Slots, n = Counts[v];
                 for (int k = 0; k < n; k++)
                 {
                     int bone = BoneOf[at + k];
-                    float w = WeightOf[at + k];
+                    float w = InfluenceKernels.Effective(WeightOf[at + k], raw, n);
                     if (bone < 0 || bone >= BoneCount || w <= 0f) continue;
                     sum += w * math.mul(Bones[bone], p).xyz;
                     total += w;
