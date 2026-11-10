@@ -290,7 +290,9 @@ namespace Orbiters.Logger.Editor
         /// </summary>
         public static class ShowAll
         {
-            private const string RecoveryPref = "Orbiters.Logger.BorrowedConsole";
+            // One journal per project (EditorPrefs are shared by every editor of this user), owned by one editor process.
+            private static string RecoveryPref => "Orbiters.Logger.BorrowedConsole." +
+                                                  TextTable.Hash(UnityEngine.Application.dataPath ?? string.Empty).ToString("x8");
             private static readonly int[] Borrowable = { FlagCollapse, FlagLogLevelLog, FlagLogLevelWarning, FlagLogLevelError, FlagShowTimestamp };
             private static int changedBits;
             private static int savedFlags;
@@ -410,13 +412,19 @@ namespace Orbiters.Logger.Editor
                         return;
                     }
 
-                    var parts = saved.Split(new[] { ';' }, 4);
-                    if (Available && parts.Length == 4 && int.TryParse(parts[0], out int bits) && int.TryParse(parts[1], out int values))
+                    var parts = saved.Split(new[] { ';' }, 5);
+                    if (parts.Length == 5 && int.TryParse(parts[0], out int owner) && owner != CurrentProcess && IsRunningEditor(owner))
+                    {
+                        // Another editor still running borrowed them: its journal, not ours to give back.
+                        return;
+                    }
+
+                    if (Available && parts.Length == 5 && int.TryParse(parts[1], out int bits) && int.TryParse(parts[2], out int values))
                     {
                         changedBits = bits;
                         savedFlags = values;
-                        changedFilter = parts[2] == "1";
-                        savedFilter = parts[3];
+                        changedFilter = parts[3] == "1";
+                        savedFilter = parts[4];
                         Release();
                     }
 
@@ -432,11 +440,42 @@ namespace Orbiters.Logger.Editor
             {
                 try
                 {
-                    EditorPrefs.SetString(RecoveryPref, changedBits + ";" + savedFlags + ";" + (changedFilter ? "1" : "0") + ";" + savedFilter);
+                    EditorPrefs.SetString(RecoveryPref, CurrentProcess + ";" + changedBits + ";" + savedFlags + ";" + (changedFilter ? "1" : "0") + ";" + savedFilter);
                 }
                 catch (Exception)
                 {
                     // Only the crash recovery is lost.
+                }
+            }
+
+            private static int CurrentProcess
+            {
+                get
+                {
+                    try
+                    {
+                        return System.Diagnostics.Process.GetCurrentProcess().Id;
+                    }
+                    catch (Exception)
+                    {
+                        return 0;
+                    }
+                }
+            }
+
+            private static bool IsRunningEditor(int processId)
+            {
+                try
+                {
+                    using (var process = System.Diagnostics.Process.GetProcessById(processId))
+                    {
+                        return !process.HasExited && process.ProcessName.IndexOf("Unity", StringComparison.OrdinalIgnoreCase) >= 0;
+                    }
+                }
+                catch (Exception)
+                {
+                    // No such process: the editor that wrote it is gone.
+                    return false;
                 }
             }
 

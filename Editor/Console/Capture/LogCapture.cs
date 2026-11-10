@@ -265,6 +265,11 @@ namespace Orbiters.Logger.Editor
                 Drain(6d);
                 if (history != null && history.Step(Store, ImportBudget()))
                 {
+                    if (history.Error != null)
+                    {
+                        Report(history.Error);
+                    }
+
                     history = null;
                     lastVersion = -1;
                 }
@@ -358,6 +363,11 @@ namespace Orbiters.Logger.Editor
                 while (!gap.Step(Store, 50d))
                 {
                 }
+            }
+
+            if (gap.Error != null)
+            {
+                Report(gap.Error);
             }
 
             gap = null;

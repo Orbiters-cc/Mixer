@@ -86,6 +86,9 @@ namespace Orbiters.Logger.Editor
         public int Done => next - from;
         public bool Finished { get; private set; }
         public bool Failed { get; private set; }
+
+        /// <summary>What stopped the import, when an exception did (reported once by its caller).</summary>
+        public Exception Error { get; private set; }
         public float Progress => Total > 0 ? (float)Done / Total : 1f;
 
         /// <summary>
@@ -140,6 +143,13 @@ namespace Orbiters.Logger.Editor
                 {
                     return Finish(store, failed);
                 }
+            }
+            catch (Exception exception)
+            {
+                // Never retried: the same row would fail at every update while the store stays pinned. Finish gives the
+                // console settings and the pin back; the caller reports Error once.
+                Error = exception;
+                return Finish(store, failed: true);
             }
             finally
             {
