@@ -103,7 +103,7 @@ namespace Orbiters.Mixer.Editor
     {
         public static readonly string[] HelperPrefixes = { MixerInfo.HelperPrefix, "__XRayGizmos_", "__ReFit_" };
 
-        private const string InstancePrefix = "InstanceId-";
+        internal const string InstancePrefix = "InstanceId-";
 
         /// <summary>A stable id for an object: its GlobalObjectId, or its instance id for objects that have none (preview scenes, some temporaries).</summary>
         public static string IdOf(UnityEngine.Object o)
@@ -121,118 +121,15 @@ namespace Orbiters.Mixer.Editor
             return GlobalObjectId.TryParse(id, out var parsed) ? GlobalObjectId.GlobalObjectIdentifierToObjectSlow(parsed) : null;
         }
 
-        public static SceneGraph Build(Scene scene, MixerLinkSettings settings)
-        {
-            var graph = new SceneGraph { scene = scene.name, sceneGuid = AssetDatabase.AssetPathToGUID(scene.path) };
-            if (string.IsNullOrEmpty(graph.sceneGuid)) graph.sceneGuid = scene.name;
-            var excluded = settings != null ? new HashSet<string>(settings.excludedIds) : new HashSet<string>();
-            var materials = new Dictionary<int, SceneMaterial>();
-            var boneIds = new HashSet<Transform>();
-            var transforms = new List<Transform>();
-            var left = new List<Transform>();
-            foreach (var root in scene.GetRootGameObjects()) Collect(root.transform, excluded, transforms, left, settings);
-            var resolver = MixerLink.TargetFbxResolver;
-            if (resolver != null)
-            {
-                foreach (var t in left)
-                    foreach (var r in t.GetComponentsInChildren<Renderer>(true))
-                    {
-                        if (!(r is SkinnedMeshRenderer) && !(r is MeshRenderer)) continue;
-                        string target = resolver(r);
-                        if (!string.IsNullOrEmpty(target)) graph.keptOut.Add(new SceneKeptOut { id = IdOf(r.gameObject), name = r.name, targetFbx = target });
-                    }
-            }
-            // Bones first: every transform a skinned renderer uses, so Blender builds armatures for them.
-            foreach (var t in transforms)
-            {
-                var skinned = t.GetComponent<SkinnedMeshRenderer>();
-                if (skinned == null || skinned.bones == null) continue;
-                foreach (var b in skinned.bones) if (b != null) boneIds.Add(b);
-            }
-            var included = new HashSet<Transform>(transforms);
-            foreach (var t in transforms)
-            {
-                var node = new SceneNode { id = IdOf(t.gameObject), name = t.name, active = t.gameObject.activeSelf };
-                node.parent = t.parent != null && included.Contains(t.parent) ? IdOf(t.parent.gameObject) : null;
-                Fill(node.p, t.localPosition); FillQuaternion(node.r, t.localRotation); Fill(node.s, t.localScale);
-                var skinned = t.GetComponent<SkinnedMeshRenderer>();
-                var filter = t.GetComponent<MeshFilter>();
-                var light = t.GetComponent<Light>();
-                var camera = t.GetComponent<Camera>();
-                if (skinned != null && skinned.sharedMesh != null)
-                {
-                    node.type = "Skinned";
-                    var mesh = MixerMeshGuard.OriginalOf(skinned.sharedMesh) ?? skinned.sharedMesh;
-                    node.meshId = IdOf(mesh);
-                    node.vertexCount = mesh.vertexCount;
-                    node.materials = MaterialIds(skinned.sharedMaterials, materials);
-                    node.bones = skinned.bones.Select(b => b != null ? IdOf(b.gameObject) : "").ToArray();
-                    node.rootBone = skinned.rootBone != null ? IdOf(skinned.rootBone.gameObject) : null;
-                    node.targetFbx = MixerLink.TargetFbxResolver?.Invoke(skinned);
-                }
-                else if (filter != null && filter.sharedMesh != null && t.GetComponent<MeshRenderer>() != null)
-                {
-                    node.type = "Mesh";
-                    var mesh = MixerMeshGuard.OriginalOf(filter.sharedMesh) ?? filter.sharedMesh;
-                    node.meshId = IdOf(mesh);
-                    node.vertexCount = mesh.vertexCount;
-                    node.materials = MaterialIds(t.GetComponent<MeshRenderer>().sharedMaterials, materials);
-                    node.targetFbx = MixerLink.TargetFbxResolver?.Invoke(t.GetComponent<MeshRenderer>());
-                }
-                else if (light != null)
-                {
-                    node.type = "Light";
-                    node.light = new SceneLight { type = light.type.ToString(), color = new[] { light.color.r, light.color.g, light.color.b }, intensity = light.intensity, range = light.range, spot = light.spotAngle };
-                }
-                else if (camera != null)
-                {
-                    node.type = "Camera";
-                    node.camera = new SceneCamera { fov = camera.fieldOfView, near = camera.nearClipPlane, far = camera.farClipPlane, ortho = camera.orthographic, size = camera.orthographicSize };
-                }
-                else if (boneIds.Contains(t)) node.type = "Bone";
-                graph.nodes.Add(node);
-            }
-            graph.materials.AddRange(materials.Values);
-            return graph;
-        }
-
-        // Into: what goes to Blender; left: the roots of what the user's exclusions keep out (Mixer's own helpers are neither).
-        private static void Collect(Transform t, HashSet<string> excluded, List<Transform> into, List<Transform> left, MixerLinkSettings settings)
-        {
-            if (t == null) return;
-            string name = t.name;
-            foreach (string prefix in HelperPrefixes) if (name.StartsWith(prefix, StringComparison.Ordinal)) return;
-            if (t.gameObject.hideFlags != HideFlags.None && (t.gameObject.hideFlags & HideFlags.HideInHierarchy) != 0) return;
-            if (excluded.Contains(IdOf(t.gameObject)) ||
-                (settings != null && settings.excludeInactive && !t.gameObject.activeInHierarchy) ||
-                (settings != null && settings.excludeEditorOnly && t.CompareTag("EditorOnly")))
-            {
-                left.Add(t);
-                return;
-            }
-            into.Add(t);
-            for (int i = 0; i < t.childCount; i++) Collect(t.GetChild(i), excluded, into, left, settings);
-        }
-
-        private static string[] MaterialIds(Material[] sharedMaterials, Dictionary<int, SceneMaterial> materials)
-        {
-            if (sharedMaterials == null) return new string[0];
-            var ids = new string[sharedMaterials.Length];
-            for (int i = 0; i < sharedMaterials.Length; i++)
-            {
-                var m = sharedMaterials[i];
-                if (m == null) { ids[i] = ""; continue; }
-                int key = m.GetInstanceID();
-                if (!materials.TryGetValue(key, out var info)) materials[key] = info = Describe(m);
-                ids[i] = info.id;
-            }
-            return ids;
-        }
+        /// <summary>The whole graph of a scene (a link host keeps a <see cref="SceneGraphCache"/> to update it instead).</summary>
+        public static SceneGraph Build(Scene scene, MixerLinkSettings settings) => new SceneGraphCache().Build(scene, settings);
 
         /// <summary>What Blender can show of a Unity material: colour, metallic and smoothness, and the usual texture slots as absolute paths.</summary>
-        public static SceneMaterial Describe(Material m)
+        public static SceneMaterial Describe(Material m) => Describe(m, IdOf(m));
+
+        internal static SceneMaterial Describe(Material m, string id)
         {
-            var info = new SceneMaterial { id = IdOf(m), name = m.name, shader = m.shader != null ? m.shader.name : "" };
+            var info = new SceneMaterial { id = id, name = m.name, shader = m.shader != null ? m.shader.name : "" };
             var color = m.HasProperty("_Color") ? m.GetColor("_Color") : m.HasProperty("_BaseColor") ? m.GetColor("_BaseColor") : Color.white;
             info.color = new[] { color.r, color.g, color.b, color.a };
             info.metallic = m.HasProperty("_Metallic") ? m.GetFloat("_Metallic") : 0f;
@@ -273,27 +170,34 @@ namespace Orbiters.Mixer.Editor
             foreach (var node in after.nodes)
             {
                 seen.Add(node.id);
-                if (!old.TryGetValue(node.id, out var was) || was.type != node.type || was.meshId != node.meshId || was.vertexCount != node.vertexCount)
-                {
-                    delta.added.Add(node);
-                    if (node.materials != null) usedMaterials.UnionWith(node.materials);
-                    continue;
-                }
-                if (!SameStrings(was.materials, node.materials) || was.targetFbx != node.targetFbx || !SameStrings(was.bones, node.bones) || was.rootBone != node.rootBone
-                    || !SameLight(was.light, node.light) || !SameCamera(was.camera, node.camera))
-                {
-                    delta.changed.Add(node);
-                    if (node.materials != null) usedMaterials.UnionWith(node.materials);
-                }
-                if (was.name != node.name) delta.renamed.Add(new SceneNodeName { id = node.id, name = node.name });
-                if (was.parent != node.parent) delta.reparented.Add(new SceneNodeParent { id = node.id, parent = node.parent });
-                if (was.active != node.active) delta.active.Add(new SceneNodeFlag { id = node.id, active = node.active });
-                if (!Same(was.p, node.p) || !Same(was.r, node.r) || !Same(was.s, node.s)) delta.transforms.Add(new SceneNodeTransform { id = node.id, p = node.p, r = node.r, s = node.s });
+                old.TryGetValue(node.id, out var was);
+                DiffNode(was, node, delta, usedMaterials);
             }
             foreach (var id in old.Keys) if (!seen.Contains(id)) delta.removed.Add(id);
             foreach (var material in after.materials) if (material != null && usedMaterials.Contains(material.id)) delta.materials.Add(material);
             if (!SameKeptOut(before.keptOut, after.keptOut)) delta.keptOut = after.keptOut ?? new List<SceneKeptOut>();
             return delta;
+        }
+
+        /// <summary>What changed of one node from <paramref name="was"/> (null: a new node) to <paramref name="node"/>, into the delta; the materials it then needs into <paramref name="usedMaterials"/>.</summary>
+        internal static void DiffNode(SceneNode was, SceneNode node, SceneDelta delta, HashSet<string> usedMaterials)
+        {
+            if (was == null || was.type != node.type || was.meshId != node.meshId || was.vertexCount != node.vertexCount)
+            {
+                delta.added.Add(node);
+                if (node.materials != null) usedMaterials.UnionWith(node.materials);
+                return;
+            }
+            if (!SameStrings(was.materials, node.materials) || was.targetFbx != node.targetFbx || !SameStrings(was.bones, node.bones) || was.rootBone != node.rootBone
+                || !SameLight(was.light, node.light) || !SameCamera(was.camera, node.camera))
+            {
+                delta.changed.Add(node);
+                if (node.materials != null) usedMaterials.UnionWith(node.materials);
+            }
+            if (was.name != node.name) delta.renamed.Add(new SceneNodeName { id = node.id, name = node.name });
+            if (was.parent != node.parent) delta.reparented.Add(new SceneNodeParent { id = node.id, parent = node.parent });
+            if (was.active != node.active) delta.active.Add(new SceneNodeFlag { id = node.id, active = node.active });
+            if (!Same(was.p, node.p) || !Same(was.r, node.r) || !Same(was.s, node.s)) delta.transforms.Add(new SceneNodeTransform { id = node.id, p = node.p, r = node.r, s = node.s });
         }
 
         private static bool SameLight(SceneLight a, SceneLight b)
@@ -308,7 +212,7 @@ namespace Orbiters.Mixer.Editor
             return Mathf.Abs(a.fov - b.fov) <= 1e-6f && Mathf.Abs(a.near - b.near) <= 1e-6f && Mathf.Abs(a.far - b.far) <= 1e-6f && a.ortho == b.ortho && Mathf.Abs(a.size - b.size) <= 1e-6f;
         }
 
-        private static bool SameKeptOut(List<SceneKeptOut> a, List<SceneKeptOut> b)
+        internal static bool SameKeptOut(List<SceneKeptOut> a, List<SceneKeptOut> b)
         {
             int na = a?.Count ?? 0, nb = b?.Count ?? 0;
             if (na != nb) return false;
@@ -324,7 +228,7 @@ namespace Orbiters.Mixer.Editor
             return true;
         }
 
-        private static bool SameStrings(string[] a, string[] b)
+        internal static bool SameStrings(string[] a, string[] b)
         {
             if (a == null && b == null) return true;
             if (a == null || b == null || a.Length != b.Length) return false;
@@ -332,8 +236,6 @@ namespace Orbiters.Mixer.Editor
             return true;
         }
 
-        private static void Fill(float[] into, Vector3 v) { into[0] = v.x; into[1] = v.y; into[2] = v.z; }
-        private static void FillQuaternion(float[] into, Quaternion q) { into[0] = q.x; into[1] = q.y; into[2] = q.z; into[3] = q.w; }
         public static Vector3 ToVector(float[] a) => a != null && a.Length >= 3 ? new Vector3(a[0], a[1], a[2]) : Vector3.zero;
         public static Quaternion ToQuaternion(float[] a) => a != null && a.Length >= 4 ? new Quaternion(a[0], a[1], a[2], a[3]) : Quaternion.identity;
     }

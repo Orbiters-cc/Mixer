@@ -137,7 +137,7 @@ namespace Orbiters.Mixer.Editor
 
         public static void Positions(MixerLinkHost host, MeshDataCodec.PositionsFrame frame)
         {
-            foreach (var target in TargetsOf(host, frame.Id, frame.Topology, frame.Positions.Length))
+            foreach (var target in TargetsOf(host, frame.Id, frame.Topology, frame.VertexCount))
             {
                 var doc = target.Document;
                 var n = doc.LinkWeld;
@@ -160,14 +160,20 @@ namespace Orbiters.Mixer.Editor
                 if (doc.Layer != frame.Shape) { doc.Layer = frame.Shape; target.AfterLayerChange(); }
                 var baseRecorder = frame.Shape == null ? BaseOf(edit) : null;
                 var shapeRecorder = frame.Shape != null ? ShapeOf(edit, frame.Shape) : null;
+                var layer = frame.Shape != null ? doc.Shape(frame.Shape, create: true) : null;
+                var basePositions = doc.Positions;
                 var moved = new List<int>();
-                for (int w = 0; w < n.WeldedCount; w++)
+                // The frame holds the welded vertices that moved (every one, in order, when Indices is null).
+                int count = frame.Positions.Length;
+                for (int i = 0; i < count; i++)
                 {
-                    var p = frame.Positions[w];
+                    int w = frame.Indices != null ? frame.Indices[i] : i;
+                    var p = frame.Positions[i];
                     foreach (int v in n.Members[w])
                     {
-                        if (doc.GetLayerPosition(frame.Shape, v) == p) continue;
-                        if (baseRecorder != null) baseRecorder.Touch(v); else shapeRecorder.Touch(v);
+                        // Unity's == on purpose: welded members a hair apart are not pulled onto their representative.
+                        if ((layer != null ? basePositions[v] + layer.Deltas[v] : basePositions[v]) == p) continue;
+                        if (baseRecorder != null) baseRecorder.Touch(v); else shapeRecorder.Touch(v, layer);
                         doc.SetLayerPosition(frame.Shape, v, p);
                         moved.Add(v);
                     }
@@ -198,6 +204,10 @@ namespace Orbiters.Mixer.Editor
                 var n = doc.LinkWeld;
                 var edit = EditOf(target, data.Id);
                 var touched = new HashSet<int>();
+                // One welded-size buffer for every shape's payload (cleared through the indices written), and one
+                // mesh-size buffer to compare a shape Unity has not loaded yet with its source without loading it.
+                var welded = new Vector3[n.WeldedCount];
+                Vector3[] source = null;
 
                 var baseRecorder = BaseOf(edit);
                 for (int w = 0; w < n.WeldedCount; w++)
@@ -221,20 +231,23 @@ namespace Orbiters.Mixer.Editor
                     named.Add(name);
                     if (doc.DeletedShapes.Contains(name)) { notBack.Add(name); continue; }
                     if (!doc.HasShape(name)) { EnsureShape(edit, name); shapesChanged = true; }
-                    var layer = doc.Shape(name);
-                    var full = new Vector3[n.WeldedCount];
-                    for (int i = 0; i < indices.Length; i++) if (indices[i] >= 0 && indices[i] < full.Length) full[indices[i]] = deltas[i];
-                    var recorder = ShapeOf(edit, name);
-                    for (int w = 0; w < n.WeldedCount; w++)
-                        foreach (int v in n.Members[w])
-                        {
-                            if (layer.Deltas[v] == full[w]) continue;
-                            recorder.Touch(v);
-                            layer.Deltas[v] = full[w];
-                            layer.Edited = true;
-                            doc.Dirty.Add(v);
-                            touched.Add(v);
-                        }
+                    for (int i = 0; i < indices.Length; i++) if (indices[i] >= 0 && indices[i] < welded.Length) welded[indices[i]] = deltas[i];
+                    if (doc.ShapeEdits.TryGetValue(name, out var layer) || DiffersFromSource(doc, name, n, welded, ref source))
+                    {
+                        layer = layer ?? doc.Shape(name);
+                        var recorder = ShapeOf(edit, name);
+                        for (int w = 0; w < n.WeldedCount; w++)
+                            foreach (int v in n.Members[w])
+                            {
+                                if (layer.Deltas[v] == welded[w]) continue;
+                                recorder.Touch(v, layer);
+                                layer.Deltas[v] = welded[w];
+                                layer.Edited = true;
+                                doc.Dirty.Add(v);
+                                touched.Add(v);
+                            }
+                    }
+                    for (int i = 0; i < indices.Length; i++) if (indices[i] >= 0 && indices[i] < welded.Length) welded[indices[i]] = default;
                 }
                 // Shapes Blender was sent and deleted.
                 if (sentShapes != null)
@@ -248,23 +261,32 @@ namespace Orbiters.Mixer.Editor
                         shapesChanged = true;
                     }
 
-                if (data.Influences != null && doc.HasSkin && data.Bones != null)
+                if (data.InfluenceCount != null && doc.HasSkin && data.Bones != null)
                 {
                     var bones = target.Skinned != null ? target.Skinned.bones : null;
                     var boneIndex = new int[data.Bones.Length];
                     for (int b = 0; b < data.Bones.Length; b++) boneIndex[b] = MeshDataCodec.ResolveBone(bones, b, data.Bones[b]);
                     var recorder = WeightsOf(edit, null);
                     bool any = false;
-                    for (int w = 0; w < n.WeldedCount && w < data.Influences.Length; w++)
+                    var list = new List<MeshDocument.Influence>();
+                    int cursor = 0;
+                    for (int w = 0; w < n.WeldedCount && w < data.InfluenceCount.Length; w++)
                     {
-                        var list = new List<MeshDocument.Influence>();
-                        foreach (var inf in data.Influences[w])
-                            if (inf.Bone >= 0 && inf.Bone < boneIndex.Length && boneIndex[inf.Bone] >= 0 && inf.Weight > 0f) list.Add(new MeshDocument.Influence(boneIndex[inf.Bone], inf.Weight));
+                        int count = data.InfluenceCount[w];
+                        list.Clear();
+                        for (int k = cursor; k < cursor + count; k++)
+                        {
+                            int bone = data.InfluenceBone[k];
+                            float weight = data.InfluenceWeight[k];
+                            if (bone < boneIndex.Length && boneIndex[bone] >= 0 && weight > 0f) list.Add(new MeshDocument.Influence(boneIndex[bone], weight));
+                        }
+                        cursor += count;
+                        MeshDocument.Influence[] influences = null;
                         foreach (int v in n.Members[w])
                         {
                             if (SameInfluences(doc.InfluencesOf(v), list)) continue;
                             recorder.Touch(v);
-                            doc.SetInfluences(v, list.ToArray());
+                            doc.SetInfluences(v, influences ?? (influences = list.ToArray()));
                             any = true;
                         }
                     }
@@ -273,23 +295,35 @@ namespace Orbiters.Mixer.Editor
 
                 var groupNames = new HashSet<string>();
                 bool groupsChanged = false;
+                var full = new float[n.WeldedCount];
+                var changes = new List<(int vertex, float weight)>();
                 foreach (var (name, indices, weights) in data.Groups)
                 {
                     if (string.IsNullOrEmpty(name)) continue;
                     groupNames.Add(name);
                     var group = EnsureGroup(edit, name);
                     var recorder = WeightsOf(edit, name);
-                    var full = new float[n.WeldedCount];
                     for (int i = 0; i < indices.Length; i++) if (indices[i] >= 0 && indices[i] < full.Length) full[indices[i]] = weights[i];
-                    for (int w = 0; w < n.WeldedCount; w++)
-                        foreach (int v in n.Members[w])
-                        {
-                            float current = group.Weights.TryGetValue(v, out float cw) ? cw : 0f;
-                            if (Mathf.Abs(current - full[w]) < 1e-6f) continue;
-                            recorder.Touch(v);
-                            if (full[w] > 0f) group.Weights[v] = full[w]; else group.Weights.Remove(v);
-                            groupsChanged = true;
-                        }
+                    // Only what either side weighs: the group's vertices now, then the payload's that the group lacks.
+                    changes.Clear();
+                    foreach (var pair in group.Weights)
+                    {
+                        float wanted = full[n.Weld[pair.Key]];
+                        if (Mathf.Abs(pair.Value - wanted) >= 1e-6f) changes.Add((pair.Key, wanted));
+                    }
+                    for (int i = 0; i < indices.Length; i++)
+                    {
+                        int w = indices[i];
+                        if (w < 0 || w >= full.Length || full[w] < 1e-6f) continue;
+                        foreach (int v in n.Members[w]) if (!group.Weights.ContainsKey(v)) changes.Add((v, full[w]));
+                    }
+                    foreach (var (v, wanted) in changes)
+                    {
+                        recorder.Touch(v);
+                        if (wanted > 0f) group.Weights[v] = wanted; else group.Weights.Remove(v);
+                        groupsChanged = true;
+                    }
+                    for (int i = 0; i < indices.Length; i++) if (indices[i] >= 0 && indices[i] < full.Length) full[indices[i]] = 0f;
                 }
                 if (sentGroups != null)
                     foreach (string name in sentGroups)
@@ -320,6 +354,19 @@ namespace Orbiters.Mixer.Editor
             }
             // What Blender holds now: when Unity's shapes or groups differ from it, Blender gets the mesh again.
             if (blenderShapes != null) host.NoteBlenderHas(data.Id, blenderShapes, blenderGroups);
+        }
+
+        // Whether the payload's deltas of a shape Unity has not loaded (welded, dense) are its source's, read into a
+        // buffer kept for the mesh: Unity's == as for a loaded layer.
+        private static bool DiffersFromSource(MeshDocument doc, string name, Toolkit.Meshes.MeshNeighbors n, Vector3[] welded, ref Vector3[] source)
+        {
+            int index = doc.ShapeSource.GetBlendShapeIndex(name);
+            if (index < 0) return true;
+            if (source == null) source = new Vector3[doc.VertexCount];
+            doc.ShapeSource.GetBlendShapeFrameVertices(index, doc.ShapeSource.GetBlendShapeFrameCount(index) - 1, source, null, null);
+            var weld = n.Weld;
+            for (int v = 0; v < source.Length; v++) if (source[v] != welded[weld[v]]) return true;
+            return false;
         }
 
         private static bool SameInfluences(List<MeshDocument.Influence> a, List<MeshDocument.Influence> b)
@@ -532,33 +579,32 @@ namespace Orbiters.Mixer.Editor
     /// <summary>Records the deltas of one shape an edit touches: the first touch of a vertex keeps its delta before.</summary>
     internal sealed class DeltaRecorder
     {
-        private readonly Dictionary<int, Vector3> before = new Dictionary<int, Vector3>();
+        // A mark per mesh vertex instead of a dictionary: a whole mesh from Blender touches every moved vertex of a shape.
+        private bool[] kept;
+        private readonly List<int> indices = new List<int>();
+        private readonly List<Vector3> before = new List<Vector3>();
         private readonly EditTarget target;
         private readonly string shape;
         private readonly string label;
 
         public DeltaRecorder(EditTarget target, string shape, string label) { this.target = target; this.shape = shape; this.label = label; }
 
-        public void Touch(int v)
+        /// <summary>Keeps a vertex's delta before its first change; <paramref name="layer"/> is the shape's layer now.</summary>
+        public void Touch(int v, ShapeLayer layer)
         {
-            if (before.ContainsKey(v)) return;
-            var layer = target.Document.Shape(shape, create: true);
-            before[v] = layer.Deltas[v];
+            if (kept == null) kept = new bool[target.Document.VertexCount];
+            if (kept[v]) return;
+            kept[v] = true;
+            indices.Add(v);
+            before.Add(layer.Deltas[v]);
         }
 
         public ShapeDeltaEdit Finish()
         {
-            if (before.Count == 0) return null;
+            if (indices.Count == 0) return null;
             var layer = target.Document.Shape(shape, create: true);
-            var edit = new ShapeDeltaEdit { Target = target, Label = label, Shape = shape, Indices = new int[before.Count], Before = new Vector3[before.Count], After = new Vector3[before.Count] };
-            int i = 0;
-            foreach (var pair in before)
-            {
-                edit.Indices[i] = pair.Key;
-                edit.Before[i] = pair.Value;
-                edit.After[i] = layer.Deltas[pair.Key];
-                i++;
-            }
+            var edit = new ShapeDeltaEdit { Target = target, Label = label, Shape = shape, Indices = indices.ToArray(), Before = before.ToArray(), After = new Vector3[indices.Count] };
+            for (int i = 0; i < edit.Indices.Length; i++) edit.After[i] = layer.Deltas[edit.Indices[i]];
             return edit;
         }
     }

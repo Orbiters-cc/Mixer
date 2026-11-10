@@ -95,6 +95,64 @@ namespace Orbiters.Mixer.Editor.Tests
             Assert.That(SceneGraphExporter.Diff(before, SceneGraphExporter.Build(scene, null)).Empty, Is.True);
         }
 
+        // The cached graph is the one a fresh build gives, ids included; a change of known objects re-describes their nodes
+        // only, objects that are no node are left alone, and what changes the kinds of nodes asks for a full build.
+        [Test]
+        public void TheCachedGraphUpdatesOnlyTheNodesThatChanged()
+        {
+            var cache = new SceneGraphCache();
+            var graph = cache.Build(scene, null);
+            var fresh = SceneGraphExporter.Build(scene, null);
+            Assert.That(graph.nodes.Select(n => n.id), Is.EqualTo(fresh.nodes.Select(n => n.id)), "the same nodes, the same ids");
+            Assert.That(SceneGraphExporter.Diff(fresh, graph).Empty, Is.True, "and nothing else differs");
+            Assert.That(cache.IdOf(mesh), Is.EqualTo(SceneGraphExporter.IdOf(mesh)), "a mesh's id is its GlobalObjectId");
+            Assert.That(cache.IdOf(root), Is.EqualTo(SceneGraphExporter.IdOf(root)));
+
+            var sun = root.transform.Find("Sun");
+            sun.GetComponent<Light>().intensity = 4f;
+            var stray = new GameObject("__XRayGizmos_test");
+            stray.transform.SetParent(root.transform, false);
+            var delta = new SceneDelta();
+            Assert.That(cache.Redescribe(new[] { sun.gameObject.GetInstanceID(), stray.GetInstanceID() }, graph, delta), Is.True);
+            Assert.That(delta.changed.Select(n => n.name), Is.EqualTo(new[] { "Sun" }), "the light's node is resent, the helper is no node");
+            Assert.That(delta.transforms, Is.Empty);
+            Assert.That(SceneGraphExporter.Diff(SceneGraphExporter.Build(scene, null), graph).changed, Is.Empty, "the graph holds the change now");
+
+            var hip = renderer.bones[0];
+            hip.localPosition = new Vector3(0, 0.5f, 0);
+            var moved = new SceneDelta();
+            Assert.That(cache.Retransform(graph, moved), Is.True);
+            Assert.That(moved.transforms.Single().id, Is.EqualTo(SceneGraphExporter.IdOf(hip.gameObject)), "a bone Mixer moved without an event is found");
+            var again = new SceneDelta();
+            Assert.That(cache.Retransform(graph, again) && again.transforms.Count == 0, Is.True, "and only once");
+
+            renderer.bones = new[] { renderer.bones[1] };
+            Assert.That(cache.Redescribe(new[] { renderer.gameObject.GetInstanceID() }, graph, new SceneDelta()), Is.False, "other bones: a full build");
+            Assert.That(cache.Redescribe(new[] { sun.gameObject.GetInstanceID() }, SceneGraphExporter.Build(scene, null), new SceneDelta()), Is.False, "only the graph the cache built");
+            UnityEngine.Object.DestroyImmediate(stray);
+        }
+
+        // A session event sends no whole graph: a Mixer tool's move of a bone reaches Blender as a transform.
+        [Test]
+        public void ASessionEventSendsTransformsNotTheGraph()
+        {
+            using (var host = MixerLinkHost.OpenPrivate(scene))
+            using (var blender = new FakeBlender(host))
+            {
+                blender.Hello();
+                blender.Pump(5, MixerLinkProtocol.FrameType.MeshData);
+                renderer.bones[1].localPosition = new Vector3(0, 1.5f, 0);
+                host.MarkSessionsChanged(0);
+                var frames = blender.Pump(1.0, MixerLinkProtocol.FrameType.SceneDelta);
+                Assert.That(frames.Any(f => f.type == MixerLinkProtocol.FrameType.SceneGraph), Is.False, "no whole graph");
+                var delta = frames.Where(f => f.type == MixerLinkProtocol.FrameType.SceneDelta).Select(f => MixerLinkProtocol.Read<SceneDelta>(f.payload)).LastOrDefault();
+                Assert.That(delta, Is.Not.Null);
+                Assert.That(delta.transforms.Single().p, Is.EqualTo(new[] { 0f, 1.5f, 0f }));
+                host.MarkObjectsChanged(new[] { root.transform.Find("Sun").gameObject.GetInstanceID() }, 0);
+                Assert.That(blender.Pump(0.5).Any(f => f.type == MixerLinkProtocol.FrameType.SceneDelta || f.type == MixerLinkProtocol.FrameType.SceneGraph), Is.False, "nothing for a change that changed nothing");
+            }
+        }
+
         [Test]
         public void MeshDataRoundTripsWeldedVerticesSkinShapesAndTopology()
         {
@@ -106,7 +164,10 @@ namespace Orbiters.Mixer.Editor.Tests
             Assert.That(decoded.Vertices.Length, Is.LessThan(mesh.vertexCount));
             Assert.That(decoded.CornerVertex.Length, Is.EqualTo(mesh.triangles.Length));
             Assert.That(decoded.Bones, Is.EqualTo(new[] { "Hip", "Chest" }));
-            Assert.That(decoded.Influences.Length, Is.EqualTo(n.WeldedCount));
+            Assert.That(decoded.InfluenceCount.Length, Is.EqualTo(n.WeldedCount));
+            Assert.That(decoded.InfluenceBone.Length, Is.EqualTo(decoded.InfluenceCount.Sum(c => c)), "the influences add up");
+            Assert.That(decoded.CornerAttribute, Is.EqualTo(mesh.triangles), "a corner's attribute is the Unity vertex it came from");
+            Assert.That(decoded.AttributeUv, Is.EqualTo(mesh.uv), "whose UV travels once");
             Assert.That(decoded.Shapes.Count, Is.EqualTo(1));
             Assert.That(decoded.Shapes[0].name, Is.EqualTo("Wide"));
             Assert.That(decoded.Shapes[0].indices.Length, Is.GreaterThan(10));
@@ -118,6 +179,8 @@ namespace Orbiters.Mixer.Editor.Tests
             Assert.That(positions.Shape, Is.EqualTo("Wide"));
             Assert.That(positions.Topology, Is.EqualTo(77UL));
             Assert.That(positions.Positions.Length, Is.EqualTo(decoded.Vertices.Length));
+            Assert.That(positions.Indices, Is.Null, "every vertex, in order");
+            Assert.That(positions.VertexCount, Is.EqualTo(decoded.Vertices.Length));
             var weights = MeshDataCodec.DecodeWeights(MeshDataCodec.EncodeWeights("mesh", "Chest", false, 1, 77UL, new[] { 3, 4 }, new[] { 0.25f, 1f }));
             Assert.That((weights.Bone, weights.Topology), Is.EqualTo((1, 77UL)));
             Assert.That(weights.Indices, Is.EqualTo(new[] { 3, 4 }));
@@ -159,15 +222,16 @@ namespace Orbiters.Mixer.Editor.Tests
             foreach (var decoded in new[] { fromAsset, fromDocument })
             {
                 Assert.That(decoded.Vertices.Length, Is.EqualTo(8), "front and back stay two sheets: no face is a duplicate");
-                Assert.That(decoded.CornerUvs.Keys, Is.EqualTo(new[] { 2 }), "only the channels the mesh has");
-                var (dimension, values) = decoded.CornerUvs[2];
+                Assert.That(decoded.AttributeUvs.Keys, Is.EqualTo(new[] { 2 }), "only the channels the mesh has");
+                var (dimension, values) = decoded.AttributeUvs[2];
                 Assert.That(dimension, Is.EqualTo(3));
                 for (int corner = 0; corner < sheet.triangles.Length; corner++)
                 {
                     var expected = uv2[sheet.triangles[corner]];
-                    Assert.That(new Vector3(values[corner * 3], values[corner * 3 + 1], values[corner * 3 + 2]), Is.EqualTo(expected));
+                    int a = decoded.CornerAttribute[corner];
+                    Assert.That(new Vector3(values[a * 3], values[a * 3 + 1], values[a * 3 + 2]), Is.EqualTo(expected));
                     var c = colors[sheet.triangles[corner]];
-                    Assert.That(decoded.CornerColors.Skip(corner * 4).Take(4).ToArray(), Is.EqualTo(new[] { c.r, c.g, c.b, c.a }));
+                    Assert.That(decoded.AttributeColors.Skip(a * 4).Take(4).ToArray(), Is.EqualTo(new[] { c.r, c.g, c.b, c.a }));
                 }
                 Assert.That(decoded.Shapes.Single().name, Is.EqualTo("Lift"));
                 var (weight, inBetweens) = decoded.ShapeFrames[0];
@@ -289,12 +353,28 @@ namespace Orbiters.Mixer.Editor.Tests
             var weights = MeshDataCodec.EncodeWeights("m", "g", true, -1, 1UL, new[] { 1, 2 }, new[] { 1f, 1f });
             BitConverter.GetBytes(1 << 29).CopyTo(weights, weights.Length - 2 * 8 - 4);
             Assert.Throws<InvalidDataException>(() => MeshDataCodec.DecodeWeights(weights));
+            // A sparse positions frame naming a vertex past the mesh's.
+            var past = MeshDataCodec.EncodePositions("m", null, 1UL, 4, new[] { 9 }, new[] { Vector3.one });
+            Assert.Throws<InvalidDataException>(() => MeshDataCodec.DecodePositions(past));
+            // A section of a kind this protocol does not have.
+            var unknown = new MemoryStream();
+            using (var w = new BinaryWriter(unknown))
+            {
+                w.Write((ushort)1); w.Write((byte)'m'); w.Write((ushort)0);
+                w.Write(0); w.Write(0); w.Write(0); w.Write(0); // vertices, corners, attributes, faces
+                w.Write((byte)0);
+                w.Write((ushort)0); w.Write((ushort)0);
+                w.Write((ushort)1);
+                w.Write((byte)99); w.Write(0);
+            }
+            Assert.Throws<InvalidDataException>(() => MeshDataCodec.Decode(unknown.ToArray()), "an unknown section is refused, not skipped");
+            Assert.Throws<InvalidDataException>(() => MeshDataCodec.DecodeWeights(weights));
             // A Link section that says it is 1 byte long and holds 10: it would be read again from inside itself.
             var rewinding = new MemoryStream();
             using (var w = new BinaryWriter(rewinding))
             {
                 w.Write((ushort)1); w.Write((byte)'m'); w.Write((ushort)0);
-                w.Write(0); w.Write(0); w.Write(0); // vertices, corners, faces
+                w.Write(0); w.Write(0); w.Write(0); w.Write(0); // vertices, corners, attributes, faces
                 w.Write((byte)0); // no skin
                 w.Write((ushort)0); w.Write((ushort)0); // shapes, groups
                 w.Write((ushort)1);
@@ -337,20 +417,88 @@ namespace Orbiters.Mixer.Editor.Tests
             Assert.That(renderer.sharedMesh, Is.SameAs(mesh), "the renderer shows its mesh");
         }
 
+        // Positions frames carry only what moved since the frame before: none may be dropped or merged into a newer one.
         [Test]
-        public void PositionsOfTwoShapesOfOneMeshNeverCollapseIntoEachOther()
+        public void PositionsFramesNeverCollapse()
         {
-            var accept = typeof(MixerLinkHost).GetMethod("Accept", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
-            var collapse = typeof(MixerLinkHost).GetMethod("CollapseKey", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
-            string KeyOf(string shape)
+            using (var host = MixerLinkHost.OpenPrivate(scene))
             {
-                var raw = new LiveLinkFrame { Type = (byte)MixerLinkProtocol.FrameType.Positions, Payload = MeshDataCodec.EncodePositions("mesh", shape, 1UL, new Vector3[2]) };
-                accept.Invoke(null, new object[] { raw });
-                return (string)collapse.Invoke(null, new object[] { raw });
+                var collapse = typeof(LiveLinkServer).GetField("collapseKey", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                Assert.That(collapse, Is.Not.Null, "the server keeps its collapse key in this field");
+                Assert.That(collapse.GetValue(host.Server), Is.Null, "the link's server collapses nothing");
             }
-            Assert.That(KeyOf("A"), Is.Not.EqualTo(KeyOf("B")));
-            Assert.That(KeyOf("A"), Is.EqualTo(KeyOf("A")));
-            Assert.That(KeyOf(null), Is.Not.EqualTo(KeyOf("A")));
+        }
+
+        // The wire layout of a sparse positions frame, byte for byte (tests/protocol_check.py checks the same bytes in Python).
+        [Test]
+        public void ASparsePositionsFrameIsLaidOutAsTheExtensionReadsIt()
+        {
+            var payload = MeshDataCodec.EncodePositions("mesh", "Smile", 0x1122334455667788UL, 5, new[] { 3, 1 }, new[] { new Vector3(1, 2, 3), new Vector3(4, 5, 6) });
+            var expected = new MemoryStream();
+            using (var w = new BinaryWriter(expected))
+            {
+                w.Write((ushort)4); w.Write(System.Text.Encoding.UTF8.GetBytes("mesh"));
+                w.Write((ushort)5); w.Write(System.Text.Encoding.UTF8.GetBytes("Smile"));
+                w.Write(0x1122334455667788UL);
+                w.Write(5); w.Write(2);
+                w.Write(3); w.Write(1);
+                foreach (float f in new[] { 1f, 2f, 3f, 4f, 5f, 6f }) w.Write(f);
+            }
+            Assert.That(payload, Is.EqualTo(expected.ToArray()));
+            var back = MeshDataCodec.DecodePositions(payload);
+            Assert.That(back.Indices, Is.EqualTo(new[] { 3, 1 }));
+            Assert.That(back.Positions, Is.EqualTo(new[] { new Vector3(1, 2, 3), new Vector3(4, 5, 6) }));
+            Assert.That(back.VertexCount, Is.EqualTo(5));
+            var all = MeshDataCodec.EncodePositions("mesh", null, 1UL, 2, new[] { 1, 0 }, new[] { Vector3.up, Vector3.right });
+            var dense = MeshDataCodec.DecodePositions(all);
+            Assert.That(dense.Indices, Is.Null, "every vertex named goes in order, without indices");
+            Assert.That(dense.Positions, Is.EqualTo(new[] { Vector3.right, Vector3.up }));
+            var weights = MeshDataCodec.EncodeWeights("mesh", "Chest", false, 3, 7UL, new[] { 4, 9 }, new[] { 0.5f, 1f });
+            var expectedWeights = new MemoryStream();
+            using (var w = new BinaryWriter(expectedWeights))
+            {
+                w.Write((ushort)4); w.Write(System.Text.Encoding.UTF8.GetBytes("mesh"));
+                w.Write((ushort)5); w.Write(System.Text.Encoding.UTF8.GetBytes("Chest"));
+                w.Write((byte)0); w.Write(3); w.Write(7UL); w.Write(2);
+                w.Write(4); w.Write(9); w.Write(0.5f); w.Write(1f);
+            }
+            Assert.That(weights, Is.EqualTo(expectedWeights.ToArray()), "a weights frame: indices, then weights");
+        }
+
+        // The block writer and reader against BinaryWriter's own bytes for the same values.
+        [Test]
+        public void LinkBlocksAreTheBytesOfTheirElements()
+        {
+            var w = new LinkWriter(4);
+            w.String("Body");
+            w.I32(-7);
+            w.U64(0xFEDCBA9876543210UL);
+            w.Block(new[] { new Vector3(1, 2, 3), new Vector3(-4, 5.5f, 6) }, 2);
+            int at = w.ReserveI32();
+            var claimed = w.Claim<ushort>(3);
+            claimed[0] = 1; claimed[1] = 2; claimed[2] = 65535;
+            w.PatchI32(at, 3);
+            int section = w.BeginSection(5);
+            w.F32(0.25f);
+            w.EndSection(section);
+            var expected = new MemoryStream();
+            using (var b = new BinaryWriter(expected))
+            {
+                b.Write((ushort)4); b.Write(System.Text.Encoding.UTF8.GetBytes("Body"));
+                b.Write(-7); b.Write(0xFEDCBA9876543210UL);
+                foreach (float f in new[] { 1f, 2f, 3f, -4f, 5.5f, 6f }) b.Write(f);
+                b.Write(3); b.Write((ushort)1); b.Write((ushort)2); b.Write((ushort)65535);
+                b.Write((byte)5); b.Write(4); b.Write(0.25f);
+            }
+            var bytes = w.ToArray();
+            Assert.That(bytes, Is.EqualTo(expected.ToArray()));
+            var r = new LinkReader(bytes, "test");
+            Assert.That(r.String(), Is.EqualTo("Body"));
+            Assert.That(r.I32(), Is.EqualTo(-7));
+            Assert.That(r.U64(), Is.EqualTo(0xFEDCBA9876543210UL));
+            Assert.That(r.Array<Vector3>(2), Is.EqualTo(new[] { new Vector3(1, 2, 3), new Vector3(-4, 5.5f, 6) }));
+            Assert.That(r.Array<ushort>(r.I32()), Is.EqualTo(new ushort[] { 1, 2, 65535 }));
+            Assert.Throws<InvalidDataException>(() => r.Count(1000, 4, "things"), "a count past the bytes left");
         }
 
         // ---- A fake Blender on a private host ---------------------------------------------------------------------------
@@ -674,6 +822,313 @@ namespace Orbiters.Mixer.Editor.Tests
                 Assert.That(MixerHistory.CanRedo, Is.True, "and the redo stays");
             }
         }
+
+        // Unity's live positions: the first frame of a layer after the mesh is whole, the next ones hold only the welded
+        // vertices that moved since (none at all when nothing did).
+        [Test]
+        public void UnitySendsOnlyTheVerticesThatMovedSinceItsLastFrame()
+        {
+            using (var host = MixerLinkHost.OpenPrivate(scene))
+            using (var blender = new FakeBlender(host))
+            {
+                blender.Hello();
+                blender.Pump(5, MixerLinkProtocol.FrameType.MeshData);
+                var target = MixerSession.Edit(renderer);
+                blender.Pump(0.5);
+                var doc = target.Document;
+                var n = doc.LinkWeld;
+                doc.SetLayerPosition(null, n.Representative[0], doc.Positions[n.Representative[0]] + Vector3.up);
+                host.NotePositions(target);
+                var first = PositionsOf(blender.Pump(1.0, MixerLinkProtocol.FrameType.Positions)).LastOrDefault();
+                Assert.That(first, Is.Not.Null, "Blender hears of the edit");
+                Assert.That(first.Indices, Is.Null, "the first frame after the mesh is whole");
+                Assert.That(first.Positions.Length, Is.EqualTo(n.WeldedCount));
+                int moved = n.Representative[3];
+                doc.SetLayerPosition(null, moved, doc.Positions[moved] + Vector3.right);
+                host.NotePositions(target);
+                var second = PositionsOf(blender.Pump(1.0, MixerLinkProtocol.FrameType.Positions)).LastOrDefault();
+                Assert.That(second, Is.Not.Null);
+                Assert.That(second.Indices, Is.EqualTo(new[] { 3 }), "then only what moved");
+                Assert.That(second.Positions[0], Is.EqualTo(doc.Positions[moved]));
+                host.NotePositions(target);
+                Assert.That(PositionsOf(blender.Pump(0.5)).Any(), Is.False, "and nothing when nothing moved");
+            }
+        }
+
+        // Blender's sparse frames: each holds only what moved since its last one, so every one must land, in order.
+        [Test]
+        public void SparseFramesFromBlenderAllLand()
+        {
+            using (var host = MixerLinkHost.OpenPrivate(scene))
+            using (var blender = new FakeBlender(host))
+            {
+                blender.Hello();
+                blender.Pump(5, MixerLinkProtocol.FrameType.MeshData);
+                blender.Claim(renderer, number: 1);
+                var target = MixerSession.TargetOf(renderer);
+                var doc = target.Document;
+                var n = doc.LinkWeld;
+                string meshId = MixerLinkService.MeshIdOf(renderer);
+                ulong topology = MeshDataCodec.Topology(doc);
+                int a = n.Representative[1], b = n.Representative[2];
+                var pa = doc.Positions[a] + Vector3.up * 0.2f;
+                var pb = doc.Positions[b] + Vector3.up * 0.3f;
+                blender.Send(MixerLinkProtocol.FrameType.Positions, MeshDataCodec.EncodePositions(meshId, null, topology, n.WeldedCount, new[] { 1 }, new[] { pa }));
+                blender.Send(MixerLinkProtocol.FrameType.Positions, MeshDataCodec.EncodePositions(meshId, null, topology, n.WeldedCount, new[] { 2 }, new[] { pb }));
+                blender.Pump(1.0);
+                Assert.That(doc.Positions[a], Is.EqualTo(pa), "the first frame landed");
+                Assert.That(doc.Positions[b], Is.EqualTo(pb), "and the second, sent right after it");
+                foreach (int v in n.Members[0]) Assert.That(doc.Positions[v], Is.EqualTo(mesh.vertices[v]), "what no frame named stays");
+                blender.Release(renderer);
+            }
+        }
+
+        // A whole mesh from Blender with Unity's shapes unchanged loads none of them into the document (a body's hundreds of
+        // shapes would each take a mesh-size layer), and still takes the one Blender changed.
+        [Test]
+        public void AWholeMeshFromBlenderLoadsOnlyTheShapesItChanged()
+        {
+            using (var host = MixerLinkHost.OpenPrivate(scene))
+            using (var blender = new FakeBlender(host))
+            {
+                blender.Hello();
+                blender.Pump(5, MixerLinkProtocol.FrameType.MeshData);
+                blender.Claim(renderer);
+                var target = MixerSession.TargetOf(renderer);
+                var doc = target.Document;
+                string meshId = MixerLinkService.MeshIdOf(renderer);
+                var snapshot = MeshDataCodec.Snapshot(meshId, target);
+                Assume.That(doc.ShapeEdits.ContainsKey("Wide"), Is.False, "the shape is not loaded before");
+                blender.Send(MixerLinkProtocol.FrameType.MeshData, MeshDataCodec.Encode(snapshot));
+                blender.Pump(1.0);
+                Assert.That(doc.ShapeEdits.ContainsKey("Wide"), Is.False, "an unchanged shape is not loaded");
+                var wide = snapshot.Shapes.Single(s => s.Name == "Wide");
+                for (int i = 0; i < wide.Deltas.Length; i++) wide.Deltas[i] *= 2f;
+                blender.Send(MixerLinkProtocol.FrameType.MeshData, MeshDataCodec.Encode(snapshot));
+                blender.Pump(1.0);
+                Assert.That(doc.ShapeEdits.TryGetValue("Wide", out var layer) && layer.Edited, Is.True, "a changed one is");
+                Assert.That(layer.Deltas[wide.Indices[0]], Is.EqualTo(wide.Deltas[0]));
+                blender.Release(renderer);
+                Undo.PerformUndo();
+                Assert.That(doc.Shape("Wide").Deltas[wide.Indices[0]], Is.EqualTo(wide.Deltas[0] * 0.5f), "and Ctrl+Z takes it back");
+            }
+        }
+
+        // With Auto normalize a stroke on one bone scales the vertices' other bones: Blender gets those too, not only the
+        // painted one (it would keep their old weights and bring them back with its next whole mesh).
+        [Test]
+        public void ANormalizedWeightStrokeSendsTheBonesThatGaveWay()
+        {
+            using (var host = MixerLinkHost.OpenPrivate(scene))
+            using (var blender = new FakeBlender(host))
+            {
+                blender.Hello();
+                blender.Pump(5, MixerLinkProtocol.FrameType.MeshData);
+                var target = MixerSession.Edit(renderer);
+                blender.Pump(0.3);
+                var doc = target.Document;
+                int v = doc.LinkWeld.Representative[0];
+                doc.SetBoneWeight(v, 0, 1f, normalize: true);
+                doc.SetBoneWeight(v, 1, 0.25f, normalize: true);
+                host.SendWeights(target, WeightChannel.OfBone(1), new[] { v });
+                var frames = blender.Pump(0.5).Where(f => f.type == MixerLinkProtocol.FrameType.Weights).Select(f => MeshDataCodec.DecodeWeights(f.payload)).ToList();
+                Assert.That(frames.Select(f => f.Bone), Is.EquivalentTo(new[] { 1, 0 }), "the painted bone and the one that gave way");
+                Assert.That(frames.Single(f => f.Bone == 0).Weights[0], Is.EqualTo(0.75f).Within(1e-5f));
+            }
+        }
+
+        // The shape list is compared at every revision (every brush step moves it): a step that changes no shape or group
+        // sends no mesh, a deleted shape does.
+        [Test]
+        public void ABrushStepSendsNoMeshAndADeletedShapeDoes()
+        {
+            using (var host = MixerLinkHost.OpenPrivate(scene))
+            using (var blender = new FakeBlender(host))
+            {
+                blender.Hello();
+                blender.Pump(5, MixerLinkProtocol.FrameType.MeshData);
+                var target = MixerSession.Edit(renderer);
+                blender.Pump(0.3);
+                target.Document.Revision++;
+                Assert.That(blender.Pump(0.5).Any(f => f.type == MixerLinkProtocol.FrameType.MeshData), Is.False, "a step sends no mesh");
+                target.Document.DeleteShape("Wide");
+                var resent = blender.Pump(5, MixerLinkProtocol.FrameType.MeshData).Where(f => f.type == MixerLinkProtocol.FrameType.MeshData).Select(f => MeshDataCodec.Decode(f.payload)).LastOrDefault();
+                Assert.That(resent, Is.Not.Null, "a deleted shape sends the mesh");
+                Assert.That(resent.Shapes.Any(sh => sh.name == "Wide"), Is.False);
+            }
+        }
+
+        // A base frame moves the shapes with it on the other side: the next frame of a shape is whole, so a shape edited
+        // back to where Unity last sent it still reaches Blender (base, shape, base, shape).
+        [Test]
+        public void AShapeFrameAfterABaseFrameIsWhole()
+        {
+            using (var host = MixerLinkHost.OpenPrivate(scene))
+            using (var blender = new FakeBlender(host))
+            {
+                blender.Hello();
+                blender.Pump(5, MixerLinkProtocol.FrameType.MeshData);
+                var target = MixerSession.Edit(renderer);
+                blender.Pump(0.3);
+                var doc = target.Document;
+                int v = doc.LinkWeld.Representative[0];
+                var layer = doc.Shape("Wide", create: true);
+                doc.Layer = "Wide";
+                var shapeAt = doc.Positions[v] + layer.Deltas[v] + Vector3.right;
+                doc.SetLayerPosition("Wide", v, shapeAt);
+                host.NotePositions(target);
+                Assert.That(PositionsOf(blender.Pump(1.0, MixerLinkProtocol.FrameType.Positions)).Last().Shape, Is.EqualTo("Wide"));
+                doc.Layer = null;
+                doc.SetLayerPosition(null, v, doc.Positions[v] + Vector3.right);
+                host.NotePositions(target);
+                var baseFrame = PositionsOf(blender.Pump(1.0, MixerLinkProtocol.FrameType.Positions)).Last();
+                Assert.That(baseFrame.Shape, Is.Null);
+                // The shape back at the place Unity sent before the base moved: Blender's key moved with the base, so it goes.
+                doc.Layer = "Wide";
+                doc.SetLayerPosition("Wide", v, shapeAt);
+                host.NotePositions(target);
+                var shapeFrame = PositionsOf(blender.Pump(1.0, MixerLinkProtocol.FrameType.Positions)).LastOrDefault();
+                Assert.That(shapeFrame, Is.Not.Null, "the shape's edit reaches Blender");
+                Assert.That(shapeFrame.Shape, Is.EqualTo("Wide"));
+                Assert.That(shapeFrame.Indices, Is.Null, "whole, as Unity no longer knows what Blender has of the shape");
+                Assert.That(shapeFrame.Positions[0], Is.EqualTo(shapeAt));
+                // And again after one more base frame.
+                doc.Layer = null;
+                doc.SetLayerPosition(null, v, doc.Positions[v] - Vector3.right);
+                host.NotePositions(target);
+                blender.Pump(1.0, MixerLinkProtocol.FrameType.Positions);
+                doc.Layer = "Wide";
+                host.NotePositions(target);
+                Assert.That(PositionsOf(blender.Pump(1.0, MixerLinkProtocol.FrameType.Positions)).LastOrDefault()?.Indices, Is.Null, "whole again");
+            }
+        }
+
+        // Undo and Redo of a base edit between shape edits: each base frame they send makes the shape's next frame whole.
+        [Test]
+        public void UndoAndRedoOfTheBaseBetweenShapeEditsKeepTheShapeWhole()
+        {
+            using (var host = MixerLinkHost.OpenPrivate(scene))
+            using (var blender = new FakeBlender(host))
+            {
+                blender.Hello();
+                blender.Pump(5, MixerLinkProtocol.FrameType.MeshData);
+                var target = MixerSession.Edit(renderer);
+                blender.Pump(0.3);
+                var doc = target.Document;
+                int v = doc.LinkWeld.Representative[0];
+                doc.Shape("Wide", create: true);
+                doc.Layer = "Wide";
+                doc.SetLayerPosition("Wide", v, doc.GetLayerPosition("Wide", v) + Vector3.up);
+                host.NotePositions(target);
+                blender.Pump(1.0, MixerLinkProtocol.FrameType.Positions);
+                var before = doc.Positions[v];
+                var after = before + Vector3.forward;
+                doc.SetLayerPosition(null, v, after);
+                MixerHistory.Push(new PositionEdit { Target = target, Label = "Test base move", Layer = null, Indices = new[] { v }, Before = new[] { before }, After = new[] { after } });
+                host.NotePositions(target);
+                blender.Pump(1.0, MixerLinkProtocol.FrameType.Positions);
+                foreach (bool undo in new[] { true, false })
+                {
+                    if (undo) Undo.PerformUndo(); else Undo.PerformRedo();
+                    var frames = PositionsOf(blender.Pump(1.0, MixerLinkProtocol.FrameType.Positions)).ToList();
+                    Assert.That(frames.Any(f => f.Shape == null), Is.True, undo ? "the undo sends the base" : "the redo sends the base");
+                    doc.Layer = "Wide";
+                    host.NotePositions(target);
+                    var shape = PositionsOf(blender.Pump(1.0, MixerLinkProtocol.FrameType.Positions)).LastOrDefault(f => f.Shape == "Wide");
+                    Assert.That(shape, Is.Not.Null, "the shape follows");
+                    Assert.That(shape.Indices, Is.Null, "whole");
+                    Assert.That(shape.Positions[0], Is.EqualTo(doc.GetLayerPosition("Wide", v)));
+                }
+            }
+        }
+
+        // One undo step holding a base stroke and the shape stroke after it: the base goes first, then the shape whole, so
+        // Blender's moving of the shapes with the base cannot move the shape's final positions again. Then the redo.
+        [Test]
+        public void AnUndoOfABaseAndAShapeStrokeSendsTheBaseFirst()
+        {
+            using (var host = MixerLinkHost.OpenPrivate(scene))
+            using (var blender = new FakeBlender(host))
+            {
+                blender.Hello();
+                blender.Pump(5, MixerLinkProtocol.FrameType.MeshData);
+                var target = MixerSession.Edit(renderer);
+                blender.Pump(0.3);
+                var doc = target.Document;
+                int v = doc.LinkWeld.Representative[0];
+                doc.Shape("Wide", create: true);
+                // Unity knows what Blender has of both layers.
+                foreach (string shown in new[] { "Wide", null, "Wide" })
+                {
+                    doc.Layer = shown;
+                    host.NotePositions(target);
+                    blender.Pump(1.0, MixerLinkProtocol.FrameType.Positions);
+                }
+                var b0 = doc.Positions[v];
+                var b1 = b0 + Vector3.forward;
+                doc.SetLayerPosition(null, v, b1);
+                var s0 = doc.GetLayerPosition("Wide", v);
+                var s1 = s0 + Vector3.up;
+                doc.SetLayerPosition("Wide", v, s1);
+                Undo.IncrementCurrentGroup();
+                Undo.SetCurrentGroupName("Mixer: base and shape");
+                MixerHistory.Push(new PositionEdit { Target = target, Label = "Test base", Layer = null, Indices = new[] { v }, Before = new[] { b0 }, After = new[] { b1 } }, joinCurrentGroup: true);
+                MixerHistory.Push(new PositionEdit { Target = target, Label = "Test shape", Layer = "Wide", Indices = new[] { v }, Before = new[] { s0 }, After = new[] { s1 } }, joinCurrentGroup: true);
+                Undo.IncrementCurrentGroup();
+                foreach (string shown in new[] { (string)null, "Wide" })
+                {
+                    doc.Layer = shown;
+                    host.NotePositions(target);
+                    blender.Pump(1.0, MixerLinkProtocol.FrameType.Positions);
+                }
+                foreach (bool undo in new[] { true, false })
+                {
+                    if (undo) Undo.PerformUndo(); else Undo.PerformRedo();
+                    var frames = PositionsOf(blender.Pump(1.0)).ToList();
+                    int baseAt = frames.FindIndex(f => f.Shape == null), shapeAt = frames.FindIndex(f => f.Shape == "Wide");
+                    Assert.That(baseAt, Is.GreaterThanOrEqualTo(0), undo ? "the undo sends the base" : "the redo sends the base");
+                    Assert.That(shapeAt, Is.GreaterThan(baseAt), "and the shape after it");
+                    Assert.That(frames[shapeAt].Indices, Is.Null, "whole");
+                    Assert.That(frames[shapeAt].Positions[0], Is.EqualTo(doc.GetLayerPosition("Wide", v)));
+                    Assert.That(doc.GetLayerPosition("Wide", v), Is.EqualTo(undo ? s0 : s1).Using<Vector3>((a, b) => (a - b).sqrMagnitude < 1e-10f ? 0 : 1));
+                }
+            }
+        }
+
+        // A bone a normalised stroke takes out of a vertex entirely (to 0, or under the thousandth Unity keeps) goes to
+        // Blender as 0, so Blender's copy does not keep it beside the painted bone.
+        [Test]
+        public void ABoneANormalizedStrokeRemovesGoesAsZero()
+        {
+            using (var host = MixerLinkHost.OpenPrivate(scene))
+            using (var blender = new FakeBlender(host))
+            {
+                blender.Hello();
+                blender.Pump(5, MixerLinkProtocol.FrameType.MeshData);
+                var target = MixerSession.Edit(renderer);
+                blender.Pump(0.3);
+                var doc = target.Document;
+                var n = doc.LinkWeld;
+                foreach (var (painted, value) in new[] { (n.Representative[1], 1f), (n.Representative[2], 0.9995f) })
+                {
+                    doc.SetInfluences(painted, new[] { new MeshDocument.Influence(0, 0.75f), new MeshDocument.Influence(1, 0.25f) });
+                    var recorder = new WeightRecorder(target, null, "Test stroke");
+                    recorder.Touch(painted);
+                    doc.SetBoneWeight(painted, 1, value, normalize: true);
+                    Assume.That(doc.BoneWeight(painted, 0), Is.EqualTo(0f), "Unity dropped bone 0 from the vertex");
+                    MixerHistory.Push(recorder.Finish());
+                    host.SendWeights(target, WeightChannel.OfBone(1), new[] { painted });
+                    var frames = blender.Pump(0.5).Where(f => f.type == MixerLinkProtocol.FrameType.Weights).Select(f => MeshDataCodec.DecodeWeights(f.payload)).ToList();
+                    var gone = frames.FirstOrDefault(f => f.Bone == 0);
+                    Assert.That(gone, Is.Not.Null, "the bone that left the vertex is sent (stroke to " + value + ")");
+                    Assert.That(gone.Weights, Is.EqualTo(new[] { 0f }), "as 0");
+                    Assert.That(frames.Single(f => f.Bone == 1).Weights[0], Is.EqualTo(doc.BoneWeight(painted, 1)));
+                }
+            }
+        }
+
+        private static IEnumerable<MeshDataCodec.PositionsFrame> PositionsOf(List<(MixerLinkProtocol.FrameType type, byte[] payload)> frames) =>
+            frames.Where(f => f.type == MixerLinkProtocol.FrameType.Positions).Select(f => MeshDataCodec.DecodePositions(f.payload));
 
         /// <summary>A Blender extension speaking the link over a real socket, pumping the host by hand (a test has no editor loop).</summary>
         private sealed class FakeBlender : IDisposable

@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.CompilerServices;
-using System.Text;
 using Orbiters.Toolkit.Meshes;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -12,30 +11,39 @@ namespace Orbiters.Mixer.Editor
     /// <summary>
     /// The binary mesh of the link, as Blender likes it: vertices welded where Unity only split them for a UV seam or a
     /// hard edge (same place, normals less than 120 degrees apart, same skin, same motion in every shape frame), so sheets
-    /// that touch (double-sided cloth, closed lips, seams that open in a shape) stay apart; faces as triangles
-    /// whose corners carry the UV and normal of the Unity vertex they came from, materials per face, skin and shapes per
-    /// welded vertex. Blender edits come back per welded vertex and Unity spreads them over the members. Little-endian:
+    /// that touch (double-sided cloth, closed lips, seams that open in a shape) stay apart; faces as triangles whose
+    /// corners carry the UV and normal of the Unity vertex they came from, materials per face, skin and shapes per welded
+    /// vertex. Blender edits come back per welded vertex and Unity spreads them over the members. Little-endian; every
+    /// array is one block of its elements (read and written at once, numpy reads them with one call):
     /// <code>
     ///   u16 idLen, id (UTF-8)            u16 nameLen, name
     ///   u32 vertexCount, vertexCount × (f32 x, y, z)
-    ///   u32 cornerCount (= 3 × faces), cornerCount × u32 vertex index, cornerCount × (f32 u, v), cornerCount × (f32 nx, ny, nz)
+    ///   u32 cornerCount (= 3 × faces), cornerCount × u32 vertex, cornerCount × u32 attribute
+    ///   u32 attributeCount, attributeCount × (f32 u, v), attributeCount × (f32 nx, ny, nz)
+    ///       Corner attributes: what a corner carries besides its vertex, shared by the corners that name it. From Unity
+    ///       an attribute is a Unity vertex (they are the distinct place, normal and UV tuples already); from Blender one
+    ///       per corner.
     ///   u32 faceCount, faceCount × u16 material index
-    ///   u8 hasSkin; if 1: u16 boneCount, boneCount × (u16 len, bone name); vertexCount × (u8 n, n × (u16 bone, f32 weight))
-    ///   u16 shapeCount, shapeCount × (u16 len, name, u32 n, n × (u32 vertex, f32 dx, dy, dz))   the last frame of each shape
-    ///   u16 groupCount, groupCount × (u16 len, name, u32 n, n × (u32 vertex, f32 weight))
-    ///   u16 sectionCount, sectionCount × (u8 tag, u32 byteLength, data): what a reader does not know it skips
-    ///     1 UV channel:  u8 channel (1..7, or 0 when it has more than two components), u8 dimension (2..4), cornerCount × dimension × f32
-    ///     2 Colours:     cornerCount × (u8 r, g, b, a)
+    ///   u8 hasSkin; if 1: u16 boneCount, boneCount × (u16 len, bone name),
+    ///       vertexCount × u8 influences, u32 n (their sum), n × u16 bone, n × f32 weight (the vertices' influences in order)
+    ///   u16 shapeCount, shapeCount × (u16 len, name, sparse vectors)   the last frame of each shape
+    ///   u16 groupCount, groupCount × (u16 len, name, u32 n, n × u32 vertex, n × f32 weight)
+    ///   u16 sectionCount, sectionCount × (u8 tag, u32 byteLength, data); a tag the reader does not know is an error
+    ///     1 UV channel:  u8 channel (1..7, or 0 when it has more than two components), u8 dimension (2..4), attributeCount × dimension × f32
+    ///     2 Colours:     attributeCount × (u8 r, g, b, a)
     ///     3 Shape frames, for a shape whose last frame's weight is not 100 or that has in-betweens:
-    ///                    u16 shape index (in the list above), f32 last frame's weight, u16 n, n × (f32 weight, u32 m, m × (u32 vertex, f32 dx, dy, dz))
+    ///                    u16 shape index (in the list above), f32 last frame's weight, u16 n, n × (f32 weight, sparse vectors)
     ///     4 Bind poses:  u16 boneCount, boneCount × 16 f32 (mesh space to bone space, Unity's element order m[0..15])
     ///     5 Link:        u64 topology (<see cref="Topology"/> of Unity's welded mesh; from Blender: the one its copy was
     ///                    built from), u16 keyLen, key (an asset mesh's content key, empty otherwise)
+    ///   sparse vectors: u32 n, n × u32 vertex, n × (f32 dx, dy, dz)
     /// </code>
-    /// A bone Unity has no transform for travels with an empty name. Positions frames:
-    /// <c>u16 idLen, id, u16 shapeLen, shape (empty for the base), u64 topology, u32 count, count × (f32 x, y, z)</c>.
-    /// Weights frames: <c>u16 idLen, id, u16 channelLen, channel, u8 isGroup, i32 bone (its index in the bone list sent,
-    /// -1 for a group), u64 topology, u32 count, count × (u32 vertex, f32 weight)</c>.
+    /// A bone Unity has no transform for travels with an empty name. Positions frames (either way):
+    /// <c>u16 idLen, id, u16 shapeLen, shape (empty for the base), u64 topology, u32 vertexCount, u32 n, [n × u32 vertex
+    /// when n is not vertexCount], n × (f32 x, y, z)</c>: the positions of the welded vertices that moved since the last
+    /// frame (every vertex in order when n is vertexCount). Weights frames: <c>u16 idLen, id, u16 channelLen, channel,
+    /// u8 isGroup, i32 bone (its index in the bone list sent, -1 for a group), u64 topology, u32 n, n × u32 vertex,
+    /// n × f32 weight</c>.
     /// </summary>
     internal static class MeshDataCodec
     {
@@ -155,15 +163,26 @@ namespace Orbiters.Mixer.Editor
 
         private static void AddFrameKeys(long[] keys, int shape, int frame, Vector3[] deltas)
         {
-            long tag = ((long)shape << 16) | (uint)frame;
             for (int v = 0; v < keys.Length; v++)
             {
                 var d = deltas[v];
                 if (d.sqrMagnitude <= 0f) continue;
-                long key = MixKey(keys[v], tag);
-                key = MixKey(key, ((long)BitConverter.SingleToInt32Bits(d.x) << 32) | (uint)BitConverter.SingleToInt32Bits(d.y));
-                keys[v] = MixKey(key, BitConverter.SingleToInt32Bits(d.z));
+                keys[v] = FrameKey(keys[v], shape, frame, d);
             }
+        }
+
+        // The same keys from a frame's sparse deltas (its moving vertices only, as the dense pass above keeps them).
+        private static void AddFrameKeys(long[] keys, int shape, int frame, int[] indices, Vector3[] deltas)
+        {
+            for (int i = 0; i < indices.Length; i++) keys[indices[i]] = FrameKey(keys[indices[i]], shape, frame, deltas[i]);
+        }
+
+        private static long FrameKey(long key, int shape, int frame, Vector3 d)
+        {
+            long tag = ((long)shape << 16) | (uint)frame;
+            key = MixKey(key, tag);
+            key = MixKey(key, ((long)BitConverter.SingleToInt32Bits(d.x) << 32) | (uint)BitConverter.SingleToInt32Bits(d.y));
+            return MixKey(key, BitConverter.SingleToInt32Bits(d.z));
         }
 
         private static long MixKey(long key, long value)
@@ -213,23 +232,29 @@ namespace Orbiters.Mixer.Editor
             public string Key;
             public Vector3[] Vertices;
             public int[] CornerVertex;
-            public Vector2[] CornerUv;
-            public Vector3[] CornerNormal;
+            /// <summary>Per corner: its attribute (an index into <see cref="AttributeUv"/>, <see cref="AttributeNormal"/>, <see cref="AttributeUvs"/>, <see cref="AttributeColors"/>).</summary>
+            public int[] CornerAttribute;
+            public Vector2[] AttributeUv;
+            public Vector3[] AttributeNormal;
             public ushort[] FaceMaterial;
             public string[] Bones;
-            public List<MeshDocument.Influence>[] Influences;
+            /// <summary>The influences, vertex after vertex: how many each vertex has, then their bones and weights (null without skin).</summary>
+            public byte[] InfluenceCount;
+            public ushort[] InfluenceBone;
+            public float[] InfluenceWeight;
             public List<(string name, int[] indices, Vector3[] deltas)> Shapes = new List<(string, int[], Vector3[])>();
             public List<(string name, int[] indices, float[] weights)> Groups = new List<(string, int[], float[])>();
-            /// <summary>UV channels 1..7 per corner (channel to dimension and values, dimension per corner).</summary>
-            public Dictionary<int, (int dimension, float[] values)> CornerUvs = new Dictionary<int, (int, float[])>();
-            /// <summary>RGBA per corner, or null.</summary>
-            public byte[] CornerColors;
+            /// <summary>UV channels 1..7 per attribute (channel to dimension and values, dimension per attribute).</summary>
+            public Dictionary<int, (int dimension, float[] values)> AttributeUvs = new Dictionary<int, (int, float[])>();
+            /// <summary>RGBA per attribute, or null.</summary>
+            public byte[] AttributeColors;
             /// <summary>Shape index to its last frame's weight and in-between frames (shapes absent here: one frame at 100).</summary>
             public Dictionary<int, (float weight, List<Frame> inBetweens)> ShapeFrames = new Dictionary<int, (float, List<Frame>)>();
             public Matrix4x4[] BindPoses;
         }
 
-        public sealed class PositionsFrame { public string Id; public string Shape; public ulong Topology; public Vector3[] Positions; }
+        /// <summary>A positions frame: <see cref="Indices"/> null when it holds every welded vertex in order.</summary>
+        public sealed class PositionsFrame { public string Id; public string Shape; public ulong Topology; public int VertexCount; public int[] Indices; public Vector3[] Positions; }
         public sealed class WeightsFrame { public string Id; public string Channel; public bool IsGroup; public int Bone = -1; public ulong Topology; public int[] Indices; public float[] Weights; }
 
         /// <summary>A shape as sent: its last frame and in-betweens, sparse over the mesh's own vertices.</summary>
@@ -258,10 +283,9 @@ namespace Orbiters.Mixer.Editor
             public MeshNeighbors Weld;
             public long[] WeldKeys;
             public string[] BoneNames;
+            /// <summary>The influences as Unity lays them out: how many per vertex, then the vertices' influences in order.</summary>
             public byte[] BonesPerVertex;
             public BoneWeight1[] BoneWeights;
-            /// <summary>A document's influences, used instead of <see cref="BonesPerVertex"/>/<see cref="BoneWeights"/> when set.</summary>
-            public List<MeshDocument.Influence>[] Influences;
             public Matrix4x4[] BindPoses;
             public List<ShapeSnapshot> Shapes = new List<ShapeSnapshot>();
             public List<(string name, Dictionary<int, float> weights)> Groups = new List<(string, Dictionary<int, float>)>();
@@ -271,6 +295,28 @@ namespace Orbiters.Mixer.Editor
             public string Key;
             /// <summary>Set by <see cref="Encode(MeshSnapshot)"/>: the topology it wrote.</summary>
             public ulong Topology;
+        }
+
+        // A dense array's moving entries, gathered in one pass into buffers kept for one snapshot.
+        private sealed class SparseScratch
+        {
+            private int[] indices = Array.Empty<int>();
+            private Vector3[] deltas = Array.Empty<Vector3>();
+
+            public Frame Sparse(float weight, Vector3[] dense)
+            {
+                if (indices.Length < dense.Length) { indices = new int[dense.Length]; deltas = new Vector3[dense.Length]; }
+                int count = 0;
+                for (int v = 0; v < dense.Length; v++)
+                {
+                    var d = dense[v];
+                    if (d.sqrMagnitude > 0f) { indices[count] = v; deltas[count] = d; count++; }
+                }
+                var frame = new Frame { Weight = weight, Indices = new int[count], Deltas = new Vector3[count] };
+                Array.Copy(indices, frame.Indices, count);
+                Array.Copy(deltas, frame.Deltas, count);
+                return frame;
+            }
         }
 
         /// <summary>The mesh as its document knows it (current positions, edited shapes, weights, bind poses), welded as the link welds it.</summary>
@@ -297,6 +343,7 @@ namespace Orbiters.Mixer.Editor
                 s.BindPoses = (Matrix4x4[])doc.BindPoses.Clone();
             }
             var buffer = new Vector3[doc.VertexCount];
+            var scratch = new SparseScratch();
             foreach (string shapeName in doc.ShapeOrder)
             {
                 if (!doc.HasShape(shapeName)) continue;
@@ -309,8 +356,8 @@ namespace Orbiters.Mixer.Editor
                     // In-betweens as a commit would make them (moved with an edit of the last frame).
                     var all = MeshBuilder.FramesOf(doc, doc.Original, shapeName);
                     shape.InBetweens = new List<Frame>();
-                    for (int f = 0; f < all.Count - 1; f++) shape.InBetweens.Add(Sparse(all[f].weight, all[f].deltas));
-                    var lastFrame = Sparse(all[all.Count - 1].weight, all[all.Count - 1].deltas);
+                    for (int f = 0; f < all.Count - 1; f++) shape.InBetweens.Add(scratch.Sparse(all[f].weight, all[f].deltas));
+                    var lastFrame = scratch.Sparse(all[all.Count - 1].weight, all[all.Count - 1].deltas);
                     shape.Indices = lastFrame.Indices; shape.Deltas = lastFrame.Deltas;
                 }
                 else
@@ -322,7 +369,7 @@ namespace Orbiters.Mixer.Editor
                         doc.Original.GetBlendShapeFrameVertices(index, frames - 1, buffer, null, null);
                         source = buffer;
                     }
-                    var sparse = Sparse(shape.Weight, source);
+                    var sparse = scratch.Sparse(shape.Weight, source);
                     shape.Indices = sparse.Indices; shape.Deltas = sparse.Deltas;
                 }
                 s.Shapes.Add(shape);
@@ -353,7 +400,10 @@ namespace Orbiters.Mixer.Editor
                 s.BoneWeights = mesh.GetAllBoneWeights().ToArray();
                 s.BindPoses = mesh.bindposes;
             }
+            // Each frame is read whole (Unity hands out no sparse frames) into one buffer, and kept sparse; the weld keys
+            // come from its moving vertices only.
             var deltas = new Vector3[s.Positions.Length];
+            var scratch = new SparseScratch();
             for (int i = 0; i < mesh.blendShapeCount; i++)
             {
                 int frames = mesh.GetBlendShapeFrameCount(i);
@@ -361,8 +411,8 @@ namespace Orbiters.Mixer.Editor
                 for (int f = 0; f < frames; f++)
                 {
                     mesh.GetBlendShapeFrameVertices(i, f, deltas, null, null);
-                    AddFrameKeys(s.WeldKeys, i, f, deltas);
-                    var frame = Sparse(mesh.GetBlendShapeFrameWeight(i, f), deltas);
+                    var frame = scratch.Sparse(mesh.GetBlendShapeFrameWeight(i, f), deltas);
+                    AddFrameKeys(s.WeldKeys, i, f, frame.Indices, frame.Deltas);
                     if (f < frames - 1) (shape.InBetweens ?? (shape.InBetweens = new List<Frame>())).Add(frame);
                     else { shape.Indices = frame.Indices; shape.Deltas = frame.Deltas; }
                 }
@@ -410,182 +460,178 @@ namespace Orbiters.Mixer.Editor
             return Array.FindIndex(bones, t => t != null && t.name == name);
         }
 
-        private static Frame Sparse(float weight, Vector3[] dense)
-        {
-            int count = 0;
-            for (int v = 0; v < dense.Length; v++) if (dense[v].sqrMagnitude > 0f) count++;
-            var frame = new Frame { Weight = weight, Indices = new int[count], Deltas = new Vector3[count] };
-            int k = 0;
-            for (int v = 0; v < dense.Length; v++) if (dense[v].sqrMagnitude > 0f) { frame.Indices[k] = v; frame.Deltas[k] = dense[v]; k++; }
-            return frame;
-        }
-
         public static byte[] Encode(MeshSnapshot s)
         {
             var positions = s.Positions;
             var triangles = s.Triangles;
             var n = s.Weld ?? LinkWeld(positions, triangles, s.Normals, s.WeldTolerance, s.WeldKeys);
+            var weld = n.Weld;
             var representative = n.Representative;
-            int corners = triangles.Length;
+            int welded = n.WeldedCount, corners = triangles.Length, attributes = positions.Length;
             s.Topology = Topology(n, triangles);
-            using (var stream = new MemoryStream())
-            using (var writer = new BinaryWriter(stream, Encoding.UTF8))
+            var w = new LinkWriter(welded * 13 + corners * 8 + attributes * 20 + 4096);
+            w.String(s.Id);
+            w.String(s.Name);
+            w.I32(welded);
+            var vertices = w.Claim<Vector3>(welded);
+            for (int i = 0; i < welded; i++) vertices[i] = positions[representative[i]];
+            // Corners: the welded vertex, and the Unity vertex whose UV and normal (and extra channels) they carry.
+            w.I32(corners);
+            var cornerVertex = w.Claim<int>(corners);
+            for (int i = 0; i < corners; i++) cornerVertex[i] = weld[triangles[i]];
+            w.Block(triangles, corners);
+            w.I32(attributes);
+            w.Block(s.Uvs, attributes);
+            w.Block(s.Normals, attributes);
+            int faces = corners / 3;
+            w.I32(faces);
+            int known = Math.Min(faces, s.FaceMaterial.Length);
+            w.Block(s.FaceMaterial, known);
+            if (known < faces) w.Claim<ushort>(faces - known).Clear();
+            bool skin = s.BoneNames != null;
+            w.U8((byte)(skin ? 1 : 0));
+            if (skin) WriteSkin(w, s, n);
+            // Shapes: sparse over the mesh's vertices, sent per welded vertex (its representative's delta).
+            w.U16((ushort)s.Shapes.Count);
+            foreach (var shape in s.Shapes)
             {
-                WriteString(writer, s.Id);
-                WriteString(writer, s.Name);
-                writer.Write(n.WeldedCount);
-                for (int w = 0; w < n.WeldedCount; w++) WriteVector(writer, positions[representative[w]]);
-                writer.Write(corners);
-                for (int i = 0; i < corners; i++) writer.Write(n.Weld[triangles[i]]);
-                for (int i = 0; i < corners; i++) { var uv = s.Uvs[triangles[i]]; writer.Write(uv.x); writer.Write(uv.y); }
-                for (int i = 0; i < corners; i++) WriteVector(writer, s.Normals[triangles[i]]);
-                int faces = corners / 3;
-                writer.Write(faces);
-                for (int f = 0; f < faces; f++) writer.Write(f < s.FaceMaterial.Length ? s.FaceMaterial[f] : (ushort)0);
-                bool skin = s.BoneNames != null;
-                writer.Write((byte)(skin ? 1 : 0));
-                if (skin)
-                {
-                    writer.Write((ushort)s.BoneNames.Length);
-                    foreach (var b in s.BoneNames) WriteString(writer, b);
-                    int[] start = null;
-                    if (s.Influences == null)
-                    {
-                        start = new int[positions.Length + 1];
-                        for (int v = 0; v < positions.Length; v++) start[v + 1] = start[v] + (v < s.BonesPerVertex.Length ? s.BonesPerVertex[v] : 0);
-                    }
-                    for (int w = 0; w < n.WeldedCount; w++)
-                    {
-                        int v = representative[w];
-                        if (s.Influences != null)
-                        {
-                            var list = s.Influences[v];
-                            writer.Write((byte)Math.Min(255, list.Count));
-                            for (int k = 0; k < list.Count && k < 255; k++) { writer.Write((ushort)list[k].Bone); writer.Write(list[k].Weight); }
-                            continue;
-                        }
-                        int count = start[v + 1] - start[v];
-                        writer.Write((byte)Math.Min(255, count));
-                        for (int k = 0; k < count && k < 255; k++) { var bw = s.BoneWeights[start[v] + k]; writer.Write((ushort)bw.boneIndex); writer.Write(bw.weight); }
-                    }
-                }
-                // Shapes: sparse over the mesh's vertices, sent per welded vertex (its representative's delta).
-                var dense = new Vector3[positions.Length];
-                writer.Write((ushort)s.Shapes.Count);
-                foreach (var shape in s.Shapes)
-                {
-                    WriteString(writer, shape.Name);
-                    WriteWelded(writer, n, dense, shape.Indices, shape.Deltas);
-                }
-                writer.Write((ushort)s.Groups.Count);
-                foreach (var (name, weights) in s.Groups)
-                {
-                    WriteString(writer, name);
-                    var idx = new List<int>(); var ws = new List<float>();
-                    for (int w = 0; w < n.WeldedCount; w++)
-                        if (weights.TryGetValue(representative[w], out float weight) && weight > 0f) { idx.Add(w); ws.Add(weight); }
-                    writer.Write(idx.Count);
-                    for (int i = 0; i < idx.Count; i++) { writer.Write(idx[i]); writer.Write(ws[i]); }
-                }
-                WriteSections(writer, s, n, dense);
-                return stream.ToArray();
+                w.String(shape.Name);
+                WriteWelded(w, n, shape.Indices, shape.Deltas);
+            }
+            w.U16((ushort)s.Groups.Count);
+            foreach (var (name, weights) in s.Groups)
+            {
+                w.String(name);
+                int count = 0;
+                foreach (var pair in weights) if (IsRepresentative(n, pair.Key) && pair.Value > 0f) count++;
+                w.I32(count);
+                var indices = w.Claim<int>(count);
+                int k = 0;
+                foreach (var pair in weights) if (IsRepresentative(n, pair.Key) && pair.Value > 0f) indices[k++] = weld[pair.Key];
+                var values = w.Claim<float>(count);
+                k = 0;
+                foreach (var pair in weights) if (IsRepresentative(n, pair.Key) && pair.Value > 0f) values[k++] = pair.Value;
+            }
+            WriteSections(w, s, n);
+            return w.ToArray();
+        }
+
+        private static bool IsRepresentative(MeshNeighbors n, int v) => v >= 0 && v < n.Weld.Length && n.Representative[n.Weld[v]] == v;
+
+        // Per welded vertex its representative's influences, in Unity's layout.
+        private static void WriteSkin(LinkWriter w, MeshSnapshot s, MeshNeighbors n)
+        {
+            w.U16((ushort)s.BoneNames.Length);
+            foreach (var b in s.BoneNames) w.String(b);
+            var perVertex = s.BonesPerVertex ?? Array.Empty<byte>();
+            var weights = s.BoneWeights ?? Array.Empty<BoneWeight1>();
+            var start = new int[s.Positions.Length + 1];
+            for (int v = 0; v < s.Positions.Length; v++) start[v + 1] = start[v] + (v < perVertex.Length ? perVertex[v] : 0);
+            int welded = n.WeldedCount;
+            var representative = n.Representative;
+            var counts = w.Claim<byte>(welded);
+            int total = 0;
+            for (int i = 0; i < welded; i++)
+            {
+                int v = representative[i];
+                int count = Math.Min(start[v + 1], weights.Length) - start[v];
+                counts[i] = (byte)Math.Max(0, Math.Min(255, count));
+                total += counts[i];
+            }
+            w.I32(total);
+            var bones = w.Claim<ushort>(total);
+            int k = 0;
+            for (int i = 0; i < welded; i++)
+            {
+                int v = representative[i], count = Math.Max(0, Math.Min(255, Math.Min(start[v + 1], weights.Length) - start[v]));
+                for (int j = 0; j < count; j++) bones[k++] = (ushort)weights[start[v] + j].boneIndex;
+            }
+            var values = w.Claim<float>(total);
+            k = 0;
+            for (int i = 0; i < welded; i++)
+            {
+                int v = representative[i], count = Math.Max(0, Math.Min(255, Math.Min(start[v + 1], weights.Length) - start[v]));
+                for (int j = 0; j < count; j++) values[k++] = weights[start[v] + j].weight;
             }
         }
 
         // The deltas of the welded vertices whose representative moves, from a sparse list over the mesh's vertices.
-        private static void WriteWelded(BinaryWriter writer, MeshNeighbors n, Vector3[] dense, int[] indices, Vector3[] deltas)
+        private static void WriteWelded(LinkWriter w, MeshNeighbors n, int[] indices, Vector3[] deltas)
         {
-            for (int i = 0; i < indices.Length; i++) dense[indices[i]] = deltas[i];
-            var representative = n.Representative;
-            int moving = 0;
-            for (int w = 0; w < n.WeldedCount; w++) if (dense[representative[w]].sqrMagnitude > 0f) moving++;
-            writer.Write(moving);
-            for (int w = 0; w < n.WeldedCount; w++)
-            {
-                var delta = dense[representative[w]];
-                if (delta.sqrMagnitude <= 0f) continue;
-                writer.Write(w);
-                WriteVector(writer, delta);
-            }
-            for (int i = 0; i < indices.Length; i++) dense[indices[i]] = Vector3.zero;
+            int count = 0;
+            for (int i = 0; i < indices.Length; i++) if (IsRepresentative(n, indices[i]) && deltas[i].sqrMagnitude > 0f) count++;
+            w.I32(count);
+            var to = w.Claim<int>(count);
+            int k = 0;
+            for (int i = 0; i < indices.Length; i++) if (IsRepresentative(n, indices[i]) && deltas[i].sqrMagnitude > 0f) to[k++] = n.Weld[indices[i]];
+            var values = w.Claim<Vector3>(count);
+            k = 0;
+            for (int i = 0; i < indices.Length; i++) if (IsRepresentative(n, indices[i]) && deltas[i].sqrMagnitude > 0f) values[k++] = deltas[i];
         }
 
-        private static void WriteSections(BinaryWriter writer, MeshSnapshot s, MeshNeighbors n, Vector3[] dense)
+        private static void WriteSections(LinkWriter w, MeshSnapshot s, MeshNeighbors n)
         {
-            var sections = new List<(byte tag, byte[] data)>();
-            var triangles = s.Triangles;
+            int countAt = w.ReserveU16();
+            int sections = 0;
+            int attributes = s.Positions.Length;
             foreach (var (channel, dimension, values) in s.ExtraUvs)
             {
-                sections.Add((UvSection, Section(w =>
+                int at = w.BeginSection(UvSection);
+                w.U8((byte)channel);
+                w.U8((byte)dimension);
+                var into = w.Claim<float>(attributes * dimension);
+                for (int v = 0, k = 0; v < attributes; v++)
                 {
-                    w.Write((byte)channel);
-                    w.Write((byte)dimension);
-                    for (int i = 0; i < triangles.Length; i++)
-                    {
-                        var uv = values[triangles[i]];
-                        w.Write(uv.x); w.Write(uv.y);
-                        if (dimension > 2) w.Write(uv.z);
-                        if (dimension > 3) w.Write(uv.w);
-                    }
-                })));
+                    var uv = values[v];
+                    into[k++] = uv.x; into[k++] = uv.y;
+                    if (dimension > 2) into[k++] = uv.z;
+                    if (dimension > 3) into[k++] = uv.w;
+                }
+                w.EndSection(at);
+                sections++;
             }
             if (s.Colors != null)
             {
-                sections.Add((ColorSection, Section(w =>
-                {
-                    for (int i = 0; i < triangles.Length; i++) { var c = s.Colors[triangles[i]]; w.Write(c.r); w.Write(c.g); w.Write(c.b); w.Write(c.a); }
-                })));
+                int at = w.BeginSection(ColorSection);
+                w.Block(s.Colors, attributes);
+                w.EndSection(at);
+                sections++;
             }
             for (int index = 0; index < s.Shapes.Count; index++)
             {
                 var shape = s.Shapes[index];
                 bool inBetweens = shape.InBetweens != null && shape.InBetweens.Count > 0;
                 if (!inBetweens && Mathf.Approximately(shape.Weight, 100f)) continue;
-                int shapeIndex = index;
-                sections.Add((FramesSection, Section(w =>
-                {
-                    w.Write((ushort)shapeIndex);
-                    w.Write(shape.Weight);
-                    w.Write((ushort)(inBetweens ? shape.InBetweens.Count : 0));
-                    if (!inBetweens) return;
+                int at = w.BeginSection(FramesSection);
+                w.U16((ushort)index);
+                w.F32(shape.Weight);
+                w.U16((ushort)(inBetweens ? shape.InBetweens.Count : 0));
+                if (inBetweens)
                     foreach (var frame in shape.InBetweens)
                     {
-                        w.Write(frame.Weight);
-                        WriteWelded(w, n, dense, frame.Indices, frame.Deltas);
+                        w.F32(frame.Weight);
+                        WriteWelded(w, n, frame.Indices, frame.Deltas);
                     }
-                })));
+                w.EndSection(at);
+                sections++;
             }
             if (s.BoneNames != null && s.BindPoses != null && s.BindPoses.Length == s.BoneNames.Length)
             {
-                sections.Add((BindPoseSection, Section(w =>
-                {
-                    w.Write((ushort)s.BindPoses.Length);
-                    foreach (var pose in s.BindPoses) for (int i = 0; i < 16; i++) w.Write(pose[i]);
-                })));
+                int at = w.BeginSection(BindPoseSection);
+                w.U16((ushort)s.BindPoses.Length);
+                // Matrix4x4 holds its elements in Unity's order m[0..15] (column after column).
+                w.Block(s.BindPoses, s.BindPoses.Length);
+                w.EndSection(at);
+                sections++;
             }
-            sections.Add((LinkSection, Section(w =>
             {
-                w.Write(s.Topology);
-                WriteString(w, s.Key);
-            })));
-            writer.Write((ushort)sections.Count);
-            foreach (var (tag, data) in sections)
-            {
-                writer.Write(tag);
-                writer.Write(data.Length);
-                writer.Write(data);
+                int at = w.BeginSection(LinkSection);
+                w.U64(s.Topology);
+                w.String(s.Key);
+                w.EndSection(at);
+                sections++;
             }
-        }
-
-        private static byte[] Section(Action<BinaryWriter> write)
-        {
-            using (var stream = new MemoryStream())
-            using (var writer = new BinaryWriter(stream, Encoding.UTF8))
-            {
-                write(writer);
-                writer.Flush();
-                return stream.ToArray();
-            }
+            w.PatchU16(countAt, (ushort)sections);
         }
 
         private static ushort[] FaceMaterials(Mesh mesh, int faces)
@@ -607,231 +653,189 @@ namespace Orbiters.Mixer.Editor
         /// </summary>
         public static Decoded Decode(byte[] payload)
         {
-            if (payload == null) throw new InvalidDataException("No mesh payload.");
-            using (var reader = new BinaryReader(new MemoryStream(payload, false), Encoding.UTF8))
+            var r = new LinkReader(payload, "mesh");
+            var d = new Decoded { Id = r.String(), Name = r.String() };
+            int vertices = r.Count(r.I32(), 12, "vertices");
+            d.Vertices = r.Array<Vector3>(vertices);
+            int corners = r.Count(r.I32(), 8, "face corners");
+            d.CornerVertex = r.Array<int>(corners);
+            d.CornerAttribute = r.Array<int>(corners);
+            int attributes = r.Count(r.I32(), 8 + 12, "corner attributes");
+            d.AttributeUv = r.Array<Vector2>(attributes);
+            d.AttributeNormal = r.Array<Vector3>(attributes);
+            for (int i = 0; i < corners; i++)
+                if ((uint)d.CornerAttribute[i] >= (uint)attributes || (uint)d.CornerVertex[i] >= (uint)vertices) throw new InvalidDataException("A face corner names a vertex or attribute the mesh does not have.");
+            int faces = r.Count(r.I32(), 2, "faces");
+            d.FaceMaterial = r.Array<ushort>(faces);
+            if (r.U8() == 1)
             {
-                try
+                int bones = r.Count(r.U16(), 2, "bones");
+                d.Bones = new string[bones];
+                for (int i = 0; i < bones; i++) d.Bones[i] = r.String();
+                d.InfluenceCount = r.Array<byte>(r.Count(vertices, 1, "influence counts"));
+                int total = r.Count(r.I32(), 6, "influences");
+                long sum = 0;
+                for (int v = 0; v < vertices; v++) sum += d.InfluenceCount[v];
+                if (sum != total) throw new InvalidDataException("The influences per vertex add up to " + sum + ", the payload holds " + total + ".");
+                d.InfluenceBone = r.Array<ushort>(total);
+                d.InfluenceWeight = r.Array<float>(total);
+            }
+            int shapes = r.Count(r.U16(), 6, "shapes");
+            for (int s = 0; s < shapes; s++)
+            {
+                string name = r.String();
+                var frame = ReadSparse(r, 100f);
+                d.Shapes.Add((name, frame.Indices, frame.Deltas));
+            }
+            int groups = r.Count(r.U16(), 6, "vertex groups");
+            for (int g = 0; g < groups; g++)
+            {
+                string name = r.String();
+                int count = r.Count(r.I32(), 8, "group weights");
+                d.Groups.Add((name, r.Array<int>(count), r.Array<float>(count)));
+            }
+            int sections = r.Count(r.U16(), 5, "sections");
+            for (int i = 0; i < sections; i++)
+            {
+                byte tag = r.U8();
+                int length = r.Count(r.I32(), 1, "section bytes");
+                int end = r.Position + length;
+                switch (tag)
                 {
-                    var d = new Decoded { Id = ReadString(reader), Name = ReadString(reader) };
-                    int vertices = Count(reader, reader.ReadInt32(), 12, "vertices");
-                    d.Vertices = new Vector3[vertices];
-                    for (int i = 0; i < vertices; i++) d.Vertices[i] = ReadVector(reader);
-                    // Each corner: a vertex index, a UV and a normal.
-                    int corners = Count(reader, reader.ReadInt32(), 4 + 8 + 12, "face corners");
-                    d.CornerVertex = new int[corners];
-                    for (int i = 0; i < corners; i++) d.CornerVertex[i] = reader.ReadInt32();
-                    d.CornerUv = new Vector2[corners];
-                    for (int i = 0; i < corners; i++) d.CornerUv[i] = new Vector2(reader.ReadSingle(), reader.ReadSingle());
-                    d.CornerNormal = new Vector3[corners];
-                    for (int i = 0; i < corners; i++) d.CornerNormal[i] = ReadVector(reader);
-                    int faces = Count(reader, reader.ReadInt32(), 2, "faces");
-                    d.FaceMaterial = new ushort[faces];
-                    for (int i = 0; i < faces; i++) d.FaceMaterial[i] = reader.ReadUInt16();
-                    if (reader.ReadByte() == 1)
+                    case UvSection:
                     {
-                        int bones = Count(reader, reader.ReadUInt16(), 2, "bones");
-                        d.Bones = new string[bones];
-                        for (int i = 0; i < bones; i++) d.Bones[i] = ReadString(reader);
-                        Count(reader, vertices, 1, "influence lists");
-                        d.Influences = new List<MeshDocument.Influence>[vertices];
-                        for (int v = 0; v < vertices; v++)
-                        {
-                            int count = Count(reader, reader.ReadByte(), 6, "influences");
-                            var list = new List<MeshDocument.Influence>(count);
-                            for (int k = 0; k < count; k++) list.Add(new MeshDocument.Influence(reader.ReadUInt16(), reader.ReadSingle()));
-                            d.Influences[v] = list;
-                        }
+                        int channel = r.U8(), dimension = r.U8();
+                        if (dimension < 1 || dimension > 4) throw new InvalidDataException("A UV channel of " + dimension + " components.");
+                        int values = r.Count((int)Math.Min(int.MaxValue, (long)attributes * dimension), 4, "UV values");
+                        d.AttributeUvs[channel] = (dimension, r.Array<float>(values));
+                        break;
                     }
-                    int shapes = Count(reader, reader.ReadUInt16(), 6, "shapes");
-                    for (int s = 0; s < shapes; s++)
+                    case ColorSection:
+                        d.AttributeColors = r.Array<byte>(r.Count((int)Math.Min(int.MaxValue, (long)attributes * 4), 1, "colours"));
+                        break;
+                    case FramesSection:
                     {
-                        string name = ReadString(reader);
-                        var frame = ReadSparse(reader, 100f);
-                        d.Shapes.Add((name, frame.Indices, frame.Deltas));
+                        int shape = r.U16();
+                        float weight = r.F32();
+                        int count = r.Count(r.U16(), 8, "in-between frames");
+                        var inBetweens = new List<Frame>(count);
+                        for (int k = 0; k < count; k++) { float w = r.F32(); inBetweens.Add(ReadSparse(r, w)); }
+                        d.ShapeFrames[shape] = (weight, inBetweens);
+                        break;
                     }
-                    int groups = Count(reader, reader.ReadUInt16(), 6, "vertex groups");
-                    for (int g = 0; g < groups; g++)
-                    {
-                        string name = ReadString(reader);
-                        int count = Count(reader, reader.ReadInt32(), 8, "group weights");
-                        var idx = new int[count]; var ws = new float[count];
-                        for (int i = 0; i < count; i++) { idx[i] = reader.ReadInt32(); ws[i] = reader.ReadSingle(); }
-                        d.Groups.Add((name, idx, ws));
-                    }
-                    int sections = Count(reader, reader.ReadUInt16(), 5, "sections");
-                    for (int i = 0; i < sections; i++)
-                    {
-                        byte tag = reader.ReadByte();
-                        int length = Count(reader, reader.ReadInt32(), 1, "section bytes");
-                        long end = reader.BaseStream.Position + length;
-                        switch (tag)
-                        {
-                            case UvSection:
-                            {
-                                int channel = reader.ReadByte(), dimension = reader.ReadByte();
-                                if (dimension < 1 || dimension > 4) throw new InvalidDataException("A UV channel of " + dimension + " components.");
-                                int values = Count(reader, (int)Math.Min(int.MaxValue, (long)corners * dimension), 4, "UV values");
-                                var data = new float[values];
-                                for (int k = 0; k < data.Length; k++) data[k] = reader.ReadSingle();
-                                d.CornerUvs[channel] = (dimension, data);
-                                break;
-                            }
-                            case ColorSection:
-                                d.CornerColors = reader.ReadBytes(Count(reader, (int)Math.Min(int.MaxValue, (long)corners * 4), 1, "colours"));
-                                break;
-                            case FramesSection:
-                            {
-                                int shape = reader.ReadUInt16();
-                                float weight = reader.ReadSingle();
-                                int count = Count(reader, reader.ReadUInt16(), 8, "in-between frames");
-                                var inBetweens = new List<Frame>(count);
-                                for (int k = 0; k < count; k++) { float w = reader.ReadSingle(); inBetweens.Add(ReadSparse(reader, w)); }
-                                d.ShapeFrames[shape] = (weight, inBetweens);
-                                break;
-                            }
-                            case BindPoseSection:
-                            {
-                                int count = Count(reader, reader.ReadUInt16(), 64, "bind poses");
-                                d.BindPoses = new Matrix4x4[count];
-                                for (int k = 0; k < count; k++) for (int e = 0; e < 16; e++) d.BindPoses[k][e] = reader.ReadSingle();
-                                break;
-                            }
-                            case LinkSection:
-                                d.Topology = reader.ReadUInt64();
-                                d.Key = ReadString(reader);
-                                break;
-                        }
-                        if (end > reader.BaseStream.Length) throw new InvalidDataException("A section runs past the payload.");
-                        // A section read past its own length would be read again from inside it, as often as it says.
-                        if (reader.BaseStream.Position > end) throw new InvalidDataException("A section holds more than its length.");
-                        reader.BaseStream.Position = end;
-                    }
-                    return d;
+                    case BindPoseSection:
+                        d.BindPoses = r.Array<Matrix4x4>(r.Count(r.U16(), 64, "bind poses"));
+                        break;
+                    case LinkSection:
+                        d.Topology = r.U64();
+                        d.Key = r.String();
+                        break;
+                    default:
+                        // Both sides speak one protocol: a section it does not name is a payload that is not this protocol's.
+                        throw new InvalidDataException("A mesh section of an unknown kind (" + tag + ").");
                 }
-                catch (EndOfStreamException) { throw new InvalidDataException("The mesh payload ends too soon."); }
+                // A section read past its own length would be read again from inside it, as often as it says.
+                if (r.Position > end) throw new InvalidDataException("A section holds more than its length.");
+                r.Position = end;
             }
+            return d;
         }
 
-        // A count read from the payload, checked against the bytes left (bytesEach: the least each element takes).
-        private static int Count(BinaryReader reader, int count, int bytesEach, string what)
+        private static Frame ReadSparse(LinkReader r, float weight)
         {
-            long left = reader.BaseStream.Length - reader.BaseStream.Position;
-            if (count < 0 || (long)count * bytesEach > left) throw new InvalidDataException("The payload announces " + count + " " + what + " but holds " + left + " bytes more.");
-            return count;
+            int count = r.Count(r.I32(), 16, "shape deltas");
+            return new Frame { Weight = weight, Indices = r.Array<int>(count), Deltas = r.Array<Vector3>(count) };
         }
 
-        private static Frame ReadSparse(BinaryReader reader, float weight)
-        {
-            int count = Count(reader, reader.ReadInt32(), 16, "shape deltas");
-            var frame = new Frame { Weight = weight, Indices = new int[count], Deltas = new Vector3[count] };
-            for (int i = 0; i < count; i++) { frame.Indices[i] = reader.ReadInt32(); frame.Deltas[i] = ReadVector(reader); }
-            return frame;
-        }
+        /// <summary>The positions of every welded vertex, in order.</summary>
+        public static byte[] EncodePositions(string id, string shape, ulong topology, Vector3[] positions) =>
+            EncodePositions(id, shape, topology, positions.Length, null, positions);
 
-        public static byte[] EncodePositions(string id, string shape, ulong topology, Vector3[] positions)
+        /// <summary>
+        /// The positions of the welded vertices <paramref name="indices"/> (null: every one of the
+        /// <paramref name="vertexCount"/>, in order) of a mesh of <paramref name="vertexCount"/> welded vertices.
+        /// </summary>
+        public static byte[] EncodePositions(string id, string shape, ulong topology, int vertexCount, IReadOnlyList<int> indices, IReadOnlyList<Vector3> positions)
         {
-            using (var stream = new MemoryStream())
-            using (var writer = new BinaryWriter(stream, Encoding.UTF8))
+            int count = indices != null ? indices.Count : vertexCount;
+            if (positions.Count < count) throw new ArgumentException("Fewer positions than vertices.", nameof(positions));
+            var w = new LinkWriter(64 + count * 16);
+            w.String(id);
+            w.String(shape);
+            w.U64(topology);
+            w.I32(vertexCount);
+            w.I32(count);
+            if (indices != null && count == vertexCount)
             {
-                WriteString(writer, id);
-                WriteString(writer, shape ?? "");
-                writer.Write(topology);
-                writer.Write(positions.Length);
-                for (int i = 0; i < positions.Length; i++) WriteVector(writer, positions[i]);
-                return stream.ToArray();
+                // Every vertex moved: written in order, without indices.
+                var all = w.Claim<Vector3>(count);
+                for (int i = 0; i < count; i++) all[indices[i]] = positions[i];
+                return w.ToArray();
             }
+            if (indices != null)
+            {
+                var to = w.Claim<int>(count);
+                for (int i = 0; i < count; i++) to[i] = indices[i];
+            }
+            var values = w.Claim<Vector3>(count);
+            for (int i = 0; i < count; i++) values[i] = positions[i];
+            return w.ToArray();
         }
 
         public static PositionsFrame DecodePositions(byte[] payload)
         {
-            if (payload == null) throw new InvalidDataException("No positions payload.");
-            using (var reader = new BinaryReader(new MemoryStream(payload, false), Encoding.UTF8))
+            var r = new LinkReader(payload, "positions");
+            var frame = new PositionsFrame { Id = r.String(), Shape = r.String(), Topology = r.U64() };
+            frame.VertexCount = r.I32();
+            int count = r.Count(r.I32(), 12, "positions");
+            if (frame.VertexCount < 0 || count > frame.VertexCount) throw new InvalidDataException("A positions frame of " + count + " vertices for a mesh of " + frame.VertexCount + ".");
+            if (count != frame.VertexCount)
             {
-                try
-                {
-                    var frame = new PositionsFrame { Id = ReadString(reader), Shape = ReadString(reader), Topology = reader.ReadUInt64() };
-                    int count = Count(reader, reader.ReadInt32(), 12, "positions");
-                    frame.Positions = new Vector3[count];
-                    for (int i = 0; i < count; i++) frame.Positions[i] = ReadVector(reader);
-                    if (frame.Shape.Length == 0) frame.Shape = null;
-                    return frame;
-                }
-                catch (EndOfStreamException) { throw new InvalidDataException("The positions payload ends too soon."); }
+                r.Count(count, 16, "moved vertices");
+                frame.Indices = r.Array<int>(count);
+                for (int i = 0; i < count; i++)
+                    if ((uint)frame.Indices[i] >= (uint)frame.VertexCount) throw new InvalidDataException("A positions frame names vertex " + frame.Indices[i] + " of " + frame.VertexCount + ".");
             }
+            frame.Positions = r.Array<Vector3>(count);
+            if (frame.Shape.Length == 0) frame.Shape = null;
+            return frame;
         }
 
         public static byte[] EncodeWeights(string id, string channel, bool isGroup, int bone, ulong topology, IReadOnlyList<int> indices, IReadOnlyList<float> weights)
         {
-            using (var stream = new MemoryStream())
-            using (var writer = new BinaryWriter(stream, Encoding.UTF8))
-            {
-                WriteString(writer, id);
-                WriteString(writer, channel ?? "");
-                writer.Write((byte)(isGroup ? 1 : 0));
-                writer.Write(isGroup ? -1 : bone);
-                writer.Write(topology);
-                writer.Write(indices.Count);
-                for (int i = 0; i < indices.Count; i++) { writer.Write(indices[i]); writer.Write(weights[i]); }
-                return stream.ToArray();
-            }
+            var w = new LinkWriter(64 + indices.Count * 8);
+            w.String(id);
+            w.String(channel);
+            w.U8((byte)(isGroup ? 1 : 0));
+            w.I32(isGroup ? -1 : bone);
+            w.U64(topology);
+            w.I32(indices.Count);
+            var to = w.Claim<int>(indices.Count);
+            for (int i = 0; i < indices.Count; i++) to[i] = indices[i];
+            var values = w.Claim<float>(indices.Count);
+            for (int i = 0; i < indices.Count; i++) values[i] = weights[i];
+            return w.ToArray();
         }
 
         public static WeightsFrame DecodeWeights(byte[] payload)
         {
-            if (payload == null) throw new InvalidDataException("No weights payload.");
-            using (var reader = new BinaryReader(new MemoryStream(payload, false), Encoding.UTF8))
-            {
-                try
-                {
-                    var frame = new WeightsFrame { Id = ReadString(reader), Channel = ReadString(reader), IsGroup = reader.ReadByte() == 1 };
-                    frame.Bone = reader.ReadInt32();
-                    frame.Topology = reader.ReadUInt64();
-                    int count = Count(reader, reader.ReadInt32(), 8, "weights");
-                    frame.Indices = new int[count]; frame.Weights = new float[count];
-                    for (int i = 0; i < count; i++) { frame.Indices[i] = reader.ReadInt32(); frame.Weights[i] = reader.ReadSingle(); }
-                    return frame;
-                }
-                catch (EndOfStreamException) { throw new InvalidDataException("The weights payload ends too soon."); }
-            }
+            var r = new LinkReader(payload, "weights");
+            var frame = new WeightsFrame { Id = r.String(), Channel = r.String(), IsGroup = r.U8() == 1 };
+            frame.Bone = r.I32();
+            frame.Topology = r.U64();
+            int count = r.Count(r.I32(), 8, "weights");
+            frame.Indices = r.Array<int>(count);
+            frame.Weights = r.Array<float>(count);
+            return frame;
         }
 
-        /// <summary>The mesh id at the start of a mesh, positions or weights frame (to collapse older frames of the same mesh).</summary>
-        public static string PeekId(byte[] payload) => PeekString(payload, 0, out _);
-
-        /// <summary>The shape a positions frame is of (the string after the id; null for the base or a payload too short).</summary>
-        public static string PeekShape(byte[] payload)
+        /// <summary>The mesh id at the start of a mesh, positions or weights frame.</summary>
+        public static string PeekId(byte[] payload)
         {
-            if (PeekString(payload, 0, out int next) == null) return null;
-            string shape = PeekString(payload, next, out _);
-            return string.IsNullOrEmpty(shape) ? null : shape;
+            if (payload == null || payload.Length < 2) return null;
+            int len = payload[0] | (payload[1] << 8);
+            if (2 + len > payload.Length) return null;
+            return System.Text.Encoding.UTF8.GetString(payload, 2, len);
         }
-
-        private static string PeekString(byte[] payload, int at, out int next)
-        {
-            next = at;
-            if (payload == null || at < 0 || payload.Length < at + 2) return null;
-            int len = payload[at] | (payload[at + 1] << 8);
-            if (at + 2 + len > payload.Length) return null;
-            next = at + 2 + len;
-            return Encoding.UTF8.GetString(payload, at + 2, len);
-        }
-
-        private static void WriteString(BinaryWriter w, string s)
-        {
-            var bytes = Encoding.UTF8.GetBytes(s ?? "");
-            if (bytes.Length > ushort.MaxValue) Array.Resize(ref bytes, ushort.MaxValue);
-            w.Write((ushort)bytes.Length);
-            w.Write(bytes);
-        }
-
-        private static string ReadString(BinaryReader r)
-        {
-            int len = r.ReadUInt16();
-            var bytes = r.ReadBytes(len);
-            if (bytes.Length != len) throw new EndOfStreamException();
-            return Encoding.UTF8.GetString(bytes);
-        }
-        private static void WriteVector(BinaryWriter w, Vector3 v) { w.Write(v.x); w.Write(v.y); w.Write(v.z); }
-        private static Vector3 ReadVector(BinaryReader r) => new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
     }
 }

@@ -68,6 +68,8 @@ namespace Orbiters.Mixer.Editor
             EditorApplication.update += Tick;
             EditorApplication.hierarchyChanged += () => ForEach(h => h.MarkGraphDirty(0.25));
             ObjectChangeEvents.changesPublished += OnChanges;
+            // A scene saved for the first time gives its objects other ids.
+            EditorSceneManager.sceneSaved += _ => ForEach(h => h.ForgetIds());
             EditorSceneManager.activeSceneChangedInEditMode += (a, b) => ForEach(h => h.SceneSwitched());
             EditorApplication.quitting += Stop;
             // The endpoint file stays: after the reload the link listens again on the same port with the same token.
@@ -75,7 +77,9 @@ namespace Orbiters.Mixer.Editor
             // positions so far are in the session, which the reload keeps.
             AssemblyReloadEvents.beforeAssemblyReload += () => { live?.Dispose(deleteEndpoint: false, endEdits: false); live = null; };
             EditorApplication.playModeStateChanged += OnPlayMode;
-            MixerSession.Changed += () => ForEach(h => h.MarkGraphDirty(0.3));
+            // A session event (every stroke ends with one) changes no object of the graph but the sessions' renderers,
+            // which may show another mesh, and transforms Mixer's tools moved: those alone are looked at again.
+            MixerSession.Changed += () => ForEach(h => h.MarkSessionsChanged(0.3));
             if (Enabled) EditorApplication.delayCall += EnsureRunning;
         }
 
@@ -154,20 +158,42 @@ namespace Orbiters.Mixer.Editor
             ForEach(h => h.Tick());
         }
 
+        // A property of a component changes its node only: that node is described again. Anything that can change which
+        // objects are nodes, or a GameObject's own properties (name, active, tag), rebuilds the graph; prefab updates and
+        // scene changes give objects other ids too.
         private static void OnChanges(ref ObjectChangeEventStream stream)
         {
             if (hosts.Count == 0) return;
-            for (int i = 0; i < stream.length; i++)
+            bool full = false, forget = false;
+            List<int> objects = null;
+            for (int i = 0; i < stream.length && !forget; i++)
             {
-                var kind = stream.GetEventType(i);
-                if (kind == ObjectChangeKind.ChangeGameObjectOrComponentProperties || kind == ObjectChangeKind.ChangeGameObjectParent || kind == ObjectChangeKind.CreateGameObjectHierarchy ||
-                    kind == ObjectChangeKind.DestroyGameObjectHierarchy || kind == ObjectChangeKind.ChangeGameObjectStructure || kind == ObjectChangeKind.ChangeGameObjectStructureHierarchy ||
-                    kind == ObjectChangeKind.UpdatePrefabInstances || kind == ObjectChangeKind.ChangeScene)
+                switch (stream.GetEventType(i))
                 {
-                    ForEach(h => h.MarkGraphDirty(0.12));
-                    return;
+                    case ObjectChangeKind.ChangeGameObjectOrComponentProperties:
+                    {
+                        stream.GetChangeGameObjectOrComponentPropertiesEvent(i, out var change);
+                        if (EditorUtility.InstanceIDToObject(change.instanceId) is Component component && component != null)
+                            (objects ?? (objects = new List<int>())).Add(component.gameObject.GetInstanceID());
+                        else full = true;
+                        break;
+                    }
+                    case ObjectChangeKind.ChangeGameObjectParent:
+                    case ObjectChangeKind.CreateGameObjectHierarchy:
+                    case ObjectChangeKind.DestroyGameObjectHierarchy:
+                    case ObjectChangeKind.ChangeGameObjectStructure:
+                        full = true;
+                        break;
+                    case ObjectChangeKind.ChangeGameObjectStructureHierarchy:
+                    case ObjectChangeKind.UpdatePrefabInstances:
+                    case ObjectChangeKind.ChangeScene:
+                        full = forget = true;
+                        break;
                 }
             }
+            if (forget) ForEach(h => h.ForgetIds());
+            if (full) ForEach(h => h.MarkGraphDirty(0.12));
+            else if (objects != null) ForEach(h => h.MarkObjectsChanged(objects, 0.12));
         }
 
         // ---- Settings ------------------------------------------------------------------------------------------------
@@ -301,11 +327,15 @@ namespace Orbiters.Mixer.Editor
         private string unityEditing, unityEditingNode;
         private readonly Dictionary<string, (string message, double at)> throttled = new Dictionary<string, (string, double)>();
 
-        // The graph Blender has.
+        // The graph Blender has, kept up to date by graphCache: a full build when what the nodes are may have changed
+        // (graphDirty), else the nodes of the objects that changed and, after a session event, the transforms.
         private SceneGraph lastGraph;
+        private readonly SceneGraphCache graphCache = new SceneGraphCache();
         private readonly HashSet<string> graphNodes = new HashSet<string>();
+        private readonly HashSet<int> changedObjects = new HashSet<int>();
+        private readonly HashSet<int> sessionRenderers = new HashSet<int>();
         private double graphDueAt, recheckAt;
-        private bool graphDirty, sceneSwitched;
+        private bool graphDirty, partsDirty, sessionsDirty, sceneSwitched;
 
         // Meshes going out: queued by node, encoded (on a thread for assets), one in flight until Blender says it arrived.
         private readonly Queue<string> meshQueue = new Queue<string>();
@@ -320,7 +350,15 @@ namespace Orbiters.Mixer.Editor
         private uint nextTransfer = 1;
         private Dictionary<string, string> heldByBlender;
         private readonly Dictionary<string, SentMesh> sent = new Dictionary<string, SentMesh>();
-        private readonly Dictionary<string, double> positionsDue = new Dictionary<string, double>();
+        // Live positions due, per session and layer ("" for the base): the layer a stroke edited, not the one shown when they leave.
+        private readonly Dictionary<(string target, string layer), double> positionsDue = new Dictionary<(string, string), double>();
+        private readonly List<(string, string)> leavingKeys = new List<(string, string)>();
+        // What Blender has of a layer of a mesh (mesh id, layer or ""), per welded vertex, as Unity's positions frames
+        // left it: the next frame carries only the vertices that differ. Forgotten whenever Blender's copy can have
+        // changed otherwise (a whole mesh either way, a claim of Blender's, a new connection): the next frame is then whole.
+        private readonly Dictionary<(string mesh, string layer), Vector3[]> sentLayers = new Dictionary<(string, string), Vector3[]>();
+        private readonly List<int> movedIndices = new List<int>();
+        private readonly List<Vector3> movedPositions = new List<Vector3>();
         private readonly Dictionary<string, int> checkedRevision = new Dictionary<string, int>();
 
         private readonly MeshChunkAssembler assembler = new MeshChunkAssembler();
@@ -332,7 +370,8 @@ namespace Orbiters.Mixer.Editor
             Token = token ?? throw new ArgumentNullException(nameof(token));
             writesEndpoint = writeEndpoint;
             this.log = log ?? new List<string>();
-            Server = new LiveLinkServer(MixerLinkProtocol.Format, token, port, singleClient: true, accept: Accept, collapseKey: CollapseKey,
+            // Nothing Blender sends collapses: its positions frames carry only what moved since its previous one.
+            Server = new LiveLinkServer(MixerLinkProtocol.Format, token, port, singleClient: true, accept: Accept,
                 closingType: (byte)MixerLinkProtocol.FrameType.Bye, threadName: isLive ? "Mixer Blender link" : "Mixer Blender link (test)",
                 replacedGoodbye: MixerLinkProtocol.Json(new MixerLinkProtocol.Goodbye { replaced = true }));
             try
@@ -407,7 +446,6 @@ namespace Orbiters.Mixer.Editor
                 pid = System.Diagnostics.Process.GetCurrentProcess().Id,
                 port = Server.Port,
                 token = Token,
-                proof = MixerLinkProtocol.ServerProvesToken,
                 projectPath = Path.GetFullPath(Path.Combine(Application.dataPath, "..")),
                 sceneGuid = AssetDatabase.AssetPathToGUID(scene.path),
                 sceneName = scene.name,
@@ -426,14 +464,9 @@ namespace Orbiters.Mixer.Editor
             var frame = new MixerLinkFrame { Type = type, Payload = raw.Payload };
             if (type == MixerLinkProtocol.FrameType.MeshData || type == MixerLinkProtocol.FrameType.Positions || type == MixerLinkProtocol.FrameType.Weights)
                 frame.MeshId = MeshDataCodec.PeekId(raw.Payload);
-            if (type == MixerLinkProtocol.FrameType.Positions) frame.Shape = MeshDataCodec.PeekShape(raw.Payload);
             raw.Decoded = frame;
             return true;
         }
-
-        // The newest positions of one shape of one mesh replace older ones waiting: another shape's never do.
-        private static string CollapseKey(LiveLinkFrame raw) =>
-            raw.Decoded is MixerLinkFrame frame && frame.Type == MixerLinkProtocol.FrameType.Positions && frame.MeshId != null ? "pos:" + frame.MeshId + "\n" + (frame.Shape ?? "") : null;
 
         private void OnConnection(int id, bool up)
         {
@@ -465,6 +498,7 @@ namespace Orbiters.Mixer.Editor
             inFlightBefore = null;
             assembler.Reset();
             positionsDue.Clear();
+            sentLayers.Clear();
             unityEditing = unityEditingNode = null;
         }
 
@@ -596,7 +630,8 @@ namespace Orbiters.Mixer.Editor
                 Refuse(claim, e.Message);
                 return;
             }
-            positionsDue.Remove(claim.id);
+            ForgetPositions(claim.id);
+            ForgetSentLayers(meshId);
             Status(claim.id, "Blender edits " + r.name + ".", "info");
             Say("Blender edits " + r.name + ".");
             RaiseChanged();
@@ -628,6 +663,7 @@ namespace Orbiters.Mixer.Editor
         {
             if (meshId == null || !blenderMeshes.TryGetValue(meshId, out string node)) return;
             if (takeBack) LinkApply.RevertBlenderEdit(meshId); else LinkApply.EndBlenderEdit(meshId);
+            ForgetSentLayers(meshId);
             blenderMeshes.Remove(meshId);
             blenderClaims.TryGetValue(meshId, out int number);
             blenderClaims.Remove(meshId);
@@ -653,6 +689,7 @@ namespace Orbiters.Mixer.Editor
             if (!blenderMeshes.ContainsKey(meshId)) return;
             // Still held while the history is written, so nothing of it echoes back to Blender.
             LinkApply.EndBlenderEdit(meshId);
+            ForgetSentLayers(meshId);
             blenderMeshes.Remove(meshId);
             blenderClaims.Remove(meshId);
             RaiseChanged();
@@ -695,7 +732,8 @@ namespace Orbiters.Mixer.Editor
                 }));
                 RaiseChanged();
             }
-            positionsDue.Remove(target.Id);
+            ForgetPositions(target.Id);
+            ForgetSentLayers(meshId);
             checkedRevision.Remove(target.Id);
             // A revert (or a commit into the same asset) leaves the mesh id as it was: Blender gets that mesh again. A commit
             // into a new asset changes the node's mesh, which the graph's delta sends.
@@ -754,7 +792,7 @@ namespace Orbiters.Mixer.Editor
                         LayersOf(layers, target).Add(deltas.Shape);
                         break;
                     case GroupWeightEdit group:
-                        if (target.Document.Group(group.Group) != null) SendWeights(target, WeightChannel.OfGroup(group.Group), group.Indices);
+                        if (target.Document.Group(group.Group) != null) SendChannel(target, WeightChannel.OfGroup(group.Group), group.Indices);
                         break;
                     case WeightEdit weights:
                     {
@@ -764,14 +802,18 @@ namespace Orbiters.Mixer.Editor
                             foreach (var influence in weights.Before[i]) VerticesOf(byBone, influence.Bone).Add(weights.Indices[i]);
                             foreach (var influence in weights.After[i]) VerticesOf(byBone, influence.Bone).Add(weights.Indices[i]);
                         }
-                        foreach (var pair in byBone) if (pair.Key >= 0) SendWeights(target, WeightChannel.OfBone(pair.Key), pair.Value);
+                        foreach (var pair in byBone) if (pair.Key >= 0) SendChannel(target, WeightChannel.OfBone(pair.Key), pair.Value);
                         break;
                     }
                 }
             }
+            // The base first: Blender moves every shape with a base frame, so a shape sent before it would be moved again.
+            // A base frame makes the shapes' next frames whole (ForgetShapeLayers).
             foreach (var pair in layers)
-                foreach (string layer in pair.Value)
-                    SendLayer(pair.Key, layer.Length == 0 ? null : layer);
+            {
+                if (pair.Value.Contains("")) SendLayer(pair.Key, null);
+                foreach (string layer in pair.Value) if (layer.Length > 0) SendLayer(pair.Key, layer);
+            }
         }
 
         private static HashSet<string> LayersOf(Dictionary<EditTarget, HashSet<string>> layers, EditTarget target)
@@ -786,15 +828,82 @@ namespace Orbiters.Mixer.Editor
             return list;
         }
 
-        // The welded positions of one layer of a session (null: the base), as live positions.
+        // The welded positions of one layer of a session (null: the base) that Blender does not have yet, as live
+        // positions: every one when Unity does not know what Blender has of that layer, else those that differ from it.
+        // The layer is resolved once (its deltas array), not per vertex.
         private void SendLayer(EditTarget target, string layer)
         {
             var doc = target.Document;
             if (layer != null && !doc.HasShape(layer)) return;
+            string meshId = MixerLinkService.MeshIdOf(target);
+            if (meshId == null) return;
             var n = doc.LinkWeld;
-            var positions = new Vector3[n.WeldedCount];
-            for (int w = 0; w < positions.Length; w++) positions[w] = doc.GetLayerPosition(layer, n.Representative[w]);
-            Send(MixerLinkProtocol.FrameType.Positions, MeshDataCodec.EncodePositions(MixerLinkService.MeshIdOf(target), layer, MeshDataCodec.Topology(doc), positions));
+            var representative = n.Representative;
+            var basePositions = doc.Positions;
+            var deltas = layer != null && doc.ShapeEdits.TryGetValue(layer, out var shape) ? shape.Deltas : null;
+            int count = n.WeldedCount;
+            var key = (meshId, layer ?? "");
+            ulong topology = MeshDataCodec.Topology(doc);
+            if (!sentLayers.TryGetValue(key, out var known) || known.Length != count)
+            {
+                known = new Vector3[count];
+                for (int w = 0; w < count; w++) { int v = representative[w]; known[w] = deltas != null ? basePositions[v] + deltas[v] : basePositions[v]; }
+                if (Send(MixerLinkProtocol.FrameType.Positions, MeshDataCodec.EncodePositions(meshId, layer, topology, known)))
+                {
+                    sentLayers[key] = known;
+                    if (layer == null) ForgetShapeLayers(meshId);
+                }
+                return;
+            }
+            movedIndices.Clear();
+            movedPositions.Clear();
+            for (int w = 0; w < count; w++)
+            {
+                int v = representative[w];
+                var p = deltas != null ? basePositions[v] + deltas[v] : basePositions[v];
+                if (!MeshDocument.Differs(p, known[w])) continue;
+                movedIndices.Add(w);
+                movedPositions.Add(p);
+            }
+            if (movedIndices.Count == 0) return;
+            if (!Send(MixerLinkProtocol.FrameType.Positions, MeshDataCodec.EncodePositions(meshId, layer, topology, count, movedIndices, movedPositions)))
+            {
+                sentLayers.Remove(key);
+                return;
+            }
+            for (int i = 0; i < movedIndices.Count; i++) known[movedIndices[i]] = movedPositions[i];
+            if (layer == null) ForgetShapeLayers(meshId);
+        }
+
+        // A base frame moves every shape of the mesh with it on the other side (Blender's keys keep their offsets, Unity's
+        // shapes are deltas on the base): what Unity knew of the shapes is no longer what Blender has, so each shape's
+        // next frame is whole.
+        private void ForgetShapeLayers(string meshId)
+        {
+            if (sentLayers.Count == 0) return;
+            leavingKeys.Clear();
+            foreach (var key in sentLayers.Keys) if (key.mesh == meshId && key.layer.Length > 0) leavingKeys.Add(key);
+            foreach (var key in leavingKeys) sentLayers.Remove(key);
+            leavingKeys.Clear();
+        }
+
+        // Blender's copy of the mesh may now differ from what Unity's frames left it: the next frame of each layer is whole.
+        private void ForgetSentLayers(string meshId)
+        {
+            if (meshId == null || sentLayers.Count == 0) return;
+            leavingKeys.Clear();
+            foreach (var key in sentLayers.Keys) if (key.mesh == meshId) leavingKeys.Add(key);
+            foreach (var key in leavingKeys) sentLayers.Remove(key);
+            leavingKeys.Clear();
+        }
+
+        private void ForgetPositions(string targetId)
+        {
+            if (targetId == null || positionsDue.Count == 0) return;
+            leavingKeys.Clear();
+            foreach (var key in positionsDue.Keys) if (key.target == targetId) leavingKeys.Add(key);
+            foreach (var key in leavingKeys) positionsDue.Remove(key);
+            leavingKeys.Clear();
         }
 
         // ---- What Blender was sent ---------------------------------------------------------------------------------------
@@ -846,6 +955,29 @@ namespace Orbiters.Mixer.Editor
             graphDueAt = Math.Max(graphDueAt, EditorApplication.timeSinceStartup + delay);
         }
 
+        /// <summary>Components of these GameObjects changed: their nodes are described again (a full build when that is not enough).</summary>
+        public void MarkObjectsChanged(IEnumerable<int> gameObjects, double delay)
+        {
+            changedObjects.UnionWith(gameObjects);
+            partsDirty = true;
+            graphDueAt = Math.Max(graphDueAt, EditorApplication.timeSinceStartup + delay);
+        }
+
+        /// <summary>A Mixer session event: the sessions' renderers (now and just ended) and every node's transform are read again.</summary>
+        public void MarkSessionsChanged(double delay)
+        {
+            sessionsDirty = true;
+            partsDirty = true;
+            graphDueAt = Math.Max(graphDueAt, EditorApplication.timeSinceStartup + delay);
+        }
+
+        /// <summary>Objects may have other ids now (a scene saved, prefabs updated or unpacked): worked out again, the graph rebuilt.</summary>
+        public void ForgetIds()
+        {
+            graphCache.Forget();
+            MarkGraphDirty(0.1);
+        }
+
         public void SceneSwitched()
         {
             lastGraph = null;
@@ -860,7 +992,7 @@ namespace Orbiters.Mixer.Editor
         {
             if (!Connected) return;
             var scene = sceneOf();
-            var graph = SceneGraphExporter.Build(scene, MixerLinkService.SettingsFor(scene, false));
+            var graph = graphCache.Build(scene, MixerLinkService.SettingsFor(scene, false));
             bool whole = force || lastGraph == null || lastGraph.sceneGuid != graph.sceneGuid;
             if (whole)
             {
@@ -878,7 +1010,9 @@ namespace Orbiters.Mixer.Editor
             lastGraph = graph;
             graphNodes.Clear();
             foreach (var node in graph.nodes) graphNodes.Add(node.id);
-            graphDirty = false;
+            graphDirty = partsDirty = sessionsDirty = false;
+            changedObjects.Clear();
+            NoteSessionRenderers();
             if (sceneSwitched && whole)
             {
                 sceneSwitched = false;
@@ -887,6 +1021,53 @@ namespace Orbiters.Mixer.Editor
                 SendAllMeshes();
             }
             if (recheck && recheckAt <= 0) recheckAt = EditorApplication.timeSinceStartup + 2.5;
+        }
+
+        // What changed of the objects marked since the graph was sent, without building it again.
+        private void SendGraphChanges()
+        {
+            partsDirty = false;
+            if (!Connected) return;
+            if (lastGraph == null) { SendGraph(force: false, recheck: true); return; }
+            bool transforms = sessionsDirty;
+            if (sessionsDirty)
+            {
+                // The renderers of the sessions now and of those that just ended may show another mesh (a commit).
+                changedObjects.UnionWith(sessionRenderers);
+                NoteSessionRenderers();
+                changedObjects.UnionWith(sessionRenderers);
+                sessionsDirty = false;
+            }
+            var delta = new SceneDelta();
+            bool described = graphCache.Redescribe(changedObjects, lastGraph, delta);
+            changedObjects.Clear();
+            if (!described) { SendGraph(force: false, recheck: true); return; }
+            if (transforms && !graphCache.Retransform(lastGraph, delta))
+            {
+                // The nodes described above are in the graph already: Blender gets it whole.
+                SendGraph(force: true);
+                return;
+            }
+            if (delta.Empty) return;
+            Send(MixerLinkProtocol.FrameType.SceneDelta, MixerLinkProtocol.Json(delta));
+            foreach (var node in delta.added) if (node.meshId != null) SendMesh(node.id);
+            if (recheckAt <= 0) recheckAt = EditorApplication.timeSinceStartup + 2.5;
+        }
+
+        // The tools' late answers (target FBX, kept-out renderers) asked again, a while after a change.
+        private void RecheckGraph()
+        {
+            if (!Connected || lastGraph == null) return;
+            var delta = new SceneDelta();
+            if (!graphCache.Recheck(lastGraph, delta)) { SendGraph(force: false, recheck: false); return; }
+            if (!delta.Empty) Send(MixerLinkProtocol.FrameType.SceneDelta, MixerLinkProtocol.Json(delta));
+        }
+
+        private void NoteSessionRenderers()
+        {
+            sessionRenderers.Clear();
+            foreach (var t in MixerSession.Targets)
+                if (t.Alive && t.Renderer != null) sessionRenderers.Add(t.Renderer.gameObject.GetInstanceID());
         }
 
         private void SendAllMeshes()
@@ -1014,6 +1195,7 @@ namespace Orbiters.Mixer.Editor
                 if (!SendMeshPayload(job.Payload)) { Say("The mesh of " + job.Name + " was not sent: Blender is gone."); continue; }
                 inFlightBefore = sent.TryGetValue(job.MeshId, out var before) ? before : null;
                 sent[job.MeshId] = job.Sent;
+                ForgetSentLayers(job.MeshId);
                 inFlight = job.MeshId;
                 inFlightSince = EditorApplication.timeSinceStartup;
             }
@@ -1037,15 +1219,47 @@ namespace Orbiters.Mixer.Editor
             Status(nodeId, "Unity could not send " + name + ": " + e.Message, "error");
         }
 
-        /// <summary>A Mixer stroke moved a target: Blender gets the new positions soon (collapsed, at most every 100 ms).</summary>
+        /// <summary>A Mixer stroke moved a target's shown layer: Blender gets what moved of it soon (at most every 100 ms).</summary>
         public void NotePositions(EditTarget target)
         {
             if (!Connected || target == null || !graphNodes.Contains(target.Id) || IsBlenderOwned(target)) return;
-            positionsDue[target.Id] = Math.Min(positionsDue.TryGetValue(target.Id, out double due) ? due : double.MaxValue, EditorApplication.timeSinceStartup + 0.1);
+            var key = (target.Id, target.Document.Layer ?? "");
+            positionsDue[key] = Math.Min(positionsDue.TryGetValue(key, out double due) ? due : double.MaxValue, EditorApplication.timeSinceStartup + 0.1);
         }
 
-        /// <summary>A Mixer stroke changed weights: Blender gets the sparse change now.</summary>
+        /// <summary>
+        /// A Mixer stroke changed weights: Blender gets the sparse change now. For a bone, every bone the vertices have
+        /// now goes too (Auto normalize scaled the others), each with its weight there (0 where it has none).
+        /// </summary>
         public void SendWeights(EditTarget target, WeightChannel channel, IReadOnlyList<int> vertices)
+        {
+            if (!Connected || target == null || channel.IsNone || !graphNodes.Contains(target.Id) || IsBlenderOwned(target)) return;
+            SendChannel(target, channel, vertices);
+            if (channel.IsGroup) return;
+            // The bones the vertices have now, and those they had before the stroke (one that fell under a thousandth left
+            // the vertex: it goes as 0, which takes the vertex out of its group in Blender). The stroke pushed its history
+            // entry just before (WeightStroke.End), with the influences before and after.
+            var others = new HashSet<int>();
+            var document = target.Document;
+            foreach (int v in vertices)
+                if (v >= 0 && v < document.VertexCount)
+                    for (int i = 0, n = document.InfluenceCount(v); i < n; i++) others.Add(document.InfluenceAt(v, i).Bone);
+            if (MixerHistory.Last is WeightEdit stroke && stroke.Target == target)
+            {
+                var touched = new HashSet<int>(vertices);
+                for (int i = 0; i < stroke.Indices.Length; i++)
+                {
+                    if (!touched.Contains(stroke.Indices[i])) continue;
+                    foreach (var influence in stroke.Before[i]) others.Add(influence.Bone);
+                    foreach (var influence in stroke.After[i]) others.Add(influence.Bone);
+                }
+            }
+            others.Remove(channel.Bone);
+            foreach (int bone in others) if (bone >= 0) SendChannel(target, WeightChannel.OfBone(bone), vertices);
+        }
+
+        // One channel's weights on these vertices (welded once each), as they are now.
+        private void SendChannel(EditTarget target, WeightChannel channel, IReadOnlyList<int> vertices)
         {
             if (!Connected || target == null || channel.IsNone || !graphNodes.Contains(target.Id) || IsBlenderOwned(target)) return;
             var doc = target.Document;
@@ -1066,7 +1280,8 @@ namespace Orbiters.Mixer.Editor
         }
 
         // A session whose shapes or groups changed in Unity (deleted, renamed, duplicated...) is sent whole: Blender would
-        // keep the old ones otherwise, and bring them back with its next edit.
+        // keep the old ones otherwise, and bring them back with its next edit. Looked at when the document's revision
+        // moved (every brush step moves it): compared name by name, nothing allocated, no native lookup.
         private void CheckShapeLists()
         {
             foreach (var target in MixerSession.Targets)
@@ -1078,12 +1293,38 @@ namespace Orbiters.Mixer.Editor
                 // Not compared while Blender holds the mesh or it waits to go: the revision is checked once it can be.
                 if (meshId == null || OwnsMesh(meshId) || queuedMeshes.Contains(target.Id) || !sent.TryGetValue(meshId, out var info)) continue;
                 checkedRevision[target.Id] = doc.Revision;
-                var shapes = new HashSet<string>(doc.ShapeOrder.Where(doc.HasShape));
-                var groups = new HashSet<string>(doc.Groups.Select(g => g.Name));
-                if (shapes.SetEquals(info.Shapes) && groups.SetEquals(info.Groups)) continue;
-                positionsDue.Remove(target.Id);
+                if (SameShapes(doc, info.Shapes) && SameGroups(doc, info.Groups)) continue;
+                ForgetPositions(target.Id);
                 SendMesh(target.Id);
             }
+        }
+
+        private static readonly ConditionalWeakTable<MeshDocument, HashSet<string>> sourceShapes = new ConditionalWeakTable<MeshDocument, HashSet<string>>();
+
+        // The document's live shapes (MeshDocument.HasShape, with its source's names read once) are exactly these.
+        private static bool SameShapes(MeshDocument doc, HashSet<string> sentShapes)
+        {
+            var source = sourceShapes.GetValue(doc, d =>
+            {
+                var names = new HashSet<string>();
+                for (int i = 0; i < d.ShapeSource.blendShapeCount; i++) names.Add(d.ShapeSource.GetBlendShapeName(i));
+                return names;
+            });
+            int live = 0;
+            foreach (string name in doc.ShapeOrder)
+            {
+                if (string.IsNullOrEmpty(name) || doc.DeletedShapes.Contains(name) || (!doc.ShapeEdits.ContainsKey(name) && !source.Contains(name))) continue;
+                if (!sentShapes.Contains(name)) return false;
+                live++;
+            }
+            return live == sentShapes.Count;
+        }
+
+        private static bool SameGroups(MeshDocument doc, HashSet<string> sentGroups)
+        {
+            foreach (var g in doc.Groups) if (!sentGroups.Contains(g.Name)) return false;
+            foreach (string name in sentGroups) if (doc.Group(name) == null) return false;
+            return true;
         }
 
         internal void Tick()
@@ -1099,15 +1340,24 @@ namespace Orbiters.Mixer.Editor
             UpdateUnityClaim();
             SendNextMesh();
             if (graphDirty && now >= graphDueAt) SendGraph(force: false, recheck: true);
-            else if (recheckAt > 0 && now >= recheckAt) { recheckAt = 0; SendGraph(force: false, recheck: false); }
+            else if (partsDirty && now >= graphDueAt) SendGraphChanges();
+            else if (recheckAt > 0 && now >= recheckAt) { recheckAt = 0; RecheckGraph(); }
             CheckShapeLists();
             if (positionsDue.Count == 0) return;
-            foreach (var pair in positionsDue.Where(p => p.Value <= now).ToList())
+            leavingKeys.Clear();
+            foreach (var pair in positionsDue) if (pair.Value <= now) leavingKeys.Add(pair.Key);
+            if (leavingKeys.Count == 0) return;
+            var leaving = leavingKeys.ToArray();
+            leavingKeys.Clear();
+            // Bases before shapes, as in HistoryApplied.
+            Array.Sort(leaving, (a, b) => (a.Item2.Length == 0 ? 0 : 1).CompareTo(b.Item2.Length == 0 ? 0 : 1));
+            foreach (var (targetId, layer) in leaving)
             {
-                positionsDue.Remove(pair.Key);
-                var target = MixerSession.Targets.FirstOrDefault(t => t.Id == pair.Key);
+                positionsDue.Remove((targetId, layer));
+                EditTarget target = null;
+                foreach (var t in MixerSession.Targets) if (t.Id == targetId) { target = t; break; }
                 if (target == null || !target.Alive || IsBlenderOwned(target) || queuedMeshes.Contains(target.Id)) continue;
-                SendLayer(target, target.Document.Layer);
+                SendLayer(target, layer.Length == 0 ? null : layer);
             }
         }
     }
