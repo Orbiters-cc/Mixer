@@ -583,6 +583,10 @@ namespace Orbiters.Mixer.Editor
         public float[] OverlayWeights;
         public WeightChannel ShownChannel = WeightChannel.None;
         private double lastWeightUpload;
+        private readonly BoneWeightUploader weightUploader = new BoneWeightUploader();
+
+        /// <summary>For tests: what sends the influences to the working mesh.</summary>
+        internal BoneWeightUploader WeightUploader => weightUploader;
 
         /// <summary>
         /// Uploads the influences to the working mesh when they changed (throttled unless forced) and refreshes the
@@ -596,9 +600,7 @@ namespace Orbiters.Mixer.Editor
             double now = EditorApplication.timeSinceStartup;
             if (!force && now - lastWeightUpload < 0.08) return;
             lastWeightUpload = now;
-            doc.BuildBoneWeights(out var perVertex, out var weights);
-            try { Working.SetBoneWeights(perVertex, weights); }
-            finally { perVertex.Dispose(); weights.Dispose(); }
+            weightUploader.Upload(Working, doc);
             doc.WeightsDirty = false;
             Skin.InvalidateWeights();
             if (force)

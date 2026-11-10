@@ -465,6 +465,54 @@ namespace Orbiters.Mixer.Editor.Tests
             }
         }
 
+        // The kept skin arrays: a repaint of vertices that keep their number of influences is packed in place, a change of
+        // that number packs everything again; the mesh holds what a fresh pack gives either way.
+        [Test]
+        public void TheBoneWeightUploadPatchesWhatWasPaintedAndHoldsAFreshPack()
+        {
+            var mesh = MixerCoreTestsFixtures.Cylinder(8, 6, 0.3f, 2f);
+            try
+            {
+                var doc = new MeshDocument(mesh);
+                var uploader = new BoneWeightUploader();
+                void SameAsAFreshPack(string when)
+                {
+                    doc.BuildBoneWeights(out var perVertex, out var packed);
+                    try
+                    {
+                        var held = mesh.GetBonesPerVertex().ToArray();
+                        var weights = mesh.GetAllBoneWeights().ToArray();
+                        Assert.That(held, Is.EqualTo(perVertex.ToArray()), "counts " + when);
+                        Assert.That(weights.Length, Is.EqualTo(packed.Length), when);
+                        for (int i = 0; i < weights.Length; i++)
+                        {
+                            Assert.That(weights[i].boneIndex, Is.EqualTo(packed[i].boneIndex), "bone " + i + " " + when);
+                            Assert.That(weights[i].weight, Is.EqualTo(packed[i].weight), "weight " + i + " " + when);
+                        }
+                    }
+                    finally { perVertex.Dispose(); packed.Dispose(); }
+                    Assert.That(doc.WeightPages.Any, Is.False, "the painted pages are cleared " + when);
+                }
+                uploader.Upload(mesh, doc);
+                Assert.That(uploader.LastWasPatch, Is.False, "the first upload packs everything");
+                SameAsAFreshPack("at first");
+                // A vertex with both bones keeps two influences: packed in place.
+                int both = Enumerable.Range(0, mesh.vertexCount).First(v => doc.InfluenceCount(v) == 2);
+                doc.SetBoneWeight(both, 1, 0.4f, normalize: true);
+                uploader.Upload(mesh, doc);
+                Assert.That(uploader.LastWasPatch, Is.True);
+                Assert.That(uploader.LastPacked, Is.LessThanOrEqualTo(VertexPages.PageSize));
+                SameAsAFreshPack("after a repaint");
+                // A vertex of one bone given a second: everything after it moves, so everything is packed again.
+                int single = Enumerable.Range(0, mesh.vertexCount).First(v => doc.InfluenceCount(v) == 1);
+                doc.SetBoneWeight(single, 1, 0.3f, normalize: true);
+                uploader.Upload(mesh, doc);
+                Assert.That(uploader.LastWasPatch, Is.False);
+                SameAsAFreshPack("after a new influence");
+            }
+            finally { Object.DestroyImmediate(mesh); }
+        }
+
         [Test]
         public void TheBoundsKernelIsTheSmallestBox()
         {

@@ -36,6 +36,10 @@ namespace Orbiters.Mixer.Editor
         private byte[] influenceCount;
         private readonly List<Influence> influenceScratch = new List<Influence>();
 
+        /// <summary>Vertices whose influences changed since the last upload to the working mesh (by page).</summary>
+        public VertexPages WeightPages => weightPages ?? (weightPages = new VertexPages(VertexCount));
+        private VertexPages weightPages;
+
         /// <summary>Whether the influences were loaded (an edit, or a reader that needed them); before, the original's are the document's.</summary>
         public bool InfluencesLoaded => influenceCount != null;
         /// <summary>The slots each vertex has (the most influences any vertex has needed, at least 4).</summary>
@@ -176,6 +180,7 @@ namespace Orbiters.Mixer.Editor
             KeepABone(v, strongest);
             SortSlots(v);
             WeightEdited.Add(v);
+            WeightPages.Add(v);
             WeightsDirty = true;
         }
 
@@ -196,6 +201,7 @@ namespace Orbiters.Mixer.Editor
             // Unity reads the strongest first (and keeps only the first four at the usual quality): Blender's order is any.
             SortSlots(v);
             WeightEdited.Add(v);
+            WeightPages.Add(v);
             WeightsDirty = true;
         }
 
