@@ -12,16 +12,37 @@ namespace Orbiters.Mixer.Editor
     /// of the welded vertices into the document, the shown arrays and the world picture, and the normals around what
     /// moved. Each one is the managed loop it replaced written again operation for operation (same order of every
     /// addition, divisions where it divided, FloatMode.Strict so nothing is fused or reordered), so a stroke gives the
-    /// same vertices and the same values as before; MixerKernelTests compares each with that managed loop.
+    /// same vertices and the same values as before; MixerStrokeKernelTests compares each with that managed loop.
     /// <para>
     /// Managed arrays are pinned for the length of a job that completes before the call returns, as in
-    /// <see cref="MeshKernels"/>: nothing native outlives a call. Main thread only (jobs are scheduled). The first calls
-    /// of an editor session may run before Burst compiled them: the same code then runs on Mono.
+    /// <see cref="MeshKernels"/>: nothing native outlives a call. Main thread only (jobs are scheduled). The kernels
+    /// compile synchronously, so they never answer from Mono while Burst compiles; with Burst off, the same code runs on Mono.
     /// </para>
     /// </summary>
     internal static unsafe class StrokeKernels
     {
         private const int Batch = 256;
+
+        /// <summary>
+        /// Whether the kernels run as Burst code now (false: Burst is off, or this editor runs them on Mono). Compiled
+        /// synchronously like the kernels, so a test that compares them with managed code knows it compared something.
+        /// </summary>
+        public static bool RunsBurst()
+        {
+            bool burst = true;
+            new ProbeJob { Result = &burst }.Run();
+            return burst;
+        }
+
+        [BurstCompile(CompileSynchronously = true)]
+        private struct ProbeJob : IJob
+        {
+            [NativeDisableUnsafePtrRestriction] public bool* Result;
+            public void Execute() => ManagedOnly(Result);
+
+            [BurstDiscard]
+            private static void ManagedOnly(bool* result) => *result = false;
+        }
 
         // ---- Falloff ------------------------------------------------------------------------------------------------
 
@@ -78,7 +99,7 @@ namespace Orbiters.Mixer.Editor
             return count;
         }
 
-        [BurstCompile(FloatMode = FloatMode.Strict, FloatPrecision = FloatPrecision.Standard)]
+        [BurstCompile(FloatMode = FloatMode.Strict, FloatPrecision = FloatPrecision.Standard, CompileSynchronously = true)]
         private struct GatherJob : IJob
         {
             public BvhView View;
@@ -187,7 +208,7 @@ namespace Orbiters.Mixer.Editor
             }
         }
 
-        [BurstCompile(FloatMode = FloatMode.Strict, FloatPrecision = FloatPrecision.Standard)]
+        [BurstCompile(FloatMode = FloatMode.Strict, FloatPrecision = FloatPrecision.Standard, CompileSynchronously = true)]
         private struct MoveJob : IJobParallelFor
         {
             [NativeDisableUnsafePtrRestriction] public int* Vertices;
@@ -331,7 +352,7 @@ namespace Orbiters.Mixer.Editor
             return length > 0f ? new float3(x / length, y / length, z / length) : float3.zero;
         }
 
-        [BurstCompile(FloatMode = FloatMode.Strict, FloatPrecision = FloatPrecision.Standard)]
+        [BurstCompile(FloatMode = FloatMode.Strict, FloatPrecision = FloatPrecision.Standard, CompileSynchronously = true)]
         private struct FaceNormalJob : IJobParallelFor
         {
             public WeldPointers Weld;
@@ -342,7 +363,7 @@ namespace Orbiters.Mixer.Editor
             public void Execute(int w) => Result[w] = FaceNormal(Weld, MeshTriangles, Positions, w);
         }
 
-        [BurstCompile(FloatMode = FloatMode.Strict, FloatPrecision = FloatPrecision.Standard)]
+        [BurstCompile(FloatMode = FloatMode.Strict, FloatPrecision = FloatPrecision.Standard, CompileSynchronously = true)]
         private struct TurnJob : IJobParallelFor
         {
             public WeldPointers Weld;
