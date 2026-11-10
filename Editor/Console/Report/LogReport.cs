@@ -234,7 +234,7 @@ namespace Orbiters.Logger.Editor
                         line.Append(LevelTag(message.Variant)).Append("  ");
                         line.Append(masked.Source(snapshot, id)).Append("  ");
                         // Time and level hold nothing to mask; the source and text are masked once each.
-                        AppendIndented(line, masked.Text(message.Text), "    ");
+                        AppendIndented(line, masked.Entry(message.Text), "    ");
                         writer.Raw(line.ToString());
                         written++;
                         if ((i & 0x3FFF) == 0)
@@ -278,7 +278,7 @@ namespace Orbiters.Logger.Editor
                     writer.Raw("first " + Stamp(first[id]) + " · last " + Stamp(last[id]));
                     writer.Raw(string.Empty);
                     // Each text masked whole: a key header in one message can't mask the messages after it.
-                    writer.Raw(masked.Text(message.Text));
+                    writer.Raw(masked.Message(message.Text));
                     string stack = view.Texts.Plain(message.Stack);
                     if (!string.IsNullOrWhiteSpace(stack))
                     {
@@ -337,6 +337,9 @@ namespace Orbiters.Logger.Editor
             private readonly TextTable texts;
             private readonly string[] byText;
             private readonly string[] bySource;
+            // Texts that continued a secret begun by the logs before them, at least once: masked whole everywhere.
+            private readonly bool[] continuation;
+            private readonly ReportPrivacy.EntryMasker entries;
             private string unity;
 
             public Masked(ReportPrivacy privacy, TextTable texts, int sources)
@@ -344,8 +347,32 @@ namespace Orbiters.Logger.Editor
                 this.privacy = privacy;
                 this.texts = texts;
                 byText = new string[texts.Count];
+                continuation = new bool[texts.Count];
                 bySource = new string[sources];
+                entries = privacy.Entries();
             }
+
+            /// <summary>
+            /// The text of the next log in time order (logs.txt): a text that continues a secret split over several
+            /// logs (a key logged line by line) is masked whole, and stays so in messages.txt.
+            /// </summary>
+            public string Entry(int id)
+            {
+                if (entries.Continues(id > 0 ? texts.Plain(id) : string.Empty))
+                {
+                    if (id > 0 && id < continuation.Length)
+                    {
+                        continuation[id] = true;
+                    }
+
+                    return ReportPrivacy.Masked;
+                }
+
+                return Text(id);
+            }
+
+            /// <summary>A distinct message's text (messages.txt, written after logs.txt).</summary>
+            public string Message(int id) => id > 0 && id < continuation.Length && continuation[id] ? ReportPrivacy.Masked : Text(id);
 
             public string Text(int id)
             {

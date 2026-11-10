@@ -472,6 +472,79 @@ namespace Orbiters.Logger.Editor
         }
 
         /// <summary>
+        /// What a log entry continues, read entry by entry in the order they were logged: a secret can be split over
+        /// several logs (a key file logged line by line, a "-accessToken" flag and then its value). An entry that
+        /// continues one is masked whole. Each entry is still masked on its own with <see cref="Mask"/>; unlike
+        /// <see cref="LineMasker"/>, a key header without its footer only carries over entries that look like key
+        /// material, so one quoted header can't mask every later log.
+        /// </summary>
+        internal EntryMasker Entries() => new EntryMasker(this);
+
+        internal sealed class EntryMasker
+        {
+            // A line of a PEM body: base64, or one of its "Proc-Type:" / "DEK-Info:" headers.
+            private static readonly Regex KeyMaterial = new Regex(@"^(?:[A-Za-z0-9+/=]{8,}|Proc-Type:.*|DEK-Info:.*)$", RegexOptions.CultureInvariant);
+            private readonly ReportPrivacy privacy;
+            private bool valueNext;
+            private bool inKey;
+
+            public EntryMasker(ReportPrivacy privacy) => this.privacy = privacy;
+
+            /// <summary>True when <paramref name="entry"/> (its plain text) continues a secret the entries before it began.</summary>
+            public bool Continues(string entry)
+            {
+                entry = entry ?? string.Empty;
+                string trimmed = entry.Trim();
+                bool oneLine = trimmed.IndexOf('\n') < 0;
+                if (inKey)
+                {
+                    if (PrivateKeyEnd.IsMatch(entry))
+                    {
+                        inKey = false;
+                        valueNext = false;
+                        return false;
+                    }
+
+                    if (trimmed.Length == 0 || AllKeyMaterial(trimmed))
+                    {
+                        return true;
+                    }
+
+                    inKey = false;
+                }
+
+                bool continues = false;
+                if (valueNext)
+                {
+                    valueNext = false;
+                    continues = trimmed.Length > 0 && oneLine && !trimmed.StartsWith("-", StringComparison.Ordinal);
+                }
+
+                if (!continues)
+                {
+                    valueNext = oneLine && privacy.AnnouncesSecret(trimmed);
+                    inKey = entry.IndexOf('-') >= 0 && PrivateKeyBegin.IsMatch(entry) && !PrivateKeyEnd.IsMatch(entry);
+                }
+
+                return continues;
+            }
+
+            private static bool AllKeyMaterial(string text)
+            {
+                foreach (string line in text.Split('\n'))
+                {
+                    string part = line.Trim();
+                    if (part.Length > 0 && !KeyMaterial.IsMatch(part))
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
+            }
+        }
+
+        /// <summary>
         /// Masks a file line by line (Editor.log): each line as <see cref="Mask"/> does, the line after a secret flag
         /// alone (its value), and the lines of a private key block.
         /// </summary>

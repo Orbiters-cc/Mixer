@@ -265,6 +265,46 @@ namespace Orbiters.Logger.Editor.Tests
         }
 
         [Test]
+        public void SecretsSplitOverSeveralLogsAreMasked()
+        {
+            var store = new LogStore();
+            long t = TimeSpan.TicksPerSecond;
+            foreach (string entry in new[]
+                     {
+                         "-----BEGIN RSA PRIVATE KEY-----", "MIIEowIBAAKCAQEAsecretbody1", "Q2FmZWJhYmVzZWNyZXRib2R5Mg==", "-----END RSA PRIVATE KEY-----",
+                         "Player spawned", "-----BEGIN PRIVATE KEY-----", "Loading scene Main", "-accessToken", "tokvalue-9876", "Done"
+                     })
+            {
+                store.Add(t++, entry, string.Empty, LogVariant.Log);
+            }
+
+            var snapshot = LogReport.Take(store);
+            snapshot.EditorLog = null;
+            string staging = Path.Combine(Path.GetTempPath(), "LoggerReportSplit-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                LogReport.Write(new ReportContext(staging, Privacy(), null, new[] { ReportPart.Logs }), snapshot, null);
+                foreach (string file in new[] { "logs.txt", "messages.txt" })
+                {
+                    string text = File.ReadAllText(Path.Combine(staging, "logs", file));
+                    StringAssert.DoesNotContain("secretbody1", text, file);
+                    StringAssert.DoesNotContain("Q2FmZWJhYmVzZWNyZXRib2R5Mg", text, file);
+                    StringAssert.DoesNotContain("tokvalue-9876", text, file);
+                    StringAssert.Contains("Player spawned", text, file);
+                    StringAssert.Contains("Loading scene Main", text, file + ": a header alone doesn't mask the logs after it");
+                    StringAssert.Contains("Done", text, file);
+                }
+            }
+            finally
+            {
+                if (Directory.Exists(staging))
+                {
+                    Directory.Delete(staging, true);
+                }
+            }
+        }
+
+        [Test]
         public void TextsAreMaskedBeforeTheyAreCut()
         {
             // A token across the cut would otherwise leave its first half in the report.
