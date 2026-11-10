@@ -48,7 +48,7 @@ namespace Orbiters.Logger.Editor
             EnsureLoaded();
             if (!ReferenceEquals(store, scannedStore) || store.Epoch != scannedEpoch)
             {
-                // Cleared, trimmed or merged with history: every message again (a few thousand at most).
+                // Cleared, regrouped or compacted: every message again (a few thousand at most).
                 scannedStore = store;
                 scannedEpoch = store.Epoch;
                 scanned = 0;
@@ -72,7 +72,7 @@ namespace Orbiters.Logger.Editor
             for (int i = 0; i < store.MessageCount; i++)
             {
                 ref var message = ref store.Message(i);
-                if (message.Count > 0 && message.Last >= 0 && message.Last < store.Count)
+                if (message.Count > 0 && store.Contains(message.Last))
                 {
                     notedLast[i] = store.TimeAt(message.Last);
                 }
@@ -160,12 +160,14 @@ namespace Orbiters.Logger.Editor
         private static void Note(LogStore store, int messageId)
         {
             ref var message = ref store.Message(messageId);
-            if (message.Count == 0 || message.First < 0 || message.Last < 0 || message.First >= store.Count || message.Last >= store.Count)
+            if (message.Count == 0 || !store.Contains(message.Last))
             {
                 return;
             }
 
-            long first = store.TimeAt(message.First);
+            // After a trim First is only a bound (no log of the message before it): the oldest log left is then never
+            // later than when it was first seen, which the ledger's minimum keeps right.
+            long first = store.TimeAt(Math.Max(message.First, store.FirstId));
             long last = store.TimeAt(message.Last);
             NotedFor(store);
             if (messageId >= notedLast.Length)

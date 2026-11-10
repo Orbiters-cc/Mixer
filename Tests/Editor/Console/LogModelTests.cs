@@ -170,7 +170,7 @@ namespace Orbiters.Logger.Editor.Tests
             Assert.Less(store.Texts.TotalChars, 2L << 20, "texts nobody logs any more were let go");
             Assert.Less(store.Count, 40_000);
             Assert.AreEqual(1000 + 39_999, store.LastTime);
-            Assert.AreEqual("Distinct log 39999 " + padding, store.Texts[store.Message(store.MessageAt(store.Count - 1)).Text]);
+            Assert.AreEqual("Distinct log 39999 " + padding, store.Texts[store.Message(store.MessageAt(store.EndId - 1)).Text]);
             Assert.AreEqual(store.Count, CountAll(store), "counters still add up after the trims");
         }
 
@@ -186,7 +186,7 @@ namespace Orbiters.Logger.Editor.Tests
                 Assert.LessOrEqual(store.Texts.TotalChars, (1 << 20) + 300_000, "after log " + i);
             }
 
-            Assert.AreEqual("39 " + large, store.Texts[store.Message(store.MessageAt(store.Count - 1)).Text], "the newest log stays");
+            Assert.AreEqual("39 " + large, store.Texts[store.Message(store.MessageAt(store.EndId - 1)).Text], "the newest log stays");
 
             // One log larger than the whole budget is cut, and says so.
             var huge = new LogStore();
@@ -225,7 +225,7 @@ namespace Orbiters.Logger.Editor.Tests
             history.Unpin();
             history.Prepend(times, owners, new byte[owners.Length], owners.Length, null);
             Assert.LessOrEqual(history.Texts.TotalChars, (1 << 20) + 300_000);
-            Assert.AreEqual("live", history.Texts[history.Message(history.MessageAt(history.Count - 1)).Text]);
+            Assert.AreEqual("live", history.Texts[history.Message(history.MessageAt(history.EndId - 1)).Text]);
             Assert.AreEqual(history.Count, CountAll(history));
         }
 
@@ -244,11 +244,11 @@ namespace Orbiters.Logger.Editor.Tests
             Assert.AreEqual("From Unity's console", store.Texts[store.Message(imported).Text], "no compaction while pinned");
             store.Unpin();
             store.Prepend(new long[] { 1 }, new[] { imported }, new byte[1], 1, null);
-            Assert.AreEqual("From Unity's console", store.Texts[store.Message(store.MessageAt(0)).Text]);
+            Assert.AreEqual("From Unity's console", store.Texts[store.Message(store.MessageAt(store.FirstId)).Text]);
             long texts = store.Texts.Generation;
             store.Trim(500);
             Assert.AreNotEqual(texts, store.Texts.Generation, "unpinned, the dead messages go");
-            Assert.AreEqual("Distinct 5999", store.Texts[store.Message(store.MessageAt(store.Count - 1)).Text]);
+            Assert.AreEqual("Distinct 5999", store.Texts[store.Message(store.MessageAt(store.EndId - 1)).Text]);
             Assert.AreEqual(store.Count, CountAll(store));
         }
 
@@ -485,15 +485,17 @@ namespace Orbiters.Logger.Editor.Tests
             Assert.AreEqual(LogVariant.CompileError, store.Message(store.MessageAt(0)).Variant);
         }
 
+        // Was TrimKeepsTheNewestAndShifts: ids no longer shift, the first one moves up.
         [Test]
-        public void TrimKeepsTheNewestAndShifts()
+        public void TrimKeepsTheNewestAndTheirIds()
         {
             var store = new LogStore { MaxOccurrences = 10_000 };
-            int shifted = 0;
-            store.Shifted += offset => shifted += offset;
+            int emptied = 0;
+            store.Emptied += () => emptied++;
             for (int i = 0; i < 10_001; i++)
             {
                 int occurrence = store.Add(i, i % 2 == 0 ? "even" : "odd", string.Empty, LogVariant.Log);
+                Assert.AreEqual(i, occurrence, "an id is the log's for good");
                 if (i == 9_999)
                 {
                     store.SetContext(occurrence, 1234);
@@ -501,11 +503,14 @@ namespace Orbiters.Logger.Editor.Tests
             }
 
             Assert.AreEqual(8_000, store.Count);
-            Assert.AreEqual(-2_001, shifted);
-            Assert.AreEqual(10_000, store.TimeAt(store.Count - 1));
-            Assert.IsTrue(store.TryGetContext(9_999 - 2_001, out int context));
+            Assert.AreEqual(2_001, store.FirstId);
+            Assert.AreEqual(10_001, store.EndId);
+            Assert.AreEqual(0, emptied);
+            Assert.AreEqual(10_000, store.TimeAt(store.EndId - 1));
+            Assert.IsFalse(store.Contains(2_000));
+            Assert.IsTrue(store.TryGetContext(9_999, out int context));
             Assert.AreEqual(1234, context);
-            Assert.AreEqual(4_000, store.Group(store.Message(store.MessageAt(0)).Group).Count);
+            Assert.AreEqual(4_000, store.Group(store.Message(store.MessageAt(store.FirstId)).Group).Count);
         }
 
         // Logs that never repeat (an id in each) used to keep every text ever seen after their occurrences were trimmed.
@@ -524,7 +529,7 @@ namespace Orbiters.Logger.Editor.Tests
             Assert.LessOrEqual(store.MessageCount, 15_000, "messages without logs are gone (50,001 without compaction)");
             Assert.LessOrEqual(store.Texts.Count, 3 * 15_000, "and so are their texts");
             Assert.Greater(regrouped, 0);
-            for (int occurrence = 0; occurrence < store.Count; occurrence++)
+            for (int occurrence = store.FirstId; occurrence < store.EndId; occurrence++)
             {
                 var message = store.Message(store.MessageAt(occurrence));
                 Assert.AreEqual(1, message.Count);
@@ -534,25 +539,27 @@ namespace Orbiters.Logger.Editor.Tests
             }
 
             string last = "Downloaded item 050000 of the gallery";
-            Assert.AreEqual(last, store.Texts[store.Message(store.MessageAt(store.Count - 1)).Text]);
+            Assert.AreEqual(last, store.Texts[store.Message(store.MessageAt(store.EndId - 1)).Text]);
             // A message logged again after the compaction is the same message, found by its text.
             int again = store.Add(60_000, last, "at Gallery.Fetch () [0x" + 50_000.ToString("x6") + "]", LogVariant.Log);
             Assert.AreEqual(store.MessageAt(again), store.MessageAt(again - 1));
             Assert.AreEqual(2, store.Message(store.MessageAt(again)).Count);
         }
 
+        // A store whose ids start at 0 has no room in front: it renumbers (as a clear does, for whoever remembers ids).
         [Test]
         public void PrependPutsHistoryFirst()
         {
             var store = new LogStore();
-            int shifted = 0;
-            store.Shifted += offset => shifted = offset;
+            int emptied = 0;
+            store.Emptied += () => emptied++;
             int live = store.Add(5_000, "live", string.Empty, LogVariant.Log);
             store.SetContext(live, 77);
             int old = store.Intern("old", string.Empty, LogVariant.Warning);
             store.Prepend(new long[] { 100, 200, 9_999 }, new[] { old, old, old }, new byte[3], 3, new Dictionary<int, int> { { 1, 55 } });
             Assert.AreEqual(4, store.Count);
-            Assert.AreEqual(3, shifted);
+            Assert.AreEqual(1, emptied, "renumbered");
+            Assert.AreEqual(0, store.FirstId);
             Assert.AreEqual(5_000, store.TimeAt(2), "history never ends after the live logs");
             Assert.IsTrue(store.TryGetContext(3, out int moved) && moved == 77);
             Assert.IsTrue(store.TryGetContext(1, out int kept) && kept == 55);

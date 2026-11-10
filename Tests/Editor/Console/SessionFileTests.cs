@@ -75,10 +75,11 @@ namespace Orbiters.Logger.Editor.Tests
         private static void AssertSame(LogStore expected, LogStore actual)
         {
             Assert.AreEqual(expected.Count, actual.Count);
+            Assert.AreEqual(expected.FirstId, actual.FirstId, "ids are kept");
             Assert.AreEqual(expected.MessageCount, actual.MessageCount);
             Assert.AreEqual(expected.GroupCount, actual.GroupCount);
             Assert.AreEqual(expected.Grouping, actual.Grouping);
-            for (int i = 0; i < expected.Count; i++)
+            for (int i = expected.FirstId; i < expected.EndId; i++)
             {
                 Assert.AreEqual(expected.TimeAt(i), actual.TimeAt(i));
                 Assert.AreEqual(expected.FlagsAt(i), actual.FlagsAt(i));
@@ -260,7 +261,7 @@ namespace Orbiters.Logger.Editor.Tests
             var loaded = Load();
             AssertSame(store, loaded);
             Assert.AreEqual(1001, loaded.Count);
-            Assert.AreEqual(2, loaded.Message(loaded.MessageAt(1000)).Count);
+            Assert.AreEqual(2, loaded.Message(loaded.MessageAt(loaded.EndId - 1)).Count);
 
             // A trim that keeps every message keeps the texts' files and rewrites the occurrences only.
             texts = loaded.Texts.Generation;
@@ -327,12 +328,12 @@ namespace Orbiters.Logger.Editor.Tests
             var session = Fresh();
             var loaded = Load(session);
             long generation = loaded.Texts.Generation;
-            int newest = loaded.Message(loaded.MessageAt(loaded.Count - 1)).Text;
+            int newest = loaded.Message(loaded.MessageAt(loaded.EndId - 1)).Text;
             loaded.Trim(500);
             Assert.AreEqual(500, loaded.Count, "the trim itself happened");
             Assert.AreEqual(generation, loaded.Texts.Generation, "the compaction was dropped");
             Assert.IsTrue(loaded.Texts.Faulted, "the store must start over");
-            Assert.AreEqual(newest, loaded.Message(loaded.MessageAt(loaded.Count - 1)).Text, "ids still name the old table");
+            Assert.AreEqual(newest, loaded.Message(loaded.MessageAt(loaded.EndId - 1)).Text, "ids still name the old table");
             Assert.IsFalse(loaded.Texts.IsLoaded(newest), "and the placeholder was never kept");
             session.Close();
         }

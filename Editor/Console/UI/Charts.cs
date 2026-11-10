@@ -70,22 +70,30 @@ namespace Orbiters.Logger.Editor
 
         public static Color Level(LogLevel level) => level == LogLevel.Error ? Error : level == LogLevel.Warning ? Warning : Info;
 
+        // Parsed once: Event runs for every session event of every repaint.
+        private static readonly Color EnterPlayMode = SourceCatalog.Hex("#3cf29a");
+        private static readonly Color ExitPlayMode = SourceCatalog.Hex("#9e9e9e");
+        private static readonly Color Compiled = SourceCatalog.Hex("#6aa7ff");
+        private static readonly Color CompileFailed = SourceCatalog.Hex("#ff6b6b");
+        private static readonly Color DomainReload = SourceCatalog.Hex("#b890ff");
+        private static readonly Color OtherEvent = SourceCatalog.Hex("#f0a35e");
+
         public static Color Event(SessionEventKind kind)
         {
             switch (kind)
             {
                 case SessionEventKind.EnterPlayMode:
-                    return SourceCatalog.Hex("#3cf29a");
+                    return EnterPlayMode;
                 case SessionEventKind.ExitPlayMode:
-                    return SourceCatalog.Hex("#9e9e9e");
+                    return ExitPlayMode;
                 case SessionEventKind.Compile:
-                    return SourceCatalog.Hex("#6aa7ff");
+                    return Compiled;
                 case SessionEventKind.CompileFailed:
-                    return SourceCatalog.Hex("#ff6b6b");
+                    return CompileFailed;
                 case SessionEventKind.DomainReload:
-                    return SourceCatalog.Hex("#b890ff");
+                    return DomainReload;
                 default:
-                    return SourceCatalog.Hex("#f0a35e");
+                    return OtherEvent;
             }
         }
 
@@ -416,7 +424,7 @@ namespace Orbiters.Logger.Editor
             LayoutMarkerLabels();
             rangeFrom = from;
             rangeTo = to;
-            bool hasData = state != null && state.HasTimeline && state.Covered > 0;
+            bool hasData = state != null && state.HasTimeline && state.Covered > state.FirstId;
             emptyLabel.style.display = hasData ? DisplayStyle.None : DisplayStyle.Flex;
             if (state != null && state.HasTimeline)
             {

@@ -14,12 +14,12 @@ namespace Orbiters.Logger.Editor
     /// first-chance exceptions to catch it earlier). A Harmony prefix on the builders' private <c>HandleUploadError</c>,
     /// which every failure goes through, logs it once as an error with the whole exception (inner ones too), and that log
     /// is what "Check Console for more details" shows. Found by name through reflection, Harmony included (it ships with
-    /// the VRChat SDK): without the SDK, Harmony or the method, nothing is hooked.
+    /// the VRChat SDK): without the SDK, Harmony or the method, nothing is hooked. Hooked the first time an SDK panel
+    /// is seen (uploads start from it), not at every script reload (<see cref="EnsureHooked"/>).
     /// </summary>
-    [InitializeOnLoad]
     internal static class SdkUploadErrors
     {
-        /// <summary>How the log starts (what <see cref="LoggerWindow.ErrorToShow"/> looks for).</summary>
+        /// <summary>How the log starts (what <see cref="LogQueries.ErrorToShow"/> looks for).</summary>
         internal const string Prefix = "VRChat's SDK only shows the message; where it happened: ";
 
         private const string HarmonyId = "cc.orbiters.mixer.console.upload-errors";
@@ -34,13 +34,20 @@ namespace Orbiters.Logger.Editor
         // Exceptions already logged: the same one goes through the builder more than once (rethrown and handled again).
         private static readonly ConditionalWeakTable<Exception, object> Logged = new ConditionalWeakTable<Exception, object>();
 
-        static SdkUploadErrors()
+        private static bool tried;
+
+        /// <summary>
+        /// Patches the SDK's builders, once per domain: called when an SDK control panel is found (ConsoleLinks), before
+        /// any upload can start from it. Cheap after the first call.
+        /// </summary>
+        internal static void EnsureHooked()
         {
-            if (Application.isBatchMode)
+            if (tried || Application.isBatchMode)
             {
                 return;
             }
 
+            tried = true;
             try
             {
                 Hook();

@@ -11,7 +11,7 @@ namespace Orbiters.Logger.Editor
     /// <code>
     /// texts-G.bin      [char count int32][UTF-16 units]… per text id from 1, appended   (G = TextTable.Generation)
     /// textindex-G.bin  [offset int64][hash int32] per text id from 1, appended
-    /// times-R.bin      int64 per occurrence, appended                                    (R = LogStore.RowsGeneration)
+    /// times-R.bin      int64 per occurrence id from the file's first, appended           (R: new for each LogStore.RowsGeneration)
     /// owners-R.bin     int32 per occurrence, appended
     /// head-N.bin       everything else (rewritten), with how much of each file is valid: written last, under a new
     ///                  number (a new file moved into place), the older head deleted after it
@@ -20,6 +20,8 @@ namespace Orbiters.Logger.Editor
     /// (they are cut at the next save). Nothing is ever replaced in place, so no file system can lose a committed head.
     /// A new generation starts new files; the head names the ones it uses and the others are deleted after it. Texts are
     /// read lazily: a row, the details or a search reads the ones it needs (<see cref="TextTable.Restore"/>).
+    /// Occurrence ids are saved as they are (the head says the first one), so whatever remembers an id across a reload
+    /// still finds its log; a trim only moves the first id, and the rows files are rewritten once most of them is trimmed.
     /// <para>
     /// Any inconsistency makes <see cref="Load"/> return null with a reason: the caller starts from an empty store and
     /// Unity's console, and says so. Main thread, except the lazy text reads.
@@ -28,7 +30,9 @@ namespace Orbiters.Logger.Editor
     internal sealed class SessionFile
     {
         private const int Magic = 0x53474F4C; // "LOGS"
-        private const int FormatVersion = 3;
+        // 4: occurrence ids kept (first id, the rows files' first id). A session of another version is never converted: an
+        // earlier one of this editor goes through LogCapture's one recovery (Unity's console read again).
+        private const int FormatVersion = 4;
         // A text's offset, hash and length.
         private const int IndexRecord = sizeof(long) + sizeof(int) + sizeof(int);
         private const int ChunkBytes = 1 << 20;
@@ -42,7 +46,10 @@ namespace Orbiters.Logger.Editor
         private long textGeneration;
         private int textsSaved;
         private long textBytes;
+        // The rows files' key, the store generation they follow, their first occurrence id and the end of what they hold.
         private long rowsGeneration;
+        private long storeRows;
+        private int rowsFirst;
         private int rowsSaved;
         private int headNumber;
         private SessionTextFile textFile;
@@ -94,14 +101,18 @@ namespace Orbiters.Logger.Editor
 
             SaveTexts(texts, textCount);
 
-            int count = store.Count;
-            if (store.RowsGeneration != rowsGeneration)
+            var view = store.View();
+            // A new store generation, or a trim past what was saved or of most of the file: new rows files from the first id.
+            if (rowsGeneration == 0 || store.RowsGeneration != storeRows || view.First > rowsSaved || view.First < rowsFirst ||
+                view.First - (long)rowsFirst > view.Count)
             {
-                rowsGeneration = store.RowsGeneration;
-                rowsSaved = 0;
+                storeRows = store.RowsGeneration;
+                rowsGeneration = NewFileKey();
+                rowsFirst = view.First;
+                rowsSaved = view.First;
             }
 
-            SaveRows(store, count);
+            SaveRows(view);
 
             // A new name, moved into place once whole: the previous head stays until then (and if anything fails).
             int number = Math.Max(headNumber, NewestHead()) + 1;
@@ -109,7 +120,7 @@ namespace Orbiters.Logger.Editor
             using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16))
             using (var writer = new BinaryWriter(stream))
             {
-                WriteHead(writer, store, info, processId, editorStart, textCount, count);
+                WriteHead(writer, store, view, info, processId, editorStart, textCount);
                 writer.Flush();
                 stream.Flush(true);
             }
@@ -169,21 +180,34 @@ namespace Orbiters.Logger.Editor
             }
         }
 
-        private void SaveRows(LogStore store, int count)
+        private void SaveRows(StoreView view)
         {
-            store.ExportColumns(out long[] times, out int[] owners, out _);
-            using (var timesFile = OpenAppend(TimesPath(rowsGeneration), (long)rowsSaved * sizeof(long)))
-            using (var ownersFile = OpenAppend(OwnersPath(rowsGeneration), (long)rowsSaved * sizeof(int)))
+            long saved = (long)rowsSaved - rowsFirst;
+            using (var timesFile = OpenAppend(TimesPath(rowsGeneration), saved * sizeof(long)))
+            using (var ownersFile = OpenAppend(OwnersPath(rowsGeneration), saved * sizeof(int)))
             {
                 var buffer = new byte[ChunkBytes];
-                WriteBlock(timesFile, times, rowsSaved * sizeof(long), (count - rowsSaved) * sizeof(long), buffer);
-                WriteBlock(ownersFile, owners, rowsSaved * sizeof(int), (count - rowsSaved) * sizeof(int), buffer);
+                WriteColumn(timesFile, view.TimeChunks, view, rowsSaved, view.End, sizeof(long), buffer);
+                WriteColumn(ownersFile, view.OwnerChunks, view, rowsSaved, view.End, sizeof(int), buffer);
                 timesFile.Flush();
                 ownersFile.Flush();
             }
 
-            rowsSaved = count;
+            rowsSaved = view.End;
         }
+
+        // Ids [from, to) of one column, chunk by chunk.
+        private static void WriteColumn(Stream stream, Array[] chunks, StoreView view, int from, int to, int size, byte[] buffer)
+        {
+            for (int id = from; id < to;)
+            {
+                int run = view.Run(id, to, out int chunk, out int offset);
+                WriteBlock(stream, chunks[chunk], offset * size, run * size, buffer);
+                id += run;
+            }
+        }
+
+        private static long NewFileKey() => BitConverter.ToInt64(Guid.NewGuid().ToByteArray(), 0) & long.MaxValue | 1L;
 
         // A file cut to what the head knows of (a tail from a save that failed goes), positioned at its end.
         private static FileStream OpenAppend(string path, long valid)
@@ -211,7 +235,7 @@ namespace Orbiters.Logger.Editor
             }
         }
 
-        private void WriteHead(BinaryWriter writer, LogStore store, SnapshotInfo info, int processId, long editorStart, int textCount, int count)
+        private void WriteHead(BinaryWriter writer, LogStore store, StoreView view, SnapshotInfo info, int processId, long editorStart, int textCount)
         {
             writer.Write(Magic);
             writer.Write(FormatVersion);
@@ -224,12 +248,17 @@ namespace Orbiters.Logger.Editor
             writer.Write(info.HistoryAnchor ?? string.Empty);
             writer.Write((byte)store.Grouping);
             writer.Write(store.MaxOccurrences);
+            writer.Write(store.InitialFirstId);
 
             writer.Write(textGeneration);
             writer.Write(textCount);
             writer.Write(textBytes);
             writer.Write(rowsGeneration);
-            writer.Write(count);
+            writer.Write(storeRows);
+            writer.Write(rowsFirst);
+            writer.Write(store.LowestIssuedId);
+            writer.Write(view.First);
+            writer.Write(view.Count);
 
             var sources = store.Sources.All;
             writer.Write(sources.Count);
@@ -275,10 +304,14 @@ namespace Orbiters.Logger.Editor
             }
 
             // Flags change in place (a compile message superseded): small enough to write whole.
-            store.ExportColumns(out _, out _, out byte[] flags);
-            writer.Write(flags, 0, count);
+            for (int id = view.First; id < view.End;)
+            {
+                int run = view.Run(id, view.End, out int chunk, out int offset);
+                writer.Write(view.FlagChunks[chunk], offset, run);
+                id += run;
+            }
 
-            var contexts = store.Contexts;
+            var contexts = store.ContextPairs();
             writer.Write(contexts.Count);
             foreach (var pair in contexts)
             {
@@ -387,7 +420,8 @@ namespace Orbiters.Logger.Editor
         private void Forget()
         {
             Close();
-            textGeneration = rowsGeneration = 0;
+            textGeneration = rowsGeneration = storeRows = 0;
+            rowsFirst = 0;
             textsSaved = rowsSaved = 0;
             textBytes = 0;
         }
@@ -405,16 +439,26 @@ namespace Orbiters.Logger.Editor
 
             using (var reader = new BinaryReader(new MemoryStream(File.ReadAllBytes(headPath))))
             {
-                if (reader.ReadInt32() != Magic || reader.ReadInt32() != FormatVersion)
+                if (reader.ReadInt32() != Magic)
                 {
-                    // Another version of the Mixer console wrote it: nothing to tell.
+                    // Not a head of the Mixer console: nothing to tell.
                     return null;
                 }
 
+                // Every version starts with its number, the editor process and its start.
+                int version = reader.ReadInt32();
                 int savedProcess = reader.ReadInt32();
                 long savedStart = reader.ReadInt64();
                 if (savedProcess != processId || Math.Abs(savedStart - editorStart) > TimeSpan.TicksPerMinute)
                 {
+                    return null;
+                }
+
+                if (version != FormatVersion)
+                {
+                    // This editor's session, saved by another version of the Mixer console (scripts reloaded into this one):
+                    // never converted, LogCapture's one recovery reads Unity's console again.
+                    problem = "it was saved by another version of the Mixer console";
                     return null;
                 }
 
@@ -428,21 +472,29 @@ namespace Orbiters.Logger.Editor
                 };
                 var grouping = (GroupingMode)reader.ReadByte();
                 int maxOccurrences = reader.ReadInt32();
+                int initialFirst = reader.ReadInt32();
                 long texts = reader.ReadInt64();
                 int textCount = reader.ReadInt32();
                 long bytes = reader.ReadInt64();
                 long rows = reader.ReadInt64();
+                long storeGeneration = reader.ReadInt64();
+                int filesFirst = reader.ReadInt32();
+                int lowestId = reader.ReadInt32();
+                int firstId = reader.ReadInt32();
                 int count = reader.ReadInt32();
+                long skipped = (long)firstId - filesFirst;
                 // Every count is checked against the bytes that must hold it before anything is allocated for it.
-                if (textCount < 1 || bytes < 0 || count < 0 || !Fits(reader, count, 1) ||
+                if (textCount < 1 || bytes < 0 || count < 0 || !Fits(reader, count, 1) || initialFirst < 0 || firstId < 0 || skipped < 0 ||
+                    lowestId < 0 || lowestId > firstId ||
+                    (long)firstId + count > int.MaxValue - LogStore.ChunkSize ||
                     FileLength(IndexPath(texts)) < (textCount - 1L) * IndexRecord || FileLength(TextsPath(texts)) < bytes ||
-                    FileLength(TimesPath(rows)) < (long)count * sizeof(long) || FileLength(OwnersPath(rows)) < (long)count * sizeof(int))
+                    FileLength(TimesPath(rows)) < (skipped + count) * sizeof(long) || FileLength(OwnersPath(rows)) < (skipped + count) * sizeof(int))
                 {
                     problem = "the files are shorter than the head says";
                     return null;
                 }
 
-                var store = new LogStore(64) { MaxOccurrences = maxOccurrences };
+                var store = new LogStore(initialFirst) { MaxOccurrences = maxOccurrences };
                 int sourceCount = reader.ReadInt32();
                 if (!Fits(reader, sourceCount, 2))
                 {
@@ -481,8 +533,7 @@ namespace Orbiters.Logger.Editor
                         First = reader.ReadInt32(),
                         Last = reader.ReadInt32(),
                         Variant = (LogVariant)reader.ReadByte(),
-                        Flags = (MessageFlags)reader.ReadByte(),
-                        Explanation = -2
+                        Flags = (MessageFlags)reader.ReadByte()
                     };
                 }
 
@@ -514,11 +565,14 @@ namespace Orbiters.Logger.Editor
                     return null;
                 }
 
-                int capacity = Capacity(count, 4096);
-                var flags = new byte[capacity];
-                if (reader.Read(flags, 0, count) != count)
+                var flags = LogStore.NewChunks<byte>(count);
+                for (int at = 0; at < count; at += LogStore.ChunkSize)
                 {
-                    throw new EndOfStreamException();
+                    int run = Math.Min(LogStore.ChunkSize, count - at);
+                    if (reader.Read(flags[at >> LogStore.ChunkShift], 0, run) != run)
+                    {
+                        throw new EndOfStreamException();
+                    }
                 }
 
                 int contextCount = reader.ReadInt32();
@@ -528,11 +582,11 @@ namespace Orbiters.Logger.Editor
                     return null;
                 }
 
-                var contexts = new Dictionary<int, int>(Math.Max(0, contextCount));
+                var contexts = new List<KeyValuePair<int, int>>(Math.Max(0, contextCount));
                 for (int i = 0; i < contextCount; i++)
                 {
                     int key = reader.ReadInt32();
-                    contexts[key] = reader.ReadInt32();
+                    contexts.Add(new KeyValuePair<int, int>(key, reader.ReadInt32()));
                 }
 
                 int eventCount = reader.ReadInt32();
@@ -555,16 +609,17 @@ namespace Orbiters.Logger.Editor
                     return null;
                 }
 
-                problem = CheckIds(messages, messageCount, groups, groupCount, textCount, count, store.Sources.Count, contexts);
+                problem = CheckIds(messages, messageCount, groups, groupCount, textCount, firstId, firstId + count, store.Sources.Count, contexts);
                 if (problem != null)
                 {
                     return null;
                 }
 
                 // The columns, then the texts' index: only the parts the head knows of.
-                var times = new long[capacity];
-                var owners = new int[capacity];
-                if (!ReadBlock(TimesPath(rows), times, (long)count * sizeof(long)) || !ReadBlock(OwnersPath(rows), owners, (long)count * sizeof(int)))
+                var times = LogStore.NewChunks<long>(count);
+                var owners = LogStore.NewChunks<int>(count);
+                if (!ReadColumn(TimesPath(rows), times, skipped * sizeof(long), count, sizeof(long)) ||
+                    !ReadColumn(OwnersPath(rows), owners, skipped * sizeof(int), count, sizeof(int)))
                 {
                     problem = "the occurrences are incomplete";
                     return null;
@@ -596,21 +651,25 @@ namespace Orbiters.Logger.Editor
 
                 // Each text is its length (4 bytes) and two bytes per UTF-16 unit.
                 var table = TextTable.Restore(texts, textCount, (bytes - 4L * (textCount - 1)) / 2, hashes, offsets, lengths, file);
-                store.Restore(table, rows, times, owners, flags, count, messages, messageCount, groups, groupCount, grouping, contexts, events);
+                store.Restore(table, storeGeneration, firstId, lowestId, times,
+ owners, flags, count, messages, messageCount, groups, groupCount, grouping, contexts,
+                    events);
 
                 textFile = file;
                 textGeneration = texts;
                 textsSaved = textCount;
                 textBytes = bytes;
                 rowsGeneration = rows;
-                rowsSaved = count;
+                storeRows = storeGeneration;
+                rowsFirst = filesFirst;
+                rowsSaved = firstId + count;
                 info = loaded;
                 return store;
             }
         }
 
-        private static string CheckIds(LogMessage[] messages, int messageCount, LogGroup[] groups, int groupCount, int textCount, int count,
-            int sourceCount, Dictionary<int, int> contexts)
+        private static string CheckIds(LogMessage[] messages, int messageCount, LogGroup[] groups, int groupCount, int textCount, int firstId, int end,
+            int sourceCount, List<KeyValuePair<int, int>> contexts)
         {
             long total = 0;
             for (int i = 0; i < messageCount; i++)
@@ -622,7 +681,8 @@ namespace Orbiters.Logger.Editor
                     return "a message names a text that isn't saved";
                 }
 
-                if ((uint)message.Group >= (uint)groupCount || message.Count < 0 || message.First >= count || message.Last >= count)
+                if ((uint)message.Group >= (uint)groupCount || message.Count < 0 ||
+                    message.Count > 0 && (message.First < 0 || message.Last < firstId || message.Last < message.First || message.Last >= end))
                 {
                     return "a message's counts don't match";
                 }
@@ -635,14 +695,16 @@ namespace Orbiters.Logger.Editor
                 total += message.Count;
             }
 
-            if (total != count)
+            if (total != (long)end - firstId)
             {
                 return "the messages' counts don't add up";
             }
 
             for (int i = 0; i < groupCount; i++)
             {
-                if (!IsText(groups[i].Key, textCount) || groups[i].Latest >= messageCount || groups[i].Last >= count)
+                var group = groups[i];
+                if (!IsText(group.Key, textCount) || group.Latest >= messageCount ||
+                    group.Count > 0 && (group.Latest < 0 || group.First < 0 || group.Last < firstId || group.Last < group.First || group.Last >= end))
                 {
                     return "a group doesn't match";
                 }
@@ -650,7 +712,7 @@ namespace Orbiters.Logger.Editor
 
             foreach (var pair in contexts)
             {
-                if ((uint)pair.Key >= (uint)count)
+                if (pair.Key < firstId || pair.Key >= end)
                 {
                     return "a context doesn't match";
                 }
@@ -707,17 +769,60 @@ namespace Orbiters.Logger.Editor
             return System.Text.Encoding.UTF8.GetString(reader.ReadBytes(length));
         }
 
-        private static string CheckRows(int[] owners, int count, LogMessage[] messages, int messageCount)
+        private static string CheckRows(int[][] owners, int count, LogMessage[] messages, int messageCount)
         {
             for (int i = 0; i < count; i++)
             {
-                if ((uint)owners[i] >= (uint)messageCount)
+                if ((uint)owners[i >> LogStore.ChunkShift][i & LogStore.ChunkMask] >= (uint)messageCount)
                 {
                     return "an occurrence names a message that isn't saved";
                 }
             }
 
             return null;
+        }
+
+        // `count` elements of `size` bytes from `offset` in the file into the chunks, from slot 0; false when it is shorter.
+        private static bool ReadColumn(string path, Array[] chunks, long offset, int count, int size)
+        {
+            if (count == 0)
+            {
+                return true;
+            }
+
+            if (!File.Exists(path))
+            {
+                return false;
+            }
+
+            using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 16))
+            {
+                if (stream.Length < offset + (long)count * size)
+                {
+                    return false;
+                }
+
+                stream.Position = offset;
+                var buffer = new byte[Math.Min(ChunkBytes, LogStore.ChunkSize * size)];
+                for (int at = 0; at < count; at += LogStore.ChunkSize)
+                {
+                    int bytes = Math.Min(LogStore.ChunkSize, count - at) * size;
+                    var chunk = chunks[at >> LogStore.ChunkShift];
+                    for (int done = 0; done < bytes;)
+                    {
+                        int read = stream.Read(buffer, 0, Math.Min(buffer.Length, bytes - done));
+                        if (read <= 0)
+                        {
+                            return false;
+                        }
+
+                        Buffer.BlockCopy(buffer, 0, chunk, done, read);
+                        done += read;
+                    }
+                }
+            }
+
+            return true;
         }
 
         // Every record must start where the one before ends, and the last end where the texts file's valid part does.
@@ -859,7 +964,8 @@ namespace Orbiters.Logger.Editor
         public void Delete()
         {
             Close();
-            textGeneration = rowsGeneration = 0;
+            textGeneration = rowsGeneration = storeRows = 0;
+            rowsFirst = 0;
             textsSaved = rowsSaved = 0;
             textBytes = 0;
             try

@@ -596,15 +596,20 @@ namespace Orbiters.Logger.Editor
             RegisterCallback<GeometryChangedEvent>(evt => hint.style.display = evt.newRect.width >= 236f ? DisplayStyle.Flex : DisplayStyle.None);
 
             var options = LoggerUi.Box("lg-search__options");
-            caseToggle = Toggle("Aa", "Match case", matchCase);
-            regexToggle = Toggle(".*", "Regular expression (.NET syntax)", regex);
+            // The options are fields; the buttons' "on" class only shows them (MXL-21).
+            matchCaseOn = matchCase;
+            regexOn = regex;
+            stackOn = stack;
+            caseToggle = Toggle("Aa", "Match case", matchCase, () => matchCaseOn = !matchCaseOn);
+            regexToggle = Toggle(".*", "Regular expression (.NET syntax)", regex, () => regexOn = !regexOn);
             stackToggle = new Button { tooltip = "Search stack traces too" };
             stackToggle.AddToClassList("lg-search__toggle");
             stackToggle.Add(new LoggerIcon(LoggerGlyph.Stack));
             stackToggle.EnableInClassList("lg-search__toggle--on", stack);
             LoggerUi.Press(stackToggle, () =>
             {
-                stackToggle.ToggleInClassList("lg-search__toggle--on");
+                stackOn = !stackOn;
+                stackToggle.EnableInClassList("lg-search__toggle--on", stackOn);
                 OptionsChanged?.Invoke();
             });
             clear = LoggerUi.Icon(LoggerGlyph.Close, "Clear the search (Esc)", () =>
@@ -658,9 +663,13 @@ namespace Orbiters.Logger.Editor
             set => field.SetValueWithoutNotify(value ?? string.Empty);
         }
 
-        public bool MatchCase => caseToggle.ClassListContains("lg-search__toggle--on");
-        public bool Regex => regexToggle.ClassListContains("lg-search__toggle--on");
-        public bool Stack => stackToggle.ClassListContains("lg-search__toggle--on");
+        private bool matchCaseOn;
+        private bool regexOn;
+        private bool stackOn;
+
+        public bool MatchCase => matchCaseOn;
+        public bool Regex => regexOn;
+        public bool Stack => stackOn;
 
         public void FocusField()
         {
@@ -685,7 +694,8 @@ namespace Orbiters.Logger.Editor
             EnableInClassList("lg-search--active", !empty);
         }
 
-        private Button Toggle(string text, string tooltip, bool on)
+        // `flip` turns the option's field over and returns its new value; the class follows it.
+        private Button Toggle(string text, string tooltip, bool on, Func<bool> flip)
         {
             var button = new Button { text = text, tooltip = tooltip };
             button.AddToClassList("lg-search__toggle");
@@ -693,7 +703,7 @@ namespace Orbiters.Logger.Editor
             button.EnableInClassList("lg-search__toggle--on", on);
             LoggerUi.Press(button, () =>
             {
-                button.ToggleInClassList("lg-search__toggle--on");
+                button.EnableInClassList("lg-search__toggle--on", flip());
                 OptionsChanged?.Invoke();
             });
             return button;
