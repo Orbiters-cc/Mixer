@@ -68,6 +68,8 @@ namespace Orbiters.Mixer.Editor
             EditorApplication.update += Tick;
             EditorApplication.hierarchyChanged += () => ForEach(h => h.MarkGraphDirty(0.25));
             ObjectChangeEvents.changesPublished += OnChanges;
+            // A scene saved for the first time gives its objects other ids.
+            EditorSceneManager.sceneSaved += _ => ForEach(h => h.ForgetIds());
             EditorSceneManager.activeSceneChangedInEditMode += (a, b) => ForEach(h => h.SceneSwitched());
             EditorApplication.quitting += Stop;
             // The endpoint file stays: after the reload the link listens again on the same port with the same token.
@@ -75,7 +77,9 @@ namespace Orbiters.Mixer.Editor
             // positions so far are in the session, which the reload keeps.
             AssemblyReloadEvents.beforeAssemblyReload += () => { live?.Dispose(deleteEndpoint: false, endEdits: false); live = null; };
             EditorApplication.playModeStateChanged += OnPlayMode;
-            MixerSession.Changed += () => ForEach(h => h.MarkGraphDirty(0.3));
+            // A session event (every stroke ends with one) changes no object of the graph but the sessions' renderers,
+            // which may show another mesh, and transforms Mixer's tools moved: those alone are looked at again.
+            MixerSession.Changed += () => ForEach(h => h.MarkSessionsChanged(0.3));
             if (Enabled) EditorApplication.delayCall += EnsureRunning;
         }
 
@@ -154,20 +158,42 @@ namespace Orbiters.Mixer.Editor
             ForEach(h => h.Tick());
         }
 
+        // A property of a component changes its node only: that node is described again. Anything that can change which
+        // objects are nodes, or a GameObject's own properties (name, active, tag), rebuilds the graph; prefab updates and
+        // scene changes give objects other ids too.
         private static void OnChanges(ref ObjectChangeEventStream stream)
         {
             if (hosts.Count == 0) return;
-            for (int i = 0; i < stream.length; i++)
+            bool full = false, forget = false;
+            List<int> objects = null;
+            for (int i = 0; i < stream.length && !forget; i++)
             {
-                var kind = stream.GetEventType(i);
-                if (kind == ObjectChangeKind.ChangeGameObjectOrComponentProperties || kind == ObjectChangeKind.ChangeGameObjectParent || kind == ObjectChangeKind.CreateGameObjectHierarchy ||
-                    kind == ObjectChangeKind.DestroyGameObjectHierarchy || kind == ObjectChangeKind.ChangeGameObjectStructure || kind == ObjectChangeKind.ChangeGameObjectStructureHierarchy ||
-                    kind == ObjectChangeKind.UpdatePrefabInstances || kind == ObjectChangeKind.ChangeScene)
+                switch (stream.GetEventType(i))
                 {
-                    ForEach(h => h.MarkGraphDirty(0.12));
-                    return;
+                    case ObjectChangeKind.ChangeGameObjectOrComponentProperties:
+                    {
+                        stream.GetChangeGameObjectOrComponentPropertiesEvent(i, out var change);
+                        if (EditorUtility.InstanceIDToObject(change.instanceId) is Component component && component != null)
+                            (objects ?? (objects = new List<int>())).Add(component.gameObject.GetInstanceID());
+                        else full = true;
+                        break;
+                    }
+                    case ObjectChangeKind.ChangeGameObjectParent:
+                    case ObjectChangeKind.CreateGameObjectHierarchy:
+                    case ObjectChangeKind.DestroyGameObjectHierarchy:
+                    case ObjectChangeKind.ChangeGameObjectStructure:
+                        full = true;
+                        break;
+                    case ObjectChangeKind.ChangeGameObjectStructureHierarchy:
+                    case ObjectChangeKind.UpdatePrefabInstances:
+                    case ObjectChangeKind.ChangeScene:
+                        full = forget = true;
+                        break;
                 }
             }
+            if (forget) ForEach(h => h.ForgetIds());
+            if (full) ForEach(h => h.MarkGraphDirty(0.12));
+            else if (objects != null) ForEach(h => h.MarkObjectsChanged(objects, 0.12));
         }
 
         // ---- Settings ------------------------------------------------------------------------------------------------
@@ -301,11 +327,15 @@ namespace Orbiters.Mixer.Editor
         private string unityEditing, unityEditingNode;
         private readonly Dictionary<string, (string message, double at)> throttled = new Dictionary<string, (string, double)>();
 
-        // The graph Blender has.
+        // The graph Blender has, kept up to date by graphCache: a full build when what the nodes are may have changed
+        // (graphDirty), else the nodes of the objects that changed and, after a session event, the transforms.
         private SceneGraph lastGraph;
+        private readonly SceneGraphCache graphCache = new SceneGraphCache();
         private readonly HashSet<string> graphNodes = new HashSet<string>();
+        private readonly HashSet<int> changedObjects = new HashSet<int>();
+        private readonly HashSet<int> sessionRenderers = new HashSet<int>();
         private double graphDueAt, recheckAt;
-        private bool graphDirty, sceneSwitched;
+        private bool graphDirty, partsDirty, sessionsDirty, sceneSwitched;
 
         // Meshes going out: queued by node, encoded (on a thread for assets), one in flight until Blender says it arrived.
         private readonly Queue<string> meshQueue = new Queue<string>();
@@ -904,6 +934,29 @@ namespace Orbiters.Mixer.Editor
             graphDueAt = Math.Max(graphDueAt, EditorApplication.timeSinceStartup + delay);
         }
 
+        /// <summary>Components of these GameObjects changed: their nodes are described again (a full build when that is not enough).</summary>
+        public void MarkObjectsChanged(IEnumerable<int> gameObjects, double delay)
+        {
+            changedObjects.UnionWith(gameObjects);
+            partsDirty = true;
+            graphDueAt = Math.Max(graphDueAt, EditorApplication.timeSinceStartup + delay);
+        }
+
+        /// <summary>A Mixer session event: the sessions' renderers (now and just ended) and every node's transform are read again.</summary>
+        public void MarkSessionsChanged(double delay)
+        {
+            sessionsDirty = true;
+            partsDirty = true;
+            graphDueAt = Math.Max(graphDueAt, EditorApplication.timeSinceStartup + delay);
+        }
+
+        /// <summary>Objects may have other ids now (a scene saved, prefabs updated or unpacked): worked out again, the graph rebuilt.</summary>
+        public void ForgetIds()
+        {
+            graphCache.Forget();
+            MarkGraphDirty(0.1);
+        }
+
         public void SceneSwitched()
         {
             lastGraph = null;
@@ -918,7 +971,7 @@ namespace Orbiters.Mixer.Editor
         {
             if (!Connected) return;
             var scene = sceneOf();
-            var graph = SceneGraphExporter.Build(scene, MixerLinkService.SettingsFor(scene, false));
+            var graph = graphCache.Build(scene, MixerLinkService.SettingsFor(scene, false));
             bool whole = force || lastGraph == null || lastGraph.sceneGuid != graph.sceneGuid;
             if (whole)
             {
@@ -936,7 +989,9 @@ namespace Orbiters.Mixer.Editor
             lastGraph = graph;
             graphNodes.Clear();
             foreach (var node in graph.nodes) graphNodes.Add(node.id);
-            graphDirty = false;
+            graphDirty = partsDirty = sessionsDirty = false;
+            changedObjects.Clear();
+            NoteSessionRenderers();
             if (sceneSwitched && whole)
             {
                 sceneSwitched = false;
@@ -945,6 +1000,53 @@ namespace Orbiters.Mixer.Editor
                 SendAllMeshes();
             }
             if (recheck && recheckAt <= 0) recheckAt = EditorApplication.timeSinceStartup + 2.5;
+        }
+
+        // What changed of the objects marked since the graph was sent, without building it again.
+        private void SendGraphChanges()
+        {
+            partsDirty = false;
+            if (!Connected) return;
+            if (lastGraph == null) { SendGraph(force: false, recheck: true); return; }
+            bool transforms = sessionsDirty;
+            if (sessionsDirty)
+            {
+                // The renderers of the sessions now and of those that just ended may show another mesh (a commit).
+                changedObjects.UnionWith(sessionRenderers);
+                NoteSessionRenderers();
+                changedObjects.UnionWith(sessionRenderers);
+                sessionsDirty = false;
+            }
+            var delta = new SceneDelta();
+            bool described = graphCache.Redescribe(changedObjects, lastGraph, delta);
+            changedObjects.Clear();
+            if (!described) { SendGraph(force: false, recheck: true); return; }
+            if (transforms && !graphCache.Retransform(lastGraph, delta))
+            {
+                // The nodes described above are in the graph already: Blender gets it whole.
+                SendGraph(force: true);
+                return;
+            }
+            if (delta.Empty) return;
+            Send(MixerLinkProtocol.FrameType.SceneDelta, MixerLinkProtocol.Json(delta));
+            foreach (var node in delta.added) if (node.meshId != null) SendMesh(node.id);
+            if (recheckAt <= 0) recheckAt = EditorApplication.timeSinceStartup + 2.5;
+        }
+
+        // The tools' late answers (target FBX, kept-out renderers) asked again, a while after a change.
+        private void RecheckGraph()
+        {
+            if (!Connected || lastGraph == null) return;
+            var delta = new SceneDelta();
+            if (!graphCache.Recheck(lastGraph, delta)) { SendGraph(force: false, recheck: false); return; }
+            if (!delta.Empty) Send(MixerLinkProtocol.FrameType.SceneDelta, MixerLinkProtocol.Json(delta));
+        }
+
+        private void NoteSessionRenderers()
+        {
+            sessionRenderers.Clear();
+            foreach (var t in MixerSession.Targets)
+                if (t.Alive && t.Renderer != null) sessionRenderers.Add(t.Renderer.gameObject.GetInstanceID());
         }
 
         private void SendAllMeshes()
@@ -1159,7 +1261,8 @@ namespace Orbiters.Mixer.Editor
             UpdateUnityClaim();
             SendNextMesh();
             if (graphDirty && now >= graphDueAt) SendGraph(force: false, recheck: true);
-            else if (recheckAt > 0 && now >= recheckAt) { recheckAt = 0; SendGraph(force: false, recheck: false); }
+            else if (partsDirty && now >= graphDueAt) SendGraphChanges();
+            else if (recheckAt > 0 && now >= recheckAt) { recheckAt = 0; RecheckGraph(); }
             CheckShapeLists();
             if (positionsDue.Count == 0) return;
             leavingKeys.Clear();

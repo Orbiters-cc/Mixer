@@ -95,6 +95,64 @@ namespace Orbiters.Mixer.Editor.Tests
             Assert.That(SceneGraphExporter.Diff(before, SceneGraphExporter.Build(scene, null)).Empty, Is.True);
         }
 
+        // The cached graph is the one a fresh build gives, ids included; a change of known objects re-describes their nodes
+        // only, objects that are no node are left alone, and what changes the kinds of nodes asks for a full build.
+        [Test]
+        public void TheCachedGraphUpdatesOnlyTheNodesThatChanged()
+        {
+            var cache = new SceneGraphCache();
+            var graph = cache.Build(scene, null);
+            var fresh = SceneGraphExporter.Build(scene, null);
+            Assert.That(graph.nodes.Select(n => n.id), Is.EqualTo(fresh.nodes.Select(n => n.id)), "the same nodes, the same ids");
+            Assert.That(SceneGraphExporter.Diff(fresh, graph).Empty, Is.True, "and nothing else differs");
+            Assert.That(cache.IdOf(mesh), Is.EqualTo(SceneGraphExporter.IdOf(mesh)), "a mesh's id is its GlobalObjectId");
+            Assert.That(cache.IdOf(root), Is.EqualTo(SceneGraphExporter.IdOf(root)));
+
+            var sun = root.transform.Find("Sun");
+            sun.GetComponent<Light>().intensity = 4f;
+            var stray = new GameObject("__XRayGizmos_test");
+            stray.transform.SetParent(root.transform, false);
+            var delta = new SceneDelta();
+            Assert.That(cache.Redescribe(new[] { sun.gameObject.GetInstanceID(), stray.GetInstanceID() }, graph, delta), Is.True);
+            Assert.That(delta.changed.Select(n => n.name), Is.EqualTo(new[] { "Sun" }), "the light's node is resent, the helper is no node");
+            Assert.That(delta.transforms, Is.Empty);
+            Assert.That(SceneGraphExporter.Diff(SceneGraphExporter.Build(scene, null), graph).changed, Is.Empty, "the graph holds the change now");
+
+            var hip = renderer.bones[0];
+            hip.localPosition = new Vector3(0, 0.5f, 0);
+            var moved = new SceneDelta();
+            Assert.That(cache.Retransform(graph, moved), Is.True);
+            Assert.That(moved.transforms.Single().id, Is.EqualTo(SceneGraphExporter.IdOf(hip.gameObject)), "a bone Mixer moved without an event is found");
+            var again = new SceneDelta();
+            Assert.That(cache.Retransform(graph, again) && again.transforms.Count == 0, Is.True, "and only once");
+
+            renderer.bones = new[] { renderer.bones[1] };
+            Assert.That(cache.Redescribe(new[] { renderer.gameObject.GetInstanceID() }, graph, new SceneDelta()), Is.False, "other bones: a full build");
+            Assert.That(cache.Redescribe(new[] { sun.gameObject.GetInstanceID() }, SceneGraphExporter.Build(scene, null), new SceneDelta()), Is.False, "only the graph the cache built");
+            UnityEngine.Object.DestroyImmediate(stray);
+        }
+
+        // A session event sends no whole graph: a Mixer tool's move of a bone reaches Blender as a transform.
+        [Test]
+        public void ASessionEventSendsTransformsNotTheGraph()
+        {
+            using (var host = MixerLinkHost.OpenPrivate(scene))
+            using (var blender = new FakeBlender(host))
+            {
+                blender.Hello();
+                blender.Pump(5, MixerLinkProtocol.FrameType.MeshData);
+                renderer.bones[1].localPosition = new Vector3(0, 1.5f, 0);
+                host.MarkSessionsChanged(0);
+                var frames = blender.Pump(1.0, MixerLinkProtocol.FrameType.SceneDelta);
+                Assert.That(frames.Any(f => f.type == MixerLinkProtocol.FrameType.SceneGraph), Is.False, "no whole graph");
+                var delta = frames.Where(f => f.type == MixerLinkProtocol.FrameType.SceneDelta).Select(f => MixerLinkProtocol.Read<SceneDelta>(f.payload)).LastOrDefault();
+                Assert.That(delta, Is.Not.Null);
+                Assert.That(delta.transforms.Single().p, Is.EqualTo(new[] { 0f, 1.5f, 0f }));
+                host.MarkObjectsChanged(new[] { root.transform.Find("Sun").gameObject.GetInstanceID() }, 0);
+                Assert.That(blender.Pump(0.5).Any(f => f.type == MixerLinkProtocol.FrameType.SceneDelta || f.type == MixerLinkProtocol.FrameType.SceneGraph), Is.False, "nothing for a change that changed nothing");
+            }
+        }
+
         [Test]
         public void MeshDataRoundTripsWeldedVerticesSkinShapesAndTopology()
         {
