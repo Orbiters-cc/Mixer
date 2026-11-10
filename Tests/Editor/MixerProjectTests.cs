@@ -257,6 +257,33 @@ namespace Orbiters.Mixer.Editor.Tests
             finally { MixerLink.BlendshapeUses -= source; }
         }
 
+        // After the first reading, the index reads again only the paths the asset database names: a clip made, a folder
+        // moved and a clip deleted are seen without walking the project, and the result equals a full reading.
+        [Test]
+        public void TheContentIndexFollowsChangedPathsAsAFullReadingWould()
+        {
+            Assert.That(AssetContentIndex.RefreshNow(), Is.True, "the content index was read in time");
+            var made = new AnimationClip();
+            made.SetCurve("Body", typeof(SkinnedMeshRenderer), "blendShape.MixerProjectKept", AnimationCurve.Constant(0f, 1f, 100f));
+            AssetDatabase.CreateAsset(made, Root + "/Sub/Deep/Kept.anim");
+            var gone = new AnimationClip();
+            gone.SetCurve("Body", typeof(SkinnedMeshRenderer), "blendShape.MixerProjectGone", AnimationCurve.Constant(0f, 1f, 100f));
+            AssetDatabase.CreateAsset(gone, Root + "/Gone.anim");
+            Assert.That(AssetContentIndex.UpdateNow(), Is.True, "read in time");
+            Assert.That(AssetContentIndex.WithFact("attribute", "blendShape.MixerProjectKept"), Is.EqualTo(new[] { Root + "/Sub/Deep/Kept.anim" }));
+            Assert.That(AssetDatabase.MoveAsset(Root + "/Sub", Root + "/Moved"), Is.Empty);
+            AssetDatabase.DeleteAsset(Root + "/Gone.anim");
+            Assert.That(AssetContentIndex.UpdateNow(), Is.True, "read in time");
+            Assert.That(AssetContentIndex.UpToDate, Is.True);
+            var kept = AssetContentIndex.WithFact("attribute", "blendShape.MixerProjectKept");
+            Assert.That(kept, Is.EqualTo(new[] { Root + "/Moved/Deep/Kept.anim" }), "the moved folder's clip is found where it went");
+            Assert.That(AssetContentIndex.WithFact("attribute", "blendShape.MixerProjectGone"), Is.Empty, "a deleted clip is left out");
+            var mine = AssetContentIndex.WithFact("m_Name", "Run").Where(p => p.StartsWith(Root + "/", StringComparison.Ordinal)).ToList();
+            Assert.That(AssetContentIndex.RefreshNow(), Is.True, "the content index was read in time");
+            Assert.That(AssetContentIndex.WithFact("attribute", "blendShape.MixerProjectKept"), Is.EqualTo(kept), "as a full reading");
+            Assert.That(AssetContentIndex.WithFact("m_Name", "Run").Where(p => p.StartsWith(Root + "/", StringComparison.Ordinal)), Is.EquivalentTo(mine), "as a full reading");
+        }
+
         [Test]
         public void TheContentIndexFindsWhatAssetsHoldInside()
         {
