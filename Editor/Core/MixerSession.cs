@@ -629,7 +629,7 @@ namespace Orbiters.Mixer.Editor
                 if (Mathf.Abs(x) <= centre)
                 {
                     // On the centre line a symmetric shape does not move sideways.
-                    foreach (int v in n.Members[w])
+                    foreach (int v in n.MembersOf(w))
                     {
                         var d = layer.Deltas[v];
                         if (d.x == 0f) continue;
@@ -647,7 +647,7 @@ namespace Orbiters.Mixer.Editor
                 if (source < 0) continue;
                 var sd = layer.Deltas[n.Representative[source]];
                 var flipped = new Vector3(-sd.x, sd.y, sd.z);
-                foreach (int v in n.Members[w])
+                foreach (int v in n.MembersOf(w))
                 {
                     if (!MeshDocument.Differs(layer.Deltas[v], flipped)) continue;
                     indices.Add(v);

@@ -261,16 +261,17 @@ namespace Orbiters.Mixer.Editor
                 var n = Vector3.Cross(positions[b] - positions[a], positions[c] - positions[a]);
                 faceSum[a] += n; faceSum[b] += n; faceSum[c] += n;
             }
-            var members = doc.NormalWeld.Members;
-            for (int w = 0; w < members.Length; w++)
+            var weld = doc.NormalWeld;
+            for (int w = 0; w < weld.WeldedCount; w++)
             {
+                var members = weld.MembersOf(w);
                 var sum = Vector3.zero;
-                foreach (int m in members[w]) sum += faceSum[m];
+                foreach (int m in members) sum += faceSum[m];
                 // By hand: millimetre faces sum below Vector3.Normalize's threshold.
                 float length = Mathf.Sqrt(sum.sqrMagnitude);
                 if (length <= 0f) continue;
                 sum /= length;
-                foreach (int m in members[w]) result[m] = sum;
+                foreach (int m in members) result[m] = sum;
             }
             return result;
         }

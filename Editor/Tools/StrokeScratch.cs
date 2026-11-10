@@ -21,8 +21,13 @@ namespace Orbiters.Mixer.Editor
         public readonly int[] ValueMark, PlanMark, PlanAt;
         // Per mesh vertex and per normal-welded vertex: what the stroke's undo record kept (the stroke's serial).
         public readonly int[] Kept, NormalKept, RingKept;
-        public readonly BrushContext Context = new BrushContext();
-        public readonly List<int> Triangles = new List<int>(), Moved = new List<int>(), Local = new List<int>(), Mirrored = new List<int>();
+        public readonly BrushContext Context;
+        // What a gather found (welded vertex and its weight, room for every welded vertex: a kernel writes them).
+        public readonly int[] GatherWelded;
+        public readonly float[] GatherWeight;
+        public readonly List<int> Local = new List<int>(), Mirrored = new List<int>();
+        /// <summary>The mesh vertices a step moved (what the BVH refits and the move kernel reads).</summary>
+        public readonly IndexList Moved = new IndexList();
         public readonly List<int> KeptIndices = new List<int>(), KeptNormalIndices = new List<int>();
         public readonly List<Vector3> KeptPositions = new List<Vector3>(), KeptNormals = new List<Vector3>();
         public Vector3[] Moves = new Vector3[256];
@@ -34,6 +39,8 @@ namespace Orbiters.Mixer.Editor
             MoveOf = new Vector3[weldedCount]; MirrorOf = new Vector3[weldedCount];
             ValueOf = new float[weldedCount]; ValueMark = new int[weldedCount]; PlanMark = new int[2 * weldedCount]; PlanAt = new int[2 * weldedCount];
             Kept = new int[vertexCount]; NormalKept = new int[vertexCount]; RingKept = new int[normalWeldedCount];
+            GatherWelded = new int[weldedCount]; GatherWeight = new float[weldedCount];
+            Context = new BrushContext(GatherWelded, GatherWeight);
         }
 
         /// <summary>A fresh mark for the welded-vertex arrays (a gather or a step).</summary>

@@ -235,8 +235,8 @@ namespace Orbiters.Mixer.Editor
             if (ringKept[w] == serial) return true;
             ringKept[w] = serial;
             var normals = doc.Normals;
-            foreach (int m in weld.Members[w]) KeepNormal(m, normals);
-            foreach (int a in weld.Adjacent[w]) foreach (int m in weld.Members[a]) KeepNormal(m, normals);
+            foreach (int m in weld.MembersOf(w)) KeepNormal(m, normals);
+            foreach (int a in weld.AdjacentTo(w)) foreach (int m in weld.MembersOf(a)) KeepNormal(m, normals);
             return true;
         }
 

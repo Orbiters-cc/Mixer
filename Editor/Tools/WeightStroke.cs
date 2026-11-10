@@ -37,8 +37,6 @@ namespace Orbiters.Mixer.Editor
         // A dab works in the target's stroke scratch (marks per welded vertex instead of sets) and these lists, kept for
         // the stroke: a dab allocates nothing of its own.
         private readonly StrokeScratch scratch;
-        private readonly List<int> welded = new List<int>();
-        private readonly List<float> weights = new List<float>();
         // Each welded vertex and channel a dab paints, once: the strongest falloff that reaches it (straight or through its
         // mirror) and whose blur target it takes. A mirror pair both under the brush on the same channel (a vertex group, a
         // bone on the middle line) is painted once, not once for each.
@@ -240,8 +238,10 @@ namespace Orbiters.Mixer.Editor
             Steps++;
             var doc = target.Document;
             var n = doc.Neighbors;
-            StrokeGather.Sphere(target, scratch, Center, radius, falloff, false, welded, weights);
-            if (welded.Count == 0) return;
+            int gathered = StrokeGather.Sphere(target, scratch, Center, radius, falloff, false);
+            if (gathered == 0) return;
+            var welded = scratch.GatherWelded;
+            var weights = scratch.GatherWeight;
             plan.Clear();
             channelGroup = channel.IsGroup ? doc.Group(channel.Group) : null;
             mirrorGroup = mirrorChannel.IsGroup ? doc.Group(mirrorChannel.Group) : null;
@@ -249,19 +249,20 @@ namespace Orbiters.Mixer.Editor
             // Blur reads the neighbours' current weights before anything changes.
             if (kind == WeightBrushKind.Blur)
             {
-                foreach (int w in welded)
+                for (int i = 0; i < gathered; i++)
                 {
-                    var adjacent = n.Adjacent[w];
+                    int w = welded[i];
+                    var adjacent = n.AdjacentTo(w);
                     if (adjacent.Length == 0) continue;
                     float mean = 0f;
-                    foreach (int a in adjacent) mean += Read(n.Representative[a], channel, channelGroup);
+                    for (int k = 0; k < adjacent.Length; k++) mean += Read(n.Representative[adjacent[k]], channel, channelGroup);
                     scratch.ValueOf[w] = mean / adjacent.Length;
                     scratch.ValueMark[w] = mark;
                 }
             }
             float goal = invert ? 0f : value;
             bool sameChannel = mirrorChannel.Bone == channel.Bone && mirrorChannel.Group == channel.Group;
-            for (int i = 0; i < welded.Count; i++)
+            for (int i = 0; i < gathered; i++)
             {
                 int w = welded[i];
                 Plan(mark, w, false, weights[i], -1);
@@ -313,7 +314,7 @@ namespace Orbiters.Mixer.Editor
                 default: next = Mathf.Lerp(current, goal, strength * f * 0.5f); break;
             }
             if (Mathf.Abs(next - current) < 1e-5f) return;
-            foreach (int v in n.Members[w])
+            foreach (int v in n.MembersOf(w))
             {
                 recorder.Touch(v);
                 Write(v, on, next, mirror);

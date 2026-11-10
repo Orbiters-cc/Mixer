@@ -878,7 +878,7 @@ namespace Orbiters.Mixer.Editor.Tests
                 blender.Pump(1.0);
                 Assert.That(doc.Positions[a], Is.EqualTo(pa), "the first frame landed");
                 Assert.That(doc.Positions[b], Is.EqualTo(pb), "and the second, sent right after it");
-                foreach (int v in n.Members[0]) Assert.That(doc.Positions[v], Is.EqualTo(mesh.vertices[v]), "what no frame named stays");
+                foreach (int v in n.MembersOf(0).ToArray()) Assert.That(doc.Positions[v], Is.EqualTo(mesh.vertices[v]), "what no frame named stays");
                 blender.Release(renderer);
             }
         }

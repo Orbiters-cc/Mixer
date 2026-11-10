@@ -64,9 +64,17 @@ namespace Orbiters.Mixer.Editor
         /// copied sheet still welds across its own UV seams. A face repeated on the very same Unity vertices cannot be
         /// told apart this way (Blender leaves it out, and the export says so).
         /// </summary>
-        public static MeshNeighbors LinkWeld(Vector3[] positions, int[] triangles, Vector3[] normals, float tolerance, long[] keys)
+        /// <param name="byPosition">The position weld of the same positions, triangles and tolerance when the caller has it
+        /// (a document's <see cref="MeshDocument.Neighbors"/>): refined instead of welding again. Build with normals or keys
+        /// is that refinement of its own position weld, so the welded vertices and their numbers, and with them the
+        /// topology hash Blender holds, are the same either way.</param>
+        public static MeshNeighbors LinkWeld(Vector3[] positions, int[] triangles, Vector3[] normals, float tolerance, long[] keys, MeshNeighbors byPosition = null)
         {
-            var n = MeshNeighbors.Build(positions, triangles, tolerance, normals, LinkWeldMinNormalDot, keys);
+            if (byPosition != null && byPosition.Weld.Length != positions.Length) byPosition = null;
+            MeshNeighbors Weld(long[] by) => byPosition != null
+                ? byPosition.Refine(positions, triangles, tolerance, normals, LinkWeldMinNormalDot, by)
+                : MeshNeighbors.Build(positions, triangles, tolerance, normals, LinkWeldMinNormalDot, by);
+            var n = Weld(keys);
             var level = new int[positions.Length];
             var seen = new Dictionary<(int, int, int), int>();
             bool split = false;
@@ -86,7 +94,7 @@ namespace Orbiters.Mixer.Editor
             if (!split) return n;
             var sheets = keys != null && keys.Length == positions.Length ? (long[])keys.Clone() : new long[positions.Length];
             for (int v = 0; v < sheets.Length; v++) if (level[v] > 0) sheets[v] = MixKey(sheets[v], 0x5bd1e995L * level[v]);
-            return MeshNeighbors.Build(positions, triangles, tolerance, normals, LinkWeldMinNormalDot, sheets);
+            return Weld(sheets);
         }
 
         private static readonly ConditionalWeakTable<MeshNeighbors, StrongBox<ulong>> topologies = new ConditionalWeakTable<MeshNeighbors, StrongBox<ulong>>();
