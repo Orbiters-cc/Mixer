@@ -211,12 +211,12 @@ namespace Orbiters.Logger.Editor
                 var counts = new int[view.MessageCount];
                 var first = new long[view.MessageCount];
                 var last = new long[view.MessageCount];
-                var masked = new Masked(context.Privacy, view.Texts, snapshot.Sources.Length);
                 using (var writer = context.OpenText("logs/logs.txt", "Every log of the session, oldest first (stack traces in messages.txt)"))
                 {
                     writer.Line("# " + LoggerUi.Plural(view.Count, "log") + " from " + Stamp(view.Times[0]) + " to " + Stamp(view.Times[view.Count - 1]) +
                                 ". ~ marks a time read back from Unity's console (to the second).");
                     writer.Line();
+                    var memo = new LineMemo(context.Privacy);
                     var line = new StringBuilder(256);
                     for (int i = 0; i < view.Count; i++)
                     {
@@ -230,12 +230,11 @@ namespace Orbiters.Logger.Editor
                         last[id] = time;
                         ref var message = ref view.Messages[id];
                         line.Clear();
-                        line.Append(Stamp(time)).Append(((OccurrenceFlags)view.Flags[i] & OccurrenceFlags.ApproximateTime) != 0 ? "~ " : "  ");
+                        line.Append(((OccurrenceFlags)view.Flags[i] & OccurrenceFlags.ApproximateTime) != 0 ? "~ " : "  ");
                         line.Append(LevelTag(message.Variant)).Append("  ");
-                        line.Append(masked.Source(snapshot, id)).Append("  ");
-                        // Time and level hold nothing to mask; the source and text are masked once each.
-                        AppendIndented(line, masked.Entry(message.Text), "    ");
-                        writer.Raw(line.ToString());
+                        line.Append(SourceName(snapshot, id)).Append("  ");
+                        AppendIndented(line, view.Texts.Plain(message.Text), "    ");
+                        memo.Write(writer, Stamp(time), line.ToString());
                         written++;
                         if ((i & 0x3FFF) == 0)
                         {
@@ -244,7 +243,7 @@ namespace Orbiters.Logger.Editor
                     }
                 }
 
-                WriteMessages(context, snapshot, masked, counts, first, last);
+                WriteMessages(context, snapshot, counts, first, last);
             }
 
             progress?.Invoke(0.8f);
@@ -260,7 +259,7 @@ namespace Orbiters.Logger.Editor
             return LoggerUi.Plural(written, "log") + (copied ? " · Editor.log" : string.Empty);
         }
 
-        private static void WriteMessages(ReportContext context, Snapshot snapshot, Masked masked, int[] counts, long[] first, long[] last)
+        private static void WriteMessages(ReportContext context, Snapshot snapshot, int[] counts, long[] first, long[] last)
         {
             var view = snapshot.View;
             var order = Enumerable.Range(0, view.MessageCount).Where(i => counts[i] > 0)
@@ -273,17 +272,16 @@ namespace Orbiters.Logger.Editor
                     ref var message = ref view.Messages[id];
                     writer.Line();
                     writer.Line(new string('─', 100));
-                    writer.Raw(LevelTag(message.Variant).Trim() + " · " + LogVariants.Label(message.Variant) + " · ×" + counts[id].ToString("N0", CultureInfo.InvariantCulture) +
-                               " · " + masked.Source(snapshot, id) + (message.Resolved ? " · fixed by a later compilation" : string.Empty));
-                    writer.Raw("first " + Stamp(first[id]) + " · last " + Stamp(last[id]));
-                    writer.Raw(string.Empty);
-                    // Each text masked whole: a key header in one message can't mask the messages after it.
-                    writer.Raw(masked.Message(message.Text));
+                    writer.Line(LevelTag(message.Variant).Trim() + " · " + LogVariants.Label(message.Variant) + " · ×" + counts[id].ToString("N0", CultureInfo.InvariantCulture) +
+                                " · " + SourceName(snapshot, id) + (message.Resolved ? " · fixed by a later compilation" : string.Empty));
+                    writer.Line("first " + Stamp(first[id]) + " · last " + Stamp(last[id]));
+                    writer.Line();
+                    writer.Line(view.Texts.Plain(message.Text));
                     string stack = view.Texts.Plain(message.Stack);
                     if (!string.IsNullOrWhiteSpace(stack))
                     {
-                        writer.Raw(string.Empty);
-                        writer.Raw(context.Privacy.Mask(stack.TrimEnd()));
+                        writer.Line();
+                        writer.Line(stack.TrimEnd());
                     }
                 }
             }
@@ -327,73 +325,61 @@ namespace Orbiters.Logger.Editor
             }
         }
 
-        /// <summary>
-        /// Log texts and source names masked once each, the first time a log needs them: a message logged 100,000 times
-        /// goes through the privacy masker once. Each text is masked as a whole (<see cref="ReportPrivacy.Mask"/>).
-        /// </summary>
-        internal sealed class Masked
+        private static string SourceName(Snapshot snapshot, int message)
         {
+            int source = snapshot.SourceOf[message];
+            return source >= 0 && source < snapshot.Sources.Length ? snapshot.Sources[source] : "Unity";
+        }
+
+        /// <summary>
+        /// The masker's results reused, never changed (MXL-28): the files are what masking every line in order gives.
+        /// A line is masked by the real masker, in the order written, unless the masker is <see cref="ReportWriter.Neutral"/>
+        /// and the same line was masked before from that state and left it neutral: then its result is reused. A log line
+        /// differs from another of the same message only by its time; the time is reused over only when masking the line
+        /// with two different stand-in times gives the stand-in back and the same rest both times.
+        /// </summary>
+        internal sealed class LineMemo
+        {
+            private const string TimeA = "2000-01-01 00:00:00.000";
+            private const string TimeB = "2999-12-31 23:59:59.999";
             private readonly ReportPrivacy privacy;
-            private readonly TextTable texts;
-            private readonly string[] byText;
-            private readonly string[] bySource;
-            // Texts that continued a secret begun by the logs before them, at least once: masked whole everywhere.
-            private readonly bool[] continuation;
-            private readonly ReportPrivacy.EntryMasker entries;
-            private string unity;
+            private readonly Dictionary<string, string> byRest = new Dictionary<string, string>(StringComparer.Ordinal);
+            private readonly HashSet<string> notReusable = new HashSet<string>(StringComparer.Ordinal);
 
-            public Masked(ReportPrivacy privacy, TextTable texts, int sources)
-            {
-                this.privacy = privacy;
-                this.texts = texts;
-                byText = new string[texts.Count];
-                continuation = new bool[texts.Count];
-                bySource = new string[sources];
-                entries = privacy.Entries();
-            }
+            public LineMemo(ReportPrivacy privacy) => this.privacy = privacy;
 
-            /// <summary>
-            /// The text of the next log in time order (logs.txt): a text that continues a secret split over several
-            /// logs (a key logged line by line) is masked whole, and stays so in messages.txt.
-            /// </summary>
-            public string Entry(int id)
+            /// <summary>Writes <paramref name="stamp"/> + <paramref name="rest"/> as <see cref="ReportWriter.Line"/> would.</summary>
+            public void Write(ReportWriter writer, string stamp, string rest)
             {
-                if (entries.Continues(id > 0 ? texts.Plain(id) : string.Empty))
+                if (stamp.Length == TimeA.Length && writer.Neutral && byRest.TryGetValue(rest, out string masked))
                 {
-                    if (id > 0 && id < continuation.Length)
-                    {
-                        continuation[id] = true;
-                    }
-
-                    return ReportPrivacy.Masked;
+                    writer.Raw(stamp + masked);
+                    return;
                 }
 
-                return Text(id);
-            }
-
-            /// <summary>A distinct message's text (messages.txt, written after logs.txt).</summary>
-            public string Message(int id) => id > 0 && id < continuation.Length && continuation[id] ? ReportPrivacy.Masked : Text(id);
-
-            public string Text(int id)
-            {
-                if (id <= 0 || id >= byText.Length)
+                bool neutral = writer.Neutral;
+                writer.Line(stamp + rest);
+                if (!neutral || !writer.Neutral || stamp.Length != TimeA.Length || notReusable.Contains(rest) || byRest.ContainsKey(rest))
                 {
-                    return id > 0 ? privacy.Mask(texts.Plain(id)) : string.Empty;
+                    return;
                 }
 
-                return byText[id] ?? (byText[id] = privacy.Mask(texts.Plain(id)));
-            }
-
-            public string Source(Snapshot snapshot, int message)
-            {
-                int source = snapshot.SourceOf[message];
-                if (source < 0 || source >= bySource.Length)
+                // From and back to the neutral state, the masker is the stateless Mask of the line.
+                string a = privacy.Mask(TimeA + rest);
+                string b = privacy.Mask(TimeB + rest);
+                if (a.StartsWith(TimeA, StringComparison.Ordinal) && b.StartsWith(TimeB, StringComparison.Ordinal) &&
+                    string.Equals(a.Substring(TimeA.Length), b.Substring(TimeB.Length), StringComparison.Ordinal))
                 {
-                    return unity ?? (unity = privacy.Mask("Unity"));
+                    byRest[rest] = a.Substring(TimeA.Length);
                 }
-
-                return bySource[source] ?? (bySource[source] = privacy.Mask(snapshot.Sources[source]));
+                else
+                {
+                    notReusable.Add(rest);
+                }
             }
+
+            /// <summary>Writes a line with no time in it (messages.txt) as <see cref="ReportWriter.Line"/> would.</summary>
+            public void Write(ReportWriter writer, string line) => Write(writer, string.Empty, line);
         }
 
         internal static string LevelTag(LogVariant variant)

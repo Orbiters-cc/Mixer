@@ -145,7 +145,13 @@ namespace Orbiters.Logger.Editor
 
         public void Line(string text = "") => writer.WriteLine(lines.Mask(text));
 
-        /// <summary>A line already masked by the caller (each distinct log text is masked once, not once per log).</summary>
+        /// <summary>No secret is open between lines: see <see cref="ReportPrivacy.LineMasker.Neutral"/>.</summary>
+        public bool Neutral => lines.Neutral;
+
+        /// <summary>
+        /// A line the caller masked already, the way <see cref="Line"/> would have in the <see cref="Neutral"/> state it
+        /// leaves unchanged (LogReport's memo).
+        /// </summary>
         public void Raw(string text) => writer.WriteLine(text ?? string.Empty);
 
         public void Write(string text) => writer.Write(privacy.Mask(text));
