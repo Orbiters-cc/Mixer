@@ -29,6 +29,8 @@ namespace Orbiters.UnitGit.Editor
         internal UnitGitHistory history;
         internal VisualElement branchesListRoot;
         internal string selectedCommitFile = string.Empty;
+        // Folders of the commit file list folded in this session (by path): as Local Changes keeps its own, never in EditorPrefs.
+        internal readonly HashSet<string> collapsedCommitFolders = new HashSet<string>(StringComparer.Ordinal);
         internal readonly UnitGitLatestRequest<UnitGitWindow.SelectionDetails> detailsRead = new UnitGitLatestRequest<UnitGitWindow.SelectionDetails>();
         internal readonly Dictionary<string, UnitGitCommitDetails> detailsCache = new Dictionary<string, UnitGitCommitDetails>();
         internal UnitGitWindow.SelectionDetails loadedSelection;

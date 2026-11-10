@@ -84,8 +84,7 @@ namespace Orbiters.UnitGit.Editor
             }
             else
             {
-                var rows = logTab.loadedSelection.FileList.GetVisibleRows(row =>
-                    GetFoldoutExpanded(GetFoldoutPrefKey("ChangedFilesFolder", row.Path), true));
+                var rows = logTab.loadedSelection.FileList.GetVisibleRows(row => !logTab.collapsedCommitFolders.Contains(row.Path));
                 body.Add(BuildVirtualList(rows, 26f, BuildCommitFileRow, "unitgit-changed-files-scroll"));
             }
 
@@ -97,7 +96,10 @@ namespace Orbiters.UnitGit.Editor
         {
             if (logTab.loadedSelection == null) return;
             foreach (var folder in logTab.loadedSelection.FileList.Folders)
-                EditorPrefs.SetBool(GetFoldoutPrefKey("ChangedFilesFolder", folder.Path), expanded);
+            {
+                if (expanded) logTab.collapsedCommitFolders.Remove(folder.Path);
+                else logTab.collapsedCommitFolders.Add(folder.Path);
+            }
             RefreshDetailsPane();
         }
 
@@ -123,8 +125,7 @@ namespace Orbiters.UnitGit.Editor
         {
             if (!row.IsFolder)
                 return BuildChangedFileButton(row.Path, row.Depth);
-            string prefKey = GetFoldoutPrefKey("ChangedFilesFolder", row.Path);
-            bool expanded = GetFoldoutExpanded(prefKey, true);
+            bool expanded = !logTab.collapsedCommitFolders.Contains(row.Path);
             var folder = new VisualElement();
             folder.AddToClassList("ug-row");
             folder.AddToClassList("ug-row--folder");
@@ -140,7 +141,8 @@ namespace Orbiters.UnitGit.Editor
             folder.RegisterCallback<MouseDownEvent>(evt =>
             {
                 if (evt.button != 0) return;
-                EditorPrefs.SetBool(prefKey, !expanded);
+                if (expanded) logTab.collapsedCommitFolders.Add(row.Path);
+                else logTab.collapsedCommitFolders.Remove(row.Path);
                 RefreshDetailsPane();
             });
             return folder;
