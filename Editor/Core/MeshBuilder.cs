@@ -70,8 +70,8 @@ namespace Orbiters.Mixer.Editor
             }
             // Unity has no way to change or remove one shape of a mesh: when an existing shape changed, every shape is
             // added again in order (the cost of each AddBlendShapeFrame grows with the shapes before it). What a commit
-            // can save is everything around those calls: the frame buffers are made once for the whole build, not three
-            // per shape (500 shapes on a 90k-vertex body were 1.6 GB of short-lived arrays).
+            // can save is everything around those calls: the frame buffers are made once for the whole build (and only
+            // those a shape needs), not three per shape (500 shapes on a 90k-vertex body were 1.6 GB of short-lived arrays).
             var buffers = new ShapeBuffers(doc.VertexCount);
             Vector3[] weldedBase = null;
             Vector3[] WeldedBase() => weldedBase ?? (weldedBase = WeldedNormals(doc.Positions, doc));
@@ -103,18 +103,25 @@ namespace Orbiters.Mixer.Editor
             return mesh;
         }
 
-        // What writing the shapes works in, made once per build: a frame's deltas, normals and tangents, and the shaped
-        // surface and its welded normals for an edited frame.
+        // What writing the shapes works in, each array made once per build and only when first needed: a copied frame's
+        // deltas, normals and tangents, an in-between and the last frame of an edited shape, the shaped surface and its
+        // welded normals for a frame whose normals are turned. A commit that writes no shape makes none of them.
         private sealed class ShapeBuffers
         {
-            public readonly Vector3[] Deltas, Normals, Tangents, Frame, Last, Shaped, FaceSum, Welded;
+            private readonly int count;
+            private Vector3[] deltas, normals, tangents, frame, last, shaped, faceSum, welded;
 
-            public ShapeBuffers(int count)
-            {
-                Deltas = new Vector3[count]; Normals = new Vector3[count]; Tangents = new Vector3[count];
-                Frame = new Vector3[count]; Last = new Vector3[count];
-                Shaped = new Vector3[count]; FaceSum = new Vector3[count]; Welded = new Vector3[count];
-            }
+            public ShapeBuffers(int count) { this.count = count; }
+
+            public int Count => count;
+            public Vector3[] Deltas => deltas ?? (deltas = new Vector3[count]);
+            public Vector3[] Normals => normals ?? (normals = new Vector3[count]);
+            public Vector3[] Tangents => tangents ?? (tangents = new Vector3[count]);
+            public Vector3[] Frame => frame ?? (frame = new Vector3[count]);
+            public Vector3[] Last => last ?? (last = new Vector3[count]);
+            public Vector3[] Shaped => shaped ?? (shaped = new Vector3[count]);
+            public Vector3[] FaceSum => faceSum ?? (faceSum = new Vector3[count]);
+            public Vector3[] Welded => welded ?? (welded = new Vector3[count]);
         }
 
         private static void AddShape(Mesh mesh, Mesh source, MeshDocument doc, string name, Func<Vector3[]> weldedBase, ShapeBuffers buffers)
@@ -162,7 +169,7 @@ namespace Orbiters.Mixer.Editor
             int index = source.GetBlendShapeIndex(from);
             if (index < 0) return;
             int frames = source.GetBlendShapeFrameCount(index);
-            if (source.vertexCount != buffers.Deltas.Length) return;
+            if (source.vertexCount != buffers.Count) return;
             for (int f = 0; f < frames; f++)
             {
                 source.GetBlendShapeFrameVertices(index, f, buffers.Deltas, buffers.Normals, buffers.Tangents);
