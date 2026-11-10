@@ -9,14 +9,26 @@ namespace Orbiters.Mixer.Editor
 {
     /// <summary>
     /// Burst kernels of a stroke step on the flat topology (<see cref="FlatWeld"/>): the gather under the brush, the move
-    /// of the welded vertices into the document, the shown arrays and the world picture, and the normals around what
-    /// moved. Each one is the managed loop it replaced written again operation for operation (same order of every
-    /// addition, divisions where it divided, FloatMode.Strict so nothing is fused or reordered), so a stroke gives the
-    /// same vertices and the same values as before; MixerStrokeKernelTests compares each with that managed loop.
+    /// of the welded vertices into the document, the shown arrays and the world picture, the world picture of vertices
+    /// moved outside a stroke (undo, Blender), and the normals around what moved.
+    /// <para>
+    /// These kernels are the one path that decides what a stroke gathers, where the world picture puts a vertex and what
+    /// the normals are: every caller in the product goes through them (Burst in the editor; with Burst compilation off,
+    /// Unity runs the same job code on Mono, the only fallback). They follow the managed loops they replaced operation
+    /// for operation (FloatMode.Strict: nothing fused or reordered), so they agree with them to rounding, not bit for bit:
+    /// Mono evaluates float expressions in double precision and rounds when it stores, Burst rounds every operation to
+    /// single precision. A last-bit difference grows through the falloff curve (a few 1e-6 relative) and cancellations
+    /// (a component near zero). Nothing compares their results with managed arithmetic for equality: the normals' "did
+    /// the faces move" test compares two results of <see cref="FaceNormals"/> (original and shown), and document
+    /// positions are only ever added to (one rounding, the same on both runtimes) or set from recorded values.
+    /// Making Mono round each step would mean a cast at every operation here and in the managed code that feeds them
+    /// (Vector3's operators are library code): not worth the unreadable fallback.
+    /// </para>
     /// <para>
     /// Managed arrays are pinned for the length of a job that completes before the call returns, as in
     /// <see cref="MeshKernels"/>: nothing native outlives a call. Main thread only (jobs are scheduled). The kernels
-    /// compile synchronously, so they never answer from Mono while Burst compiles; with Burst off, the same code runs on Mono.
+    /// compile synchronously, so they never answer from Mono while Burst compiles. Results do not depend on the number
+    /// of workers: every element is computed on its own (MixerStrokeKernelTests checks it).
     /// </para>
     /// </summary>
     internal static unsafe class StrokeKernels
@@ -176,7 +188,7 @@ namespace Orbiters.Mixer.Editor
         /// shown position plus <paramref name="offset"/>, the other shapes, when given), as
         /// <see cref="SkinningMap.PointToWorld"/> places one vertex.
         /// </summary>
-        public static void Move(int[] vertices, int count, int[] weld, Vector3[] moveOf, Vector3[] layer, Vector3[] display, Vector3[] offset, Vector3[] world, SkinningMap skin)
+        public static void Move(int[] vertices, int count, int[] weld, Vector3[] moveOf, Vector3[] layer, Vector3[] display, Vector3[] offset, Vector3[] world, SkinningMap skin, bool parallel = true)
         {
             if (count <= 0) return;
             skin.SkinArrays(out bool skinned, out var bones, out var transform, out var boneOf, out var weightOf, out var counts, out int slots);
@@ -203,8 +215,62 @@ namespace Orbiters.Mixer.Editor
                     },
                 };
                 // Every vertex once and on its own: the vertices split over the cores without changing a result.
-                if (count >= 4 * Batch) job.Schedule(count, Batch).Complete();
+                if (parallel && count >= 4 * Batch) job.Schedule(count, Batch).Complete();
                 else job.Run(count);
+            }
+        }
+
+        /// <summary>
+        /// The world picture of <paramref name="count"/> mesh vertices of <paramref name="vertices"/> (repeats allowed:
+        /// they write the same value) moved outside a stroke: the shown position (<paramref name="positions"/> plus
+        /// <paramref name="deltas"/> of the shown layer at <paramref name="weight"/>, as <see cref="MeshDocument.LayerView"/>
+        /// reads it) plus <paramref name="offset"/>, through <paramref name="skin"/>, as <see cref="Move"/> places a vertex.
+        /// </summary>
+        public static void Place(int[] vertices, int count, Vector3[] positions, Vector3[] deltas, float weight, Vector3[] offset, Vector3[] world, SkinningMap skin)
+        {
+            if (count <= 0) return;
+            skin.SkinArrays(out bool skinned, out var bones, out var transform, out var boneOf, out var weightOf, out var counts, out int slots);
+            fixed (int* v = vertices)
+            fixed (Vector3* p = positions)
+            fixed (Vector3* d = deltas)
+            fixed (Vector3* o = offset)
+            fixed (Vector3* w = world)
+            fixed (Matrix4x4* b = bones)
+            fixed (int* bo = boneOf)
+            fixed (float* bw = weightOf)
+            fixed (byte* c = counts)
+            {
+                new PlaceJob
+                {
+                    Vertices = v, Positions = (float3*)p, Deltas = deltas != null ? (float3*)d : null, Weight = weight,
+                    Offset = offset != null ? (float3*)o : null, World = (float3*)w,
+                    Skin = new SkinPointers
+                    {
+                        Skinned = skinned ? 1 : 0, Bones = (float4x4*)b, BoneCount = bones != null ? bones.Length : 0, Transform = transform,
+                        BoneOf = bo, WeightOf = bw, Counts = c, Slots = slots,
+                    },
+                }.Run(count);
+            }
+        }
+
+        [BurstCompile(FloatMode = FloatMode.Strict, FloatPrecision = FloatPrecision.Standard, CompileSynchronously = true)]
+        private struct PlaceJob : IJobParallelFor
+        {
+            [NativeDisableUnsafePtrRestriction] public int* Vertices;
+            [NativeDisableUnsafePtrRestriction] public float3* Positions;
+            [NativeDisableUnsafePtrRestriction] public float3* Deltas;
+            [NativeDisableUnsafePtrRestriction] public float3* Offset;
+            [NativeDisableUnsafePtrRestriction] public float3* World;
+            public float Weight;
+            public SkinPointers Skin;
+
+            public void Execute(int i)
+            {
+                int v = Vertices[i];
+                var p = Positions[v];
+                if (Deltas != null) p = Weight == 1f ? p + Deltas[v] : p + Deltas[v] * Weight;
+                if (Offset != null) p = p + Offset[v];
+                World[v] = Skin.PointToWorld(v, p);
             }
         }
 
@@ -290,7 +356,7 @@ namespace Orbiters.Mixer.Editor
         /// normal moved from <paramref name="before"/> (see <see cref="MeshDocument.RefreshAllNormals"/>), into
         /// <paramref name="normals"/>. Each welded vertex writes only its own members: the ring splits over the cores.
         /// </summary>
-        public static void Turn(FlatWeld weld, int[] triangles, int[] ring, int count, Vector3[] positions, Vector3[] before, Vector3[] originalNormals, Vector3[] normals)
+        public static void Turn(FlatWeld weld, int[] triangles, int[] ring, int count, Vector3[] positions, Vector3[] before, Vector3[] originalNormals, Vector3[] normals, bool parallel = true)
         {
             if (count <= 0) return;
             var n = weld.Neighbors;
@@ -311,7 +377,7 @@ namespace Orbiters.Mixer.Editor
                     Weld = FlatWeld.Pin(wd, ms, m, null, null, ts, t, n.WeldedCount), MeshTriangles = tris, Ring = ring != null ? r : null,
                     Positions = (float3*)p, Before = (float3*)b, OriginalNormals = (float3*)on, Normals = (float3*)outNormals,
                 };
-                if (count >= 4 * Batch) job.Schedule(count, Batch).Complete();
+                if (parallel && count >= 4 * Batch) job.Schedule(count, Batch).Complete();
                 else job.Run(count);
             }
         }
