@@ -186,7 +186,8 @@ namespace Orbiters.Logger.Editor.Tests
                 Assert.LessOrEqual(store.Texts.TotalChars, (1 << 20) + 300_000, "after log " + i);
             }
 
-            Assert.AreEqual("39 " + large, store.Texts[store.Message(store.MessageAt(store.EndId - 1)).Text], "the newest log stays");
+            // A 200,000-character log is more than an eighth of this 1M budget: it is kept cut to that (one log always fits).
+            Assert.AreEqual(LogStore.Capped("39 " + large, (1 << 20) / 8), store.Texts[store.Message(store.MessageAt(store.EndId - 1)).Text], "the newest log stays");
 
             // One log larger than the whole budget is cut, and says so.
             var huge = new LogStore();
@@ -209,7 +210,6 @@ namespace Orbiters.Logger.Editor.Tests
             // History put in front counts against the same budget.
             var history = new LogStore { MaxTextChars = 1 << 20 };
             history.Add(5_000, "live", string.Empty, LogVariant.Log);
-            history.Pin();
             var owners = new int[30];
             for (int i = 0; i < owners.Length; i++)
             {
@@ -222,34 +222,10 @@ namespace Orbiters.Logger.Editor.Tests
                 times[i] = 100 + i;
             }
 
-            history.Unpin();
             history.Prepend(times, owners, new byte[owners.Length], owners.Length, null);
             Assert.LessOrEqual(history.Texts.TotalChars, (1 << 20) + 300_000);
             Assert.AreEqual("live", history.Texts[history.Message(history.MessageAt(history.EndId - 1)).Text]);
             Assert.AreEqual(history.Count, CountAll(history));
-        }
-
-        [Test]
-        public void PinnedMessagesSurviveATrim()
-        {
-            var store = new LogStore();
-            int imported = store.Intern("From Unity's console", string.Empty, LogVariant.Log);
-            store.Pin();
-            for (int i = 0; i < 6000; i++)
-            {
-                store.Add(100 + i, "Distinct " + i, string.Empty, LogVariant.Log);
-            }
-
-            store.Trim(1000);
-            Assert.AreEqual("From Unity's console", store.Texts[store.Message(imported).Text], "no compaction while pinned");
-            store.Unpin();
-            store.Prepend(new long[] { 1 }, new[] { imported }, new byte[1], 1, null);
-            Assert.AreEqual("From Unity's console", store.Texts[store.Message(store.MessageAt(store.FirstId)).Text]);
-            long texts = store.Texts.Generation;
-            store.Trim(500);
-            Assert.AreNotEqual(texts, store.Texts.Generation, "unpinned, the dead messages go");
-            Assert.AreEqual("Distinct 5999", store.Texts[store.Message(store.MessageAt(store.EndId - 1)).Text]);
-            Assert.AreEqual(store.Count, CountAll(store));
         }
 
         private static int CountAll(LogStore store)

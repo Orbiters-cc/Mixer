@@ -19,7 +19,8 @@ namespace Orbiters.Logger.Editor
         /// <summary>
         /// The most characters of text the store ever holds outside an import: the budget plus a quarter. A compaction in
         /// the background is an optimisation the budget never depends on: past this, the oldest logs go and what they
-        /// leave dead is compacted at once, on the editor's thread (the synchronous path), whatever runs in the background.
+        /// leave dead is compacted at once, on the editor's thread (the synchronous path), whatever runs in the background,
+        /// imports included (they hold nothing across updates).
         /// Compactions share the store's strings (<see cref="TextTable.InternCopy"/>) and a cancelled one lets go of its
         /// tables at its next occurrence, so the store's own table is what holds the characters.
         /// </summary>
@@ -27,6 +28,9 @@ namespace Orbiters.Logger.Editor
 
         /// <summary>Tests: compactions cancelled before they landed, and times the ceiling compacted synchronously.</summary>
         internal int CompactionsCancelled { get; private set; }
+
+        /// <summary>Tests: characters of texts the last bounded landing attempt copied on the editor's thread.</summary>
+        internal long LastLandingChars { get; private set; }
         internal int CeilingCompactions { get; private set; }
 
         // While the ceiling's synchronous path runs: compactions land in the call that starts them.
@@ -40,10 +44,10 @@ namespace Orbiters.Logger.Editor
         /// </summary>
         private void MaybeCompact()
         {
-            if (!AllowCompaction || compaction != null || pins > 0 || Texts.Faulted)
+            if (!AllowCompaction || compaction != null || Texts.Faulted)
             {
-                // An import holds message ids that have no occurrence yet; or a text could not be read back, and copying
-                // it would keep its placeholder as if it were the log (LogCapture starts over instead).
+                // A text could not be read back, and copying it would keep its placeholder as if it were the log
+                // (LogCapture starts over instead).
                 return;
             }
 
@@ -69,7 +73,7 @@ namespace Orbiters.Logger.Editor
         // now (trims and synchronous compactions).
         private void EnforceCeiling()
         {
-            if (Texts.TotalChars <= TextCeiling || pins > 0 || Texts.Faulted || compactNow)
+            if (Texts.TotalChars <= TextCeiling || Texts.Faulted || compactNow)
             {
                 return;
             }
@@ -150,15 +154,24 @@ namespace Orbiters.Logger.Editor
                 return;
             }
 
+            // One budget for everything the editor's thread copies here: late occurrences' texts, then late patches. Each
+            // adoption and each patch is checked before it is copied; what doesn't fit goes back to a worker, and what was
+            // done stays done (a steady trickle still lands).
             long deadline = bounded ? Stopwatch.GetTimestamp() + (long)(LandingMilliseconds * Stopwatch.Frequency / 1000d) : long.MaxValue;
-            if (!prepared.CountTo(end, deadline, bounded ? LandingChars : long.MaxValue))
+            var budget = new LandingBudget(deadline, bounded ? LandingChars : long.MaxValue);
+            bool whole = prepared.CountTo(end, ref budget) && prepared.ApplyPatches(ref budget);
+            if (bounded)
+            {
+                LastLandingChars = budget.Used;
+            }
+
+            if (!whole)
             {
                 // Out of time or characters (large texts, a slow read from the session file): a worker goes on.
                 prepared.Start();
                 return;
             }
 
-            prepared.ApplyPatches();
             if (Texts.Faulted || prepared.Failed || !ReferenceEquals(Texts, prepared.OldTexts))
             {
                 // A text read back from the session file for the copy was damaged: the copy holds its placeholder.
@@ -168,7 +181,8 @@ namespace Orbiters.Logger.Editor
             }
 
             // Profiles of the timings known when it started, remapped by the worker; one filed since is parsed again from
-            // its text the first time it is asked for (TimingOf).
+            // its text the first time it is asked for (TimingOf). The owner directory below is one reference per chunk
+            // (65,536 occurrences): no occurrence is copied here.
             profiles = prepared.Profiles();
             Texts = prepared.Texts;
             messages = prepared.Messages;
@@ -185,10 +199,39 @@ namespace Orbiters.Logger.Editor
             Epoch++;
             Version++;
             Regrouped?.Invoke();
-            if (Texts.TotalChars > maxTextChars && pins == 0)
+            if (Texts.TotalChars > maxTextChars)
             {
                 // Still over budget: the next oldest fifth goes (and compacts in turn).
                 KeepTextBudget();
+            }
+        }
+
+        // What the editor's thread may still copy in one landing (the worker's is unlimited).
+        private struct LandingBudget
+        {
+            private readonly long deadline;
+            private readonly long maxChars;
+            public long Used;
+
+            public LandingBudget(long deadline, long maxChars)
+            {
+                this.deadline = deadline;
+                this.maxChars = maxChars;
+                Used = 0;
+            }
+
+            public static LandingBudget Unlimited => new LandingBudget(long.MaxValue, long.MaxValue);
+
+            // Whether `chars` more fit, the time included; charged when they do.
+            public bool Take(long chars)
+            {
+                if (maxChars != long.MaxValue && Used + chars > maxChars || deadline != long.MaxValue && Stopwatch.GetTimestamp() > deadline)
+                {
+                    return false;
+                }
+
+                Used += chars;
+                return true;
             }
         }
 
@@ -218,7 +261,6 @@ namespace Orbiters.Logger.Editor
             private volatile bool busy;
             private volatile bool failed;
             private int done;
-            private long copiedChars;
             private readonly ManualResetEventSlim idle = new ManualResetEventSlim(true);
 
             public StoreCompaction(LogStore store)
@@ -293,8 +335,9 @@ namespace Orbiters.Logger.Editor
                 for (int round = 0; round < 64 && !cancelled; round++)
                 {
                     int to = Volatile.Read(ref store.end);
-                    CountTo(to, long.MaxValue, long.MaxValue);
-                    ApplyPatches();
+                    var unlimited = LandingBudget.Unlimited;
+                    CountTo(to, ref unlimited);
+                    ApplyPatches(ref unlimited);
                     if (Volatile.Read(ref store.end) - to <= LandingLimit / 2 && patches.Count <= LandingPatches / 2)
                     {
                         break;
@@ -305,11 +348,11 @@ namespace Orbiters.Logger.Editor
             }
 
             /// <summary>
-            /// Counts the occurrences up to <paramref name="to"/>, adopting each message at its first one; false when it
-            /// stopped at <paramref name="deadline"/> (a Stopwatch timestamp) or after <paramref name="maxChars"/>
-            /// characters of new texts (what it counted stays counted).
+            /// Counts the occurrences up to <paramref name="to"/>, adopting each message at its first one; false when the
+            /// next adoption doesn't fit <paramref name="budget"/> (checked before it copies anything, so a text too large
+            /// for what is left goes to the worker) or the time is up. What it counted stays counted.
             /// </summary>
-            public bool CountTo(int to, long deadline, long maxChars)
+            public bool CountTo(int to, ref LandingBudget budget)
             {
                 // Read after the occurrence id: whatever the store published before it is in these.
                 var directory = Volatile.Read(ref store.ownerChunks);
@@ -319,7 +362,6 @@ namespace Orbiters.Logger.Editor
                     Array.Resize(ref owners, directory.Length);
                 }
 
-                long charsAtStart = copiedChars;
                 int id = done;
                 while (id < to)
                 {
@@ -338,13 +380,24 @@ namespace Orbiters.Logger.Editor
                             return false;
                         }
 
-                        if ((i & 63) == 0 && (copiedChars - charsAtStart > maxChars || deadline != long.MaxValue && Stopwatch.GetTimestamp() > deadline))
+                        int old = column[i];
+                        int message = NewId(old);
+                        if (message < 0)
+                        {
+                            if (!budget.Take(CharsOf(oldMessages[old])))
+                            {
+                                Volatile.Write(ref done, id);
+                                return false;
+                            }
+
+                            message = Adopt(old, oldMessages);
+                        }
+                        else if (!budget.Take(0))
                         {
                             Volatile.Write(ref done, id);
                             return false;
                         }
 
-                        int message = NewIdOrAdopt(column[i], oldMessages);
                         remapped[i] = message;
                         Count(message, id);
                     }
@@ -355,6 +408,11 @@ namespace Orbiters.Logger.Editor
                 return true;
             }
 
+            // What adopting a message may copy: its texts' lengths (read without loading them).
+            private long CharsOf(in LogMessage message) =>
+                (long)OldTexts.LengthOf(message.Text) + OldTexts.LengthOf(message.Stack) + OldTexts.LengthOf(message.Callsite) +
+                OldTexts.LengthOf(message.File) + OldTexts.LengthOf(message.Assembly);
+
             /// <summary>The new id of an old message, -1 when it had no occurrence (it goes).</summary>
             public int NewId(int old) => old >= 0 && old < map.Length ? map[old] - 1 : -1;
 
@@ -362,26 +420,26 @@ namespace Orbiters.Logger.Editor
             public void Patched(int old) => patches.Enqueue(old);
 
             /// <summary>
-            /// Copies what changed in patched messages since they were adopted, each once (the worker; at landing only
-            /// what came since, at most <see cref="LandingPatches"/> on the bounded path). A message not adopted yet
-            /// needs none: it is adopted from its current fields.
+            /// Copies what changed in patched messages since they were adopted, each once, within <paramref name="budget"/>
+            /// (checked before each); false when one didn't fit: it and the rest wait in the queue. A message not adopted
+            /// yet needs none: it is adopted from its current fields.
             /// </summary>
-            public void ApplyPatches()
+            public bool ApplyPatches(ref LandingBudget budget)
             {
                 patchBatch.Clear();
-                while (patches.TryDequeue(out int old))
+                var order = new List<int>();
+                while (patches.TryDequeue(out int queued))
                 {
-                    patchBatch.Add(old);
-                }
-
-                if (patchBatch.Count == 0)
-                {
-                    return;
+                    if (patchBatch.Add(queued))
+                    {
+                        order.Add(queued);
+                    }
                 }
 
                 var current = Volatile.Read(ref store.messages);
-                foreach (int old in patchBatch)
+                for (int k = 0; k < order.Count; k++)
                 {
+                    int old = order[k];
                     int moved = NewId(old);
                     if (moved < 0 || old >= current.Length)
                     {
@@ -389,6 +447,17 @@ namespace Orbiters.Logger.Editor
                     }
 
                     var source = current[old];
+                    long chars = (long)OldTexts.LengthOf(source.File) + OldTexts.LengthOf(source.Callsite) + OldTexts.LengthOf(source.Assembly);
+                    if (!budget.Take(chars))
+                    {
+                        for (int rest = k; rest < order.Count; rest++)
+                        {
+                            patches.Enqueue(order[rest]);
+                        }
+
+                        return false;
+                    }
+
                     ref var target = ref Messages[moved];
                     target.Flags = source.Flags;
                     target.Line = source.Line;
@@ -396,6 +465,8 @@ namespace Orbiters.Logger.Editor
                     target.Callsite = Copy(source.Callsite);
                     target.Assembly = Copy(source.Assembly);
                 }
+
+                return true;
             }
 
             /// <summary>The timings' profiles under their new message ids.</summary>
@@ -426,18 +497,14 @@ namespace Orbiters.Logger.Editor
                 return directory;
             }
 
-            private int NewIdOrAdopt(int old, LogMessage[] oldMessages)
+            private int Adopt(int old, LogMessage[] oldMessages)
             {
                 if (old >= map.Length)
                 {
                     Array.Resize(ref map, Math.Max(old + 1, map.Length * 2));
                 }
 
-                int moved = map[old] - 1;
-                if (moved >= 0)
-                {
-                    return moved;
-                }
+                int moved;
 
                 // A copy: the store changes the counters of its message meanwhile, never its text ids or its type.
                 var message = oldMessages[old];
@@ -462,23 +529,8 @@ namespace Orbiters.Logger.Editor
                 return moved;
             }
 
-            // The same strings as the store's table (no new characters held), counted for the landing's bound.
-            private int Copy(int text)
-            {
-                if (text <= 0)
-                {
-                    return 0;
-                }
-
-                int count = Texts.Count;
-                int copied = Texts.InternCopy(OldTexts, text);
-                if (Texts.Count > count)
-                {
-                    copiedChars += OldTexts[text].Length;
-                }
-
-                return copied;
-            }
+            // The same strings as the store's table (no new characters held).
+            private int Copy(int text) => text <= 0 ? 0 : Texts.InternCopy(OldTexts, text);
 
             // As LogStore.CountIn, in the new tables (occurrences come in id order).
             private void Count(int message, int id)

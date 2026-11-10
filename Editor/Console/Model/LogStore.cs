@@ -206,7 +206,21 @@ namespace Orbiters.Logger.Editor
             Texts = new TextTable();
         }
 
-        public TextTable Texts { get; private set; }
+        /// <summary>
+        /// The distinct texts. Their cache limit is <see cref="TextCeiling"/>: a stripped copy read back lazily (any thread)
+        /// is not kept past it, so the ceiling holds on that path too without a check on the editor's thread.
+        /// </summary>
+        public TextTable Texts
+        {
+            get => textTable;
+            private set
+            {
+                textTable = value;
+                value.CacheLimit = TextCeiling;
+            }
+        }
+
+        private TextTable textTable;
         public SourceCatalog Sources { get; } = new SourceCatalog();
         public GroupingMode Grouping { get; private set; }
         /// <summary>Occurrences in the store.</summary>
@@ -258,6 +272,7 @@ namespace Orbiters.Logger.Editor
             set
             {
                 maxTextChars = Math.Max(1L << 16, value);
+                Texts.CacheLimit = TextCeiling;
             }
         }
 
@@ -344,6 +359,7 @@ namespace Orbiters.Logger.Editor
             }
 
             compaction?.Patched(message);
+            EnforceCeiling();
         }
 
         /// <summary>The assembly a compiler message belongs to, learnt after it was filed.</summary>
@@ -378,8 +394,8 @@ namespace Orbiters.Logger.Editor
         /// <summary>The id of the message with this text, stack trace and type, created when new.</summary>
         public int Intern(string condition, string stack, LogVariant variant, int assembly = 0, string file = null, int line = 0, int column = 0)
         {
-            int text = Texts.Intern(Capped(condition) ?? string.Empty);
-            int stackId = Texts.Intern(Capped(stack) ?? string.Empty);
+            int text = Texts.Intern(Capped(condition, TextLimit) ?? string.Empty);
+            int stackId = Texts.Intern(Capped(stack, TextLimit) ?? string.Empty);
             var key = new MessageKey(text, stackId, variant);
             if (messageIndex.TryGetValue(key, out int id))
             {
@@ -630,7 +646,7 @@ namespace Orbiters.Logger.Editor
                 // starts again from the trimmed store.
                 Trim(maxOccurrences * 4 / 5);
             }
-            else if (Texts.TotalChars > maxTextChars && pins == 0)
+            else if (Texts.TotalChars > maxTextChars)
             {
                 // Logs that never repeat (an id, a time in the text) keep a new text each: memory is bounded by their
                 // size, not only their number.
@@ -690,17 +706,35 @@ namespace Orbiters.Logger.Editor
             return next;
         }
         /// <summary>The text as stored: itself, or its first <see cref="MaxTextLength"/> characters and how many were left out.</summary>
-        public static string Capped(string text)
+        public static string Capped(string text) => Capped(text, MaxTextLength);
+
+        /// <summary>
+        /// The longest text this store keeps: <see cref="MaxTextLength"/>, or an eighth of its text budget when that is
+        /// smaller, so one log (its text and stack and their stripped copies) always fits the budget, whatever it is.
+        /// </summary>
+        internal int TextLimit => (int)Math.Min(MaxTextLength, maxTextChars / 8);
+
+        /// <summary>
+        /// Whether a new message with these texts fits the text budget now (before anything is interned): a history import
+        /// stops taking older entries once it doesn't. Counts the stripped copies they may add.
+        /// </summary>
+        internal bool HasRoomFor(string condition, string stack)
         {
-            if (text == null || text.Length <= MaxTextLength)
+            long chars = Math.Min(condition?.Length ?? 0, TextLimit) + (long)Math.Min(stack?.Length ?? 0, TextLimit);
+            return Texts.TotalChars + 2 * chars <= maxTextChars;
+        }
+
+        internal static string Capped(string text, int maxLength)
+        {
+            if (text == null || text.Length <= maxLength)
             {
                 return text;
             }
 
             // The note included, never longer than the limit: capping a capped text changes nothing, whatever path
             // (the queue, the store, a history import) cut it first.
-            int keep = MaxTextLength - CutNote(text.Length - MaxTextLength).Length;
-            while (keep > 0 && keep + CutNote(text.Length - keep).Length > MaxTextLength)
+            int keep = maxLength - CutNote(text.Length - maxLength).Length;
+            while (keep > 0 && keep + CutNote(text.Length - keep).Length > maxLength)
             {
                 keep--;
             }
@@ -722,7 +756,7 @@ namespace Orbiters.Logger.Editor
         /// </summary>
         public void KeepWithinTextBudget()
         {
-            if (Texts.TotalChars > maxTextChars && pins == 0)
+            if (Texts.TotalChars > maxTextChars)
             {
                 KeepTextBudget();
             }
@@ -736,7 +770,7 @@ namespace Orbiters.Logger.Editor
         // texts can exceed the budget up to TextCeiling, where EnforceCeiling takes over synchronously.
         private void KeepTextBudget()
         {
-            while (Texts.TotalChars > maxTextChars && Count > 1 && pins == 0 && !Texts.Faulted && compaction == null)
+            while (Texts.TotalChars > maxTextChars && Count > 1 && !Texts.Faulted && compaction == null)
             {
                 Trim(Count * 4 / 5);
             }
@@ -859,7 +893,6 @@ namespace Orbiters.Logger.Editor
             groupIndex.Clear();
             events.Clear();
             profiles.Clear();
-            pins = 0;
             Texts = new TextTable();
             RowsGeneration = NewRowsGeneration();
             Epoch++;
@@ -1026,23 +1059,6 @@ namespace Orbiters.Logger.Editor
 
         private static bool IsHex(char c) => c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F';
 
-        private int pins;
-
-        /// <summary>
-        /// Keeps message ids meaning the same message until <see cref="Unpin"/> (no compaction): for a history import
-        /// that interns messages long before it adds their occurrences. A clear forgets every pin.
-        /// </summary>
-        public void Pin()
-        {
-            pins++;
-            // One being prepared would land with the import's messages dropped (they have no occurrence yet).
-            CancelCompaction();
-        }
-
-        // No budget check here: an import unpins just before it puts its occurrences in (Prepend), and a compaction in
-        // between would drop the messages it is about to use. Prepend and the next append check the budget.
-        public void Unpin() => pins = Math.Max(0, pins - 1);
-
         /// <summary>
         /// Keeps the newest <paramref name="keep"/> occurrences: the first id moves up, whole chunks below it go, and only
         /// the dropped occurrences are visited to fix the counters. A message left without occurrences reads Count 0
@@ -1201,7 +1217,7 @@ namespace Orbiters.Logger.Editor
                 Trim(maxOccurrences * 4 / 5);
             }
 
-            if (Texts.TotalChars > maxTextChars && pins == 0)
+            if (Texts.TotalChars > maxTextChars)
             {
                 // A large history counts against the same budget as live logs.
                 KeepTextBudget();
