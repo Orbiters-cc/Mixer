@@ -40,23 +40,40 @@ namespace Orbiters.UnitGit.Editor
     /// Git commands that change the repository run one at a time, and a lock another program holds for a moment is waited
     /// out. Reads never take Git's optional index lock (GIT_OPTIONAL_LOCKS=0), so a refresh never makes a commit fail.
     /// </summary>
+    /// <summary>
+    /// What a Git command does to the repository, declared by every call into the runner (the people writing a call know
+    /// whether it writes); the runner's guard only ever makes a declared read stricter (UnitGitWriteGate.Effective).
+    /// </summary>
+    internal enum GitAccess
+    {
+        /// <summary>Reads only: no gate; a superseded read may stop it; a reload stops it at once.</summary>
+        Read,
+        /// <summary>
+        /// Changes only what Git's own locks keep safe beside local changes, and is never stopped as a superseded read; a
+        /// reload gives it the grace for changes. It waits until no exclusive change runs, then runs outside the write
+        /// gate, so a slow network never holds a commit behind it. Only the commands Mixer Git really builds are this:
+        /// "fetch --all --prune" writes objects (packs written whole, then renamed), FETCH_HEAD, the remote-tracking refs
+        /// refs/remotes/&lt;remote&gt;/* (and prunes them) and auto-followed new tags refs/tags/* (never overwriting one), each
+        /// under its own lock file, and never the index, the work tree or the checked-out branch. With refspecs the user
+        /// configured it can write any other local ref, refs/heads/* included (but the checked-out branch). Every local ref
+        /// change Mixer Git makes either carries its expected old value (the rewrite's update-ref, commit, merge, reset and
+        /// stash, which Git checks) or creates a ref that must not exist (checkout -b); branch -d and -dr delete without one,
+        /// which is why a change of this kind waits for the gate to be free before it starts. Left: a branch delete started
+        /// while such a fetch runs can delete a branch that fetch just moved, which only a refspec writing refs/heads/*
+        /// allows, and deleting it is what the user asked. "push" and "push -u" write the remote, then their
+        /// remote-tracking ref and (with -u) the branch's upstream in the config, under the config's lock. "bundle create"
+        /// and "clone" write a file or a new repository outside this one.
+        /// </summary>
+        Change,
+        /// <summary>Changes the index, the work tree, local refs or the configuration: one at a time (the write gate), never
+        /// stopped as a superseded read, the reload grace.</summary>
+        Exclusive
+    }
+
     internal static class UnitGitWriteGate
     {
         private static readonly SemaphoreSlim Gate = new SemaphoreSlim(1, 1);
         private static readonly int[] LockRetryDelays = { 100, 200, 400, 700, 1000, 1500, 2000 };
-
-        // Commands that only read, whatever their options: never gated, stopped by a superseded read, stopped at once at a
-        // reload. Commands whose options decide are classified in Classify.
-        private static readonly HashSet<string> ReadVerbs = new HashSet<string>(StringComparer.Ordinal)
-        {
-            "status", "log", "show", "diff", "ls-files", "ls-tree", "cat-file", "rev-parse", "rev-list", "for-each-ref",
-            "merge-base", "check-ignore", "check-attr", "show-ref", "describe", "blame", "name-rev", "version", "--version",
-            "grep", "shortlog", "count-objects", "var", "ls-remote", "help", "diff-tree", "diff-index", "diff-files", "cherry",
-            "range-diff", "check-ref-format", "verify-commit", "verify-tag",
-            // Mixer Git runs merge-file on copies in a temporary folder only (the conflict view's parts): it reads the
-            // repository's settings and writes nothing in it, so a superseded read may stop it and it takes no write gate.
-            "merge-file"
-        };
 
         // One step that takes the index lock before doing anything: failing on the lock changed nothing, so it can run again.
         private static readonly HashSet<string> RetryableVerbs = new HashSet<string>(StringComparer.Ordinal)
@@ -80,92 +97,102 @@ namespace Orbiters.UnitGit.Editor
             return string.Empty;
         }
 
-        /// <summary>What a Git command does to the repository, for the write gate and for stopping it.</summary>
-        internal enum Kind
+        // Verbs with no mode that writes, whatever their options: a command line made of them and any options is a read,
+        // but for the few options that write a file of their own (--output) or run another program.
+        private static readonly HashSet<string> ReadOnlyVerbs = new HashSet<string>(StringComparer.Ordinal)
         {
-            /// <summary>Reads only: no gate; a superseded read may stop it; a reload stops it at once.</summary>
-            Read,
-            /// <summary>
-            /// Changes something, but only what Git's own locks keep safe beside the local changes, so it does not wait for
-            /// the write gate nor hold local changes behind it. These are the network commands: fetch writes objects (packs
-            /// written whole, then renamed) and remote-tracking refs and FETCH_HEAD, each under its own lock file, and
-            /// never the index, the work tree or the checked-out branch; push reads the local refs and writes the remote,
-            /// then its remote-tracking refs (and, with -u, the branch's upstream in the config, which Git also writes
-            /// under a lock: at worst one of two writers fails, nothing is half written); bundle create and clone write a
-            /// file or a new repository outside this one. A local commit beside them takes other locks (index, its
-            /// branch), or meets a held one and fails cleanly, and the gate's retries cover the index. Never stopped
-            /// because a read was superseded; a reload gives it the grace for changes.
-            /// </summary>
-            Change,
-            /// <summary>Changes the index, the work tree, local refs or the configuration: one at a time (the write gate),
-            /// never stopped because a read was superseded, the reload grace.</summary>
-            Exclusive
-        }
+            "status", "log", "show", "diff", "diff-tree", "diff-index", "diff-files", "ls-files", "ls-tree", "cat-file", "rev-parse",
+            "rev-list", "for-each-ref", "merge-base", "check-ignore", "check-attr", "show-ref", "describe", "name-rev", "var",
+            "ls-remote", "check-ref-format", "count-objects", "--version", "version",
+            // Mixer Git runs merge-file on copies in a temporary folder only (the conflict view's parts): it writes nothing in
+            // the repository.
+            "merge-file"
+        };
 
-        /// <summary>Whether the command only reads (see <see cref="Kind"/>).</summary>
-        internal static bool IsRead(IList<string> arguments) => Classify(arguments) == Kind.Read;
+        private static readonly string[] WritingOptions = { "--output", "--ext-diff", "--textconv", "--open-files-in-pager", "-O" };
 
         /// <summary>
-        /// Classifies by the operation and its options, not the verb alone. Anything not known to read is a change, and a
-        /// change not known to be safe beside local changes is exclusive.
+        /// The guard behind each call's declared access: true only for the exact read-only shapes Mixer Git builds (a verb
+        /// with no writing mode, or a reading mode of stash, config, remote, branch, tag, symbolic-ref, bundle, worktree
+        /// with exactly the options those calls use), after only the global options Mixer Git itself puts first
+        /// (--literal-pathspecs, -c core.quotePath=...). Everything else, including what it cannot parse, other global
+        /// options (-C, --git-dir, --no-pager, -c anything else) and combined short flags, may write.
         /// </summary>
-        internal static Kind Classify(IList<string> arguments)
+        internal static bool KnownRead(IList<string> arguments)
         {
-            string verb = Verb(arguments);
-            if (ReadVerbs.Contains(verb)) return Kind.Read;
-            var rest = arguments.SkipWhile(argument => argument != verb).Skip(1).ToList();
-            string first = rest.FirstOrDefault(argument => !argument.StartsWith("-", StringComparison.Ordinal)) ?? string.Empty;
-            bool Has(params string[] options) => rest.Any(argument => options.Contains(argument));
-            bool Starts(string prefix) => rest.Any(argument => argument.StartsWith(prefix, StringComparison.Ordinal));
+            if (arguments == null || arguments.Count == 0) return false;
+            int at = 0;
+            while (at < arguments.Count && (arguments[at] ?? string.Empty).StartsWith("-", StringComparison.Ordinal) && arguments[at] != "--version")
+            {
+                string option = arguments[at];
+                if (option == "--literal-pathspecs") { at++; continue; }
+                if (option == "-c" && at + 1 < arguments.Count &&
+                    (arguments[at + 1] == "core.quotePath=true" || arguments[at + 1] == "core.quotePath=false")) { at += 2; continue; }
+                return false;
+            }
+            if (at >= arguments.Count) return false;
+            string verb = arguments[at];
+            var rest = arguments.Skip(at + 1).Select(argument => argument ?? string.Empty).ToList();
+            if (ReadOnlyVerbs.Contains(verb))
+                return !rest.Any(argument => WritingOptions.Any(option => argument == option || argument.StartsWith(option + "=", StringComparison.Ordinal)));
+
+            bool Only(IEnumerable<string> tokens, params string[] allowed) => tokens.All(token => allowed.Contains(token));
+            var options = rest.Where(argument => argument.StartsWith("-", StringComparison.Ordinal)).ToList();
+            var names = rest.Where(argument => !argument.StartsWith("-", StringComparison.Ordinal)).ToList();
             switch (verb)
             {
-                case "fetch":
-                    // --update-head-ok lets fetch move the checked-out branch: that is a local change of HEAD.
-                    return Has("--update-head-ok") ? Kind.Exclusive : Kind.Change;
-                case "push":
-                case "clone":
-                    return Kind.Change;
-                case "bundle":
-                    if (first == "verify" || first == "list-heads") return Kind.Read;
-                    return first == "create" ? Kind.Change : Kind.Exclusive; // unbundle writes objects into this repository
-                case "hash-object":
-                    return Has("-w") ? Kind.Exclusive : Kind.Read;
-                case "merge-tree":
-                    // The old form only prints; --write-tree writes the merged trees' objects.
-                    return Has("--write-tree") ? Kind.Exclusive : Kind.Read;
                 case "stash":
-                    return rest.Count > 0 && (rest[0] == "list" || rest[0] == "show") ? Kind.Read : Kind.Exclusive;
+                    // "stash list [--format=...]", "stash show [--name-status] [-z] [<stash>]".
+                    if (rest.Count == 0) return false;
+                    if (rest[0] == "list") return rest.Skip(1).All(token => token.StartsWith("--format=", StringComparison.Ordinal));
+                    if (rest[0] == "show") return Only(rest.Skip(1).Where(token => token.StartsWith("-", StringComparison.Ordinal)), "--name-status", "-z", "-M", "-p") &&
+                                                  rest.Skip(1).Count(token => !token.StartsWith("-", StringComparison.Ordinal)) <= 1;
+                    return false;
                 case "config":
-                    // Reading: --get, --get-all, --get-regexp, --get-urlmatch, --list; anything else sets or unsets a value.
-                    return Starts("--get") || Has("--list", "-l") ? Kind.Read : Kind.Exclusive;
+                    // "config [--bool] --get <name>", "config --get-regexp <pattern>", "config --list".
+                {
+                    bool listing = options.Contains("--list") || options.Contains("-l");
+                    bool getting = options.Contains("--get") || options.Contains("--get-all") || options.Contains("--get-regexp");
+                    return Only(options, "--get", "--get-all", "--get-regexp", "--bool", "--list", "-l", "--null", "-z") &&
+                           (listing ? !getting && names.Count == 0 : getting && names.Count >= 1 && names.Count <= 2);
+                }
                 case "remote":
-                    return rest.Count == 0 || rest[0] == "-v" || rest[0] == "get-url" || rest[0] == "show" ? Kind.Read : Kind.Exclusive;
+                    return rest.Count == 0 || (rest.Count == 1 && rest[0] == "-v") || (rest.Count == 2 && rest[0] == "get-url");
                 case "branch":
                 case "tag":
-                    if (Has("-d", "-D", "--delete", "-m", "-M", "-c", "-C", "-u", "-f", "--force", "--unset-upstream", "--edit-description") ||
-                        Starts("--set-upstream") || Starts("--track"))
-                        return Kind.Exclusive;
-                    return rest.Count == 0 || Has("--list", "-l", "--show-current", "-v", "-vv", "-a", "-r", "--all", "--remotes", "--contains", "--merged",
-                        "--no-merged", "--points-at") || Starts("--format") ? Kind.Read : Kind.Exclusive;
+                    // Listing only; a name is a pattern only after --list.
+                    return Only(options.Where(option => !option.StartsWith("--format=", StringComparison.Ordinal) && !option.StartsWith("--sort=", StringComparison.Ordinal)),
+                               "--list", "-l", "-a", "-r", "--all", "--remotes", "-v", "-vv", "--show-current") &&
+                           (names.Count == 0 || options.Contains("--list") || options.Contains("-l"));
                 case "symbolic-ref":
-                    // One name reads it; two set it; -d deletes it.
-                    return !Has("-d", "--delete") && rest.Count(argument => !argument.StartsWith("-", StringComparison.Ordinal)) <= 1 ? Kind.Read : Kind.Exclusive;
-                case "reflog":
-                    return first == "expire" || first == "delete" ? Kind.Exclusive : Kind.Read;
+                    return Only(options, "--quiet", "-q", "--short") && names.Count == 1;
+                case "bundle":
+                    return rest.Count == 2 && (rest[0] == "list-heads" || rest[0] == "verify");
                 case "worktree":
-                    return first == "list" ? Kind.Read : Kind.Exclusive;
-                case "notes":
-                    return first == "" || first == "list" || first == "show" ? Kind.Read : Kind.Exclusive;
-                case "submodule":
-                    return first == "" || first == "status" || first == "summary" ? Kind.Read : Kind.Exclusive;
-                case "lfs":
-                    if (first == "fetch" || first == "push") return Kind.Change; // objects in .git/lfs, or the remote; never the work tree
-                    return first == "ls-files" || first == "status" || first == "env" || first == "version" || first == "locks" ? Kind.Read : Kind.Exclusive;
+                    return rest.Count >= 1 && rest[0] == "list" && Only(rest.Skip(1), "--porcelain", "-z");
                 default:
-                    // update-ref, gc, prune, repack, pack-refs, commit-graph, init, fast-import, checkout-index, commit, add,
-                    // and anything not listed here.
-                    return Kind.Exclusive;
+                    return false;
             }
+        }
+
+        /// <summary>Whether this command line is one of the known reads (see <see cref="KnownRead"/>).</summary>
+        internal static bool IsRead(IList<string> arguments) => KnownRead(arguments);
+
+        private static readonly HashSet<string> Reported = new HashSet<string>(StringComparer.Ordinal);
+
+        /// <summary>
+        /// What a call actually runs as: its declared access, but a call declared a read whose command line is not a known
+        /// read shape runs as an exclusive change (a wrong declaration fails safe) and is reported once. A declared change is
+        /// never downgraded.
+        /// </summary>
+        internal static GitAccess Effective(GitAccess declared, IList<string> arguments)
+        {
+            if (declared != GitAccess.Read || KnownRead(arguments)) return declared;
+            string line = string.Join(" ", arguments);
+            bool first;
+            lock (Reported) first = Reported.Add(line);
+            if (first) UnityEngine.Debug.LogWarning("Mixer Git: \"git " + line + "\" was declared a read but is not one of the reads it knows; it runs as a change.");
+            return GitAccess.Exclusive;
         }
 
         private static readonly Regex LockFile = new Regex(@"Unable to create '([^']+\.lock)': File exists", RegexOptions.Compiled);
@@ -193,10 +220,25 @@ namespace Orbiters.UnitGit.Editor
             (result.StandardError ?? string.Empty).IndexOf("index.lock': File exists", StringComparison.Ordinal) >= 0;
 
         /// <summary>Runs a Git command: reads at once, changes one at a time with short waits on another program's index lock.</summary>
-        internal static GitCommandResult Run(IList<string> arguments, int timeoutMilliseconds, Func<GitCommandResult> run, Action<string> log)
+        /// <summary>Runs a Git command as its access says: reads at once, changes one at a time with short waits on another
+        /// program's index lock, and changes Git keeps safe beside local ones once no exclusive change runs.</summary>
+        internal static GitCommandResult Run(GitAccess access, IList<string> arguments, int timeoutMilliseconds, Func<GitCommandResult> run, Action<string> log)
         {
-            // Reads, and changes Git keeps safe beside local ones (see Kind.Change), never wait for the gate.
-            if (Classify(arguments) != Kind.Exclusive) return run();
+            if (access == GitAccess.Read) return run();
+            if (access == GitAccess.Change)
+            {
+                // A change Git keeps safe beside local changes (see GitAccess.Change) waits until no exclusive change runs,
+                // then runs without holding the gate: a rewrite or a branch delete in progress blocks a fetch from starting,
+                // a fetch in progress does not block a commit. The main thread never waits (as below).
+                bool onMain = UnityEditorInternal.InternalEditorUtility.CurrentThreadIsMainThread();
+                if (!Gate.Wait(onMain ? 0 : Math.Max(1000, timeoutMilliseconds)))
+                {
+                    if (!onMain)
+                        return new GitCommandResult { ExitCode = 1, TimedOut = true, StandardError = "Another Git change is still running. Try again once it is done." };
+                }
+                else Gate.Release();
+                return run();
+            }
             // The editor's main thread never waits on the gate (a long background write would freeze Unity): it relies on the retries.
             bool mainThread = UnityEditorInternal.InternalEditorUtility.CurrentThreadIsMainThread();
             bool entered = Gate.Wait(mainThread ? 0 : Math.Max(1000, timeoutMilliseconds));

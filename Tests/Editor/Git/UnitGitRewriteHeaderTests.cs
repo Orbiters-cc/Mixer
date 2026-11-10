@@ -21,7 +21,7 @@ namespace Orbiters.UnitGit.Editor.Tests
             string parent = repo.Run("rev-parse", "HEAD").Trim();
             string text = "tree " + tree + "\nparent " + parent + "\nauthor " + author + " 1600000000 +0200\n" +
                           "committer Someone <someone@example.test> 1600000100 +0200\n" + extraHeaders + "\n" + message;
-            GitCommandResult made = repo.Git.RunGitWithInput(60000, Encoding.UTF8.GetBytes(text), "hash-object", "-t", "commit", "-w", "--stdin");
+            GitCommandResult made = repo.Git.RunGitWithInput(GitAccess.Exclusive, 60000, Encoding.UTF8.GetBytes(text), "hash-object", "-t", "commit", "-w", "--stdin");
             Assert.That(made.Success, Is.True, made.Message);
             string hash = made.StandardOutput.Trim();
             repo.Run("update-ref", "refs/heads/main", hash, parent);

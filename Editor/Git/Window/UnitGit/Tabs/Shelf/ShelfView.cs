@@ -198,9 +198,9 @@ namespace Orbiters.UnitGit.Editor
                     var service = new UnitGitService(root);
                     var files = new List<ShelfFile>();
                     // -z: paths exactly as Git has them (a non-ASCII name would otherwise come quoted and escaped).
-                    var tracked = service.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "stash", "show", "--name-status", "-z", reference);
+                    var tracked = service.RunGit(GitAccess.Read, UnitGitService.DefaultTimeoutMilliseconds, "stash", "show", "--name-status", "-z", reference);
                     if (tracked.Success) files.AddRange(ParseNameStatus(tracked.StandardOutput, reference, false));
-                    var untracked = service.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "show", "--name-status", "-z", "--format=", reference + "^3");
+                    var untracked = service.RunGit(GitAccess.Read, UnitGitService.DefaultTimeoutMilliseconds, "show", "--name-status", "-z", "--format=", reference + "^3");
                     if (untracked.Success) files.AddRange(ParseNameStatus(untracked.StandardOutput, reference, true));
                     return files;
                 })

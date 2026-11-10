@@ -68,7 +68,7 @@ namespace Orbiters.UnitGit.Editor
 
         private GitCommandResult RewriteHeadHistory(IList<string> commitHashes, string message, bool squash, UnitGitHeadState expected)
         {
-            GitCommandResult branchResult = RunGit(DefaultTimeoutMilliseconds, "symbolic-ref", "--quiet", "HEAD");
+            GitCommandResult branchResult = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "symbolic-ref", "--quiet", "HEAD");
             if (!branchResult.Success)
                 return Failure("Check out a branch before rewriting history.");
             string branchRef = FirstNonEmptyLine(branchResult.StandardOutput);
@@ -78,14 +78,14 @@ namespace Orbiters.UnitGit.Editor
                 new UnitGitHeadState { BranchRef = branchRef }, false);
             if (changed != null)
                 return changed;
-            GitCommandResult headResult = RunGit(DefaultTimeoutMilliseconds, "rev-parse", "--verify", branchRef);
+            GitCommandResult headResult = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "rev-parse", "--verify", branchRef);
             if (!headResult.Success)
             {
                 return headResult;
             }
 
             string oldHead = FirstNonEmptyLine(headResult.StandardOutput);
-            GitCommandResult historyResult = RunGit(DefaultTimeoutMilliseconds, "rev-list", "--topo-order", "--reverse", oldHead);
+            GitCommandResult historyResult = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "rev-list", "--topo-order", "--reverse", oldHead);
             if (!historyResult.Success)
             {
                 return historyResult;
@@ -104,7 +104,7 @@ namespace Orbiters.UnitGit.Editor
             var selected = new HashSet<string>(StringComparer.Ordinal);
             foreach (string hash in commitHashes.Where(hash => !string.IsNullOrWhiteSpace(hash)))
             {
-                GitCommandResult resolved = RunGit(DefaultTimeoutMilliseconds, "rev-parse", "--verify", hash.Trim() + "^{commit}");
+                GitCommandResult resolved = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "rev-parse", "--verify", hash.Trim() + "^{commit}");
                 if (!resolved.Success)
                 {
                     return resolved;
@@ -296,7 +296,7 @@ namespace Orbiters.UnitGit.Editor
             {
                 if (streamRef != null)
                 {
-                    RunGit(DefaultTimeoutMilliseconds, "update-ref", "--no-deref", "-d", streamRef);
+                    RunGit(GitAccess.Exclusive, DefaultTimeoutMilliseconds, "update-ref", "--no-deref", "-d", streamRef);
                 }
 
                 return written;
@@ -306,13 +306,13 @@ namespace Orbiters.UnitGit.Editor
 
             // Commit trees are unchanged. Move only the captured branch, and only if nobody advanced it.
             // Do not reset the index or whichever branch another process has since checked out.
-            GitCommandResult updateResult = RunGit(DefaultTimeoutMilliseconds, "update-ref", "--no-deref",
+            GitCommandResult updateResult = RunGit(GitAccess.Exclusive, DefaultTimeoutMilliseconds, "update-ref", "--no-deref",
                 "-m", "Mixer Git: rewrite history", branchRef, newHead, oldHead);
             // The scratch ref fast-import wrote (this call named it): gone whether the branch moved or not; the new commits
             // are reachable from the branch, or left to Git's garbage collection.
             if (streamRef != null)
             {
-                RunGit(DefaultTimeoutMilliseconds, "update-ref", "--no-deref", "-d", streamRef);
+                RunGit(GitAccess.Exclusive, DefaultTimeoutMilliseconds, "update-ref", "--no-deref", "-d", streamRef);
             }
 
             if (!updateResult.Success)
@@ -379,7 +379,7 @@ namespace Orbiters.UnitGit.Editor
         {
             // The author date in Git's own form (seconds and offset): what fast-import and GIT_AUTHOR_DATE both take, exactly.
             string[] options = { "log", "--no-walk=unsorted", "-z", "--date=raw", "--format=%H%x1f%T%x1f%P%x1f%an%x1f%ae%x1f%ad%x1f%B" };
-            GitCommandResult read = RunWithList(null, LongTimeoutMilliseconds, hashes, false, options.Concat(new[] { "--stdin" }).ToArray(), options, new[] { "--" });
+            GitCommandResult read = RunWithList(GitAccess.Read, null, LongTimeoutMilliseconds, hashes, false, options.Concat(new[] { "--stdin" }).ToArray(), options, new[] { "--" });
             if (!read.Success)
             {
                 return read;
@@ -481,7 +481,7 @@ namespace Orbiters.UnitGit.Editor
                 catch (DecoderFallbackException) { return "message (it is not UTF-8)"; }
             }
 
-            GitCommandResult ident = RunGitWithEnvironment(AuthorEnvironment(source), DefaultTimeoutMilliseconds, "var", "GIT_AUTHOR_IDENT");
+            GitCommandResult ident = RunGitWithEnvironment(GitAccess.Read, AuthorEnvironment(source), DefaultTimeoutMilliseconds, "var", "GIT_AUTHOR_IDENT");
             if (!ident.Success) return "author line (Git could not form it: " + ident.Message.Trim() + ")";
             string predicted = ident.StandardOutput.TrimEnd('\n', '\r');
             return UnitGitRunner.Utf8.GetBytes(predicted).SequenceEqual(source.RawAuthor) ? null : "author line (commit-tree would write \"" + predicted + "\")";
@@ -522,7 +522,7 @@ namespace Orbiters.UnitGit.Editor
                 {
                     args.Add("-F");
                     args.Add("-");
-                    created = RunGitWithInput(AuthorEnvironment(commit.Source), LongTimeoutMilliseconds, message, args.ToArray());
+                    created = RunGitWithInput(GitAccess.Exclusive, AuthorEnvironment(commit.Source), LongTimeoutMilliseconds, message, args.ToArray());
                 }
                 else
                 {
@@ -532,7 +532,7 @@ namespace Orbiters.UnitGit.Editor
                         File.WriteAllBytes(file, message);
                         args.Add("-F");
                         args.Add(file);
-                        created = RunGitWithEnvironment(AuthorEnvironment(commit.Source), LongTimeoutMilliseconds, args.ToArray());
+                        created = RunGitWithEnvironment(GitAccess.Exclusive, AuthorEnvironment(commit.Source), LongTimeoutMilliseconds, args.ToArray());
                     }
                     finally
                     {
@@ -572,7 +572,7 @@ namespace Orbiters.UnitGit.Editor
                 if (objects.Read(commit.NewId, bytes, out string type, out _) != UnitGitObjects.Answer.Found || type != "commit")
                 {
                     bytes.SetLength(0);
-                    GitCommandResult read = ReadGitStream(DefaultTimeoutMilliseconds, (chunk, offset, count) =>
+                    GitCommandResult read = ReadGitStream(GitAccess.Read, DefaultTimeoutMilliseconds, (chunk, offset, count) =>
                     {
                         bytes.Write(chunk, offset, count);
                         return true;
@@ -663,7 +663,7 @@ namespace Orbiters.UnitGit.Editor
                 if (objects.Read(hash, bytes, out string type, out _) != UnitGitObjects.Answer.Found || type != "commit")
                 {
                     bytes.SetLength(0);
-                    GitCommandResult read = ReadGitStream(DefaultTimeoutMilliseconds, (chunk, offset, count) =>
+                    GitCommandResult read = ReadGitStream(GitAccess.Read, DefaultTimeoutMilliseconds, (chunk, offset, count) =>
                     {
                         bytes.Write(chunk, offset, count);
                         return true;
@@ -796,13 +796,13 @@ namespace Orbiters.UnitGit.Editor
                 return new GitCommandResult();
             }
 
-            GitCommandResult signing = RunGit(DefaultTimeoutMilliseconds, "config", "--bool", "--get", "commit.gpgSign");
+            GitCommandResult signing = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "config", "--bool", "--get", "commit.gpgSign");
             if (signing.Success && FirstNonEmptyLine(signing.StandardOutput) == "true")
             {
                 return new GitCommandResult();
             }
 
-            GitCommandResult ident = RunGit(DefaultTimeoutMilliseconds, "var", "GIT_COMMITTER_IDENT");
+            GitCommandResult ident = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "var", "GIT_COMMITTER_IDENT");
             if (!ident.Success)
             {
                 return ident;
@@ -822,7 +822,7 @@ namespace Orbiters.UnitGit.Editor
             string marks = Path.Combine(Path.GetTempPath(), "mixer-git-marks-" + Guid.NewGuid().ToString("N") + ".txt");
             try
             {
-                GitCommandResult imported = RunGitWithInput(LongTimeoutMilliseconds, stream.Bytes.ToArray(), "fast-import", "--quiet", "--done",
+                GitCommandResult imported = RunGitWithInput(GitAccess.Exclusive, LongTimeoutMilliseconds, stream.Bytes.ToArray(), "fast-import", "--quiet", "--done",
                     "--export-marks=" + marks);
                 if (!imported.Success)
                 {

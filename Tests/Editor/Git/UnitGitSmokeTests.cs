@@ -16,26 +16,26 @@ namespace Orbiters.UnitGit.Editor.Tests
             {
                 var service = new UnitGitService(root);
                 ConfigureTempRepository(service);
-                AssertGit(service.RunGit(30000, "config", "core.quotePath", "true"));
-                AssertGit(service.RunGit(30000, "config", "commit.gpgsign", "false"));
+                AssertGit(service.RunGit(GitAccess.Exclusive, 30000, "config", "core.quotePath", "true"));
+                AssertGit(service.RunGit(GitAccess.Exclusive, 30000, "config", "commit.gpgsign", "false"));
                 const string original = "caf\u00e9.txt";
                 const string renamed = "\u670d\U0001F43E.txt";
                 File.WriteAllText(Path.Combine(root, original), "visible content\n");
-                var status = service.RunGit(30000, "status", "--porcelain=v1", "-b", "-uall");
+                var status = service.RunGit(GitAccess.Read, 30000, "status", "--porcelain=v1", "-b", "-uall");
                 AssertGit(status);
                 var change = UnitGitService.ParseStatusOutput(status.StandardOutput).Changes.Single();
                 Assert.That(change.Path, Is.EqualTo(original));
                 Assert.That(service.GetFileDiff(change).Lines.Any(line => line.Right == "visible content"), Is.True);
                 AssertGit(service.StageAll());
                 AssertGit(service.Commit("initial"));
-                AssertGit(service.RunGit(30000, "mv", "--", original, renamed));
-                status = service.RunGit(30000, "status", "--porcelain=v1", "-b", "-uall");
+                AssertGit(service.RunGit(GitAccess.Exclusive, 30000, "mv", "--", original, renamed));
+                status = service.RunGit(GitAccess.Read, 30000, "status", "--porcelain=v1", "-b", "-uall");
                 AssertGit(status);
                 change = UnitGitService.ParseStatusOutput(status.StandardOutput).Changes.Single();
                 Assert.That(change.Path, Is.EqualTo(renamed));
                 Assert.That(change.OriginalPath, Is.EqualTo(original));
                 File.AppendAllText(Path.Combine(root, renamed), "modified content\n");
-                status = service.RunGit(30000, "status", "--porcelain=v1", "-b", "-uall");
+                status = service.RunGit(GitAccess.Read, 30000, "status", "--porcelain=v1", "-b", "-uall");
                 change = UnitGitService.ParseStatusOutput(status.StandardOutput).Changes.Single();
                 Assert.That(service.GetFileDiff(change).Lines.Any(line => line.Right == "modified content"), Is.True);
             }
@@ -74,7 +74,7 @@ namespace Orbiters.UnitGit.Editor.Tests
                 Assert.That(diff.Lines.Any(line => line.Right == "unstaged"), Is.True);
 
                 AssertGit(service.ShelveAll("unitgit smoke shelf"));
-                GitCommandResult stashList = service.RunGit(30000, "stash", "list");
+                GitCommandResult stashList = service.RunGit(GitAccess.Read, 30000, "stash", "list");
                 AssertGit(stashList);
                 Assert.That(UnitGitService.ParseStashList(stashList.StandardOutput).Any(line => line.Contains("unitgit smoke shelf")), Is.True);
             }
@@ -146,7 +146,7 @@ namespace Orbiters.UnitGit.Editor.Tests
                 Assert.That(result.Message, Does.Contain("Staging files failed"));
                 Assert.That(File.Exists(UnitGitReleases.GetReleasesFilePath(root)), Is.False);
 
-                GitCommandResult releaseStatus = service.RunGit(30000, "status", "--porcelain=v1", "--", UnitGitReleases.ReleasesFileName);
+                GitCommandResult releaseStatus = service.RunGit(GitAccess.Read, 30000, "status", "--porcelain=v1", "--", UnitGitReleases.ReleasesFileName);
                 AssertGit(releaseStatus);
                 Assert.That(releaseStatus.StandardOutput.Trim(), Is.Empty);
             }
@@ -174,15 +174,15 @@ namespace Orbiters.UnitGit.Editor.Tests
                 File.WriteAllText(Path.Combine(root, "Assets", "version.json"), "version");
                 File.WriteAllText(Path.Combine(root, "Assets", "logic.unitypackage"), "generated");
                 File.WriteAllText(Path.Combine(root, "Assets", "logic.unitypackage.meta"), "generated meta");
-                string before = service.RunGit(30000, "diff", "--cached", "--binary").StandardOutput;
+                string before = service.RunGit(GitAccess.Read, 30000, "diff", "--cached", "--binary").StandardOutput;
                 var result = UnitGitReleases.PublishRelease(new UnitGitReleaseEntry { id = "scoped-test", tool = "MCB", version = "1.0.0" },
                     "release test", service, "Assets/version.json", "Assets/logic.unitypackage", "Assets/logic.unitypackage.meta");
                 Assert.That(result.Success, Is.True, result.Message);
-                Assert.That(service.RunGit(30000, "diff", "--cached", "--binary").StandardOutput, Is.EqualTo(before));
-                Assert.That(service.RunGit(30000, "show", "HEAD:Assets/other.txt").StandardOutput.TrimEnd('\r', '\n'), Is.EqualTo("base"));
+                Assert.That(service.RunGit(GitAccess.Read, 30000, "diff", "--cached", "--binary").StandardOutput, Is.EqualTo(before));
+                Assert.That(service.RunGit(GitAccess.Read, 30000, "show", "HEAD:Assets/other.txt").StandardOutput.TrimEnd('\r', '\n'), Is.EqualTo("base"));
                 Assert.That(File.ReadAllText(Path.Combine(root, "Assets", "other.txt")), Is.EqualTo("unstaged"));
-                Assert.That(service.RunGit(30000, "ls-tree", "-r", "HEAD").StandardOutput, Does.Not.Contain("unitypackage"));
-                Assert.That(service.RunGit(30000, "show", "HEAD:Assets/version.json").StandardOutput.TrimEnd('\r', '\n'), Is.EqualTo("version"));
+                Assert.That(service.RunGit(GitAccess.Read, 30000, "ls-tree", "-r", "HEAD").StandardOutput, Does.Not.Contain("unitypackage"));
+                Assert.That(service.RunGit(GitAccess.Read, 30000, "show", "HEAD:Assets/version.json").StandardOutput.TrimEnd('\r', '\n'), Is.EqualTo("version"));
             }
             finally { DeleteTempFolder(root); }
         }
@@ -200,12 +200,12 @@ namespace Orbiters.UnitGit.Editor.Tests
                 File.WriteAllText(Path.Combine(root, "Assets", "body.txt"), "staged");
                 AssertGit(service.StageAll());
                 File.WriteAllText(Path.Combine(root, "Assets", "body.txt"), "unstaged");
-                string before = service.RunGit(30000, "ls-files", "--stage", "-z").StandardOutput;
+                string before = service.RunGit(GitAccess.Read, 30000, "ls-files", "--stage", "-z").StandardOutput;
                 string head = GetHead(service);
                 var result = UnitGitReleases.PublishRelease(new UnitGitReleaseEntry { id = "failure-test" }, "release test",
                     service, "Assets/body.txt", "Assets/missing.txt");
                 Assert.That(result.Success, Is.False);
-                Assert.That(service.RunGit(30000, "ls-files", "--stage", "-z").StandardOutput, Is.EqualTo(before));
+                Assert.That(service.RunGit(GitAccess.Read, 30000, "ls-files", "--stage", "-z").StandardOutput, Is.EqualTo(before));
                 Assert.That(GetHead(service), Is.EqualTo(head));
                 Assert.That(File.ReadAllText(Path.Combine(root, "Assets", "body.txt")), Is.EqualTo("unstaged"));
                 Assert.That(File.Exists(UnitGitReleases.GetReleasesFilePath(root)), Is.False);
@@ -235,12 +235,12 @@ namespace Orbiters.UnitGit.Editor.Tests
                 File.WriteAllText(releasePath, "{\"releases\":[]}\n\n");
                 File.WriteAllText(Path.Combine(root, "Assets", "new.txt"), "untracked");
                 string before = GetPorcelainStatus(service);
-                string entries = service.RunGit(30000, "ls-files", "--stage", "-z").StandardOutput;
+                string entries = service.RunGit(GitAccess.Read, 30000, "ls-files", "--stage", "-z").StandardOutput;
                 string contents = File.ReadAllText(releasePath);
                 string head = GetHead(service);
-                AssertGit(service.RunGit(10000, "config", "commit.gpgsign", "true"));
-                AssertGit(service.RunGit(10000, "config", "gpg.format", "openpgp"));
-                AssertGit(service.RunGit(10000, "config", "gpg.program", Path.Combine(root, "missing-gpg.exe")));
+                AssertGit(service.RunGit(GitAccess.Exclusive, 10000, "config", "commit.gpgsign", "true"));
+                AssertGit(service.RunGit(GitAccess.Exclusive, 10000, "config", "gpg.format", "openpgp"));
+                AssertGit(service.RunGit(GitAccess.Exclusive, 10000, "config", "gpg.program", Path.Combine(root, "missing-gpg.exe")));
                 var result = release
                     ? UnitGitReleases.PublishReleaseAll(new UnitGitReleaseEntry { id = "failed-checkpoint" }, "checkpoint", service, false)
                     : UnitGitReleases.CommitAll("checkpoint", "paragraph", service, false);
@@ -248,7 +248,7 @@ namespace Orbiters.UnitGit.Editor.Tests
                 Assert.That(result.Message, Does.Contain("Commit failed"));
                 Assert.That(GetHead(service), Is.EqualTo(head));
                 Assert.That(GetPorcelainStatus(service), Is.EqualTo(before));
-                Assert.That(service.RunGit(30000, "ls-files", "--stage", "-z").StandardOutput, Is.EqualTo(entries));
+                Assert.That(service.RunGit(GitAccess.Read, 30000, "ls-files", "--stage", "-z").StandardOutput, Is.EqualTo(entries));
                 Assert.That(File.ReadAllText(tracked), Is.EqualTo("unstaged"));
                 Assert.That(File.ReadAllText(releasePath), Is.EqualTo(contents));
                 Assert.That(Directory.GetFiles(Path.Combine(root, ".git"), "index.unitgit-*").Length, Is.Zero);
@@ -413,7 +413,7 @@ namespace Orbiters.UnitGit.Editor.Tests
 
                 AssertGit(service.RenameCommit(first, "renamed one", GetHeadState(service)));
 
-                GitCommandResult log = service.RunGit(30000, "log", "--format=%s");
+                GitCommandResult log = service.RunGit(GitAccess.Read, 30000, "log", "--format=%s");
                 AssertGit(log);
                 Assert.That(log.StandardOutput, Does.Contain("renamed one"));
                 Assert.That(log.StandardOutput, Does.Contain("two"));
@@ -484,7 +484,7 @@ namespace Orbiters.UnitGit.Editor.Tests
 
                 AssertGit(service.SquashCommits(new[] { first, second }, "one and two", GetHeadState(service)));
 
-                GitCommandResult log = service.RunGit(30000, "log", "--format=%s");
+                GitCommandResult log = service.RunGit(GitAccess.Read, 30000, "log", "--format=%s");
                 AssertGit(log);
                 Assert.That(log.StandardOutput, Does.Contain("one and two"));
                 Assert.That(log.StandardOutput, Does.Not.Contain("\none\n"));
@@ -602,21 +602,21 @@ namespace Orbiters.UnitGit.Editor.Tests
 
         private static string GetPorcelainStatus(UnitGitService service)
         {
-            GitCommandResult result = service.RunGit(30000, "status", "--porcelain=v1", "-uall");
+            GitCommandResult result = service.RunGit(GitAccess.Read, 30000, "status", "--porcelain=v1", "-uall");
             AssertGit(result);
             return result.StandardOutput;
         }
 
         private static void ConfigureTempRepository(UnitGitService service)
         {
-            AssertGit(service.RunGit(30000, "init"));
-            AssertGit(service.RunGit(30000, "config", "user.email", "unitgit@example.test"));
-            AssertGit(service.RunGit(30000, "config", "user.name", "Mixer Git Tests"));
-            AssertGit(service.RunGit(30000, "config", "core.autocrlf", "false"));
-            AssertGit(service.RunGit(30000, "config", "commit.gpgsign", "false"));
+            AssertGit(service.RunGit(GitAccess.Exclusive, 30000, "init"));
+            AssertGit(service.RunGit(GitAccess.Exclusive, 30000, "config", "user.email", "unitgit@example.test"));
+            AssertGit(service.RunGit(GitAccess.Exclusive, 30000, "config", "user.name", "Mixer Git Tests"));
+            AssertGit(service.RunGit(GitAccess.Exclusive, 30000, "config", "core.autocrlf", "false"));
+            AssertGit(service.RunGit(GitAccess.Exclusive, 30000, "config", "commit.gpgsign", "false"));
             string hooks = Path.Combine(service.ProjectRoot, ".git", "audit-empty-hooks");
             Directory.CreateDirectory(hooks);
-            AssertGit(service.RunGit(30000, "config", "core.hooksPath", hooks));
+            AssertGit(service.RunGit(GitAccess.Exclusive, 30000, "config", "core.hooksPath", hooks));
         }
 
         private static UnitGitHeadState GetHeadState(UnitGitService service)
@@ -627,7 +627,7 @@ namespace Orbiters.UnitGit.Editor.Tests
 
         private static string GetHead(UnitGitService service)
         {
-            GitCommandResult result = service.RunGit(30000, "rev-parse", "HEAD");
+            GitCommandResult result = service.RunGit(GitAccess.Read, 30000, "rev-parse", "HEAD");
             AssertGit(result);
             return result.StandardOutput.Trim();
         }

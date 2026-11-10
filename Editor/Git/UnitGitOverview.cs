@@ -151,7 +151,7 @@ namespace Orbiters.UnitGit.Editor
 
             // One status answers the branch, whether there are commits, the changes (a folder of new files counted once) and
             // how far the branch is ahead of and behind its upstream, as the window reads them.
-            var status = service.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "status", "--porcelain=v2", "--branch", "-z");
+            var status = service.RunGit(GitAccess.Read, UnitGitService.DefaultTimeoutMilliseconds, "status", "--porcelain=v2", "--branch", "-z");
             if (status.Success)
             {
                 UnitGitSnapshot state = UnitGitService.ParseStatusV2Output(status.StandardOutput);
@@ -171,7 +171,7 @@ namespace Orbiters.UnitGit.Editor
             string remote = remotes.FirstOrDefault(r => string.Equals(r, "origin", StringComparison.OrdinalIgnoreCase)) ?? remotes.FirstOrDefault();
             if (remote != null)
             {
-                var url = service.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "remote", "get-url", remote);
+                var url = service.RunGit(GitAccess.Read, UnitGitService.DefaultTimeoutMilliseconds, "remote", "get-url", remote);
                 if (url.Success) summary.RemoteUrl = url.StandardOutput.Trim();
             }
 
@@ -245,7 +245,7 @@ namespace Orbiters.UnitGit.Editor
                 if (string.IsNullOrWhiteSpace(url)) return new GitCommandResult { ExitCode = 1, StandardError = "Paste the repository URL first." };
                 var service = new UnitGitService(root);
                 bool exists = service.GetRemoteNames().Any(r => string.Equals(r, "origin", StringComparison.OrdinalIgnoreCase));
-                return service.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "remote", exists ? "set-url" : "add", "origin", url.Trim());
+                return service.RunGit(GitAccess.Exclusive, UnitGitService.DefaultTimeoutMilliseconds, "remote", exists ? "set-url" : "add", "origin", url.Trim());
             });
         }
 

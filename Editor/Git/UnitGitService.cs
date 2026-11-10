@@ -135,14 +135,14 @@ namespace Orbiters.UnitGit.Editor
             GitCommandResult status, refs;
             if (UnityEditorInternal.InternalEditorUtility.CurrentThreadIsMainThread())
             {
-                status = RunGit(DefaultTimeoutMilliseconds, statusArguments);
-                refs = RunGit(DefaultTimeoutMilliseconds, refsArguments);
+                status = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, statusArguments);
+                refs = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, refsArguments);
             }
             else
             {
                 // On a worker (the window's refresh): the two reads run side by side.
-                var refsRead = System.Threading.Tasks.Task.Run(() => RunGit(DefaultTimeoutMilliseconds, refsArguments));
-                status = RunGit(DefaultTimeoutMilliseconds, statusArguments);
+                var refsRead = System.Threading.Tasks.Task.Run(() => RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, refsArguments));
+                status = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, statusArguments);
                 refs = refsRead.Result;
             }
 
@@ -188,7 +188,7 @@ namespace Orbiters.UnitGit.Editor
                     snapshot.Shelves = previous.Shelves;
                 else
                 {
-                    var shelves = RunGit(DefaultTimeoutMilliseconds, "stash", "list");
+                    var shelves = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "stash", "list");
                     if (shelves.Success)
                         snapshot.Shelves = ParseStashList(shelves.StandardOutput);
                 }
@@ -202,8 +202,8 @@ namespace Orbiters.UnitGit.Editor
         // The refs signature as a full refresh computes it, from for-each-ref and HEAD alone (no status).
         private string CurrentRefsSignature()
         {
-            GitCommandResult refs = RunGit(DefaultTimeoutMilliseconds, "for-each-ref", "--format=" + RefFormat, "refs/heads", "refs/remotes", "refs/tags", "refs/stash");
-            GitCommandResult head = RunGit(DefaultTimeoutMilliseconds, "rev-parse", "HEAD", "--symbolic-full-name", "HEAD");
+            GitCommandResult refs = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "for-each-ref", "--format=" + RefFormat, "refs/heads", "refs/remotes", "refs/tags", "refs/stash");
+            GitCommandResult head = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "rev-parse", "HEAD", "--symbolic-full-name", "HEAD");
             if (!refs.Success || !head.Success) return null;
             string[] lines = SplitLines(head.StandardOutput).Select(line => line.Trim()).Where(line => line.Length > 0).ToArray();
             if (lines.Length < 2) return null;
@@ -252,7 +252,7 @@ namespace Orbiters.UnitGit.Editor
         private void ReadTrackedIgnoredDownloads(UnitGitSnapshot snapshot)
         {
             if (!Directory.Exists(Path.Combine(ProjectRoot, UnitGitProjectInitializer.McbDownloadsFolder))) return;
-            var tracked = RunGit(DefaultTimeoutMilliseconds, "ls-files", "-z", "--cached", "--ignored", "--exclude-standard", "--", UnitGitProjectInitializer.McbDownloadsFolder);
+            var tracked = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "ls-files", "-z", "--cached", "--ignored", "--exclude-standard", "--", UnitGitProjectInitializer.McbDownloadsFolder);
             if (!tracked.Success) return;
             foreach (string entry in tracked.StandardOutput.Split('\0'))
             {
@@ -269,13 +269,13 @@ namespace Orbiters.UnitGit.Editor
         {
             snapshot.DetachedCommit = ReadCommit("HEAD");
             snapshot.DetachedBy = UnitGitConflicts.DetachedBy(ProjectRoot);
-            GitCommandResult previous = RunGit(DefaultTimeoutMilliseconds, "rev-parse", "--abbrev-ref", "@{-1}");
+            GitCommandResult previous = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "rev-parse", "--abbrev-ref", "@{-1}");
             string previousBranch = previous.Success ? FirstNonEmptyLine(previous.StandardOutput) : string.Empty;
             // A detached commit before this one prints nothing or a hash: only an existing local branch is a way back.
             snapshot.PreviousBranch = IsLocalBranch(snapshot, previousBranch) ? previousBranch : string.Empty;
             snapshot.ReturnBranch = IsLocalBranch(snapshot, visitBranch) ? visitBranch.Trim() : snapshot.PreviousBranch;
             if (snapshot.ReturnBranch.Length == 0) return;
-            GitCommandResult newer = RunGit(DefaultTimeoutMilliseconds, "rev-list", "--count", "HEAD..refs/heads/" + snapshot.ReturnBranch, "--");
+            GitCommandResult newer = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "rev-list", "--count", "HEAD..refs/heads/" + snapshot.ReturnBranch, "--");
             if (newer.Success && int.TryParse(FirstNonEmptyLine(newer.StandardOutput), NumberStyles.Integer, CultureInfo.InvariantCulture, out int count))
                 snapshot.NewerCommits = count;
         }
@@ -288,7 +288,7 @@ namespace Orbiters.UnitGit.Editor
         // One commit as the Log shows it, or null.
         private UnitGitCommit ReadCommit(string revision)
         {
-            GitCommandResult result = RunGit(DefaultTimeoutMilliseconds, "log", "-1", "--pretty=format:" + CommitLogFormat(), revision, "--");
+            GitCommandResult result = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "log", "-1", "--pretty=format:" + CommitLogFormat(), revision, "--");
             return result.Success ? ParseCommits(result.StandardOutput, string.Empty).FirstOrDefault() : null;
         }
 
@@ -296,7 +296,7 @@ namespace Orbiters.UnitGit.Editor
         internal bool IsHeadDetached()
         {
             // Exit 1: HEAD is not a symbolic ref. A branch without commits yet is still a branch.
-            return RunGit(DefaultTimeoutMilliseconds, "symbolic-ref", "--quiet", "HEAD").ExitCode == 1;
+            return RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "symbolic-ref", "--quiet", "HEAD").ExitCode == 1;
         }
 
         /// <summary>
@@ -321,7 +321,7 @@ namespace Orbiters.UnitGit.Editor
         private GitCommandResult ReadChangeStatus()
         {
             // A folder of new files counts once (normal, not -uall): only whether there are changes matters here.
-            return RunGit(DefaultTimeoutMilliseconds, "status", "--porcelain=v2", "-z", "--untracked-files=normal", "--ignore-submodules=all");
+            return RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "status", "--porcelain=v2", "-z", "--untracked-files=normal", "--ignore-submodules=all");
         }
 
         /// <summary>
@@ -334,14 +334,14 @@ namespace Orbiters.UnitGit.Editor
             untracked = new List<string>();
             ignored = new List<string>();
             // What the target has and HEAD has not: the only files a checkout writes where Git tracks nothing yet.
-            GitCommandResult incoming = RunGit(DefaultTimeoutMilliseconds, "diff-tree", "-r", "-z", "--name-only", "--no-renames", "--diff-filter=A", "HEAD", target, "--");
+            GitCommandResult incoming = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "diff-tree", "-r", "-z", "--name-only", "--no-renames", "--diff-filter=A", "HEAD", target, "--");
             if (!incoming.Success) return incoming;
             List<string> paths = SplitNul(incoming.StandardOutput);
             if (paths.Count == 0) return incoming;
-            GitCommandResult others = RunGit(DefaultTimeoutMilliseconds, "ls-files", "-z", "--others", "--exclude-standard");
+            GitCommandResult others = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "ls-files", "-z", "--others", "--exclude-standard");
             if (!others.Success) return others;
             // "--directory": a folder ignored as a whole (Library/) is one line, not every file in it.
-            GitCommandResult ignoredOthers = RunGit(DefaultTimeoutMilliseconds, "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory");
+            GitCommandResult ignoredOthers = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory");
             if (!ignoredOthers.Success) return ignoredOthers;
             string root = ProjectRoot;
             Func<string, bool> exists = path => File.Exists(Path.Combine(root, path));
@@ -361,7 +361,7 @@ namespace Orbiters.UnitGit.Editor
             var args = new List<string> { "rev-list", "--count", "HEAD", "--not", "--branches", "--tags", "--remotes" };
             if (!string.IsNullOrWhiteSpace(since) && ResolveCommit(since, out string hash).Success) args.Add(hash);
             args.Add("--");
-            GitCommandResult result = RunGit(DefaultTimeoutMilliseconds, args.ToArray());
+            GitCommandResult result = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, args.ToArray());
             if (result.Success) int.TryParse(FirstNonEmptyLine(result.StandardOutput), NumberStyles.Integer, CultureInfo.InvariantCulture, out count);
             return result;
         }
@@ -379,7 +379,7 @@ namespace Orbiters.UnitGit.Editor
                 if (answer == UnitGitObjects.Answer.Missing) return null;
             }
 
-            GitCommandResult blob = RunGit(DefaultTimeoutMilliseconds, "cat-file", "blob", revision + ":./" + path);
+            GitCommandResult blob = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "cat-file", "blob", revision + ":./" + path);
             return blob.Success ? blob.StandardOutput : null;
         }
 
@@ -414,7 +414,10 @@ namespace Orbiters.UnitGit.Editor
                 GitCommandResult shelve = fromBranch ? ShelveAll(shelfMessage) : ShelveChanges(shelfMessage, inTheWay);
                 if (!shelve.Success) return shelve;
                 shelved = true;
-                left = ReadChangeStatus().StandardOutput;
+                // What Git sees right after shelving, to put the shelf back onto only that (see PutShelfBack). A read that
+                // did not finish (a reload) is no answer: null, and the shelf then stays where it is.
+                GitCommandResult after = ReadChangeStatus();
+                left = after.Success ? after.StandardOutput : null;
             }
             else if (!discardChanges && tracked > 0)
             {
@@ -431,7 +434,7 @@ namespace Orbiters.UnitGit.Editor
             if (!overwriteIgnored) checkout.Add("--no-overwrite-ignore");
             checkout.Add("--detach");
             checkout.Add(hash);
-            GitCommandResult result = RunGit(LongTimeoutMilliseconds, checkout.ToArray());
+            GitCommandResult result = RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, checkout.ToArray());
             if (result.Success || !shelved) return result;
 
             // Nothing was visited: the shelved changes go back where they were.
@@ -461,7 +464,10 @@ namespace Orbiters.UnitGit.Editor
                 GitCommandResult shelve = ShelveChanges(changedShelf, inTheWay);
                 if (!shelve.Success) return shelve;
                 shelved = true;
-                left = ReadChangeStatus().StandardOutput;
+                // What Git sees right after shelving, to put the shelf back onto only that (see PutShelfBack). A read that
+                // did not finish (a reload) is no answer: null, and the shelf then stays where it is.
+                GitCommandResult after = ReadChangeStatus();
+                left = after.Success ? after.StandardOutput : null;
             }
             else if (!discardChanges && tracked > 0)
             {
@@ -474,8 +480,8 @@ namespace Orbiters.UnitGit.Editor
 
             // "--" after the branch: a file called like the branch is never read as a path to restore.
             GitCommandResult checkout = discardChanges && !shelved
-                ? RunGit(LongTimeoutMilliseconds, "checkout", "--force", branch, "--")
-                : RunGit(LongTimeoutMilliseconds, "checkout", branch, "--");
+                ? RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "checkout", "--force", branch, "--")
+                : RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "checkout", branch, "--");
             if (!checkout.Success) return shelved ? PutShelfBack(checkout, changedShelf, left, out _) : checkout;
             if (FindShelf(shelfMessage).Length == 0) return checkout;
 
@@ -491,7 +497,7 @@ namespace Orbiters.UnitGit.Editor
             branch = (branch ?? string.Empty).Trim();
             if (branch.Length == 0 || branch.StartsWith("-", StringComparison.Ordinal))
                 return Failure("Choose the branch to go back to.");
-            GitCommandResult exists = RunGit(DefaultTimeoutMilliseconds, "rev-parse", "--verify", "--quiet", "refs/heads/" + branch);
+            GitCommandResult exists = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "rev-parse", "--verify", "--quiet", "refs/heads/" + branch);
             if (!exists.Success)
                 return Failure("Branch ‘" + branch + "’ no longer exists. Choose another branch to go back to.");
             return RefuseRunningOperation() ?? exists;
@@ -518,7 +524,7 @@ namespace Orbiters.UnitGit.Editor
                 if (!add.Success) return add;
             }
 
-            GitCommandResult shelve = RunGit(LongTimeoutMilliseconds, "stash", "push", "-m", message.Trim());
+            GitCommandResult shelve = RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "stash", "push", "-m", message.Trim());
             if (!shelve.Success && staged) RunGitForPaths(LongTimeoutMilliseconds, newFiles, "reset", "-q");
             return shelve;
         }
@@ -556,7 +562,7 @@ namespace Orbiters.UnitGit.Editor
         internal string FindShelf(string message)
         {
             if (string.IsNullOrWhiteSpace(message)) return string.Empty;
-            GitCommandResult list = RunGit(DefaultTimeoutMilliseconds, "stash", "list", "--format=%gd%x1f%gs");
+            GitCommandResult list = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "stash", "list", "--format=%gd%x1f%gs");
             return list.Success ? FindShelfIn(list.StandardOutput, message) : string.Empty;
         }
 
@@ -582,7 +588,7 @@ namespace Orbiters.UnitGit.Editor
             string shelf = FindShelf(message);
             return shelf.Length == 0
                 ? Failure("The shelf ‘" + message.Trim() + "’ was not found.")
-                : RunGit(LongTimeoutMilliseconds, "stash", "pop", shelf);
+                : RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "stash", "pop", shelf);
         }
 
         /// <summary>
@@ -611,7 +617,7 @@ namespace Orbiters.UnitGit.Editor
                 GitCommandResult result;
                 using (var file = File.Create(destination))
                 {
-                    result = ReadGitStream(LongTimeoutMilliseconds, (bytes, offset, count) =>
+                    result = ReadGitStream(GitAccess.Read, LongTimeoutMilliseconds, (bytes, offset, count) =>
                     {
                         file.Write(bytes, offset, count);
                         return true;
@@ -718,7 +724,7 @@ namespace Orbiters.UnitGit.Editor
             }
 
             // Quoted paths keep the file list ASCII whatever the output encoding, and tabs inside names escaped.
-            var result = RunGit(DefaultTimeoutMilliseconds, new[]
+            var result = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, new[]
             {
                 "-c",
                 "core.quotePath=true",
@@ -760,7 +766,7 @@ namespace Orbiters.UnitGit.Editor
             if (hashes.Count == 0) return found;
             string[] options = { "log", "--no-walk=unsorted", "-z", "--no-ext-diff", "--name-status", "-M", "--cc",
                 "--date=format-local:%m/%d/%Y %I:%M %p", "--pretty=format:" + CommitDetailsFormat() };
-            GitCommandResult result = RunWithList(null, DefaultTimeoutMilliseconds, hashes, false, options.Concat(new[] { "--stdin" }).ToArray(), options, new[] { "--" });
+            GitCommandResult result = RunWithList(GitAccess.Read, null, DefaultTimeoutMilliseconds, hashes, false, options.Concat(new[] { "--stdin" }).ToArray(), options, new[] { "--" });
             if (!result.Success) return found;
             foreach (UnitGitCommitDetails details in ParseCommitDetailsList(result.StandardOutput, hashes))
                 found[details.Commit.FullHash] = details;
@@ -780,7 +786,7 @@ namespace Orbiters.UnitGit.Editor
                 return Failure("No Git remote is configured. Use GitHub remote setup or add a remote before fetching.");
             }
 
-            return RunGit(LongTimeoutMilliseconds, "fetch", "--all", "--prune");
+            return RunGit(GitAccess.Change, LongTimeoutMilliseconds, "fetch", "--all", "--prune");
         }
 
         public GitCommandResult PullFastForward()
@@ -790,7 +796,7 @@ namespace Orbiters.UnitGit.Editor
                 return Failure("No Git remote is configured. Use GitHub remote setup or add a remote before pulling.");
             }
 
-            return RunGit(LongTimeoutMilliseconds, "pull", "--ff-only");
+            return RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "pull", "--ff-only");
         }
 
         /// <summary>
@@ -806,7 +812,7 @@ namespace Orbiters.UnitGit.Editor
             }
 
             // The full ref: --short would print "heads/main" when a tag is also called main.
-            GitCommandResult branchResult = RunGit(DefaultTimeoutMilliseconds, "symbolic-ref", "--quiet", "HEAD");
+            GitCommandResult branchResult = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "symbolic-ref", "--quiet", "HEAD");
             string branchRef = branchResult.Success ? FirstNonEmptyLine(branchResult.StandardOutput) : string.Empty;
             if (!branchRef.StartsWith("refs/heads/", StringComparison.Ordinal))
             {
@@ -816,14 +822,14 @@ namespace Orbiters.UnitGit.Editor
             string branch = branchRef.Substring("refs/heads/".Length);
 
             // The configured upstream, even when its remote branch was deleted since: push recreates it there.
-            GitCommandResult upstream = RunGit(DefaultTimeoutMilliseconds, "config", "--get", "branch." + branch + ".merge");
+            GitCommandResult upstream = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "config", "--get", "branch." + branch + ".merge");
             if (upstream.Success && FirstNonEmptyLine(upstream.StandardOutput).Length > 0)
             {
-                return RunGit(LongTimeoutMilliseconds, "push");
+                return RunGit(GitAccess.Change, LongTimeoutMilliseconds, "push");
             }
 
             string remote = remotes.FirstOrDefault(name => name == "origin") ?? remotes[0];
-            return RunGit(LongTimeoutMilliseconds, "push", "-u", remote, branch);
+            return RunGit(GitAccess.Change, LongTimeoutMilliseconds, "push", "-u", remote, branch);
         }
 
         /// <summary>Copies a commit onto the current branch. Conflicts fail and leave Git's cherry-pick in progress.</summary>
@@ -852,7 +858,7 @@ namespace Orbiters.UnitGit.Editor
             }
 
             var args = new List<string>(command) { hash };
-            GitCommandResult result = RunGit(LongTimeoutMilliseconds, args.ToArray());
+            GitCommandResult result = RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, args.ToArray());
             if (result.Success || UnitGitConflicts.Operation(ProjectRoot, out _) != operation)
             {
                 return result;
@@ -860,14 +866,17 @@ namespace Orbiters.UnitGit.Editor
 
             // Git stops on an empty result too (the changes are already here). Nothing conflicts and nothing is staged:
             // cancel it rather than leave an operation with nothing to resolve.
-            bool conflicted = RunGit(DefaultTimeoutMilliseconds, "ls-files", "-u").StandardOutput.Trim().Length > 0;
-            bool staged = RunGit(DefaultTimeoutMilliseconds, "diff", "--cached", "--quiet").ExitCode != 0;
+            // Both reads must have answered (a reload stops them at once): unless both say so, the operation stays for the user.
+            GitCommandResult unmerged = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "ls-files", "-u");
+            GitCommandResult index = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "diff", "--cached", "--quiet");
+            bool conflicted = !unmerged.Success || unmerged.StandardOutput.Trim().Length > 0;
+            bool staged = index.ExitCode != 0; // 1: something staged; an interrupted or failed read is not 0 either
             if (conflicted || staged)
             {
                 return result;
             }
 
-            GitCommandResult abort = RunGit(LongTimeoutMilliseconds, command[0], "--abort");
+            GitCommandResult abort = RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, command[0], "--abort");
             return abort.Success
                 ? Failure("Nothing to apply: the changes of " + ShortHash(hash) + " are already on this branch.")
                 : abort;
@@ -882,19 +891,19 @@ namespace Orbiters.UnitGit.Editor
                 return Failure("Select a commit first.");
             }
 
-            GitCommandResult resolved = RunGit(DefaultTimeoutMilliseconds, "rev-parse", "--verify", "--quiet", revision.Trim() + "^{commit}");
+            GitCommandResult resolved = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "rev-parse", "--verify", "--quiet", revision.Trim() + "^{commit}");
             fullHash = resolved.Success ? FirstNonEmptyLine(resolved.StandardOutput) : string.Empty;
             return fullHash.Length > 0 ? resolved : Failure("Commit " + ShortHash(revision) + " was not found.");
         }
 
         public GitCommandResult StageAll()
         {
-            return RunGit(LongTimeoutMilliseconds, "add", "-A");
+            return RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "add", "-A");
         }
 
         public GitCommandResult UnstageAll()
         {
-            return RunGit(DefaultTimeoutMilliseconds, "reset");
+            return RunGit(GitAccess.Exclusive, DefaultTimeoutMilliseconds, "reset");
         }
 
         public GitCommandResult Commit(string message)
@@ -944,7 +953,7 @@ namespace Orbiters.UnitGit.Editor
                 return Failure("Commit hash is required.");
             }
 
-            var result = RunGit(DefaultTimeoutMilliseconds, "log", "-1", "--format=%B", commitHash);
+            var result = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "log", "-1", "--format=%B", commitHash);
             if (result.Success)
             {
                 result.StandardOutput = TrimTrailingNewlines(result.StandardOutput);
@@ -956,7 +965,7 @@ namespace Orbiters.UnitGit.Editor
         internal GitCommandResult ReadHeadState(out UnitGitHeadState state)
         {
             state = null;
-            GitCommandResult result = RunGit(DefaultTimeoutMilliseconds, "rev-parse", "HEAD", "--symbolic-full-name", "HEAD");
+            GitCommandResult result = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "rev-parse", "HEAD", "--symbolic-full-name", "HEAD");
             if (!result.Success)
             {
                 return result;
@@ -980,7 +989,7 @@ namespace Orbiters.UnitGit.Editor
                 return Failure("Commit hash is required.");
             }
 
-            GitCommandResult resolved = RunGit(DefaultTimeoutMilliseconds, "rev-parse", "--verify", commitHash.Trim() + "^{commit}");
+            GitCommandResult resolved = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "rev-parse", "--verify", commitHash.Trim() + "^{commit}");
             if (!resolved.Success)
             {
                 return resolved;
@@ -999,7 +1008,7 @@ namespace Orbiters.UnitGit.Editor
             }
 
             string targetHash = FirstNonEmptyLine(resolved.StandardOutput);
-            return RunGit(LongTimeoutMilliseconds, "reset", GetResetModeArgument(mode), targetHash);
+            return RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "reset", GetResetModeArgument(mode), targetHash);
         }
 
         private static GitCommandResult CheckHeadUnchanged(string operation, UnitGitHeadState expected, UnitGitHeadState current, bool sameCommit)
@@ -1035,7 +1044,7 @@ namespace Orbiters.UnitGit.Editor
                 ? "Mixer Git shelf " + DateTime.Now.ToString("yyyy-MM-dd HH:mm")
                 : message.Trim();
 
-            return RunGit(LongTimeoutMilliseconds, "stash", "push", "-u", "-m", shelfMessage);
+            return RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "stash", "push", "-u", "-m", shelfMessage);
         }
 
         private static string GetResetModeArgument(UnitGitResetMode mode)
@@ -1061,7 +1070,7 @@ namespace Orbiters.UnitGit.Editor
                 // The message on stdin: no temporary file to write and delete per commit.
                 byte[] bytes = UnitGitRunner.Utf8.GetBytes(NormalizeCommitMessage(message) + "\n");
                 var stdinArgs = new List<string>(baseArguments) { "-F", "-" };
-                return RunGitWithInput(environment, LongTimeoutMilliseconds, bytes, stdinArgs.ToArray());
+                return RunGitWithInput(GitAccess.Exclusive, environment, LongTimeoutMilliseconds, bytes, stdinArgs.ToArray());
             }
 
             string messagePath = WriteTempCommitMessage(message);
@@ -1069,8 +1078,8 @@ namespace Orbiters.UnitGit.Editor
             {
                 var args = new List<string>(baseArguments) { "-F", messagePath };
                 return environment == null
-                    ? RunGit(LongTimeoutMilliseconds, args.ToArray())
-                    : RunGitWithEnvironment(environment, LongTimeoutMilliseconds, args.ToArray());
+                    ? RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, args.ToArray())
+                    : RunGitWithEnvironment(GitAccess.Exclusive, environment, LongTimeoutMilliseconds, args.ToArray());
             }
             finally
             {
@@ -1106,7 +1115,7 @@ namespace Orbiters.UnitGit.Editor
             string context = ContextArgument(file.Exists ? file.Length : 0);
             if (change.IsUnstaged && !change.IsUntracked)
             {
-                unstagedResult = RunGit(DefaultTimeoutMilliseconds, DiffArguments(whitespace, context, false, change.Path));
+                unstagedResult = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, DiffArguments(whitespace, context, false, change.Path));
                 if (unstagedResult.Success)
                 {
                     unstagedOutput = unstagedResult.StandardOutput;
@@ -1115,7 +1124,7 @@ namespace Orbiters.UnitGit.Editor
 
             if (change.IsStaged)
             {
-                stagedResult = RunGit(DefaultTimeoutMilliseconds, DiffArguments(whitespace, context, true, change.Path));
+                stagedResult = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, DiffArguments(whitespace, context, true, change.Path));
                 if (stagedResult.Success)
                 {
                     stagedOutput = stagedResult.StandardOutput;
@@ -1202,7 +1211,7 @@ namespace Orbiters.UnitGit.Editor
             }
             else
             {
-                GitCommandResult commit = RunGit(DefaultTimeoutMilliseconds, "show", "-s", "--format=%h%x1f%p%x1f%P", hash);
+                GitCommandResult commit = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "show", "-s", "--format=%h%x1f%p%x1f%P", hash);
                 string[] fields = (SplitLines(commit.StandardOutput).FirstOrDefault(line => line.IndexOf(FieldSeparator) >= 0) ?? string.Empty)
                     .Split(FieldSeparator);
                 if (!commit.Success || fields.Length < 3)
@@ -1259,7 +1268,7 @@ namespace Orbiters.UnitGit.Editor
             UnitGitObjects.Answer answer = UnitGitObjects.For(ProjectRoot).Describe(name, out _, out long size);
             if (answer == UnitGitObjects.Answer.Found) return size;
             if (answer == UnitGitObjects.Answer.Missing) return 0;
-            GitCommandResult read = RunGit(DefaultTimeoutMilliseconds, "--literal-pathspecs", "cat-file", "-s", name);
+            GitCommandResult read = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "--literal-pathspecs", "cat-file", "-s", name);
             return read.Success && long.TryParse(read.StandardOutput.Trim(), out long bytes) ? bytes : 0;
         }
 
@@ -1282,7 +1291,7 @@ namespace Orbiters.UnitGit.Editor
 
             args.Add("--");
             args.AddRange(paths);
-            return RunGit(DefaultTimeoutMilliseconds, args.ToArray());
+            return RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, args.ToArray());
         }
 
         // Files up to a few megabytes come whole (the viewer folds what did not change), bigger ones with 80 lines around
@@ -1327,7 +1336,7 @@ namespace Orbiters.UnitGit.Editor
 
         private string FindRenameSource(string parent, string hash, string path)
         {
-            GitCommandResult renames = RunGit(DefaultTimeoutMilliseconds, "-c", "core.quotePath=true", "diff", "--no-ext-diff",
+            GitCommandResult renames = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "-c", "core.quotePath=true", "diff", "--no-ext-diff",
                 "--name-status", "-M", "--diff-filter=R", parent, hash);
             if (!renames.Success)
             {
@@ -1376,10 +1385,10 @@ namespace Orbiters.UnitGit.Editor
             // A checkout writes the whole project: the long timeout, as a visit has (stopped midway, it leaves two versions mixed).
             if (!branch.IsRemote)
             {
-                return RunGit(LongTimeoutMilliseconds, "checkout", branch.Name);
+                return RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "checkout", branch.Name);
             }
 
-            return RunGit(LongTimeoutMilliseconds, "checkout", "-t", branch.Name);
+            return RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "checkout", "-t", branch.Name);
         }
 
         public GitCommandResult CreateBranch(string branchName, string startPoint)
@@ -1390,7 +1399,7 @@ namespace Orbiters.UnitGit.Editor
             }
 
             branchName = branchName.Trim();
-            var validation = RunGit(DefaultTimeoutMilliseconds, "check-ref-format", "--branch", branchName);
+            var validation = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "check-ref-format", "--branch", branchName);
             if (!validation.Success)
             {
                 return Failure("Invalid branch name: " + branchName);
@@ -1398,10 +1407,10 @@ namespace Orbiters.UnitGit.Editor
 
             if (string.IsNullOrWhiteSpace(startPoint))
             {
-                return RunGit(LongTimeoutMilliseconds, "checkout", "-b", branchName);
+                return RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "checkout", "-b", branchName);
             }
 
-            return RunGit(LongTimeoutMilliseconds, "checkout", "-b", branchName, startPoint);
+            return RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "checkout", "-b", branchName, startPoint);
         }
 
         public GitCommandResult UpdateBranch(UnitGitBranch branch)
@@ -1422,13 +1431,13 @@ namespace Orbiters.UnitGit.Editor
             if (string.IsNullOrWhiteSpace(branch.Upstream))
                 return Failure("Selected branch has no upstream. Fetch still works, but there is nothing to fast-forward.");
 
-            GitCommandResult checkout = RunGit(LongTimeoutMilliseconds, "checkout", branch.Name);
+            GitCommandResult checkout = RunGit(GitAccess.Exclusive, LongTimeoutMilliseconds, "checkout", branch.Name);
             if (!checkout.Success)
             {
                 return checkout;
             }
 
-            GitCommandResult current = RunGit(DefaultTimeoutMilliseconds, "symbolic-ref", "--quiet", "HEAD");
+            GitCommandResult current = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "symbolic-ref", "--quiet", "HEAD");
             if (!current.Success || FirstNonEmptyLine(current.StandardOutput) != branch.FullRef)
             {
                 return Failure("The current branch changed during Update. Refresh and try again.");
@@ -1451,10 +1460,10 @@ namespace Orbiters.UnitGit.Editor
 
             if (branch.IsRemote)
             {
-                return RunGit(DefaultTimeoutMilliseconds, "branch", "-dr", branch.Name);
+                return RunGit(GitAccess.Exclusive, DefaultTimeoutMilliseconds, "branch", "-dr", branch.Name);
             }
 
-            return RunGit(DefaultTimeoutMilliseconds, "branch", "-d", branch.Name);
+            return RunGit(GitAccess.Exclusive, DefaultTimeoutMilliseconds, "branch", "-d", branch.Name);
         }
 
         private static List<string> SelectedPaths(IList<string> paths)
@@ -1504,7 +1513,7 @@ namespace Orbiters.UnitGit.Editor
 
         internal List<string> GetRemoteNames()
         {
-            var result = RunGit(DefaultTimeoutMilliseconds, "remote");
+            var result = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "remote");
             if (!result.Success)
             {
                 return new List<string>();
@@ -1519,7 +1528,7 @@ namespace Orbiters.UnitGit.Editor
 
         private List<UnitGitBranch> GetBranches()
         {
-            var result = RunGit(
+            var result = RunGit(GitAccess.Read, 
                 DefaultTimeoutMilliseconds,
                 "branch",
                 "--all",
@@ -1535,7 +1544,7 @@ namespace Orbiters.UnitGit.Editor
 
         internal bool HasCommits()
         {
-            var result = RunGit(DefaultTimeoutMilliseconds, "rev-parse", "--verify", "HEAD");
+            var result = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "rev-parse", "--verify", "HEAD");
             return result.Success;
         }
 

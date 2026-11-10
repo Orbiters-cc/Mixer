@@ -104,7 +104,7 @@ namespace Orbiters.UnitGit.Editor.Tests
 
         public string Run(params string[] args)
         {
-            GitCommandResult result = Git.RunGit(60000, args);
+            GitCommandResult result = Git.RunGit(UnitGitWriteGate.KnownRead(args) ? GitAccess.Read : GitAccess.Exclusive, 60000, args);
             Assert.That(result.Success, Is.True, "git " + string.Join(" ", args) + ": " + result.Message);
             return result.StandardOutput;
         }

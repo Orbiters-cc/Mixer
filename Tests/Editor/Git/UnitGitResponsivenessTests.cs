@@ -100,7 +100,7 @@ namespace Orbiters.UnitGit.Editor.Tests
                 ReadSuperseded = () => true,
                 ProcessLogReceived = line => started++
             };
-            var result = service.RunGit(1000, "--version");
+            var result = service.RunGit(GitAccess.Read, 1000, "--version");
             Assert.That(result.Success, Is.False);
             Assert.That(started, Is.Zero);
         }

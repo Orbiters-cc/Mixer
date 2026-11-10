@@ -49,7 +49,7 @@ namespace Orbiters.UnitGit.Editor
             }
 
             // Relative to the project (".git/index"), or absolute in a linked worktree.
-            var result = new UnitGitService(root).RunGit(UnitGitService.DefaultTimeoutMilliseconds, arguments.ToArray());
+            var result = new UnitGitService(root).RunGit(GitAccess.Read, UnitGitService.DefaultTimeoutMilliseconds, arguments.ToArray());
             var lines = UnitGitService.SplitLines(result.StandardOutput).Where(line => line.Length > 0).ToList();
             if (!result.Success || lines.Count != names.Length) return null;
             lock (Known)

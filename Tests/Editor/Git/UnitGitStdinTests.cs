@@ -111,7 +111,7 @@ namespace Orbiters.UnitGit.Editor.Tests
                 repo.Commit("files");
                 int before = EditorProcessRunner.ActiveCount;
                 long seen = 0;
-                GitCommandResult result = repo.Git.ReadGitStream(60000, (bytes, offset, count) =>
+                GitCommandResult result = repo.Git.ReadGitStream(GitAccess.Read, 60000, (bytes, offset, count) =>
                 {
                     seen += count;
                     return false;
@@ -120,7 +120,7 @@ namespace Orbiters.UnitGit.Editor.Tests
                 Assert.That(seen, Is.GreaterThan(0));
                 Assert.That(EditorProcessRunner.ActiveCount, Is.LessThanOrEqualTo(before), "The stopped process is gone.");
 
-                GitCommandResult whole = repo.Git.ReadGitStream(60000, (bytes, offset, count) => true, "ls-files", "-z");
+                GitCommandResult whole = repo.Git.ReadGitStream(GitAccess.Read, 60000, (bytes, offset, count) => true, "ls-files", "-z");
                 Assert.That(whole.Success && !whole.Stopped, Is.True, whole.Message);
             }
         }

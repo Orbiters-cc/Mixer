@@ -177,19 +177,19 @@ namespace Orbiters.UnitGit.Editor
             EnsureVrchatGitIgnore(gitService.ProjectRoot, excludeRootPackageFolder);
             AppendMissing(Path.Combine(gitService.ProjectRoot, ".gitignore"), McbDownloadPatterns);
 
-            var initResult = gitService.RunGit(UnitGitService.LongTimeoutMilliseconds, "init");
+            var initResult = gitService.RunGit(GitAccess.Exclusive, UnitGitService.LongTimeoutMilliseconds, "init");
             if (!initResult.Success)
             {
                 return initResult;
             }
 
-            var addResult = gitService.RunGit(UnitGitService.LongTimeoutMilliseconds, "add", "-A", "--", ".");
+            var addResult = gitService.RunGit(GitAccess.Exclusive, UnitGitService.LongTimeoutMilliseconds, "add", "-A", "--", ".");
             if (!addResult.Success)
             {
                 return addResult;
             }
 
-            var commitResult = gitService.RunGit(UnitGitService.LongTimeoutMilliseconds, "commit", "-m", InitialCommitMessage);
+            var commitResult = gitService.RunGit(GitAccess.Exclusive, UnitGitService.LongTimeoutMilliseconds, "commit", "-m", InitialCommitMessage);
             if (!commitResult.Success)
             {
                 return commitResult;

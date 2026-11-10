@@ -28,7 +28,7 @@ namespace Orbiters.UnitGit.Editor.Tests
                         { "GIT_AUTHOR_NAME", "Author " + i }, { "GIT_AUTHOR_EMAIL", "a" + i + "@example.test" },
                         { "GIT_AUTHOR_DATE", "2024-0" + (i + 1) + "-02T03:04:05+02:00" }
                     };
-                    Assert.That(repo.Git.RunGitWithEnvironment(environment, 60000, "commit", "-q", "-m", messages[i]).Success, Is.True);
+                    Assert.That(repo.Git.RunGitWithEnvironment(GitAccess.Exclusive, environment, 60000, "commit", "-q", "-m", messages[i]).Success, Is.True);
                     hashes.Add(repo.Run("rev-parse", "HEAD").Trim());
                 }
 

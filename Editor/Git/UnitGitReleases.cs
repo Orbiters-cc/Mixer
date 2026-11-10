@@ -607,7 +607,7 @@ namespace Orbiters.UnitGit.Editor
                     Debug.LogWarning("[Mixer Git] " + ex.Message);
                 }
 
-                GitCommandResult head = service.RunGit(10000, "rev-parse", "HEAD");
+                GitCommandResult head = service.RunGit(GitAccess.Read, 10000, "rev-parse", "HEAD");
                 if (head.Success)
                 {
                     result.CommitHash = head.StandardOutput.Trim();
@@ -690,7 +690,7 @@ namespace Orbiters.UnitGit.Editor
                 // "add -A" silently skips ignored files; a release commit without its metadata is not a release.
                 if (requireReleaseFile && index.FilterIgnored(new[] { ReleasesFileName }).Length == 0)
                     return Fail(IgnoredReleaseFileMessage);
-                GitCommandResult stage = index.Run("add", "-A");
+                GitCommandResult stage = index.Run(GitAccess.Exclusive, "add", "-A");
                 if (!stage.Success) return Fail("Staging changes failed: " + stage.Message);
 
                 GitCommandResult commit = index.Commit(title, trailingParagraph);
@@ -705,7 +705,7 @@ namespace Orbiters.UnitGit.Editor
                     result.Message += "\n" + ex.Message;
                     Debug.LogWarning("[Mixer Git] " + ex.Message);
                 }
-                GitCommandResult head = service.RunGit(10000, "rev-parse", "HEAD");
+                GitCommandResult head = service.RunGit(GitAccess.Read, 10000, "rev-parse", "HEAD");
                 if (head.Success) result.CommitHash = head.StandardOutput.Trim();
                 if (notifyChangedExternally) RaiseChangedExternally();
                 return result;
@@ -745,10 +745,10 @@ namespace Orbiters.UnitGit.Editor
             {
                 var diffArgs = new List<string> { "diff", "--cached", "--quiet", "--exit-code", "--" };
                 diffArgs.AddRange(paths);
-                return index.Run(diffArgs.ToArray());
+                return index.Run(GitAccess.Read, diffArgs.ToArray());
             }
 
-            GitCommandResult names = index.Run("diff", "--cached", "--name-only", "--no-renames", "-z");
+            GitCommandResult names = index.Run(GitAccess.Read, "diff", "--cached", "--name-only", "--no-renames", "-z");
             if (!names.Success) return names;
             var wanted = new HashSet<string>(paths, StringComparer.Ordinal);
             bool changed = names.StandardOutput.Split('\0').Any(path => path.Length > 0 &&

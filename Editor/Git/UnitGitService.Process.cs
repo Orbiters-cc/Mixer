@@ -19,20 +19,26 @@ namespace Orbiters.UnitGit.Editor
         internal static bool FitsCommandLine(IList<string> paths) =>
             paths.Count <= MaxPathsPerCommand && paths.Sum(path => path.Length + 3) <= MaxPathCharactersPerCommand;
 
-        public GitCommandResult RunGit(int timeoutMilliseconds, params string[] arguments)
+        /// <summary>
+        /// Runs Git. <paramref name="access"/> is what the command does to the repository, declared by the caller: a read is
+        /// checked against the reads Mixer Git knows and runs as a change when it is not one (UnitGitWriteGate.Effective).
+        /// </summary>
+        public GitCommandResult RunGit(GitAccess access, int timeoutMilliseconds, params string[] arguments)
         {
             var log = ProcessLogReceived;
             var superseded = ReadSuperseded;
-            return UnitGitWriteGate.Run(arguments, timeoutMilliseconds,
-                () => RunStreaming(ProjectRoot, timeoutMilliseconds, log, superseded, null, null, null, arguments),
+            GitAccess effective = UnitGitWriteGate.Effective(access, arguments);
+            return UnitGitWriteGate.Run(effective, arguments, timeoutMilliseconds,
+                () => RunStreaming(ProjectRoot, timeoutMilliseconds, log, superseded, null, null, null, effective, arguments),
                 line => log?.Invoke(line));
         }
 
-        internal GitCommandResult RunGitWithEnvironment(IDictionary<string, string> environment, int timeoutMilliseconds, params string[] arguments)
+        internal GitCommandResult RunGitWithEnvironment(GitAccess access, IDictionary<string, string> environment, int timeoutMilliseconds, params string[] arguments)
         {
             var log = ProcessLogReceived;
-            return UnitGitWriteGate.Run(arguments, timeoutMilliseconds,
-                () => RunStreaming(ProjectRoot, timeoutMilliseconds, log, null, environment, null, null, arguments),
+            GitAccess effective = UnitGitWriteGate.Effective(access, arguments);
+            return UnitGitWriteGate.Run(effective, arguments, timeoutMilliseconds,
+                () => RunStreaming(ProjectRoot, timeoutMilliseconds, log, null, environment, null, null, effective, arguments),
                 line => log?.Invoke(line));
         }
 
@@ -41,17 +47,18 @@ namespace Orbiters.UnitGit.Editor
         /// command that changes the repository takes the write gate as <see cref="RunGit"/> does; a retry on another
         /// program's index lock writes the input again.
         /// </summary>
-        internal GitCommandResult RunGitWithInput(int timeoutMilliseconds, byte[] input, params string[] arguments)
+        internal GitCommandResult RunGitWithInput(GitAccess access, int timeoutMilliseconds, byte[] input, params string[] arguments)
         {
-            return RunGitWithInput(null, timeoutMilliseconds, input, arguments);
+            return RunGitWithInput(access, null, timeoutMilliseconds, input, arguments);
         }
 
-        internal GitCommandResult RunGitWithInput(IDictionary<string, string> environment, int timeoutMilliseconds, byte[] input, params string[] arguments)
+        internal GitCommandResult RunGitWithInput(GitAccess access, IDictionary<string, string> environment, int timeoutMilliseconds, byte[] input, params string[] arguments)
         {
             var log = ProcessLogReceived;
             var superseded = ReadSuperseded;
-            return UnitGitWriteGate.Run(arguments, timeoutMilliseconds,
-                () => RunStreaming(ProjectRoot, timeoutMilliseconds, log, superseded, environment, input, null, arguments),
+            GitAccess effective = UnitGitWriteGate.Effective(access, arguments);
+            return UnitGitWriteGate.Run(effective, arguments, timeoutMilliseconds,
+                () => RunStreaming(ProjectRoot, timeoutMilliseconds, log, superseded, environment, input, null, effective, arguments),
                 line => log?.Invoke(line));
         }
 
@@ -59,16 +66,22 @@ namespace Orbiters.UnitGit.Editor
         /// Reads a command's stdout as raw bytes while it runs; <paramref name="output"/> returns false to stop it early
         /// (the result is then a success with <see cref="GitCommandResult.Stopped"/>). Reads only: never gated.
         /// </summary>
-        internal GitCommandResult ReadGitStream(int timeoutMilliseconds, Func<byte[], int, int, bool> output, params string[] arguments)
+        internal GitCommandResult ReadGitStream(GitAccess access, int timeoutMilliseconds, Func<byte[], int, int, bool> output, params string[] arguments)
         {
-            return RunStreaming(ProjectRoot, timeoutMilliseconds, ProcessLogReceived, ReadSuperseded, null, null, output, arguments);
+            var log = ProcessLogReceived;
+            var superseded = ReadSuperseded;
+            GitAccess effective = UnitGitWriteGate.Effective(access, arguments);
+            return UnitGitWriteGate.Run(effective, arguments, timeoutMilliseconds,
+                () => RunStreaming(ProjectRoot, timeoutMilliseconds, log, superseded, null, null, output, effective, arguments),
+                line => log?.Invoke(line));
         }
 
         private static GitCommandResult RunStreaming(string workingDirectory, int timeoutMilliseconds, UnitGitProcessLogHandler logHandler,
-            Func<bool> superseded, IDictionary<string, string> environment, byte[] input, Func<byte[], int, int, bool> output, string[] arguments)
+            Func<bool> superseded, IDictionary<string, string> environment, byte[] input, Func<byte[], int, int, bool> output, GitAccess access,
+            string[] arguments)
         {
             // A change is never stopped because a newer read superseded the refresh that asked for it: it runs to its end.
-            bool write = !UnitGitWriteGate.IsRead(arguments);
+            bool write = access != GitAccess.Read;
             if (write) superseded = null;
             if (superseded != null && superseded())
                 return Failure("Read superseded.");
@@ -91,7 +104,7 @@ namespace Orbiters.UnitGit.Editor
                     Input = input,
                     Output = output,
                     // A read's output only fills the log: its lines are not logged (the command, its exit and errors are).
-                    OutputLine = log == null || UnitGitWriteGate.IsRead(arguments) ? null : (Action<string>)(line => log("stdout: " + line)),
+                    OutputLine = log == null || !write ? null : (Action<string>)(line => log("stdout: " + line)),
                     ErrorLine = log == null ? null : (Action<string>)(line => log("stderr: " + line))
                 });
                 result.ExitCode = run.Success || run.Stopped ? 0 : run.ExitCode == 0 ? 1 : run.ExitCode;
@@ -155,7 +168,7 @@ namespace Orbiters.UnitGit.Editor
             if (UnitGitRunner.CleanInput)
             {
                 args.Add("--pathspec-from-file=-");
-                return RunGitWithInput(environment, timeoutMilliseconds, writePaths, args.ToArray());
+                return RunGitWithInput(GitAccess.Exclusive, environment, timeoutMilliseconds, writePaths, args.ToArray());
             }
 
             // Stdin would start with a byte order mark (see UnitGitRunner.CleanInput): the same list from a file.
@@ -164,7 +177,9 @@ namespace Orbiters.UnitGit.Editor
             {
                 File.WriteAllBytes(file, writePaths);
                 args.Add("--pathspec-from-file=" + file);
-                return environment == null ? RunGit(timeoutMilliseconds, args.ToArray()) : RunGitWithEnvironment(environment, timeoutMilliseconds, args.ToArray());
+                return environment == null
+                    ? RunGit(GitAccess.Exclusive, timeoutMilliseconds, args.ToArray())
+                    : RunGitWithEnvironment(GitAccess.Exclusive, environment, timeoutMilliseconds, args.ToArray());
             }
             finally
             {
@@ -177,11 +192,11 @@ namespace Orbiters.UnitGit.Editor
         /// can be clean (<see cref="UnitGitRunner.CleanInput"/>), else on as many command lines as it takes, the outputs
         /// joined. Exit 1 (check-ignore: none of these) is kept only when every part says it.
         /// </summary>
-        internal GitCommandResult RunWithList(IDictionary<string, string> environment, int timeoutMilliseconds, IList<string> items, bool nul,
+        internal GitCommandResult RunWithList(GitAccess access, IDictionary<string, string> environment, int timeoutMilliseconds, IList<string> items, bool nul,
             string[] stdinArguments, string[] argumentsBeforeItems, string[] argumentsAfterItems = null)
         {
             if (UnitGitRunner.CleanInput)
-                return RunGitWithInput(environment, timeoutMilliseconds,
+                return RunGitWithInput(access, environment, timeoutMilliseconds,
                     nul ? NulSeparated(items) : UnitGitRunner.Utf8.GetBytes(string.Join("\n", items) + "\n"), stdinArguments);
             var output = new StringBuilder();
             var error = new StringBuilder();
@@ -194,7 +209,7 @@ namespace Orbiters.UnitGit.Editor
                 var args = new List<string>(argumentsBeforeItems);
                 args.AddRange(batch);
                 if (argumentsAfterItems != null) args.AddRange(argumentsAfterItems);
-                GitCommandResult part = environment == null ? RunGit(timeoutMilliseconds, args.ToArray()) : RunGitWithEnvironment(environment, timeoutMilliseconds, args.ToArray());
+                GitCommandResult part = environment == null ? RunGit(access, timeoutMilliseconds, args.ToArray()) : RunGitWithEnvironment(access, environment, timeoutMilliseconds, args.ToArray());
                 if (part.TimedOut || (part.ExitCode != 0 && part.ExitCode != 1)) return part;
                 output.Append(part.StandardOutput);
                 error.Append(part.StandardError);
@@ -230,7 +245,7 @@ namespace Orbiters.UnitGit.Editor
                 args.AddRange(paths);
             }
 
-            GitCommandResult result = RunGit(DefaultTimeoutMilliseconds, args.ToArray());
+            GitCommandResult result = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, args.ToArray());
             if (!result.Success)
                 return result;
             List<string> found = SplitNul(result.StandardOutput);
@@ -265,7 +280,7 @@ namespace Orbiters.UnitGit.Editor
             {
                 if (gitVersion == null)
                 {
-                    var result = RunGit(10000, "--version");
+                    var result = RunGit(GitAccess.Read, 10000, "--version");
                     if (!result.Success)
                     {
                         text = string.Empty;
@@ -359,7 +374,8 @@ namespace Orbiters.UnitGit.Editor
                 logHandler?.Invoke("cwd: " + startInfo.WorkingDirectory);
 
                 // A read's output only fills the log: its lines are not logged (the command, its exit and errors are).
-                bool logOutput = logHandler != null && !(fileName == "git" && UnitGitWriteGate.IsRead(arguments));
+                // Only gh and glab come here (Git goes through RunStreaming): their output is logged.
+                bool logOutput = logHandler != null;
                 var processResult = EditorProcessRunner.Run(startInfo, timeoutMilliseconds, superseded,
                     logOutput ? (Action<string>)(line => logHandler("stdout: " + line)) : null,
                     logHandler == null ? null : (Action<string>)(line => logHandler("stderr: " + line)));

@@ -46,7 +46,7 @@ namespace Orbiters.UnitGit.Editor.Tests
 
         private string Run(params string[] args)
         {
-            var result = git.RunGit(30000, args);
+            var result = git.RunGit(UnitGitWriteGate.KnownRead(args) ? GitAccess.Read : GitAccess.Exclusive, 30000, args);
             Assert.That(result.Success, Is.True, result.Message);
             return result.StandardOutput.Trim();
         }
@@ -74,7 +74,7 @@ namespace Orbiters.UnitGit.Editor.Tests
                 if (raced || !line.StartsWith("> git update-ref ")) return;
                 raced = true;
                 var otherProcess = new UnitGitService(root);
-                Assert.That(otherProcess.RunGit(30000, "checkout", "other").Success, Is.True);
+                Assert.That(otherProcess.RunGit(GitAccess.Exclusive, 30000, "checkout", "other").Success, Is.True);
             };
             var result = squash ? git.SquashCommits(new[] { first, second }, "rewritten", head) : git.RenameCommit(first, "rewritten", head);
             git.ProcessLogReceived = null;
@@ -94,9 +94,9 @@ namespace Orbiters.UnitGit.Editor.Tests
             {
                 if (concurrent != null || !line.StartsWith("> git update-ref ")) return;
                 var process = new UnitGitService(root);
-                var commit = process.RunGit(30000, "commit-tree", second + "^{tree}", "-p", second, "-m", "concurrent");
+                var commit = process.RunGit(GitAccess.Exclusive, 30000, "commit-tree", second + "^{tree}", "-p", second, "-m", "concurrent");
                 Assert.That(commit.Success, Is.True, commit.Message); concurrent = commit.StandardOutput.Trim();
-                Assert.That(process.RunGit(30000, "update-ref", "refs/heads/main", concurrent, second).Success, Is.True);
+                Assert.That(process.RunGit(GitAccess.Exclusive, 30000, "update-ref", "refs/heads/main", concurrent, second).Success, Is.True);
             };
             var result = git.RenameCommit(first, "renamed", Head());
             git.ProcessLogReceived = null;

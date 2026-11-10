@@ -33,7 +33,7 @@ namespace Orbiters.UnitGit.Editor.Tests
                         {
                             { "GIT_AUTHOR_NAME", author }, { "GIT_AUTHOR_EMAIL", name + "@example.test" }, { "GIT_AUTHOR_DATE", date }
                         };
-                        Assert.That(repo.Git.RunGitWithEnvironment(environment, 60000, "commit", "-q", "--cleanup=verbatim", "-m", message).Success, Is.True);
+                        Assert.That(repo.Git.RunGitWithEnvironment(GitAccess.Exclusive, environment, 60000, "commit", "-q", "--cleanup=verbatim", "-m", message).Success, Is.True);
                         commit[name] = repo.Run("rev-parse", "HEAD").Trim();
                     }
 
@@ -42,7 +42,7 @@ namespace Orbiters.UnitGit.Editor.Tests
                     Make("c2", "two\n\nUnitGit-Release: r1", "B", "1600000200 +1345");
                     repo.Run("checkout", "-q", "--orphan", "side");
                     repo.Run("rm", "-rq", "--cached", ".");
-                    Assert.That(repo.Git.RunGit(60000, "commit", "-q", "--allow-empty", "-m", "empty root").Success, Is.True);
+                    Assert.That(repo.Git.RunGit(GitAccess.Exclusive, 60000, "commit", "-q", "--allow-empty", "-m", "empty root").Success, Is.True);
                     commit["s0"] = repo.Run("rev-parse", "HEAD").Trim();
                     repo.Run("clean", "-fdxq");
                     Make("s1", "side work", "S", "1600000300 +0100");

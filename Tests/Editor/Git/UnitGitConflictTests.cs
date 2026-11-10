@@ -315,7 +315,7 @@ namespace Orbiters.UnitGit.Editor.Tests
                     repo.Run("worktree", "add", "-q", "-b", "side", worktree);
                     var tree = new UnitGitService(worktree);
                     File.WriteAllText(Path.Combine(worktree, "Assets", "notes.txt"), "one\nside\n");
-                    Assert.That(tree.RunGit(60000, "commit", "-q", "-am", "side").Success, Is.True);
+                    Assert.That(tree.RunGit(GitAccess.Exclusive, 60000, "commit", "-q", "-am", "side").Success, Is.True);
                     repo.Write("Assets/notes.txt", "one\nmain\n");
                     repo.Commit("main");
                     Assert.That(File.Exists(Path.Combine(worktree, ".git")), Is.True, "A linked worktree has a .git file.");

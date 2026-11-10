@@ -38,7 +38,7 @@ namespace Orbiters.UnitGit.Editor.Tests
             Put(author);
             Put(Ascii(" 1600000000 +0200\ncommitter Someone <someone@example.test> 1600000100 +0200\n\n"));
             Put(message);
-            GitCommandResult made = repo.Git.RunGitWithInput(60000, bytes.ToArray(), "hash-object", "--literally", "-t", "commit", "-w", "--stdin");
+            GitCommandResult made = repo.Git.RunGitWithInput(GitAccess.Exclusive, 60000, bytes.ToArray(), "hash-object", "--literally", "-t", "commit", "-w", "--stdin");
             Assert.That(made.Success, Is.True, made.Message);
             string hash = made.StandardOutput.Trim();
             repo.Run("update-ref", "refs/heads/main", hash, parent);
@@ -48,7 +48,7 @@ namespace Orbiters.UnitGit.Editor.Tests
         private static byte[] Stored(UnitGitTestRepo repo, string revision)
         {
             var bytes = new MemoryStream();
-            GitCommandResult read = repo.Git.ReadGitStream(60000, (chunk, offset, count) => { bytes.Write(chunk, offset, count); return true; },
+            GitCommandResult read = repo.Git.ReadGitStream(GitAccess.Read, 60000, (chunk, offset, count) => { bytes.Write(chunk, offset, count); return true; },
                 "cat-file", "commit", revision);
             Assert.That(read.Success, Is.True, read.Message);
             return bytes.ToArray();

@@ -132,7 +132,7 @@ namespace Orbiters.UnitGit.Editor
         /// </summary>
         public static HashSet<int> Stages(UnitGitService git, string path)
         {
-            var listed = git.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "-c", "core.quotePath=true", "--literal-pathspecs", "ls-files", "--unmerged", "--", path);
+            var listed = git.RunGit(GitAccess.Read, UnitGitService.DefaultTimeoutMilliseconds, "-c", "core.quotePath=true", "--literal-pathspecs", "ls-files", "--unmerged", "--", path);
             if (!listed.Success) throw new IOException("Git could not list the versions of " + path + ": " + listed.Message);
             var stages = new HashSet<int>();
             foreach (string line in UnitGitService.SplitLines(listed.StandardOutput))
@@ -298,7 +298,7 @@ namespace Orbiters.UnitGit.Editor
                 File.WriteAllText(t, theirs);
                 // Git writes the merge over "mine" byte for byte; its standard output would come back line by line, which
                 // loses whether the file ends with a line break. The exit status is the number of conflicts, at most 127.
-                var merged = git.RunGit(UnitGitService.LongTimeoutMilliseconds, "merge-file", "--diff3", "-L", MineLabel, "-L", BaseLabel, "-L", TheirsLabel, m, b, t);
+                var merged = git.RunGit(GitAccess.Read, UnitGitService.LongTimeoutMilliseconds, "merge-file", "--diff3", "-L", MineLabel, "-L", BaseLabel, "-L", TheirsLabel, m, b, t);
                 if (merged.TimedOut || merged.ExitCode < 0 || merged.ExitCode > 127)
                     throw new IOException("Git could not merge the versions: " + merged.Message);
                 var blocks = Parse(Encoding.UTF8.GetString(File.ReadAllBytes(m)));
@@ -446,7 +446,7 @@ namespace Orbiters.UnitGit.Editor
                 return Failure(path + " changed on disk after Mixer Git read it, so nothing was saved. Look at it again, then choose.");
             Directory.CreateDirectory(Path.GetDirectoryName(full));
             File.WriteAllText(full, text);
-            return git.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "--literal-pathspecs", "add", "--", path);
+            return git.RunGit(GitAccess.Exclusive, UnitGitService.DefaultTimeoutMilliseconds, "--literal-pathspecs", "add", "--", path);
         }
 
         /// <summary>
@@ -468,10 +468,10 @@ namespace Orbiters.UnitGit.Editor
             }
             if (stages.Count == 0) return Failure(path + " is not in conflict any more. Refresh, then look at it again.");
             if (!stages.Contains(stage))
-                return git.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "--literal-pathspecs", "rm", "--quiet", "--", path);
+                return git.RunGit(GitAccess.Exclusive, UnitGitService.DefaultTimeoutMilliseconds, "--literal-pathspecs", "rm", "--quiet", "--", path);
 
             // Git writes the version to a temporary file next to the project (with the filters a checkout applies) and names it.
-            var written = git.RunGit(UnitGitService.LongTimeoutMilliseconds, "checkout-index", "--temp", "--stage=" + stage, "--", path);
+            var written = git.RunGit(GitAccess.Exclusive, UnitGitService.LongTimeoutMilliseconds, "checkout-index", "--temp", "--stage=" + stage, "--", path);
             if (!written.Success) return written;
             string name = UnitGitService.SplitLines(written.StandardOutput).FirstOrDefault()?.Split('\t')[0] ?? string.Empty;
             string temporary = Path.Combine(git.ProjectRoot, name);
@@ -489,7 +489,7 @@ namespace Orbiters.UnitGit.Editor
                 try { File.Delete(temporary); } catch (IOException) { } catch (UnauthorizedAccessException) { }
                 return Failure("Could not write " + path + ": " + ex.Message);
             }
-            return git.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "--literal-pathspecs", "add", "--", path);
+            return git.RunGit(GitAccess.Exclusive, UnitGitService.DefaultTimeoutMilliseconds, "--literal-pathspecs", "add", "--", path);
         }
 
         /// <summary>Records the resolved merge (or continues the copy/revert/rebase) with Git's prepared message.</summary>
@@ -497,10 +497,10 @@ namespace Orbiters.UnitGit.Editor
         {
             switch (operation)
             {
-                case UnitGitOperation.Merge: return git.RunGit(UnitGitService.LongTimeoutMilliseconds, "commit", "--no-edit");
-                case UnitGitOperation.CherryPick: return git.RunGit(UnitGitService.LongTimeoutMilliseconds, "-c", "core.editor=true", "cherry-pick", "--continue");
-                case UnitGitOperation.Revert: return git.RunGit(UnitGitService.LongTimeoutMilliseconds, "-c", "core.editor=true", "revert", "--continue");
-                case UnitGitOperation.Rebase: return git.RunGit(UnitGitService.LongTimeoutMilliseconds, "-c", "core.editor=true", "rebase", "--continue");
+                case UnitGitOperation.Merge: return git.RunGit(GitAccess.Exclusive, UnitGitService.LongTimeoutMilliseconds, "commit", "--no-edit");
+                case UnitGitOperation.CherryPick: return git.RunGit(GitAccess.Exclusive, UnitGitService.LongTimeoutMilliseconds, "-c", "core.editor=true", "cherry-pick", "--continue");
+                case UnitGitOperation.Revert: return git.RunGit(GitAccess.Exclusive, UnitGitService.LongTimeoutMilliseconds, "-c", "core.editor=true", "revert", "--continue");
+                case UnitGitOperation.Rebase: return git.RunGit(GitAccess.Exclusive, UnitGitService.LongTimeoutMilliseconds, "-c", "core.editor=true", "rebase", "--continue");
                 default: return new GitCommandResult { StandardOutput = "All conflicts are resolved." };
             }
         }
@@ -509,10 +509,10 @@ namespace Orbiters.UnitGit.Editor
         {
             switch (operation)
             {
-                case UnitGitOperation.Merge: return git.RunGit(UnitGitService.LongTimeoutMilliseconds, "merge", "--abort");
-                case UnitGitOperation.CherryPick: return git.RunGit(UnitGitService.LongTimeoutMilliseconds, "cherry-pick", "--abort");
-                case UnitGitOperation.Revert: return git.RunGit(UnitGitService.LongTimeoutMilliseconds, "revert", "--abort");
-                case UnitGitOperation.Rebase: return git.RunGit(UnitGitService.LongTimeoutMilliseconds, "rebase", "--abort");
+                case UnitGitOperation.Merge: return git.RunGit(GitAccess.Exclusive, UnitGitService.LongTimeoutMilliseconds, "merge", "--abort");
+                case UnitGitOperation.CherryPick: return git.RunGit(GitAccess.Exclusive, UnitGitService.LongTimeoutMilliseconds, "cherry-pick", "--abort");
+                case UnitGitOperation.Revert: return git.RunGit(GitAccess.Exclusive, UnitGitService.LongTimeoutMilliseconds, "revert", "--abort");
+                case UnitGitOperation.Rebase: return git.RunGit(GitAccess.Exclusive, UnitGitService.LongTimeoutMilliseconds, "rebase", "--abort");
                 default: return new GitCommandResult { ExitCode = 1, StandardError = "Nothing to cancel." };
             }
         }
@@ -520,7 +520,7 @@ namespace Orbiters.UnitGit.Editor
         /// <summary>Merges a branch into the current one. Conflicts are a normal outcome here, not a failure.</summary>
         public static GitCommandResult MergeBranch(UnitGitService git, string branch)
         {
-            var result = git.RunGit(UnitGitService.LongTimeoutMilliseconds, "merge", "--no-edit", "--no-ff", branch);
+            var result = git.RunGit(GitAccess.Exclusive, UnitGitService.LongTimeoutMilliseconds, "merge", "--no-edit", "--no-ff", branch);
             if (!result.Success && (result.StandardOutput + result.StandardError).IndexOf("CONFLICT", StringComparison.Ordinal) >= 0)
                 return new GitCommandResult { StandardOutput = "The merge has conflicts: resolve them in the Conflicts tab." };
             return result;
