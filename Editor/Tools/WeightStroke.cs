@@ -211,11 +211,11 @@ namespace Orbiters.Mixer.Editor
             return edit;
         }
 
-        // Blender gets every channel the stroke changed: the painted group, or every bone whose weight moved on the
+        // The link (Blender) gets every channel the stroke changed: the painted group, or every bone whose weight moved on the
         // touched vertices (normalizing scales the vertex's other bones, which Blender must get too).
         private void SendToLink(HistoryEntry edit)
         {
-            if (edit is GroupWeightEdit group) { MixerLinkService.SendWeights(target, channel, new List<int>(group.Indices)); return; }
+            if (edit is GroupWeightEdit group) { MixerSession.NoteWeightsEdited(target, channel, group.Indices); return; }
             if (!(edit is WeightEdit weights)) return;
             var byBone = new Dictionary<int, List<int>>();
             void Add(int bone, int v)
@@ -230,7 +230,7 @@ namespace Orbiters.Mixer.Editor
                 foreach (var influence in weights.Before[i]) Add(influence.Bone, v);
                 foreach (var influence in weights.After[i]) Add(influence.Bone, v);
             }
-            foreach (var pair in byBone) MixerLinkService.SendWeights(target, WeightChannel.OfBone(pair.Key), pair.Value);
+            foreach (var pair in byBone) MixerSession.NoteWeightsEdited(target, WeightChannel.OfBone(pair.Key), pair.Value);
         }
 
         private void Apply(bool invert)

@@ -57,6 +57,24 @@ namespace Orbiters.Mixer.Editor
         /// concerns it: a stroke is <see cref="SessionChange.Geometry"/> of one target, not a new list of sessions.
         /// </summary>
         public static event Action<EditTarget, SessionChange> Edited;
+        /// <summary>
+        /// Positions of a target moved, or what shows of them changed (another layer, a shape made or renamed): the layer
+        /// that was edited (null: the base) and the mesh vertices that moved (null: not known, any may have). Raised just
+        /// before the <see cref="Edited"/> of the same change; the vertices are only valid during the call.
+        /// </summary>
+        public static event Action<EditTarget, string, IReadOnlyList<int>> GeometryEdited;
+        /// <summary>
+        /// A weight stroke changed one channel (a bone or a vertex group) on these mesh vertices (valid during the call);
+        /// raised once per channel it changed, after its <see cref="Edited"/>.
+        /// </summary>
+        public static event Action<EditTarget, WeightChannel, IReadOnlyList<int>> WeightsEdited;
+
+        /// <summary>A weight stroke changed <paramref name="channel"/> on <paramref name="vertices"/> (see <see cref="WeightsEdited"/>).</summary>
+        public static void NoteWeightsEdited(EditTarget target, WeightChannel channel, IReadOnlyList<int> vertices)
+        {
+            if (target == null || channel.IsNone || vertices == null) return;
+            WeightsEdited?.Invoke(target, channel, vertices);
+        }
 
         private static void Raise(EditTarget target, SessionChange change)
         {
@@ -137,7 +155,6 @@ namespace Orbiters.Mixer.Editor
             MixerSidecar.Load(original, target.Document);
             targets.Add(target);
             SaveState();
-            MixerLinkService.ClaimForUnity(target);
             NotePreviewed(target.Renderer);
             Raise(target, SessionChange.Sessions);
             return target;
@@ -507,11 +524,17 @@ namespace Orbiters.Mixer.Editor
         /// <summary>Called after a stroke or operation changed a target (anything of it: see the overload).</summary>
         public static void NoteEdited(EditTarget target) => NoteEdited(target, SessionChange.Edits);
 
-        /// <summary>Called after a stroke or operation changed <paramref name="change"/> of a target.</summary>
-        public static void NoteEdited(EditTarget target, SessionChange change)
+        /// <summary>Called after a stroke or operation changed <paramref name="change"/> of a target (on the layer it shows).</summary>
+        public static void NoteEdited(EditTarget target, SessionChange change) => NoteEdited(target, change, target?.Document.Layer, null);
+
+        /// <summary>
+        /// Called after a stroke or operation changed <paramref name="change"/> of a target; for geometry, on
+        /// <paramref name="layer"/> (null: the base) and, when the caller knows them, only <paramref name="vertices"/>.
+        /// </summary>
+        public static void NoteEdited(EditTarget target, SessionChange change, string layer, IReadOnlyList<int> vertices)
         {
             dirtySinceAutosave = true;
-            if (!MixerLinkService.IsBlenderOwned(target)) MixerLinkService.NotePositions(target);
+            if (target != null && (change & (SessionChange.Geometry | SessionChange.Layer | SessionChange.ShapeList)) != 0) GeometryEdited?.Invoke(target, layer, vertices);
             if (target != null) NotePreviewed(target.Renderer);
             Raise(target, change);
         }
@@ -524,7 +547,6 @@ namespace Orbiters.Mixer.Editor
         public static void NoteArmatureEdited()
         {
             dirtySinceAutosave = true;
-            MixerLinkService.NoteArmatureChanged();
             foreach (var root in targets.Where(t => t.Alive).Select(t => RootOf(t.Renderer)).Distinct()) if (root != null) AvatarMeshEdits.NotifyPreviewed(root);
             Raise(null, SessionChange.RestPose);
         }
@@ -664,7 +686,7 @@ namespace Orbiters.Mixer.Editor
             MixerHistory.Push(new PositionEdit { Target = target, Label = "Mirror " + name + (fromPositiveX ? " +X to -X" : " -X to +X"), Layer = name, Indices = indices.ToArray(), Before = before.ToArray(), After = after.ToArray() });
             if (previousLayer != name) target.AfterLayerChange(); else { target.AfterEdit(indices, fullRefresh: true); target.RecomputeAllNormals(); }
             SaveState();
-            NoteEdited(target, SessionChange.Layer | SessionChange.Geometry);
+            NoteEdited(target, SessionChange.Layer | SessionChange.Geometry, name, indices);
         }
 
         public static void ClearMask(EditTarget target) => SetMask(target, _ => 0f, "Clear mask");

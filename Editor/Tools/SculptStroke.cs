@@ -179,7 +179,7 @@ namespace Orbiters.Mixer.Editor
             }
             target.EndStroke();
             MixerHistory.Push(edit);
-            MixerSession.NoteEdited(target, SessionChange.Geometry);
+            MixerSession.NoteEdited(target, SessionChange.Geometry, edit.Layer, edit.Indices);
             return edit;
         }
 

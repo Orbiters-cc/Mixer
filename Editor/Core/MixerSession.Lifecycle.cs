@@ -283,7 +283,6 @@ namespace Orbiters.Mixer.Editor
             kept.HoldLayerWeight();
             kept.Document.MarkAllDirty();
             kept.Flush();
-            MixerLinkService.ClaimForUnity(kept);
             NotePreviewed(renderer);
         }
 
@@ -582,7 +581,6 @@ namespace Orbiters.Mixer.Editor
             target.HoldLayerWeight(ParseHeld(held, working.blendShapeCount));
             target.AfterLayerChange();
             target.Flush();
-            MixerLinkService.ClaimForUnity(target);
             NotePreviewed(renderer);
             return target;
         }
@@ -845,7 +843,6 @@ namespace Orbiters.Mixer.Editor
             targets.Add(target);
             dirtySinceAutosave = true;
             SaveState();
-            MixerLinkService.ClaimForUnity(target);
             NotePreviewed(renderer);
             Say("The copy " + renderer.name + " keeps " + source.Name + "'s Mixer edits in a session of its own.", false);
             Raise(null, SessionChange.Sessions);

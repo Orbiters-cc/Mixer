@@ -855,6 +855,55 @@ namespace Orbiters.Mixer.Editor.Tests
             }
         }
 
+        // A stroke names the vertices it moved (through MixerSession's geometry event): the frame holds those that differ
+        // from what Blender has, the same frame the full comparison gave; several notes before the frame leaves collapse
+        // into one; a note that names nothing compares every vertex again; and a note on another layer is its own frame.
+        [Test]
+        public void AStrokesNamedVerticesGiveTheFrameTheFullComparisonGave()
+        {
+            using (var host = MixerLinkHost.OpenPrivate(scene))
+            using (var blender = new FakeBlender(host))
+            {
+                blender.Hello();
+                blender.Pump(5, MixerLinkProtocol.FrameType.MeshData);
+                var target = MixerSession.Edit(renderer);
+                blender.Pump(0.5);
+                var doc = target.Document;
+                var n = doc.LinkWeld;
+                host.NotePositions(target);
+                Assert.That(PositionsOf(blender.Pump(1.0, MixerLinkProtocol.FrameType.Positions)).LastOrDefault()?.Indices, Is.Null, "the first frame is whole");
+
+                // Two strokes before the frame leaves, each naming the mesh vertices it moved (every member of a welded vertex).
+                int a = n.Representative[3], b = n.Representative[5];
+                var first = n.MembersOf(3).ToArray();
+                var second = n.MembersOf(5).ToArray().Concat(new[] { a }).ToArray();
+                foreach (int v in first) doc.SetLayerPosition(null, v, doc.Positions[v] + Vector3.right);
+                MixerSession.NoteEdited(target, SessionChange.Geometry, null, first);
+                foreach (int v in n.MembersOf(5).ToArray()) doc.SetLayerPosition(null, v, doc.Positions[v] + Vector3.up);
+                MixerSession.NoteEdited(target, SessionChange.Geometry, null, second);
+                var frame = PositionsOf(blender.Pump(1.0, MixerLinkProtocol.FrameType.Positions)).LastOrDefault();
+                Assert.That(frame, Is.Not.Null, "the strokes reach Blender through the session's event");
+                Assert.That(frame.Indices, Is.EqualTo(new[] { 3, 5 }), "both strokes' vertices, ascending, once each");
+                Assert.That(frame.Positions[0], Is.EqualTo(doc.Positions[a]));
+                Assert.That(frame.Positions[1], Is.EqualTo(doc.Positions[b]));
+
+                // Named but not moved: nothing goes. Moved without a list: found by comparing everything.
+                MixerSession.NoteEdited(target, SessionChange.Geometry, null, first);
+                Assert.That(PositionsOf(blender.Pump(0.5)).Any(), Is.False, "a named vertex that is where Blender has it is not sent");
+                int c = n.Representative[7];
+                foreach (int v in n.MembersOf(7).ToArray()) doc.SetLayerPosition(null, v, doc.Positions[v] + Vector3.forward);
+                MixerSession.NoteEdited(target, SessionChange.Geometry, null, first);
+                MixerSession.NoteEdited(target, SessionChange.Geometry, null, null);
+                frame = PositionsOf(blender.Pump(1.0, MixerLinkProtocol.FrameType.Positions)).LastOrDefault();
+                Assert.That(frame?.Indices, Is.EqualTo(new[] { 7 }), "a note without a list compares every vertex");
+                Assert.That(frame.Positions[0], Is.EqualTo(doc.Positions[c]));
+
+                // A mask or weights alone send no positions.
+                MixerSession.NoteEdited(target, SessionChange.Mask | SessionChange.Weights);
+                Assert.That(PositionsOf(blender.Pump(0.5)).Any(), Is.False, "no geometry, no positions frame");
+            }
+        }
+
         // Blender's sparse frames: each holds only what moved since its last one, so every one must land, in order.
         [Test]
         public void SparseFramesFromBlenderAllLand()
