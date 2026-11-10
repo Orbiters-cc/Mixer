@@ -10,10 +10,11 @@ namespace Orbiters.Mixer.Splats
     /// before each camera's transparent pass, a command buffer sorts the splats back to front on the GPU (again only
     /// once the camera has moved enough to reorder them), measures each one's footprint once in a compute pass (again
     /// only when the view changed), draws them as camera-facing Gaussians into a temporary target that shares the
-    /// camera's depth buffer, and lays that over the camera's image (<see cref="Pipeline"/>). They blend as Orbiters - N4N0's trainer fitted them, on encoded sRGB colours (Splats.shader). A
-    /// cloud's sky map goes first, behind everything the camera drew (where its depth is still the far plane), in place
-    /// of the scene's own sky, as Orbiters - N4N0's viewer draws it. An editor tool: imported clouds live on EditorOnly
-    /// objects, so builds leave them out.
+    /// camera's depth buffer, and lays that over the camera's image (<see cref="Pipeline"/>). They blend as Orbiters -
+    /// N4N0's trainer fitted them, on encoded sRGB colours (Splats.shader). A cloud's sky map goes first, behind
+    /// everything the camera drew (where its depth is still the far plane), in place of the scene's own sky, as Orbiters
+    /// - N4N0's viewer draws it. An editor tool: imported clouds live on EditorOnly objects, so builds leave them out
+    /// (and the compute shaders are found through the AssetDatabase), so none of this runs in a VRChat world.
     /// </summary>
     [ExecuteAlways]
     [AddComponentMenu("Orbiters/Mixer/Splat Renderer")]
