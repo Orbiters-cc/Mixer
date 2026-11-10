@@ -118,7 +118,7 @@ namespace Orbiters.UnitGit.Editor.Semantic
             if (raw == null) return null;
             if (raw.StartsWith("{fileID:", StringComparison.Ordinal))
             {
-                var map = UnityYaml.Parse("%YAML 1.1\n--- !u!1 &1\nX:\n  v: " + raw).Documents.FirstOrDefault()?.Body["v"];
+                var map = UnityYaml.ParseInline(raw);
                 var reference = UnitySemanticDiff.Reference(map);
                 if (reference.fileId == 0) return "None";
                 if (!string.IsNullOrEmpty(reference.guid)) return Asset(reference.guid, reference.fileId);
