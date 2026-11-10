@@ -47,7 +47,6 @@ namespace Orbiters.UnitGit.Editor
         private UnitGitService gitService;
         private UnitGitProjectInitializer initializer;
         private UnitGitSnapshot snapshot;
-        private string selectedShelf = string.Empty;
         private VisualElement contentRoot;
         private UnitGitTab activeTab = UnitGitTab.Log;
         [SerializeField] private string commitMessage = string.Empty;
@@ -72,6 +71,9 @@ namespace Orbiters.UnitGit.Editor
 
         // The Local Changes tab: its list, selection, includes in flight and the diff shown (the commit message fields stay serialized on the window).
         internal readonly UnitGitChangesState changesTab = new UnitGitChangesState();
+
+        // The Shelf tab: the shelf and file selected, what is expanded and its diff pane.
+        private readonly UnitGitShelfState shelfTab = new UnitGitShelfState();
 
         [MenuItem("Tools/Orbiters/Mixer Git", priority = 2003)]
         internal static void OpenWindow()
