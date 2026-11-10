@@ -543,6 +543,8 @@ namespace Orbiters.Mixer.Editor.Tests
             Undo.DestroyObjectImmediate(body);
             MixerSession.Tick();
             Assert.That(MixerSession.Targets, Has.No.Member(target), "the session waits while the object is gone");
+            Assert.That(MixerSession.PhaseOf(target.Id), Is.EqualTo(MixerSession.SessionPhase.WaitingForObject));
+            Assert.That(MixerSession.PhaseViolations(), Is.Empty);
 
             Undo.PerformUndo();
             var back = root.GetComponentsInChildren<SkinnedMeshRenderer>(true).FirstOrDefault(r => r.name == "Body");
@@ -551,6 +553,8 @@ namespace Orbiters.Mixer.Editor.Tests
             MixerSession.Tick();
             var session = MixerSession.TargetOf(back);
             Assert.That(session, Is.Not.Null, "its session comes back");
+            Assert.That(MixerSession.PhaseOf(session.Id), Is.EqualTo(MixerSession.SessionPhase.Live));
+            Assert.That(MixerSession.PhaseViolations(), Is.Empty);
             Assert.That(MaxDistance(session.Document.Positions, edited), Is.LessThan(1e-7f), "with its edits");
             Assert.That(back.sharedMesh, Is.SameAs(session.Working));
         }
@@ -573,12 +577,16 @@ namespace Orbiters.Mixer.Editor.Tests
             Assert.That(renderer.sharedMesh, Is.SameAs(mesh));
             Assert.That(MixerSession.TargetOf(renderer), Is.Null, "the session waits instead of drawing over the undone state");
             MixerSession.Tick();
+            Assert.That(MixerSession.PhaseOf(target.Id), Is.EqualTo(MixerSession.SessionPhase.ParkedWithHistory), "set aside whole");
+            Assert.That(MixerSession.PhaseViolations(), Is.Empty);
             Assert.That(renderer.sharedMesh, Is.SameAs(mesh), "and does not come back by itself");
 
             // Unity's redo of that step gives the renderer what the step left (the original mesh), never the working one.
             Undo.PerformRedo();
             Assert.That(MixerSession.TargetOf(renderer), Is.Null);
             Assert.That(MixerSession.Edit(renderer), Is.SameAs(target), "editing it again takes the same session up");
+            Assert.That(MixerSession.PhaseOf(target.Id), Is.EqualTo(MixerSession.SessionPhase.Live));
+            Assert.That(MixerSession.PhaseViolations(), Is.Empty);
             Assert.That(renderer.sharedMesh, Is.SameAs(working));
             Undo.PerformRedo(); // the stroke, from the session's own history
             Assert.That(MaxDistance(target.Document.Positions, edited), Is.LessThan(1e-7f));
@@ -624,6 +632,8 @@ namespace Orbiters.Mixer.Editor.Tests
             MixerSession.SimulatePlay(scene, () =>
             {
                 Assert.That(MixerSession.TargetOf(renderer), Is.Null, "nothing is edited in Play");
+                Assert.That(MixerSession.PhaseOf(target.Id), Is.EqualTo(MixerSession.SessionPhase.WaitingForPlayOrScene));
+                Assert.That(MixerSession.PhaseViolations(), Is.Empty);
                 Assert.That(renderer.sharedMesh, Is.SameAs(mesh), "Play shows the original mesh");
                 Assert.That(renderer.bones.Length, Is.EqualTo(2), "without the added leaf bone");
                 Assert.That(Vector3.Distance(upper.localPosition, new Vector3(0, 1f, 0)), Is.LessThan(1e-4f), "and the bones where the original bind poses want them");

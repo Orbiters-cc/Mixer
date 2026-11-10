@@ -4,6 +4,10 @@ using System.Globalization;
 using System.IO;
 using System.Text;
 using Orbiters.Mixer.Splats;
+using Unity.Burst;
+using Unity.Collections.LowLevel.Unsafe;
+using Unity.Jobs;
+using Unity.Mathematics;
 using UnityEngine;
 
 namespace Orbiters.Mixer.Editor.Splats
@@ -13,9 +17,12 @@ namespace Orbiters.Mixer.Editor.Splats
     /// f_dc_0..2 opacity scale_0..2 rot_0..3</c>; others, such as normals or higher spherical harmonics, are skipped),
     /// and where Orbiters - N4N0 wrote them, its <see cref="Seen"/> properties.
     /// Orbiters - N4N0 writes them in the right-handed world of the contracts (Unity's with Z negated, rotations as
-    /// (w, −x, −y, z)); reading mirrors that back. The vertices are read a block at a time, never the whole file.
+    /// (w, −x, −y, z)); reading mirrors that back. The vertices are read a block at a time, never the whole file, and
+    /// decoded by a Burst job straight into the cloud's GPU layout (<see cref="SplatLayout"/>): nothing else holds them.
+    /// The first reads of an editor session may run before Burst compiled the job: the same code then runs on Mono,
+    /// slower, not different.
     /// </summary>
-    public static class PlyReader
+    public static unsafe class PlyReader
     {
         /// <summary>Degree-0 spherical harmonic: colour = 0.5 + C0 · f_dc.</summary>
         public const float ShC0 = 0.2820948f;
@@ -26,7 +33,7 @@ namespace Orbiters.Mixer.Editor.Splats
         static readonly string[] Required = { "x", "y", "z", "f_dc_0", "f_dc_1", "f_dc_2", "opacity", "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3" };
 
         /// <summary>Orbiters - N4N0's own properties: the sky shell, and what the training keyframes saw of each splat
-        /// (<see cref="SplatCloud.seen"/>).</summary>
+        /// (<see cref="SplatCloud.packedSeen"/>).</summary>
         public static readonly string[] Seen = { "sky", "seen_weight", "seen_views", "seen_sectors", "seen_rate", "seen_beyond" };
 
         /// <summary>What the header says: where the vertices start, how many, how long each one is, where its properties are.</summary>
@@ -62,111 +69,227 @@ namespace Orbiters.Mixer.Editor.Splats
         {
             Header header = ReadHeader(stream);
             int count = header.Count, stride = header.Stride;
-            var read = new Func<byte[], int, float>[Required.Length];
-            var at = new int[Required.Length];
-            for (int k = 0; k < Required.Length; k++)
-            {
-                (int offset, string type) = header.Properties[Required[k]];
-                read[k] = Reader(type);
-                at[k] = offset;
-            }
             bool hasSeen = Array.TrueForAll(Seen, header.Properties.ContainsKey);
-            var readSeen = new Func<byte[], int, float>[Seen.Length];
-            var atSeen = new int[Seen.Length];
-            for (int k = 0; hasSeen && k < Seen.Length; k++)
+            // The properties' offsets and types, the required ones first, then (when the PLY has them) Orbiters - N4N0's.
+            int fields = Required.Length + Seen.Length;
+            var offsets = new int[fields];
+            var types = new int[fields];
+            for (int k = 0; k < fields; k++)
             {
-                (int offset, string type) = header.Properties[Seen[k]];
-                readSeen[k] = Reader(type);
-                atSeen[k] = offset;
+                string name = k < Required.Length ? Required[k] : Seen[k - Required.Length];
+                if (!header.Properties.TryGetValue(name, out (int offset, string type) p))
+                    continue; // a Seen property when the PLY lacks some: hasSeen is false and they are never read
+                offsets[k] = p.offset;
+                types[k] = TypeCode(p.type);
             }
-            var positions = new Vector3[count];
-            var rotations = new Quaternion[count];
-            var scales = new Vector3[count];
-            var colors = new Color32[count];
-            var seen = new Vector4[hasSeen ? count : 0];
-            var sky = new bool[hasSeen ? count : 0];
-            var beyond = new float[hasSeen ? count : 0];
-            int kept = 0;
+            var packed = new byte[(long)count * SplatLayout.Stride];
+            var seen = new byte[hasSeen ? (long)count * SplatLayout.SeenStride : 0];
+            var kept = new byte[count];
             stream.Position = header.DataStart;
-            int block = Math.Max(1, (1 << 20) / stride);
+            int block = Math.Max(1, (1 << 20) / Math.Max(1, stride));
             var buffer = new byte[block * stride];
-            for (int first = 0; first < count; first += block)
+            fixed (byte* source = buffer)
+            fixed (byte* to = packed)
+            fixed (byte* toSeen = seen)
+            fixed (byte* keep = kept)
+            fixed (int* at = offsets)
+            fixed (int* type = types)
             {
-                int n = Math.Min(block, count - first);
-                Fill(stream, buffer, n * stride);
-                for (int v = 0; v < n; v++)
+                for (int first = 0; first < count; first += block)
                 {
-                    int o = v * stride;
-                    float P(int k) => read[k](buffer, o + at[k]);
-                    // Mirroring Z back: positions negate z, a quaternion (w, x, y, z) becomes (w, −x, −y, z).
-                    var position = new Vector3(P(0), P(1), -P(2));
-                    var scale = new Vector3(Mathf.Exp(P(7)), Mathf.Exp(P(8)), Mathf.Exp(P(9)));
-                    // A diverged splat (no position, a size whose covariance overflows, a rotation that is not a number)
-                    // would draw over the whole view or nowhere: it is left out. A rotation of length zero is none.
-                    if (!Finite(position) || !Finite(Vector3.Scale(scale, scale)))
-                        continue;
-                    Quaternion q = new Quaternion(-P(11), -P(12), P(13), P(10));
-                    float norm = Mathf.Sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
-                    if (float.IsNaN(norm) || float.IsInfinity(norm))
-                        continue;
-                    positions[kept] = position;
-                    rotations[kept] = norm > 1e-12f ? new Quaternion(q.x / norm, q.y / norm, q.z / norm, q.w / norm) : Quaternion.identity;
-                    scales[kept] = scale;
-                    byte Channel(float dc) => (byte)Mathf.Clamp(Mathf.RoundToInt((0.5f + ShC0 * dc) * 255f), 0, 255);
-                    float opacity = 1f / (1f + Mathf.Exp(-P(6)));
-                    colors[kept] = new Color32(Channel(P(3)), Channel(P(4)), Channel(P(5)), (byte)Mathf.Clamp(Mathf.RoundToInt(opacity * 255f), 0, 255));
-                    if (hasSeen)
+                    int n = Math.Min(block, count - first);
+                    Fill(stream, buffer, n * stride);
+                    new DecodeJob
                     {
-                        float S(int k) => readSeen[k](buffer, o + atSeen[k]);
-                        // What the keyframes saw is a number or nothing known (0).
-                        float F(int k) { float x = S(k); return float.IsNaN(x) || float.IsInfinity(x) ? 0f : x; }
-                        sky[kept] = S(0) > 0.5f;
-                        seen[kept] = new Vector4(F(1), F(2), F(3), F(4));
-                        beyond[kept] = F(5);
-                    }
-                    kept++;
+                        Source = source, Stride = stride, Offsets = at, Types = type, HasSeen = hasSeen,
+                        Splats = (SplatLayout.Splat*)to + first, Seen = hasSeen ? (SplatLayout.Seen*)toSeen + first : null, Kept = keep + first,
+                    }.Schedule(n, 1024).Complete();
                 }
-            }
-            if (kept < count)
-            {
-                Array.Resize(ref positions, kept);
-                Array.Resize(ref rotations, kept);
-                Array.Resize(ref scales, kept);
-                Array.Resize(ref colors, kept);
-                if (hasSeen)
+                var result = stackalloc int[1];
+                var box = stackalloc float3[2];
+                new CompactJob
                 {
-                    Array.Resize(ref seen, kept);
-                    Array.Resize(ref sky, kept);
-                    Array.Resize(ref beyond, kept);
+                    Splats = (SplatLayout.Splat*)to, Seen = hasSeen ? (SplatLayout.Seen*)toSeen : null, Kept = keep, Count = count,
+                    Result = result, Bounds = box,
+                }.Run();
+                int left = result[0];
+                if (left < count)
+                {
+                    Array.Resize(ref packed, left * SplatLayout.Stride);
+                    if (hasSeen)
+                        Array.Resize(ref seen, left * SplatLayout.SeenStride);
                 }
+                var cloud = ScriptableObject.CreateInstance<SplatCloud>();
+                cloud.packed = packed;
+                cloud.packedSeen = seen;
+                cloud.bounds = new Bounds();
+                if (left > 0)
+                    cloud.bounds.SetMinMax(box[0], box[1]);
+                cloud.core = Core(cloud);
+                cloud.hasHorizon = Horizon(cloud, out cloud.horizon);
+                // Everything the renderer uploads, so the hash follows what the GPU reads (the sky flags are bits of it).
+                var hash = new Hash128();
+                hash.Append(packed);
+                hash.Append(seen);
+                cloud.contentHash = hash.ToString();
+                return cloud;
             }
-            var cloud = ScriptableObject.CreateInstance<SplatCloud>();
-            cloud.positions = positions;
-            cloud.rotations = rotations;
-            cloud.scales = scales;
-            cloud.colors = colors;
-            cloud.seen = seen;
-            cloud.sky = sky;
-            cloud.beyond = beyond;
-            cloud.core = Core(positions);
-            cloud.hasHorizon = Horizon(positions, colors, sky, out cloud.horizon);
-            var hash = new Hash128();
-            hash.Append(positions);
-            hash.Append(rotations);
-            hash.Append(scales);
-            hash.Append(colors);
-            hash.Append(seen);
-            // Hash128 takes blittable arrays only (bool is not): the sky flags as bytes.
-            var skyBytes = new byte[sky.Length];
-            for (int i = 0; i < sky.Length; i++)
-                skyBytes[i] = sky[i] ? (byte)1 : (byte)0;
-            hash.Append(skyBytes);
-            hash.Append(beyond);
-            cloud.contentHash = hash.ToString();
-            return cloud;
         }
 
-        static bool Finite(Vector3 v) => !float.IsNaN(v.x) && !float.IsNaN(v.y) && !float.IsNaN(v.z) && !float.IsInfinity(v.x) && !float.IsInfinity(v.y) && !float.IsInfinity(v.z);
+        const int Float32 = 0, Float64 = 1, Int8 = 2, UInt8 = 3, Int16 = 4, UInt16 = 5, Int32 = 6, UInt32 = 7;
+
+        static int TypeCode(string type)
+        {
+            switch (type)
+            {
+                case "float": case "float32": return Float32;
+                case "double": case "float64": return Float64;
+                case "char": case "int8": return Int8;
+                case "uchar": case "uint8": return UInt8;
+                case "short": case "int16": return Int16;
+                case "ushort": case "uint16": return UInt16;
+                case "int": case "int32": return Int32;
+                default: return UInt32;
+            }
+        }
+
+        /// <summary>
+        /// One block of vertices into the GPU layout, each splat at its own index (<see cref="Kept"/> says which ones
+        /// survive; <see cref="CompactJob"/> closes the gaps). Strict float mode, and the same arithmetic as Mono's
+        /// <c>Mathf</c> gave before: exp in double, then float.
+        /// </summary>
+        [BurstCompile(FloatPrecision.High, FloatMode.Strict)]
+        struct DecodeJob : IJobParallelFor
+        {
+            [NativeDisableUnsafePtrRestriction] public byte* Source;
+            [NativeDisableUnsafePtrRestriction] public int* Offsets;
+            [NativeDisableUnsafePtrRestriction] public int* Types;
+            [NativeDisableUnsafePtrRestriction] public SplatLayout.Splat* Splats;
+            [NativeDisableUnsafePtrRestriction] public SplatLayout.Seen* Seen;
+            [NativeDisableUnsafePtrRestriction] public byte* Kept;
+            public int Stride;
+            public bool HasSeen;
+
+            float P(int v, int k)
+            {
+                byte* p = Source + (long)v * Stride + Offsets[k];
+                // Fields need not be aligned (a PLY may mix byte and float properties): copied out byte by byte.
+                switch (Types[k])
+                {
+                    case Float32: { float x; UnsafeUtility.MemCpy(&x, p, 4); return x; }
+                    case Float64: { double x; UnsafeUtility.MemCpy(&x, p, 8); return (float)x; }
+                    case Int8: return *(sbyte*)p;
+                    case UInt8: return *p;
+                    case Int16: { short x; UnsafeUtility.MemCpy(&x, p, 2); return x; }
+                    case UInt16: { ushort x; UnsafeUtility.MemCpy(&x, p, 2); return x; }
+                    case Int32: { int x; UnsafeUtility.MemCpy(&x, p, 4); return x; }
+                    default: { uint x; UnsafeUtility.MemCpy(&x, p, 4); return x; }
+                }
+            }
+
+            /// <summary>Where <see cref="Seen"/>'s properties start among the fields.</summary>
+            const int SeenField = 14;
+
+            /// <summary>Seen property <paramref name="k"/>: what the keyframes saw is a number or nothing known (0).</summary>
+            float Number(int v, int k)
+            {
+                float x = P(v, SeenField + k);
+                return Finite(x) ? x : 0f;
+            }
+
+            static bool Finite(float x) => !float.IsNaN(x) && !float.IsInfinity(x);
+
+            static float Exp(float x) => (float)math.exp((double)x);
+
+            /// <summary>Mathf.RoundToInt (half to even, on the float's exact value), clamped to a byte; not a number is 0.</summary>
+            static byte Channel(float value)
+            {
+                double x = value;
+                if (!(x > 0.0)) return 0;
+                if (x >= 255.0) return 255;
+                double f = math.floor(x);
+                double d = x - f;
+                if (d > 0.5 || (d == 0.5 && ((long)f & 1L) != 0L)) f += 1.0;
+                return (byte)f;
+            }
+
+            public void Execute(int v)
+            {
+                Kept[v] = 0;
+                // Mirroring Z back: positions negate z, a quaternion (w, x, y, z) becomes (w, −x, −y, z).
+                float px = P(v, 0), py = P(v, 1), pz = -P(v, 2);
+                float l0 = P(v, 7), l1 = P(v, 8), l2 = P(v, 9);
+                float s0 = Exp(l0), s1 = Exp(l1), s2 = Exp(l2);
+                // A diverged splat (no position, a size whose covariance overflows, a rotation that is not a number)
+                // would draw over the whole view or nowhere: it is left out. A rotation of length zero is none.
+                if (!Finite(px) || !Finite(py) || !Finite(pz) || !Finite(s0 * s0) || !Finite(s1 * s1) || !Finite(s2 * s2))
+                    return;
+                float qx = -P(v, 11), qy = -P(v, 12), qz = P(v, 13), qw = P(v, 10);
+                float norm = (float)math.sqrt((double)(qx * qx + qy * qy + qz * qz + qw * qw));
+                if (!Finite(norm))
+                    return;
+                if (norm > 1e-12f)
+                {
+                    qx /= norm;
+                    qy /= norm;
+                    qz /= norm;
+                    qw /= norm;
+                }
+                else
+                {
+                    qx = qy = qz = 0f;
+                    qw = 1f;
+                }
+                float opacity = 1f / (1f + Exp(-P(v, 6)));
+                bool sky = false;
+                if (HasSeen)
+                {
+                    sky = P(v, SeenField) > 0.5f;
+                    Seen[v] = SplatLayout.EncodeSeen(Number(v, 1), Number(v, 2), Number(v, 3), Number(v, 4), Number(v, 5));
+                }
+                Splats[v] = SplatLayout.Encode(px, py, pz, qx, qy, qz, qw, l0, l1, l2,
+                    Channel((0.5f + ShC0 * P(v, 3)) * 255f), Channel((0.5f + ShC0 * P(v, 4)) * 255f), Channel((0.5f + ShC0 * P(v, 5)) * 255f),
+                    Channel(opacity * 255f), sky);
+                Kept[v] = 1;
+            }
+        }
+
+        /// <summary>Moves the kept splats down over the left-out ones, in order, and measures their bounds.</summary>
+        [BurstCompile(FloatPrecision.High, FloatMode.Strict)]
+        struct CompactJob : IJob
+        {
+            [NativeDisableUnsafePtrRestriction] public SplatLayout.Splat* Splats;
+            [NativeDisableUnsafePtrRestriction] public SplatLayout.Seen* Seen;
+            [NativeDisableUnsafePtrRestriction] public byte* Kept;
+            [NativeDisableUnsafePtrRestriction] public int* Result;
+            [NativeDisableUnsafePtrRestriction] public float3* Bounds;
+            public int Count;
+
+            public void Execute()
+            {
+                int left = 0;
+                var min = new float3(float.MaxValue);
+                var max = new float3(-float.MaxValue);
+                for (int i = 0; i < Count; i++)
+                {
+                    if (Kept[i] == 0)
+                        continue;
+                    if (left != i)
+                    {
+                        Splats[left] = Splats[i];
+                        if (Seen != null)
+                            Seen[left] = Seen[i];
+                    }
+                    var p = new float3(Splats[left].x, Splats[left].y, Splats[left].z);
+                    min = math.min(min, p);
+                    max = math.max(max, p);
+                    left++;
+                }
+                Result[0] = left;
+                Bounds[0] = min;
+                Bounds[1] = max;
+            }
+        }
 
         static void Fill(Stream stream, byte[] buffer, int length)
         {
@@ -245,60 +368,123 @@ namespace Orbiters.Mixer.Editor.Splats
 
         /// <summary>The sky's colour at the horizon, as Orbiters - N4N0's viewer finds it (its <c>sky::horizon</c>): the
         /// sky shell's splats from 2° below to 12° above the horizon, seen from the per-axis median of the other splats,
-        /// by opacity. False without any.</summary>
-        internal static bool Horizon(Vector3[] positions, Color32[] colors, bool[] sky, out Color horizon)
+        /// by opacity. False without any, or when the cloud does not say which splats are the sky.</summary>
+        internal static bool Horizon(SplatCloud cloud, out Color horizon)
         {
             horizon = default;
-            if (sky.Length != positions.Length)
+            int n = cloud.Count;
+            if (!cloud.HasSeen)
                 return false;
-            var ground = new List<Vector3>();
-            for (int i = 0; i < positions.Length; i++)
-                if (!sky[i])
-                    ground.Add(positions[i]);
-            if (ground.Count == 0)
-                return false;
-            Vector3 centre = default;
-            for (int a = 0; a < 3; a++)
+            fixed (byte* bytes = cloud.packed)
             {
-                var axis = ground.ConvertAll(p => p[a]);
-                axis.Sort();
-                centre[a] = axis[axis.Count / 2];
+                var splats = (SplatLayout.Splat*)bytes;
+                int ground = 0;
+                for (int i = 0; i < n; i++)
+                    if (!SplatLayout.IsSky(splats[i]))
+                        ground++;
+                if (ground == 0)
+                    return false;
+                // The median of each axis: the element a sort would put at Count / 2, found without sorting.
+                var axis = new float[ground];
+                Vector3 centre = default;
+                for (int a = 0; a < 3; a++)
+                {
+                    int g = 0;
+                    for (int i = 0; i < n; i++)
+                        if (!SplatLayout.IsSky(splats[i]))
+                            axis[g++] = a == 0 ? splats[i].x : a == 1 ? splats[i].y : splats[i].z;
+                    centre[a] = Select(axis, ground / 2);
+                }
+                double r = 0, gr = 0, b = 0, w = 0;
+                for (int i = 0; i < n; i++)
+                {
+                    if (!SplatLayout.IsSky(splats[i]))
+                        continue;
+                    Vector3 d = new Vector3(splats[i].x, splats[i].y, splats[i].z) - centre;
+                    float length = d.magnitude;
+                    if (length <= 0f)
+                        continue;
+                    float elevation = Mathf.Asin(Mathf.Clamp(d.y / length, -1f, 1f)) * Mathf.Rad2Deg;
+                    if (elevation < -2f || elevation > 12f)
+                        continue;
+                    Color32 c = SplatLayout.ColorOf(splats[i]);
+                    double weight = c.a / 255.0;
+                    r += weight * c.r / 255.0;
+                    gr += weight * c.g / 255.0;
+                    b += weight * c.b / 255.0;
+                    w += weight;
+                }
+                if (w <= 0)
+                    return false;
+                horizon = new Color((float)(r / w), (float)(gr / w), (float)(b / w), 1f);
+                return true;
             }
-            double r = 0, g = 0, b = 0, w = 0;
-            for (int i = 0; i < positions.Length; i++)
+        }
+
+        /// <summary>
+        /// The value at <paramref name="k"/> of <paramref name="values"/> once sorted (which it partly reorders): a
+        /// quickselect with a median-of-three pivot, and a plain sort of what is left once it has taken more rounds than a
+        /// balanced one would, so it never goes quadratic. Values must be numbers.
+        /// </summary>
+        internal static float Select(float[] values, int k)
+        {
+            int lo = 0, hi = values.Length - 1;
+            int rounds = 2 * (32 - CountLeadingZeros((uint)Math.Max(1, values.Length))) + 8;
+            while (hi > lo)
             {
-                if (!sky[i])
-                    continue;
-                Vector3 d = positions[i] - centre;
-                float length = d.magnitude;
-                if (length <= 0f)
-                    continue;
-                float elevation = Mathf.Asin(Mathf.Clamp(d.y / length, -1f, 1f)) * Mathf.Rad2Deg;
-                if (elevation < -2f || elevation > 12f)
-                    continue;
-                double weight = colors[i].a / 255.0;
-                r += weight * colors[i].r / 255.0;
-                g += weight * colors[i].g / 255.0;
-                b += weight * colors[i].b / 255.0;
-                w += weight;
+                if (rounds-- == 0)
+                {
+                    Array.Sort(values, lo, hi - lo + 1);
+                    return values[k];
+                }
+                int mid = lo + (hi - lo) / 2;
+                float a = values[lo], b = values[mid], c = values[hi];
+                float pivot = a < b ? (b < c ? b : a < c ? c : a) : (a < c ? a : b < c ? c : b);
+                int i = lo, j = hi;
+                while (i <= j)
+                {
+                    while (values[i] < pivot) i++;
+                    while (values[j] > pivot) j--;
+                    if (i <= j)
+                    {
+                        float t = values[i];
+                        values[i] = values[j];
+                        values[j] = t;
+                        i++;
+                        j--;
+                    }
+                }
+                // [lo, j] ≤ pivot ≤ [i, hi]; between them, values equal to the pivot.
+                if (k <= j) hi = j;
+                else if (k >= i) lo = i;
+                else return values[k];
             }
-            if (w <= 0)
-                return false;
-            horizon = new Color((float)(r / w), (float)(g / w), (float)(b / w), 1f);
-            return true;
+            return values[k];
+        }
+
+        static int CountLeadingZeros(uint x)
+        {
+            int n = 0;
+            while (n < 32 && (x & 0x80000000u) == 0)
+            {
+                x <<= 1;
+                n++;
+            }
+            return n;
         }
 
         /// <summary>Where the scene is, for framing: the 2nd to 98th percentile per axis of the splats within 100 m of
         /// the densest 2 m cell (Orbiters seeds the sky 400 m out, a thin shell that can hold most splats). Splats further
         /// than 1000 km out are never the scene.</summary>
-        internal static Bounds Core(Vector3[] positions)
+        internal static Bounds Core(SplatCloud cloud)
         {
             const float Far = 1e6f;
-            int step = Math.Max(1, positions.Length / 20000);
+            int count = cloud.Count;
+            int step = Math.Max(1, count / 20000);
             var sample = new List<Vector3>();
-            for (int i = 0; i < positions.Length; i += step)
+            for (int i = 0; i < count; i += step)
             {
-                Vector3 p = positions[i];
+                Vector3 p = cloud.PositionOf(i);
                 // NaN fails every comparison: left out too.
                 if (Mathf.Abs(p.x) < Far && Mathf.Abs(p.y) < Far && Mathf.Abs(p.z) < Far)
                     sample.Add(p);
@@ -368,21 +554,6 @@ namespace Orbiters.Mixer.Editor.Splats
                 case "int": case "int32": case "uint": case "uint32": case "float": case "float32": return 4;
                 case "double": case "float64": return 8;
                 default: throw new FormatException("Unknown PLY property type '" + type + "'.");
-            }
-        }
-
-        static Func<byte[], int, float> Reader(string type)
-        {
-            switch (type)
-            {
-                case "float": case "float32": return (d, at) => BitConverter.ToSingle(d, at);
-                case "double": case "float64": return (d, at) => (float)BitConverter.ToDouble(d, at);
-                case "char": case "int8": return (d, at) => (sbyte)d[at];
-                case "uchar": case "uint8": return (d, at) => d[at];
-                case "short": case "int16": return (d, at) => BitConverter.ToInt16(d, at);
-                case "ushort": case "uint16": return (d, at) => BitConverter.ToUInt16(d, at);
-                case "int": case "int32": return (d, at) => BitConverter.ToInt32(d, at);
-                default: return (d, at) => BitConverter.ToUInt32(d, at);
             }
         }
     }

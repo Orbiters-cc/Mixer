@@ -88,6 +88,22 @@ namespace Orbiters.Mixer.Editor.Capture.Tests
             Assert.That(Directory.GetFiles(Path.Combine(folder, RawCapture.GroundTruthDepthDir)).Length, Is.EqualTo(12));
         }
 
+        /// <summary>A capture with more frames of each kind than the self-check looks at: the sample, chosen when the
+        /// capture starts, still finds what each of its depth frames must decode to (only those are kept).</summary>
+        [Test]
+        public void LongCapturesCheckASampleOfEachKind()
+        {
+            var settings = CaptureTestScene.Settings(640, 360, 3);
+            var run = CaptureRun.Start(settings, Orbit(130), folder, scene.Scene, false);
+            Assert.That(run.RunToEnd(TimeSpan.FromSeconds(300)), Is.True, run.Error);
+            Assert.That(run.State, Is.EqualTo(CaptureRun.Phase.Done), run.Error);
+            var check = run.Check;
+            Assert.That(check.StripChecked, Is.EqualTo(2 * CaptureSelfCheck.SamplePerKind), "87 colour and 43 depth frames, 40 of each");
+            Assert.That(check.DepthFramesChecked, Is.EqualTo(CaptureSelfCheck.SamplePerKind));
+            Assert.That(check.DepthSamples, Is.GreaterThan(0));
+            Assert.That(check.Passed, Is.True, check + "\n" + string.Join("\n", check.Problems));
+        }
+
         [Test]
         public void CancelKeepsTheRenderedFramesAsAValidCapture()
         {

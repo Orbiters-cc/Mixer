@@ -58,6 +58,83 @@ namespace Orbiters.Mixer.Editor
             Recovered,
         }
 
+        /// <summary>
+        /// Where a session is in its life. A session id is in one phase at a time, held by one of the lifecycle's lists
+        /// (<see cref="PhaseOf"/> reads which; <see cref="PhaseViolations"/> checks that the lists agree). The transitions:
+        /// <list type="bullet">
+        /// <item><see cref="Live"/> to <see cref="ParkedWithHistory"/> (<c>Gone</c>: an undo moved the renderer off its working
+        /// mesh), to <see cref="WaitingForObject"/> (<c>Gone</c>: the object was deleted), to <see cref="WaitingForPlayOrScene"/>
+        /// (<c>Suspend</c>: Play, its scene closing), to <see cref="PendingReload"/> (a script reload), to
+        /// <see cref="None"/> (commit, revert, nothing left to keep);</item>
+        /// <item><see cref="ParkedWithHistory"/> to <see cref="Live"/> (<c>ResumeParked</c>, <c>Recover</c>: the renderer shows
+        /// the mesh again), to <see cref="WaitingForObject"/> (a script reload drops the history; the record stays), to
+        /// <see cref="None"/> (<c>Drop</c>);</item>
+        /// <item><see cref="WaitingForObject"/>, <see cref="WaitingForPlayOrScene"/> and <see cref="Recovered"/> to
+        /// <see cref="Live"/> (<c>Recover</c>, <c>ResumeParked</c> after a reload) or <see cref="None"/> (<c>Drop</c>: too old,
+        /// edited again, nothing to bring back);</item>
+        /// <item><see cref="PendingReload"/> to <see cref="Live"/> (<c>RestorePending</c>) or <see cref="None"/> (the restore
+        /// failed: the guard gives the renderer its original).</item>
+        /// </list>
+        /// </summary>
+        internal enum SessionPhase
+        {
+            /// <summary>No session of this id.</summary>
+            None,
+            /// <summary>Being edited (<see cref="Targets"/>).</summary>
+            Live,
+            /// <summary>Set aside whole, history included, while an undo shows its renderer another mesh.</summary>
+            ParkedWithHistory,
+            /// <summary>A record and its autosave (and working mesh), for a deleted object an undo may bring back.</summary>
+            WaitingForObject,
+            /// <summary>A record and its autosave while Play runs or its scene is closed.</summary>
+            WaitingForPlayOrScene,
+            /// <summary>A record read from the recovery file: an editor that crashed or quit had it open.</summary>
+            Recovered,
+            /// <summary>A line kept across a script reload, restored on the next frame.</summary>
+            PendingReload,
+        }
+
+        /// <summary>The phase of the session <paramref name="id"/> (the first list that holds it, live first).</summary>
+        internal static SessionPhase PhaseOf(string id)
+        {
+            if (id == null) return SessionPhase.None;
+            foreach (var t in targets) if (t.Id == id) return SessionPhase.Live;
+            if (parkedTargets.ContainsKey(id)) return SessionPhase.ParkedWithHistory;
+            foreach (var pending in pendingRestore) if (pending.Id == id) return SessionPhase.PendingReload;
+            foreach (var r in waiting)
+                if (r.Id == id) return r.Kind == Waits.Parked ? SessionPhase.WaitingForObject : r.Kind == Waits.Suspended ? SessionPhase.WaitingForPlayOrScene : SessionPhase.Recovered;
+            return SessionPhase.None;
+        }
+
+        /// <summary>
+        /// What breaks the rules the lifecycle's lists keep between frames (for tests; empty when none): a session live
+        /// once, a parked session not live and with the record of its working mesh, at most one record per session.
+        /// </summary>
+        internal static List<string> PhaseViolations()
+        {
+            var problems = new List<string>();
+            var live = new HashSet<string>();
+            foreach (var t in targets) if (!live.Add(t.Id)) problems.Add(t.Id + " is live twice");
+            var records = new Dictionary<string, Record>();
+            foreach (var r in waiting) { if (records.ContainsKey(r.Id)) problems.Add(r.Id + " has two waiting records"); else records[r.Id] = r; }
+            foreach (var pair in parkedTargets)
+            {
+                if (live.Contains(pair.Key)) problems.Add(pair.Key + " is live and parked");
+                if (!records.TryGetValue(pair.Key, out var record) || record.Kind != Waits.Parked) problems.Add(pair.Key + " is parked without its record");
+                else if (pair.Value.Working != null && record.Working != pair.Value.Working.GetInstanceID()) problems.Add(pair.Key + " is parked on another working mesh than its record's");
+            }
+            return problems;
+        }
+
+        // A parked session goes with its history and its bind-pose holder (it will not come back whole).
+        private static void ForgetParked(string id)
+        {
+            if (!parkedTargets.TryGetValue(id, out var kept)) return;
+            parkedTargets.Remove(id);
+            MixerHistory.Forget(kept);
+            ArmatureEdit.Forget(kept);
+        }
+
         /// <summary>A session waiting to come back.</summary>
         private sealed class Record
         {
@@ -283,7 +360,6 @@ namespace Orbiters.Mixer.Editor
             kept.HoldLayerWeight();
             kept.Document.MarkAllDirty();
             kept.Flush();
-            MixerLinkService.ClaimForUnity(kept);
             NotePreviewed(renderer);
         }
 
@@ -352,12 +428,7 @@ namespace Orbiters.Mixer.Editor
             waiting.Remove(r);
             // Kept, the autosave is a new session's of the same object: so is the bind-pose holder kept for it.
             if (deleteAutosave) { MixerAutosave.Delete(r.Id); ArmatureEdit.ForgetWaiting(r.Id); }
-            if (parkedTargets.TryGetValue(r.Id, out var kept))
-            {
-                parkedTargets.Remove(r.Id);
-                MixerHistory.Forget(kept);
-                ArmatureEdit.Forget(kept);
-            }
+            ForgetParked(r.Id);
             if (r.Working == 0) return;
             var working = EditorUtility.InstanceIDToObject(r.Working) as Mesh;
             if (working == null || targets.Any(t => t.Working == working)) return;
@@ -582,7 +653,6 @@ namespace Orbiters.Mixer.Editor
             target.HoldLayerWeight(ParseHeld(held, working.blendShapeCount));
             target.AfterLayerChange();
             target.Flush();
-            MixerLinkService.ClaimForUnity(target);
             NotePreviewed(renderer);
             return target;
         }
@@ -645,7 +715,7 @@ namespace Orbiters.Mixer.Editor
                             resumed.Add(kept);
                             continue;
                         }
-                        if (parkedTargets.TryGetValue(r.Id, out var stale)) { parkedTargets.Remove(r.Id); MixerHistory.Forget(stale); ArmatureEdit.Forget(stale); }
+                        ForgetParked(r.Id);
                         // Only Play, a scene file and a crash leave the bones placed for the original bind poses.
                         bool correct = r.Kind != Waits.Parked;
                         var opened = Open(renderer, original, parked, r.Layer.Length > 0 ? r.Layer : null, r.Held, correct, out bool restored);
@@ -845,7 +915,6 @@ namespace Orbiters.Mixer.Editor
             targets.Add(target);
             dirtySinceAutosave = true;
             SaveState();
-            MixerLinkService.ClaimForUnity(target);
             NotePreviewed(renderer);
             Say("The copy " + renderer.name + " keeps " + source.Name + "'s Mixer edits in a session of its own.", false);
             Raise(null, SessionChange.Sessions);

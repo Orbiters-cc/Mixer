@@ -160,7 +160,22 @@ namespace Orbiters.Mixer.Editor
             return repaired;
         }
 
-        private static Mesh Resolve(string id) => string.IsNullOrEmpty(id) ? null : SceneGraphExporter.Resolve(id) as Mesh;
+        // The mesh an id names, kept once found (OriginalOf is asked per renderer node of every graph build, and by other
+        // tools): the key is the id string alone, the only input of the lookup. A kept mesh that was destroyed or unloaded
+        // since (Unity's null) is looked up again, so the answer is what a fresh lookup gives: a loaded asset object is the
+        // one instance its id resolves to. The one difference: an id that no longer resolves while its mesh still lives (a
+        // scene object's id before and after its scene's first save) keeps giving that mesh, the original it was made from,
+        // where a fresh lookup gave none and the working mesh could have been taken for an original.
+        private static readonly Dictionary<string, Mesh> resolved = new Dictionary<string, Mesh>();
+
+        private static Mesh Resolve(string id)
+        {
+            if (string.IsNullOrEmpty(id)) return null;
+            if (resolved.TryGetValue(id, out var kept) && kept != null) return kept;
+            var mesh = SceneGraphExporter.Resolve(id) as Mesh;
+            if (mesh != null) resolved[id] = mesh; else resolved.Remove(id);
+            return mesh;
+        }
 
         private sealed class PrefabSaves : AssetModificationProcessor
         {

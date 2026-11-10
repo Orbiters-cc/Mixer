@@ -1,5 +1,6 @@
 using System;
 using Orbiters.Contracts;
+using Unity.Collections;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -8,7 +9,8 @@ using Object = UnityEngine.Object;
 
 namespace Orbiters.Mixer.Editor.Capture
 {
-    /// <summary>One rendered frame, read back. Buffers are bottom-up (Unity's readback order) and come from the writer's pool.</summary>
+    /// <summary>One rendered frame, read back: the colour top-down, the depth bottom-up (Unity's readback order); buffers
+    /// come from the writer's pool.</summary>
     internal sealed class CaptureFrame
     {
         public int Index;
@@ -17,7 +19,7 @@ namespace Orbiters.Mixer.Editor.Capture
         /// <summary>A rig frame (its payload is the rig's).</summary>
         public bool RigFrame;
         public int Width, Height;
-        /// <summary>RGBA32, the sRGB codes the render target stores, bottom row first.</summary>
+        /// <summary>RGBA32, the sRGB codes the render target stores, top row first (as frames are written).</summary>
         public byte[] Colour;
         /// <summary>True eye depth in metres from the camera's depth texture, 0 where nothing was drawn, bottom row first.</summary>
         public float[] Depth;
@@ -310,7 +312,10 @@ namespace Orbiters.Mixer.Editor.Capture
                 Depth = depth != null && depth.Length == Width * Height ? depth : new float[Width * Height],
                 Payload = rigFrame ? RigPayload(time) : Payload(time, depthFrame),
             };
-            colourRead.GetRawTextureData<byte>().CopyTo(frame.Colour);
+            // Unity reads back bottom-up; the colour is turned top-down in the same copy, so writing needs no other.
+            var raw = colourRead.GetRawTextureData<byte>();
+            int row = Width * 4;
+            for (int y = 0; y < Height; y++) NativeArray<byte>.Copy(raw, (Height - 1 - y) * row, frame.Colour, y * row, row);
             depthRead.GetRawTextureData<float>().CopyTo(frame.Depth);
             return frame;
         }

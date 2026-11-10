@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Orbiters.Toolkit.Meshes;
@@ -283,12 +282,16 @@ namespace Orbiters.Mixer.Editor
         /// share a normal while hard edges stay hard and sheets that only touch (double-sided cloth, closed lips) keep
         /// their own sides. Built on first use.
         /// </summary>
-        public MeshNeighbors NormalWeld => normalWeld ?? (normalWeld = Built(ref normalWeldTask, BuildNormalWeld));
+        public MeshNeighbors NormalWeld => normalWeld ?? (normalWeld = Built(ref normalWeldTask, () => BuildNormalWeld(Neighbors)));
         private MeshNeighbors normalWeld;
         private Task<MeshNeighbors> normalWeldTask;
 
         private MeshNeighbors BuildNeighbors() => MeshNeighbors.Build(OriginalPositions, Triangles, weldTolerance);
-        private MeshNeighbors BuildNormalWeld() => MeshNeighbors.Build(OriginalPositions, Triangles, weldTolerance, HasNormals ? OriginalNormals : null, HasNormals ? 0.5f : -1f);
+        // The position weld split by the normals (what Build with normals does after its own position weld, so the groups
+        // and their numbers are the same): every group lies inside one of the position weld's. Without normals it is the
+        // position weld itself.
+        private MeshNeighbors BuildNormalWeld(MeshNeighbors byPosition) =>
+            byPosition.Refine(OriginalPositions, Triangles, weldTolerance, HasNormals ? OriginalNormals : null, HasNormals ? 0.5f : -1f);
 
         /// <summary>
         /// Starts building <see cref="Neighbors"/> and <see cref="NormalWeld"/> on worker threads (they read only the
@@ -297,7 +300,12 @@ namespace Orbiters.Mixer.Editor
         public void Prewarm()
         {
             if (neighbors == null && neighborsTask == null) neighborsTask = Task.Run(BuildNeighbors);
-            if (normalWeld == null && normalWeldTask == null) normalWeldTask = Task.Run(BuildNormalWeld);
+            if (normalWeld == null && normalWeldTask == null)
+            {
+                var byPosition = neighbors != null ? Task.FromResult(neighbors) : neighborsTask;
+                // On the thread pool whatever scheduler opened the session: the main thread waits on the result.
+                normalWeldTask = byPosition.ContinueWith(t => BuildNormalWeld(t.Result), System.Threading.CancellationToken.None, TaskContinuationOptions.OnlyOnRanToCompletion, TaskScheduler.Default);
+            }
         }
 
         /// <summary>Neighbours started in the background prewarm when they ran (waited for), else built here.</summary>
@@ -322,7 +330,7 @@ namespace Orbiters.Mixer.Editor
         /// open in a shape) stay apart in Blender. Built from the original, so its indices hold through the session and
         /// match what was sent before the mesh was opened in Mixer.
         /// </summary>
-        public MeshNeighbors LinkWeld => linkWeld ?? (linkWeld = MeshDataCodec.LinkWeld(OriginalPositions, Triangles, HasNormals ? OriginalNormals : new Vector3[0], weldTolerance, MeshDataCodec.LinkWeldKeys(Original)));
+        public MeshNeighbors LinkWeld => linkWeld ?? (linkWeld = MeshDataCodec.LinkWeld(OriginalPositions, Triangles, HasNormals ? OriginalNormals : new Vector3[0], weldTolerance, MeshDataCodec.LinkWeldKeys(Original), Neighbors));
         private MeshNeighbors linkWeld;
 
         internal static float WeldTolerance(Mesh mesh)
@@ -581,7 +589,8 @@ namespace Orbiters.Mixer.Editor
         {
             var weld = NormalWeld;
             int stamp = NextNormalStamp(weld);
-            var welded = new List<int>();
+            var welded = normalSeeds;
+            welded.Clear();
             foreach (int v in vertices)
             {
                 int w = weld.Weld[v];
@@ -596,82 +605,37 @@ namespace Orbiters.Mixer.Editor
         /// <see cref="RefreshNormals"/> for vertices given by their <see cref="NormalWeld"/> index (each once): those and
         /// their neighbours get normals from <paramref name="display"/>, uploaded at the next flush.
         /// </summary>
-        public void RefreshNormalsWelded(List<int> welded, Vector3[] display)
+        public void RefreshNormalsWelded(IReadOnlyList<int> welded, Vector3[] display)
         {
             if (welded.Count == 0) return;
             var weld = NormalWeld;
             int stamp = NextNormalStamp(weld);
             var ring = normalRing;
             ring.Clear();
-            foreach (int w in welded)
+            for (int i = 0; i < welded.Count; i++)
             {
+                int w = welded[i];
                 if (normalStamp[w] != stamp) { normalStamp[w] = stamp; ring.Add(w); }
-                foreach (int a in weld.Adjacent[w])
+                foreach (int a in weld.AdjacentTo(w))
                     if (normalStamp[a] != stamp) { normalStamp[a] = stamp; ring.Add(a); }
             }
             // The pages the ring's normals land on are the ones the flush uploads.
-            var members = weld.Members;
-            foreach (int w in ring) foreach (int m in members[w]) UnflushedPages.Add(m);
+            for (int i = 0; i < ring.Count; i++) foreach (int m in weld.MembersOf(ring.Items[i])) UnflushedPages.Add(m);
             // Each welded vertex writes only its own members: a large stroke splits the ring over the cores.
-            if (ring.Count < 4096) RecomputeNormals(ring, 0, ring.Count, weld, display);
-            else Parallel.ForEach(Partitioner.Create(0, ring.Count, 2048), range => RecomputeNormals(ring, range.Item1, range.Item2, weld, display));
-        }
-
-        private void RecomputeNormals(List<int> ring, int from, int to, MeshNeighbors weld, Vector3[] display)
-        {
-            var before = FaceNormalsOfOriginal(weld);
-            for (int k = from; k < to; k++) Turn(ring[k], weld, display, before);
+            StrokeKernels.Turn(FlatWeld.Of(weld), Triangles, ring.Items, ring.Count, display, FaceNormalsOfOriginal(weld), OriginalNormals, Normals);
         }
 
         /// <summary>
         /// The normals of every vertex for the shown positions: the original's wherever their faces did not move, turned
-        /// by how much their faces turned elsewhere.
+        /// by how much their faces turned elsewhere (<see cref="StrokeKernels.Turn"/>: the original's normals, authored and
+        /// often smoothed or custom, turned by the change of the faces' normal rather than replaced by it, which changed the
+        /// shading wherever a brush touched the surface and flattened soft edges up to 60 degrees apart into one).
         /// </summary>
         public void RefreshAllNormals(Vector3[] display)
         {
             var weld = NormalWeld;
-            var before = FaceNormalsOfOriginal(weld);
-            Parallel.ForEach(Partitioner.Create(0, weld.WeldedCount, 4096), range =>
-            {
-                for (int w = range.Item1; w < range.Item2; w++) Turn(w, weld, display, before);
-            });
+            StrokeKernels.Turn(FlatWeld.Of(weld), Triangles, null, weld.WeldedCount, display, FaceNormalsOfOriginal(weld), OriginalNormals, Normals);
             Unflushed = true;
-        }
-
-        // A welded vertex's normals for the shown positions. The original's (authored, often smoothed or custom) turned by
-        // the change of the faces' normal, not the faces' normal itself: recomputing the normals outright changed the
-        // shading wherever a brush touched the surface, even where it hardly moved (dents and blotches after Smooth), and
-        // flattened the members' own normals (soft edges up to 60 degrees apart) into one.
-        private void Turn(int w, MeshNeighbors weld, Vector3[] display, Vector3[] before)
-        {
-            var now = FaceNormal(w, weld, display);
-            var was = before[w];
-            foreach (int m in weld.Members[w])
-            {
-                if (!Differs(now, was)) { Normals[m] = OriginalNormals[m]; continue; }
-                var n = OriginalNormals[m] + (now - was);
-                float length = (float)Math.Sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
-                Normals[m] = length > 1e-6f ? n / length : now;
-            }
-        }
-
-        // The area-weighted normal of a welded vertex's faces (zero for faces of no area).
-        private Vector3 FaceNormal(int w, MeshNeighbors weld, Vector3[] positions)
-        {
-            var triangles = Triangles;
-            float x = 0f, y = 0f, z = 0f;
-            foreach (int t in weld.TrianglesOf[w])
-            {
-                int i = t * 3;
-                Vector3 a = positions[triangles[i]], b = positions[triangles[i + 1]], c = positions[triangles[i + 2]];
-                float ux = b.x - a.x, uy = b.y - a.y, uz = b.z - a.z;
-                float vx = c.x - a.x, vy = c.y - a.y, vz = c.z - a.z;
-                x += uy * vz - uz * vy;
-                y += uz * vx - ux * vz;
-                z += ux * vy - uy * vx;
-            }
-            float length = (float)Math.Sqrt(x * x + y * y + z * z);
-            return length > 0f ? new Vector3(x / length, y / length, z / length) : Vector3.zero;
         }
 
         // The faces' normal of each welded vertex on the original, made the same way as the shown ones (so an untouched
@@ -685,7 +649,7 @@ namespace Orbiters.Mixer.Editor
             {
                 if (originalFaceNormals != null && originalFaceNormals.Length == weld.WeldedCount) return originalFaceNormals;
                 var result = new Vector3[weld.WeldedCount];
-                for (int w = 0; w < result.Length; w++) result[w] = FaceNormal(w, weld, OriginalPositions);
+                StrokeKernels.FaceNormals(FlatWeld.Of(weld), Triangles, OriginalPositions, result);
                 return originalFaceNormals = result;
             }
         }
@@ -693,7 +657,7 @@ namespace Orbiters.Mixer.Editor
         // Normal refreshes mark the welded vertices they visit with a stamp instead of filling sets (a stroke step visits thousands).
         private int[] normalStamp;
         private int normalStampValue;
-        private readonly List<int> normalRing = new List<int>();
+        private readonly IndexList normalRing = new IndexList(), normalSeeds = new IndexList();
 
         private int NextNormalStamp(MeshNeighbors weld)
         {
@@ -707,8 +671,8 @@ namespace Orbiters.Mixer.Editor
         {
             var weld = NormalWeld;
             int w = weld.Weld[v];
-            foreach (int m in weld.Members[w]) into.Add(m);
-            foreach (int a in weld.Adjacent[w]) foreach (int m in weld.Members[a]) into.Add(m);
+            foreach (int m in weld.MembersOf(w)) into.Add(m);
+            foreach (int a in weld.AdjacentTo(w)) foreach (int m in weld.MembersOf(a)) into.Add(m);
         }
     }
 }

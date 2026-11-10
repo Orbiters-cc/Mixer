@@ -110,6 +110,28 @@ namespace Orbiters.Mixer.Editor.Tests
 
         // ---- The model ------------------------------------------------------------------------------------------------------
 
+        // Folder listings are kept between rebuilds and forgotten for the folders the asset database names: after creating,
+        // moving and deleting assets and folders, every kept listing equals one read from the disk again.
+        [Test]
+        public void KeptFolderListingsEqualListingsReadAgainAfterAssetChanges()
+        {
+            string[] folders = { Root, Root + "/Sub", Root + "/Sub/Deep" };
+            string Describe(string folder) => string.Join(", ", ProjectFiles.Children(folder, ProjectSort.Name, ProjectKinds.None)
+                .Select(i => i.Name + i.Extension + (i.IsFolder ? "/" : "") + (i.HasChildren ? "+" : "") + (i.HasSubAssets ? "*" : "") + ":" + i.Size));
+            foreach (string folder in folders) Describe(folder);
+            AssetDatabase.CreateAsset(new AnimationClip(), Root + "/Sub/Kick.anim");
+            Assert.That(AssetDatabase.MoveAsset(Root + "/Walk.anim", Root + "/Sub/Deep/Walk.anim"), Is.Empty);
+            AssetDatabase.DeleteAsset(Root + "/Sub/Deep/Jump.anim");
+            AssetDatabase.CreateFolder(Root, "Made");
+            AssetDatabase.CreateAsset(new Material(Shader.Find("Standard")), Root + "/Made/Look.mat");
+            var kept = folders.Concat(new[] { Root + "/Made" }).Select(Describe).ToList();
+            ProjectFiles.ForgetAll();
+            var fresh = folders.Concat(new[] { Root + "/Made" }).Select(Describe).ToList();
+            Assert.That(kept, Is.EqualTo(fresh));
+            Assert.That(kept[2], Does.Contain("Walk.anim"), "the moved clip is listed where it went");
+            Assert.That(kept[0], Does.Not.Contain("Walk.anim").And.Contain("Made/+"));
+        }
+
         [Test]
         public void FoldersComeFirstAndDatesSortAndMarkNewAssets()
         {
@@ -233,6 +255,33 @@ namespace Orbiters.Mixer.Editor.Tests
                 Assert.That(uses.Any(u => u.Group == "Test tool" && u.Title == "Linked"), Is.True, "other tools' uses come through MixerLink");
             }
             finally { MixerLink.BlendshapeUses -= source; }
+        }
+
+        // After the first reading, the index reads again only the paths the asset database names: a clip made, a folder
+        // moved and a clip deleted are seen without walking the project, and the result equals a full reading.
+        [Test]
+        public void TheContentIndexFollowsChangedPathsAsAFullReadingWould()
+        {
+            Assert.That(AssetContentIndex.RefreshNow(), Is.True, "the content index was read in time");
+            var made = new AnimationClip();
+            made.SetCurve("Body", typeof(SkinnedMeshRenderer), "blendShape.MixerProjectKept", AnimationCurve.Constant(0f, 1f, 100f));
+            AssetDatabase.CreateAsset(made, Root + "/Sub/Deep/Kept.anim");
+            var gone = new AnimationClip();
+            gone.SetCurve("Body", typeof(SkinnedMeshRenderer), "blendShape.MixerProjectGone", AnimationCurve.Constant(0f, 1f, 100f));
+            AssetDatabase.CreateAsset(gone, Root + "/Gone.anim");
+            Assert.That(AssetContentIndex.UpdateNow(), Is.True, "read in time");
+            Assert.That(AssetContentIndex.WithFact("attribute", "blendShape.MixerProjectKept"), Is.EqualTo(new[] { Root + "/Sub/Deep/Kept.anim" }));
+            Assert.That(AssetDatabase.MoveAsset(Root + "/Sub", Root + "/Moved"), Is.Empty);
+            AssetDatabase.DeleteAsset(Root + "/Gone.anim");
+            Assert.That(AssetContentIndex.UpdateNow(), Is.True, "read in time");
+            Assert.That(AssetContentIndex.UpToDate, Is.True);
+            var kept = AssetContentIndex.WithFact("attribute", "blendShape.MixerProjectKept");
+            Assert.That(kept, Is.EqualTo(new[] { Root + "/Moved/Deep/Kept.anim" }), "the moved folder's clip is found where it went");
+            Assert.That(AssetContentIndex.WithFact("attribute", "blendShape.MixerProjectGone"), Is.Empty, "a deleted clip is left out");
+            var mine = AssetContentIndex.WithFact("m_Name", "Run").Where(p => p.StartsWith(Root + "/", StringComparison.Ordinal)).ToList();
+            Assert.That(AssetContentIndex.RefreshNow(), Is.True, "the content index was read in time");
+            Assert.That(AssetContentIndex.WithFact("attribute", "blendShape.MixerProjectKept"), Is.EqualTo(kept), "as a full reading");
+            Assert.That(AssetContentIndex.WithFact("m_Name", "Run").Where(p => p.StartsWith(Root + "/", StringComparison.Ordinal)), Is.EquivalentTo(mine), "as a full reading");
         }
 
         [Test]

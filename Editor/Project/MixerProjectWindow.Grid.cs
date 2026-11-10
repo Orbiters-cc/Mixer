@@ -61,6 +61,8 @@ namespace Orbiters.Mixer.Editor
             MixerUi.Show(grid, GridMode);
             root.EnableInClassList("mxp-root--grid", GridMode);
             previewCache.Clear();
+            noPreview.Clear();
+            waitingPreviews.Clear();
         }
 
         private VisualElement BuildStatusBar()

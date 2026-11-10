@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Linq.Expressions;
 using System.Reflection;
+using Orbiters.Toolkit.Editor;
 using UnityEditor;
 using UnityEditor.IMGUI.Controls;
 using UnityEngine;
@@ -51,7 +52,6 @@ namespace Orbiters.Mixer.Editor
         private static EditorWindow listener;
         private static object listenerHierarchy;
         private static bool failed;
-        private static double nextKeep;
         private static string sceneViewSearch = string.Empty;
 
         /// <summary>A ping or a frame for a scene object (true: a ping) or an asset (pings only).</summary>
@@ -106,7 +106,10 @@ namespace Orbiters.Mixer.Editor
             }
             catch (Exception) { }
             if (Application.isBatchMode) return;
-            EditorApplication.update += Update;
+            // On the editor host: timed by name, and run in a background editor too. What Unity sent is read every frame
+            // (a compiled field read); the listener is kept in place twice a second.
+            OrbitersEditorHost.EveryFrame("Mixer.UnityWindowHooks", Poll);
+            OrbitersEditorHost.Every("Mixer.UnityWindowHooks.Keep", 0.5, Keep, HostWhen.Always);
         }
 
         /// <summary>Whether Unity's pings reach the Mixer windows through the listener (else <see cref="MixerPing"/> tells them).</summary>
@@ -126,15 +129,6 @@ namespace Orbiters.Mixer.Editor
         }
 
         private static void OnRefreshHierarchy() => HierarchyRepaint?.Invoke();
-
-        private static void Update()
-        {
-            Poll();
-            double now = EditorApplication.timeSinceStartup;
-            if (now < nextKeep) return;
-            nextKeep = now + 0.5;
-            Keep();
-        }
 
         /// <summary>What Unity sent since the last update, given to the Mixer windows (tests call it instead of waiting).</summary>
         internal static void Poll()

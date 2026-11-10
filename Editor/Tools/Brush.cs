@@ -23,10 +23,13 @@ namespace Orbiters.Mixer.Editor
         public float Strength;
         public bool Invert;
         public bool First;
-        /// <summary>Welded vertices under the brush, with their falloff weight (0..1).</summary>
-        public readonly List<int> Welded = new List<int>();
-        public readonly List<float> Weight = new List<float>();
+        /// <summary>Welded vertices under the brush (the first <see cref="Count"/>), with their falloff weight (0..1): the stroke scratch's gather arrays.</summary>
+        public readonly int[] Welded;
+        public readonly float[] Weight;
+        public int Count;
         public float Delta;
+
+        public BrushContext(int[] welded, float[] weight) { Welded = welded; Weight = weight; }
     }
 
     /// <summary>A sculpt brush: moves the welded vertices under it, in the world, by a rule of its own.</summary>
@@ -44,18 +47,7 @@ namespace Orbiters.Mixer.Editor
         public abstract void Step(BrushContext ctx, Vector3[] moves);
 
         /// <summary>The brush's falloff curve at a normalized distance (0 at the center, 1 at the edge).</summary>
-        public static float Curve(Falloff falloff, float t)
-        {
-            t = Mathf.Clamp01(t);
-            switch (falloff)
-            {
-                case Falloff.Sphere: return Mathf.Sqrt(Mathf.Max(0f, 1f - t * t));
-                case Falloff.Linear: return 1f - t;
-                case Falloff.Sharp: { float u = 1f - t; return u * u * u; }
-                case Falloff.Constant: return t < 1f ? 1f : 0f;
-                default: { float u = 1f - t; return u * u * (3f - 2f * u); }
-            }
-        }
+        public static float Curve(Falloff falloff, float t) => StrokeKernels.Curve((int)falloff, t);
 
         /// <summary>The mean world position and normal of the vertices under the brush, weighted.</summary>
         protected static void Average(BrushContext ctx, out Vector3 center, out Vector3 normal)
@@ -66,7 +58,7 @@ namespace Orbiters.Mixer.Editor
             var skin = ctx.Target.Skin;
             center = Vector3.zero; normal = Vector3.zero;
             float total = 0f;
-            for (int i = 0; i < ctx.Welded.Count; i++)
+            for (int i = 0; i < ctx.Count; i++)
             {
                 int v = rep[ctx.Welded[i]];
                 float w = ctx.Weight[i];
@@ -96,7 +88,7 @@ namespace Orbiters.Mixer.Editor
         public override void Step(BrushContext ctx, Vector3[] moves)
         {
             var delta = (ctx.Center - ctx.Previous) * ctx.Strength;
-            for (int i = 0; i < ctx.Welded.Count; i++) moves[i] = delta * ctx.Weight[i];
+            for (int i = 0; i < ctx.Count; i++) moves[i] = delta * ctx.Weight[i];
         }
     }
 
@@ -111,13 +103,13 @@ namespace Orbiters.Mixer.Editor
             var doc = ctx.Document;
             var n = doc.Neighbors;
             var world = ctx.Target.World;
-            for (int i = 0; i < ctx.Welded.Count; i++)
+            for (int i = 0; i < ctx.Count; i++)
             {
                 int w = ctx.Welded[i];
-                var adjacent = n.Adjacent[w];
+                var adjacent = n.AdjacentTo(w);
                 if (adjacent.Length == 0) { moves[i] = Vector3.zero; continue; }
                 var mean = Vector3.zero;
-                foreach (int a in adjacent) mean += world[n.Representative[a]];
+                for (int k = 0; k < adjacent.Length; k++) mean += world[n.Representative[adjacent[k]]];
                 mean /= adjacent.Length;
                 moves[i] = (mean - world[n.Representative[w]]) * (ctx.Strength * 0.5f * ctx.Weight[i]);
             }
@@ -133,7 +125,7 @@ namespace Orbiters.Mixer.Editor
         public override void Step(BrushContext ctx, Vector3[] moves)
         {
             float amount = ctx.Radius * 0.05f * ctx.Strength * (ctx.Invert ? -1f : 1f);
-            for (int i = 0; i < ctx.Welded.Count; i++) moves[i] = WorldNormal(ctx, ctx.Welded[i]) * (amount * ctx.Weight[i]);
+            for (int i = 0; i < ctx.Count; i++) moves[i] = WorldNormal(ctx, ctx.Welded[i]) * (amount * ctx.Weight[i]);
         }
     }
 
@@ -149,7 +141,7 @@ namespace Orbiters.Mixer.Editor
             // over creases and does not swell sideways.
             Average(ctx, out _, out var normal);
             float amount = ctx.Radius * 0.05f * ctx.Strength * (ctx.Invert ? -1f : 1f);
-            for (int i = 0; i < ctx.Welded.Count; i++) moves[i] = normal * (amount * ctx.Weight[i]);
+            for (int i = 0; i < ctx.Count; i++) moves[i] = normal * (amount * ctx.Weight[i]);
         }
     }
 
@@ -164,7 +156,7 @@ namespace Orbiters.Mixer.Editor
             Average(ctx, out var center, out var normal);
             var world = ctx.Target.World;
             var rep = ctx.Document.Neighbors.Representative;
-            for (int i = 0; i < ctx.Welded.Count; i++)
+            for (int i = 0; i < ctx.Count; i++)
             {
                 var p = world[rep[ctx.Welded[i]]];
                 float height = Vector3.Dot(p - center, normal);
@@ -186,7 +178,7 @@ namespace Orbiters.Mixer.Editor
             var plane = center + normal * (ctx.Radius * 0.15f * sign);
             var world = ctx.Target.World;
             var rep = ctx.Document.Neighbors.Representative;
-            for (int i = 0; i < ctx.Welded.Count; i++)
+            for (int i = 0; i < ctx.Count; i++)
             {
                 var p = world[rep[ctx.Welded[i]]];
                 float height = Vector3.Dot(p - plane, normal) * sign;
@@ -206,7 +198,7 @@ namespace Orbiters.Mixer.Editor
             var world = ctx.Target.World;
             var rep = ctx.Document.Neighbors.Representative;
             float sign = ctx.Invert ? -1f : 1f;
-            for (int i = 0; i < ctx.Welded.Count; i++)
+            for (int i = 0; i < ctx.Count; i++)
             {
                 var p = world[rep[ctx.Welded[i]]];
                 var toCenter = ctx.Center - p;
@@ -228,7 +220,7 @@ namespace Orbiters.Mixer.Editor
             var rep = ctx.Document.Neighbors.Representative;
             float sign = ctx.Invert ? 1f : -1f;
             float depth = ctx.Radius * 0.04f * ctx.Strength;
-            for (int i = 0; i < ctx.Welded.Count; i++)
+            for (int i = 0; i < ctx.Count; i++)
             {
                 var p = world[rep[ctx.Welded[i]]];
                 var toCenter = ctx.Center - p;
@@ -247,7 +239,7 @@ namespace Orbiters.Mixer.Editor
 
         public override void Step(BrushContext ctx, Vector3[] moves)
         {
-            for (int i = 0; i < ctx.Welded.Count; i++) moves[i] = Vector3.zero;
+            for (int i = 0; i < ctx.Count; i++) moves[i] = Vector3.zero;
         }
     }
 

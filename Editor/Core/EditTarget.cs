@@ -319,12 +319,12 @@ namespace Orbiters.Mixer.Editor
         /// and the world picture. The recorder sees every vertex before it moves; <paramref name="moved"/> gets the mesh
         /// vertices. Normals catch up at the next flush (<see cref="SettleNormals"/>), the BVH at once.
         /// </summary>
-        public void MoveWelded(List<int> welded, Vector3[] moveOf, StrokeRecorder recorder, List<int> moved)
+        public void MoveWelded(List<int> welded, Vector3[] moveOf, StrokeRecorder recorder, IndexList moved)
         {
             using (MoveMarker.Auto()) MoveWeldedNow(welded, moveOf, recorder, moved);
         }
 
-        private void MoveWeldedNow(List<int> welded, Vector3[] moveOf, StrokeRecorder recorder, List<int> moved)
+        private void MoveWeldedNow(List<int> welded, Vector3[] moveOf, StrokeRecorder recorder, IndexList moved)
         {
             moved.Clear();
             if (welded.Count == 0) return;
@@ -337,28 +337,22 @@ namespace Orbiters.Mixer.Editor
                 layer.Edited = true;
                 deltas = layer.Deltas;
             }
-            var positions = doc.Positions;
-            var skin = Skin;
-            var offset = shapeOffset;
             var normalWeld = doc.NormalWeld.Weld;
             if (pendingStamp == null || pendingStamp.Length != doc.NormalWeld.WeldedCount) { pendingStamp = new int[doc.NormalWeld.WeldedCount]; pendingStampValue = 1; }
+            // Before anything moves: what the undo record keeps (each vertex's position before its own move, the normals
+            // before any), the pages and normals the flush sends, and the vertices in the order the kernel moves them.
             foreach (int w in welded)
             {
-                var d = moveOf[w];
-                foreach (int v in n.Members[w])
+                foreach (int v in n.MembersOf(w))
                 {
                     if (recorder.Touch(v) && deltas == null) doc.MovedBase.Add(v);
-                    if (deltas != null) deltas[v] += d; else positions[v] += d;
-                    var p = display[v] + d;
-                    display[v] = p;
-                    if (offset != null) p += offset[v];
-                    World[v] = skin.PointToWorld(v, p);
                     moved.Add(v);
                     doc.UnflushedPages.Add(v);
                     int nw = normalWeld[v];
                     if (pendingStamp[nw] != pendingStampValue) { pendingStamp[nw] = pendingStampValue; pendingNormals.Add(nw); }
                 }
             }
+            StrokeKernels.Move(moved.Items, moved.Count, n.Weld, moveOf, deltas ?? doc.Positions, display, shapeOffset, World, Skin);
             doc.Revision++;
             doc.BoundsDirty = true;
             bvh?.RefitVertices(moved, n);

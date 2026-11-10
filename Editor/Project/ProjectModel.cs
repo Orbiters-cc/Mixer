@@ -15,6 +15,8 @@ namespace Orbiters.Mixer.Editor
 
         private static void OnPostprocessAllAssets(string[] imported, string[] deleted, string[] moved, string[] movedFrom)
         {
+            // The folders' listings first: a window rebuilding on these changes reads them.
+            ProjectFiles.Forget(imported.Concat(deleted).Concat(moved).Concat(movedFrom));
             if (Changed != null) Changed(imported.Concat(deleted).Concat(moved).Concat(movedFrom));
         }
     }
@@ -78,6 +80,100 @@ namespace Orbiters.Mixer.Editor
         /// <summary>Between a file's path and a sub-asset's instance ID in a sub-asset line's key.</summary>
         public const char SubAssetMark = '\u0001';
 
+        // ---- Listings kept per folder ------------------------------------------------------------------------------
+        //
+        // What a folder holds, read from the disk in one enumeration (names, kinds, dates and sizes come with each entry;
+        // the .meta test is a lookup among the same names), with the files Unity unfolds to sub-assets. Kept until the
+        // asset postprocessor names a path in the folder or below it (Forget), or a project change comes that no import
+        // explains (anything may have changed on disk then). Inputs of a listing: the folder's entries on disk and their
+        // .meta files (the listing), and the asset database's sub-assets of its files (HierarchyProperty).
+
+        private sealed class Entry
+        {
+            public string Name;
+            public bool IsFolder;
+            public DateTime Added, Modified;
+            public long Size;
+        }
+
+        private sealed class Listing
+        {
+            public readonly List<Entry> Entries = new List<Entry>();
+            public HashSet<string> SubAssetGuids;
+        }
+
+        private static readonly Dictionary<string, Listing> Listings = new Dictionary<string, Listing>(StringComparer.Ordinal);
+        // Listings kept at most: past that, all are read again as needed (a project of thousands of folders browsed all day).
+        private const int ListingsKept = 4000;
+        private static bool watching, explained;
+
+        private static void Watch()
+        {
+            if (watching) return;
+            watching = true;
+            EditorApplication.projectChanged += () =>
+            {
+                if (!explained) Listings.Clear();
+                explained = false;
+            };
+        }
+
+        /// <summary>Forgets the listings of the folders holding these asset paths (and of every folder above them, whose
+        /// dates changed), and of the paths themselves when they are folders.</summary>
+        internal static void Forget(IEnumerable<string> paths)
+        {
+            explained = true;
+            foreach (string path in paths)
+            {
+                if (string.IsNullOrEmpty(path)) continue;
+                for (string p = path.TrimEnd('/'); !string.IsNullOrEmpty(p); p = ParentOf(p)) Listings.Remove(p);
+            }
+        }
+
+        /// <summary>Forgets every listing (tests, a refresh of the whole project).</summary>
+        internal static void ForgetAll() => Listings.Clear();
+
+        private static string ParentOf(string path)
+        {
+            int slash = path.LastIndexOf('/');
+            return slash > 0 ? path.Substring(0, slash) : null;
+        }
+
+        private static Listing ListingOf(string folder)
+        {
+            Watch();
+            if (Listings.TryGetValue(folder, out var known)) return known;
+            var listing = new Listing();
+            string full = Full(folder);
+            try
+            {
+                if (full != null && Directory.Exists(full))
+                {
+                    var infos = new DirectoryInfo(full).GetFileSystemInfos();
+                    var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var info in infos) names.Add(info.Name);
+                    foreach (var info in infos)
+                    {
+                        string name = info.Name;
+                        if (Hidden(name) || name.EndsWith(".meta", StringComparison.OrdinalIgnoreCase) || !names.Contains(name + ".meta")) continue;
+                        var entry = new Entry { Name = name, IsFolder = (info.Attributes & FileAttributes.Directory) != 0 };
+                        try
+                        {
+                            entry.Added = info.CreationTimeUtc;
+                            entry.Modified = info.LastWriteTimeUtc;
+                            if (!entry.IsFolder && info is FileInfo file) entry.Size = file.Length;
+                        }
+                        catch (Exception) { }
+                        listing.Entries.Add(entry);
+                    }
+                }
+            }
+            catch (Exception) { listing.Entries.Clear(); }
+            if (Listings.Count >= ListingsKept) Listings.Clear();
+            Listings[folder] = listing;
+            return listing;
+        }
+
         /// <summary>The roots of the folder tree: Assets, then each package (by its display name) under "Packages".</summary>
         public static List<(string path, string name)> Packages()
         {
@@ -115,18 +211,8 @@ namespace Orbiters.Mixer.Editor
         public static List<string> Folders(string folder)
         {
             var result = new List<string>();
-            string full = Full(folder);
-            if (full == null || !Directory.Exists(full)) return result;
-            try
-            {
-                foreach (string entry in Directory.EnumerateDirectories(full))
-                {
-                    string name = System.IO.Path.GetFileName(entry);
-                    if (Hidden(name) || !File.Exists(entry + ".meta")) continue;
-                    result.Add(folder + "/" + name);
-                }
-            }
-            catch (Exception) { }
+            foreach (var entry in ListingOf(folder).Entries)
+                if (entry.IsFolder) result.Add(folder + "/" + entry.Name);
             result.Sort((a, b) => EditorUtility.NaturalCompare(System.IO.Path.GetFileName(a), System.IO.Path.GetFileName(b)));
             return result;
         }
@@ -154,18 +240,8 @@ namespace Orbiters.Mixer.Editor
         /// <summary>Whether a folder holds anything Unity shows (folders only with <paramref name="foldersOnly"/>).</summary>
         public static bool HasChildren(string folder, bool foldersOnly)
         {
-            string full = Full(folder);
-            if (full == null || !Directory.Exists(full)) return false;
-            try
-            {
-                foreach (string entry in foldersOnly ? Directory.EnumerateDirectories(full) : Directory.EnumerateFileSystemEntries(full))
-                {
-                    string name = System.IO.Path.GetFileName(entry);
-                    if (Hidden(name) || name.EndsWith(".meta", StringComparison.OrdinalIgnoreCase)) continue;
-                    if (File.Exists(entry + ".meta")) return true;
-                }
-            }
-            catch (Exception) { }
+            foreach (var entry in ListingOf(folder).Entries)
+                if (!foldersOnly || entry.IsFolder) return true;
             return false;
         }
 
@@ -173,27 +249,33 @@ namespace Orbiters.Mixer.Editor
         public static List<ProjectItem> Children(string folder, ProjectSort sort, ProjectKinds kinds, bool foldersOnly = false)
         {
             var items = new List<ProjectItem>();
-            string full = Full(folder);
-            if (full == null || !Directory.Exists(full)) return items;
+            var listing = ListingOf(folder);
             var now = DateTime.UtcNow;
-            IEnumerable<string> entries;
-            try { entries = Directory.EnumerateFileSystemEntries(full).ToList(); } catch (Exception) { return items; }
-            var holding = foldersOnly ? null : FilesWithSubAssets(folder);
-            foreach (string entry in entries)
+            HashSet<string> holding = null;
+            if (!foldersOnly) holding = listing.SubAssetGuids ??= FilesWithSubAssets(folder);
+            foreach (var entry in listing.Entries)
             {
-                string name = System.IO.Path.GetFileName(entry);
-                if (Hidden(name) || name.EndsWith(".meta", StringComparison.OrdinalIgnoreCase)) continue;
-                if (!File.Exists(entry + ".meta")) continue;
-                bool isFolder = Directory.Exists(entry);
-                if (foldersOnly && !isFolder) continue;
-                var item = Make(folder + "/" + name, entry, isFolder, now);
-                if (!isFolder && !Keeps(kinds, item)) continue;
-                if (!isFolder && holding != null) item.HasSubAssets = holding.Contains(AssetDatabase.AssetPathToGUID(item.Path));
+                if (foldersOnly && !entry.IsFolder) continue;
+                var item = Made(folder + "/" + entry.Name, entry, now);
+                if (!entry.IsFolder && !Keeps(kinds, item)) continue;
+                if (!entry.IsFolder && holding != null && holding.Count > 0) item.HasSubAssets = holding.Contains(AssetDatabase.AssetPathToGUID(item.Path));
                 items.Add(item);
             }
             Sort(items, sort);
             return items;
         }
+
+        // An item from a kept entry (no file is asked again).
+        private static ProjectItem Made(string assetPath, Entry entry, DateTime now)
+        {
+            var item = new ProjectItem { Path = assetPath, IsFolder = entry.IsFolder, Added = entry.Added, Modified = entry.Modified, Size = entry.Size };
+            item.Extension = entry.IsFolder ? string.Empty : System.IO.Path.GetExtension(entry.Name);
+            item.Name = entry.IsFolder ? entry.Name : System.IO.Path.GetFileNameWithoutExtension(entry.Name);
+            item.IsNew = item.Added > now - NewFor && item.Added <= now + TimeSpan.FromMinutes(5);
+            item.HasChildren = entry.IsFolder && HasChildren(assetPath, false);
+            return item;
+        }
+
 
         // Unity's own view of a folder (as its Project window reads it, nothing loaded): the files whose rows unfold to
         // sub-assets, by GUID.

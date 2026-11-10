@@ -1,0 +1,56 @@
+// Each splat's footprint for one camera, once (SplatRenderer.Pipeline.Cached): thread i projects the splat the camera's
+// back-to-front order puts at i and writes its quad there, culled (extent 0) where it would draw nothing or nothing on
+// screen; Splats.shader's pass 3 then only expands each quad's corners.
+
+#pragma kernel Project
+
+#include "SplatProjection.hlsl"
+
+StructuredBuffer<Splat> _Splats;
+StructuredBuffer<SplatSeen> _Seen;
+uint _HasSeen;
+StructuredBuffer<uint> _Order;
+RWStructuredBuffer<SplatQuad> _Quads;
+uint _Count;
+float4x4 _ObjectToWorld;
+// World to view space, as the camera renders (worldToCameraMatrix).
+float4x4 _View;
+// The camera's own projection (projectionMatrix, OpenGL-style), for culling only.
+float4x4 _Projection;
+// fx, fy (pixels per unit of view-space tangent, both positive), then the Jacobian's clamp in x and y.
+float4 _Focal;
+// Width and height in pixels.
+float4 _Screen;
+// The camera in the cloud's own space.
+float4 _EyeInCloud;
+float4 _Confidence;
+float4 _Far;
+float4 _Horizon;
+
+[numthreads(256, 1, 1)]
+void Project(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    if (i >= _Count)
+        return;
+    SplatQuad q = SplatNoQuad();
+    uint index = _Order[i];
+    if (index < _Count)
+    {
+        SplatView v;
+        v.objectToWorld = _ObjectToWorld;
+        v.view = _View;
+        v.focal = _Focal.xy;
+        v.limit = _Focal.zw;
+        v.screen = _Screen.xy;
+        v.eyeInCloud = _EyeInCloud.xyz;
+        v.confidence = _Confidence;
+        v.far = _Far;
+        v.horizon = _Horizon.rgb;
+        bool known = _HasSeen != 0u;
+        SplatFootprint f;
+        if (SplatProject(_Splats[index], _Seen[known ? index : 0u], known, v, f) && SplatOnScreen(f, _Projection, _Screen.xy))
+            q = SplatQuadOf(f);
+    }
+    _Quads[i] = q;
+}
