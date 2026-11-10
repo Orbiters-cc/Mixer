@@ -244,8 +244,12 @@ namespace Orbiters.UnitGit.Editor
             {
                 if (string.IsNullOrWhiteSpace(url)) return new GitCommandResult { ExitCode = 1, StandardError = "Paste the repository URL first." };
                 var service = new UnitGitService(root);
-                bool exists = service.GetRemoteNames().Any(r => string.Equals(r, "origin", StringComparison.OrdinalIgnoreCase));
-                return service.RunGit(GitAccess.Exclusive, UnitGitService.DefaultTimeoutMilliseconds, "remote", exists ? "set-url" : "add", "origin", url.Trim());
+                // One operation: the check and the change under one lease, so two at once cannot both find no origin.
+                return UnitGitLease.Hold(() =>
+                {
+                    bool exists = service.GetRemoteNames().Any(r => string.Equals(r, "origin", StringComparison.OrdinalIgnoreCase));
+                    return service.RunGit(GitAccess.Exclusive, UnitGitService.DefaultTimeoutMilliseconds, "remote", exists ? "set-url" : "add", "origin", url.Trim());
+                });
             });
         }
 
