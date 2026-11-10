@@ -357,6 +357,7 @@ namespace Orbiters.Mixer.Editor
             if (!built) return;
             PersistExpanded(force: false);
             PollThumbnails();
+            ReleaseUnusedPictures();
             TickHooks();
             if (!visible) return;
             if (!dirty && model.NeedsRefresh) dirty = true;

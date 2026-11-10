@@ -30,7 +30,7 @@ namespace Orbiters.Mixer.Editor
         // Rows holding more renderers than this (a world's folders) show their icon: a picture renders them all.
         private const int PictureRenderers = 128;
         // Pictures kept by this window at most (about 147 KB each): the least recently shown go first, never one on screen.
-        private const int PicturesKept = 160;
+        internal const int PicturesKept = 160;
 
         // ---- Making the parts (once per pooled row) ---------------------------------------------------------------
 
@@ -656,7 +656,7 @@ namespace Orbiters.Mixer.Editor
             if (!scene.IsValid() || string.IsNullOrEmpty(scene.path) || EditorApplication.isPlayingOrWillChangePlaymode) return null;
             var id = GlobalObjectId.GetGlobalObjectIdSlow(row.Object);
             if (id.identifierType == 0) return null;
-            var key = new StringBuilder("mixer-hierarchy-asset|2|").Append(id.ToString());
+            var key = new StringBuilder("mixer-hierarchy-asset|3|").Append(id.ToString());
             var hashes = new Dictionary<string, string>(System.StringComparer.Ordinal);
             bool Append(Object asset)
             {
@@ -680,7 +680,37 @@ namespace Orbiters.Mixer.Editor
                 key.Append(renderer.enabled && renderer.gameObject.activeInHierarchy ? '+' : '-');
                 foreach (var material in renderer.sharedMaterials) if (!Append(material)) return null;
             }
+            // What the picture is rendered from beyond the assets: where each part is, the bones' pose, the shapes' weights.
+            key.Append("|state:").Append(RenderedState(row.Object.transform, renderers).ToString("x16"));
             return key.ToString();
+        }
+
+        /// <summary>
+        /// A hash of the scene state ModelThumbnails renders a row's renderers with: each renderer's matrix relative to the
+        /// row's object, a skinned mesh's bones relative to it (its pose, which BakeMesh reads) and its blendshape weights.
+        /// Values are rounded (1e-4) so float noise does not change the key. Fixed order: renderers, then bones and shapes
+        /// in index order.
+        /// </summary>
+        internal static ulong RenderedState(Transform root, Renderer[] renderers)
+        {
+            ulong hash = 14695981039346656037UL;
+            void Add(float value)
+            {
+                long q = float.IsNaN(value) || float.IsInfinity(value) ? long.MinValue : (long)System.Math.Round(value * 10000.0);
+                for (int b = 0; b < 8; b++) { hash ^= (byte)(q >> (b * 8)); hash *= 1099511628211UL; }
+            }
+            void AddMatrix(Matrix4x4 m) { for (int i = 0; i < 16; i++) Add(m[i]); }
+            var toRoot = root.worldToLocalMatrix;
+            foreach (var renderer in renderers)
+            {
+                if (renderer == null || MeshOf(renderer) == null) continue;
+                AddMatrix(toRoot * renderer.transform.localToWorldMatrix);
+                if (!(renderer is SkinnedMeshRenderer skinned)) continue;
+                foreach (var bone in skinned.bones) { if (bone != null) AddMatrix(toRoot * bone.localToWorldMatrix); else Add(float.NaN); }
+                int shapes = skinned.sharedMesh.blendShapeCount;
+                for (int i = 0; i < shapes; i++) Add(skinned.GetBlendShapeWeight(i));
+            }
+            return hash;
         }
 
         private static Mesh MeshOf(Renderer renderer) =>
@@ -698,12 +728,14 @@ namespace Orbiters.Mixer.Editor
 
         // Past PicturesKept, the pictures shown longest ago are freed (never one on screen): scrolling a world's thousands
         // of rows keeps a bounded number of textures.
-        private void ReleaseUnusedPictures()
+        // Called after rebuilds and from the window's tick (scrolling binds rows and makes pictures without a rebuild).
+        internal void ReleaseUnusedPictures()
         {
             if (pictures.Count <= PicturesKept || list == null) return;
             var shown = new HashSet<int>();
+            // The list shows and hides its rows by their inline display (read now, not after the next layout).
             foreach (var element in list.Rows)
-                if (element.resolvedStyle.display != DisplayStyle.None && ViewOf(element)?.Row is HierarchyRow row) shown.Add(row.InstanceId);
+                if (element.style.display.value != DisplayStyle.None && ViewOf(element)?.Row is HierarchyRow row) shown.Add(row.InstanceId);
             var oldest = new List<KeyValuePair<int, Picture>>(pictures);
             oldest.Sort((a, b) => a.Value.Used.CompareTo(b.Value.Used));
             foreach (var pair in oldest)
@@ -714,6 +746,15 @@ namespace Orbiters.Mixer.Editor
                 ModelThumbnails.Release(pair.Value.Key, transparent: true);
             }
         }
+
+        /// <summary>How many pictures this window holds (tests).</summary>
+        internal int PicturesHeld => pictures.Count;
+
+        /// <summary>Holds a picture key for a row as a bind would (tests): the eviction's input without rendering.</summary>
+        internal void HoldPicture(int instanceId, string key) => pictures[instanceId] = new Picture { Key = key, Used = ++pictureClock, Revision = int.MinValue };
+
+        /// <summary>Whether this window holds a picture for the row (tests).</summary>
+        internal bool HoldsPicture(int instanceId) => pictures.ContainsKey(instanceId);
 
         private void ReleasePictures()
         {

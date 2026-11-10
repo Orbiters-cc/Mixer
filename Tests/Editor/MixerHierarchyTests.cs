@@ -663,47 +663,210 @@ namespace Orbiters.Mixer.Editor.Tests
         public System.Collections.IEnumerator TheKeptRowsEqualRowsBuiltFromScratchAfterRandomEdits()
         {
             const string prefabPath = "Assets/__MixerHierarchyRandomEdits.prefab";
+            const string secondPath = "Assets/__MixerHierarchyRandomEdits.unity";
             undoable = redoable = 0;
             var model = new HierarchyModel();
             var filter = new HierarchyFilter();
             System.Action<Toolkit.Editor.EditorChanges> listen = changes => model.Apply(changes);
             Toolkit.Editor.EditorChangeBus.Changed += listen;
             GameObject instance = null;
+            second = default;
             try
             {
-                // A prefab instance in the fixture, for apply and revert.
+                // A prefab instance in the fixture, for apply, revert and unpack; a second scene, saved, for objects moved
+                // between scenes and for unloading and loading.
                 var source = new GameObject("Prefab source");
                 new GameObject("Prefab child").transform.SetParent(source.transform, false);
                 var prefab = PrefabUtility.SaveAsPrefabAsset(source, prefabPath);
                 Object.DestroyImmediate(source);
                 instance = (GameObject)PrefabUtility.InstantiatePrefab(prefab, scene);
                 instance.transform.SetParent(root.transform, false);
+                second = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Additive);
+                EditorSceneManager.SaveScene(second, secondPath);
                 model.SetExpanded(root.GetInstanceID(), true, recursive: true);
                 model.Rebuild(filter);
                 var random = new System.Random(20261110);
                 int made = 0;
-                for (int step = 0; step < 80; step++)
+                for (int step = 0; step < 120; step++)
                 {
                     string what = RandomEdit(random, instance, ref made);
                     // Unity publishes its change events with the next editor frame.
                     yield return null;
                     Toolkit.Editor.EditorChangeBus.Flush();
-                    // New objects open too, so every object of the fixture is a row.
-                    foreach (var t in root.GetComponentsInChildren<Transform>(true)) model.Expanded.Add(t.gameObject.GetInstanceID());
+                    // Branches fold and open again at random: rows kept under a folded branch must be right when it opens.
+                    var objects = root.GetComponentsInChildren<Transform>(true).Concat(second.GetRootGameObjects().SelectMany(g => g.GetComponentsInChildren<Transform>(true))).ToList();
+                    for (int fold = random.Next(4); fold > 0 && objects.Count > 0; fold--)
+                    {
+                        int id = objects[random.Next(objects.Count)].gameObject.GetInstanceID();
+                        if (!model.Expanded.Remove(id)) model.Expanded.Add(id);
+                    }
+                    model.Expanded.Add(root.GetInstanceID());
                     filter.Pattern = step % 5 == 4 ? new Toolkit.Editor.SearchPattern(step % 10 == 4 ? "Made" : "Made 1", false, false) : Toolkit.Editor.SearchPattern.Empty;
                     model.Refresh(filter);
                     var differences = model.Verify(filter);
                     Assert.That(differences, Is.Empty, "after step " + step + " (" + what + "): " + string.Join("; ", differences));
                 }
+                // Unloading and loading the second scene (the window forgets every object on scene events: Reset).
+                filter.Pattern = Toolkit.Editor.SearchPattern.Empty;
+                EditorSceneManager.SaveScene(second);
+                EditorSceneManager.CloseScene(second, false);
+                yield return null;
+                Toolkit.Editor.EditorChangeBus.Flush();
+                model.Reset();
+                model.Refresh(filter);
+                Assert.That(model.Verify(filter), Is.Empty, "after unloading a scene");
+                second = EditorSceneManager.OpenScene(secondPath, OpenSceneMode.Additive);
+                yield return null;
+                Toolkit.Editor.EditorChangeBus.Flush();
+                model.Reset();
+                model.Refresh(filter);
+                Assert.That(model.Verify(filter), Is.Empty, "after loading it again");
             }
             finally
             {
                 Toolkit.Editor.EditorChangeBus.Changed -= listen;
+                if (second.IsValid()) EditorSceneManager.CloseScene(second, true);
+                AssetDatabase.DeleteAsset(secondPath);
                 AssetDatabase.DeleteAsset(prefabPath);
             }
         }
 
+        // Review of MXC-29: a branch opened (its rows kept), folded, a row below it renamed and an object made below it by
+        // a script without Undo, then opened again: the rows show the new name and the new object.
+        [UnityTest]
+        public System.Collections.IEnumerator AFoldedBranchShowsScriptEditsMadeWhileFolded()
+        {
+            var model = new HierarchyModel();
+            var filter = new HierarchyFilter();
+            System.Action<Toolkit.Editor.EditorChanges> listen = changes => model.Apply(changes);
+            Toolkit.Editor.EditorChangeBus.Changed += listen;
+            try
+            {
+                var child = root.transform.GetChild(0);
+                var cube = child.GetChild(0).gameObject;
+                model.SetExpanded(root.GetInstanceID(), true);
+                model.SetExpanded(child.gameObject.GetInstanceID(), true);
+                model.Rebuild(filter);
+                Assert.That(model.IndexOf(cube.GetInstanceID()), Is.GreaterThanOrEqualTo(0));
+                model.SetExpanded(child.gameObject.GetInstanceID(), false);
+                model.Refresh(filter);
+                Assert.That(model.IndexOf(cube.GetInstanceID()), Is.LessThan(0), "folded");
+                cube.name = "Renamed while folded";
+                var deeper = new GameObject("Made while folded");
+                deeper.transform.SetParent(cube.transform, false);
+                yield return null;
+                Toolkit.Editor.EditorChangeBus.Flush();
+                model.Refresh(filter);
+                model.SetExpanded(child.gameObject.GetInstanceID(), true);
+                model.SetExpanded(cube.GetInstanceID(), true);
+                model.Refresh(filter);
+                Assert.That(model[model.IndexOf(cube.GetInstanceID())].Name, Is.EqualTo("Renamed while folded"));
+                Assert.That(model.IndexOf(deeper.GetInstanceID()), Is.GreaterThanOrEqualTo(0), "the object made below the folded branch is a row");
+                Assert.That(model.Verify(filter), Is.Empty);
+            }
+            finally { Toolkit.Editor.EditorChangeBus.Changed -= listen; }
+        }
+
+        // Review of the pictures: scrolling binds rows and makes pictures between rebuilds; the window's tick frees the
+        // oldest past the cap, never one on screen.
+        [Test]
+        public void PicturesPastTheCapAreFreedButNeverOneOnScreen()
+        {
+            var window = OpenHidden();
+            try
+            {
+                window.RevealObject(root);
+                Repaint(window);
+                ScrollToTop(window, root);
+                Repaint(window);
+                window.HoldPicture(root.GetInstanceID(), "mixer-hierarchy-test|on screen");
+                for (int i = 0; i < MixerHierarchyWindow.PicturesKept + 100; i++) window.HoldPicture(-1000 - i, "mixer-hierarchy-test|" + i);
+                window.ReleaseUnusedPictures();
+                Assert.That(window.PicturesHeld, Is.LessThanOrEqualTo(MixerHierarchyWindow.PicturesKept));
+                Assert.That(window.HoldsPicture(root.GetInstanceID()), Is.True, "the oldest, but on screen: kept");
+                Assert.That(window.HoldsPicture(-1000), Is.False, "the oldest off screen went");
+                Assert.That(window.HoldsPicture(-1000 - MixerHierarchyWindow.PicturesKept - 99), Is.True, "the newest stayed");
+            }
+            finally { window.Close(); }
+        }
+
+        // Review of the lasting picture keys: what the picture is rendered with beyond the assets (placement, the bones'
+        // pose, the shapes' weights) changes the key; the same state gives the same key.
+        [Test]
+        public void ThePictureKeyFollowsPlacementPoseAndShapes()
+        {
+            var cube = root.transform.GetChild(0).GetChild(0);
+            var renderers = root.GetComponentsInChildren<Renderer>(true);
+            ulong before = MixerHierarchyWindow.RenderedState(root.transform, renderers);
+            Assert.That(MixerHierarchyWindow.RenderedState(root.transform, renderers), Is.EqualTo(before), "the same state, the same key");
+            cube.localPosition += new Vector3(0.5f, 0f, 0f);
+            Assert.That(MixerHierarchyWindow.RenderedState(root.transform, renderers), Is.Not.EqualTo(before), "a part moved");
+            cube.localPosition -= new Vector3(0.5f, 0f, 0f);
+            Assert.That(MixerHierarchyWindow.RenderedState(root.transform, renderers), Is.EqualTo(before), "back where it was");
+
+            var mesh = new Mesh { vertices = new[] { Vector3.zero, Vector3.right, Vector3.up }, triangles = new[] { 0, 1, 2 } };
+            mesh.boneWeights = new[] { new BoneWeight { boneIndex0 = 0, weight0 = 1f }, new BoneWeight { boneIndex0 = 0, weight0 = 1f }, new BoneWeight { boneIndex0 = 0, weight0 = 1f } };
+            mesh.bindposes = new[] { Matrix4x4.identity };
+            mesh.AddBlendShapeFrame("Smile", 100f, new[] { Vector3.up, Vector3.up, Vector3.up }, null, null);
+            var holder = new GameObject("Skinned");
+            holder.transform.SetParent(root.transform, false);
+            var bone = new GameObject("Bone").transform;
+            bone.SetParent(holder.transform, false);
+            var skinned = holder.AddComponent<SkinnedMeshRenderer>();
+            skinned.sharedMesh = mesh;
+            skinned.bones = new[] { bone };
+            try
+            {
+                renderers = root.GetComponentsInChildren<Renderer>(true);
+                ulong rest = MixerHierarchyWindow.RenderedState(root.transform, renderers);
+                skinned.SetBlendShapeWeight(0, 60f);
+                ulong smiling = MixerHierarchyWindow.RenderedState(root.transform, renderers);
+                Assert.That(smiling, Is.Not.EqualTo(rest), "a shape's weight");
+                bone.localRotation = Quaternion.Euler(0f, 0f, 30f);
+                Assert.That(MixerHierarchyWindow.RenderedState(root.transform, renderers), Is.Not.EqualTo(smiling), "a bone posed");
+            }
+            finally { Object.DestroyImmediate(mesh); }
+        }
+
+        // Review of the pictures: an asset changed (a material saved and imported) moves every kept row's picture
+        // revision, so its key, with the assets' dependency hashes, is worked out again.
+        [UnityTest]
+        public System.Collections.IEnumerator AnAssetChangeMakesThePictureKeysBeWorkedOutAgain()
+        {
+            const string materialPath = "Assets/__MixerHierarchyPicture.mat";
+            var model = new HierarchyModel();
+            var filter = new HierarchyFilter();
+            System.Action<Toolkit.Editor.EditorChanges> listen = changes => model.Apply(changes);
+            Toolkit.Editor.EditorChangeBus.Changed += listen;
+            try
+            {
+                var material = new Material(Shader.Find("Standard"));
+                AssetDatabase.CreateAsset(material, materialPath);
+                var cube = root.transform.GetChild(0).GetChild(0).gameObject;
+                cube.GetComponent<MeshRenderer>().sharedMaterial = material;
+                model.SetExpanded(root.GetInstanceID(), true);
+                model.Rebuild(filter);
+                yield return null;
+                Toolkit.Editor.EditorChangeBus.Flush();
+                int before = model.Known(root.GetInstanceID()).PictureRevision;
+                material.color = Color.red;
+                EditorUtility.SetDirty(material);
+                AssetDatabase.SaveAssets();
+                AssetDatabase.ImportAsset(materialPath, ImportAssetOptions.ForceUpdate);
+                yield return null;
+                Toolkit.Editor.EditorChangeBus.Flush();
+                Assert.That(model.Known(root.GetInstanceID()).PictureRevision, Is.GreaterThan(before));
+            }
+            finally
+            {
+                Toolkit.Editor.EditorChangeBus.Changed -= listen;
+                AssetDatabase.DeleteAsset(materialPath);
+            }
+        }
+
         private int undoable, redoable;
+        private Scene second;
+
 
         // An edit that found nothing to do recorded no Undo step.
         private string Nothing()
@@ -716,10 +879,10 @@ namespace Orbiters.Mixer.Editor.Tests
         {
             var all = root.GetComponentsInChildren<Transform>(true).Where(t => t != root.transform).ToList();
             Transform Pick() => all.Count > 0 ? all[random.Next(all.Count)] : root.transform;
-            int kind = random.Next(14);
+            int kind = random.Next(17);
             // Undo and Redo only steps this test made: the user's own steps before it are never touched.
             if (kind == 10 && undoable == 0 || kind == 11 && redoable == 0) return "nothing";
-            if (kind < 10) { Undo.IncrementCurrentGroup(); undoable++; redoable = 0; }
+            if (kind < 10 || kind == 16) { Undo.IncrementCurrentGroup(); undoable++; redoable = 0; }
             switch (kind)
             {
                 case 0:
@@ -790,6 +953,7 @@ namespace Orbiters.Mixer.Editor.Tests
                 }
                 case 9:
                 {
+                    if (instance == null || !PrefabUtility.IsOutermostPrefabInstanceRoot(instance) || instance.transform.childCount == 0) return Nothing();
                     var child = instance.transform.GetChild(0).gameObject;
                     Undo.RecordObject(child, "Override");
                     child.name = "Made " + made++;
@@ -806,11 +970,32 @@ namespace Orbiters.Mixer.Editor.Tests
                     go.name = "Made " + made++;
                     return "rename without Undo";
                 }
-                default:
+                case 13:
                 {
                     var go = new GameObject("Made " + made++);
                     go.transform.SetParent(Pick(), false);
                     return "create without Undo";
+                }
+                case 14:
+                {
+                    // Hidden from (or shown again in) the hierarchy by a tool: no object change, only hierarchyChanged.
+                    var go = Pick().gameObject;
+                    go.hideFlags ^= HideFlags.HideInHierarchy;
+                    return "hide flags";
+                }
+                case 15:
+                {
+                    var t = Pick();
+                    if (!second.IsValid() || t == root.transform || PrefabUtility.IsPartOfPrefabInstance(t) && !PrefabUtility.IsOutermostPrefabInstanceRoot(t.gameObject)) return "nothing";
+                    t.SetParent(null, true);
+                    SceneManager.MoveGameObjectToScene(t.gameObject, second);
+                    return "move to another scene";
+                }
+                default:
+                {
+                    if (instance == null || !PrefabUtility.IsOutermostPrefabInstanceRoot(instance)) return Nothing();
+                    PrefabUtility.UnpackPrefabInstance(instance, PrefabUnpackMode.Completely, InteractionMode.UserAction);
+                    return "prefab unpack";
                 }
             }
         }

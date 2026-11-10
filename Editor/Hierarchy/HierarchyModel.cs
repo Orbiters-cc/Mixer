@@ -650,20 +650,26 @@ namespace Orbiters.Mixer.Editor
             }
             if (changes.Hierarchy)
             {
-                // hierarchyChanged also follows changes made without Undo, which raise no object change: the rows shown are
-                // listed again, with their names and whether they are active; with no object change at all, every fact of
-                // the rows shown is read again.
-                ResyncRows(explained: changes.StructureChanged || changes.Properties.Count > 0);
+                // hierarchyChanged also follows changes made without Undo, which raise no object change, possibly in the
+                // same frame as ones that do: every kept row is read again (review of MXC-29).
+                ResyncAll();
                 update = HierarchyUpdate.Rows;
+            }
+            if (changes.Imported.Count + changes.Deleted.Count + changes.Moved.Count + changes.Assets.Count > 0)
+            {
+                // A material, mesh or texture edited or imported: which rows' pictures use it is not known here, so every
+                // picture key is worked out again (a key that comes out the same keeps its picture).
+                foreach (var node in nodes.Values) node.PictureRevision++;
+                if (update == HierarchyUpdate.None) update = HierarchyUpdate.Rebind;
             }
             return update;
         }
 
         /// <summary>
         /// An edit made from the Mixer Hierarchy itself (its change events come a frame later): every fact of the rows shown
-        /// is read again at the next refresh, as the rows were rebuilt before.
+        /// (and every row kept below folded branches) is read again at the next refresh.
         /// </summary>
-        public void ResyncShown() => ResyncRows(explained: false);
+        public void ResyncShown() => ResyncAll();
 
         /// <summary>The scene views' visibility or picking switches changed (they raise no object change).</summary>
         public void VisibilityChanged()
@@ -710,25 +716,21 @@ namespace Orbiters.Mixer.Editor
             node.PictureRevision++;
         }
 
-        private void ResyncRows(bool explained)
+        // Something changed that no object change names (hierarchyChanged after a script's edit without Undo, an edit
+        // made here whose events come a frame later): every row kept, shown or under a folded branch, is read again when
+        // next met. Only flags are set here; the facts are read lazily, for the rows a refresh lists.
+        private void ResyncAll()
         {
-            sceneRoots.Clear();
-            revision++;
-            if (!explained) Avatars.Clear();
             List<HierarchyRow> dead = null;
-            foreach (var row in Rows)
+            foreach (var node in nodes.Values)
             {
-                if (row.IsScene) continue;
-                var go = row.Object;
-                if (go == null) { (dead ??= new List<HierarchyRow>()).Add(row); continue; }
-                row.ChildrenStale = true;
-                row.MeshesStale = true;
-                row.ActiveStale = true;
-                if (!explained) { MarkStale(row); continue; }
-                string name = go.name;
-                if (name != row.Name) row.Name = name;
+                if (node.Object == null) { (dead ??= new List<HierarchyRow>()).Add(node); continue; }
+                MarkStale(node);
             }
             if (dead != null) foreach (var node in dead) { MarkCachedUp(node.Parent, Mark.Below | Mark.Facts); Forget(node); }
+            sceneRoots.Clear();
+            Avatars.Clear();
+            revision++;
         }
 
         private void Stale(HierarchyRow node, Mark mark)
