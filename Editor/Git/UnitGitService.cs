@@ -604,26 +604,19 @@ namespace Orbiters.UnitGit.Editor
                 if (answer != UnitGitObjects.Answer.Failed) return false;
             }
 
-            var start = new ProcessStartInfo
-            {
-                FileName = "git",
-                Arguments = "--literal-pathspecs cat-file blob " + EscapeArgument(revisionPath),
-                WorkingDirectory = ProjectRoot,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true
-            };
-            start.EnvironmentVariables["GIT_TERMINAL_PROMPT"] = "0";
-            start.EnvironmentVariables["GIT_OPTIONAL_LOCKS"] = "0";
+            // A process of its own (an index stage, a name with a line break), through the same runner as every Git command.
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(destination)));
             bool complete = false;
             try
             {
-                EditorProcessResult result;
+                GitCommandResult result;
                 using (var file = File.Create(destination))
                 {
-                    result = EditorProcessRunner.Run(start, LongTimeoutMilliseconds, standardOutputDestination: file);
+                    result = ReadGitStream(LongTimeoutMilliseconds, (bytes, offset, count) =>
+                    {
+                        file.Write(bytes, offset, count);
+                        return true;
+                    }, "--literal-pathspecs", "cat-file", "blob", revisionPath);
                 }
                 complete = result.Success;
                 return complete;

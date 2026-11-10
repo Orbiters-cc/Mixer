@@ -87,7 +87,7 @@ namespace Orbiters.UnitGit.Editor
                     TimeoutMilliseconds = timeoutMilliseconds,
                     Environment = environment,
                     Cancelled = superseded,
-                    IndexLock = write ? IndexLockOf(workingDirectory, environment) : null,
+                    Write = write,
                     Input = input,
                     Output = output,
                     // A read's output only fills the log: its lines are not logged (the command, its exit and errors are).
@@ -104,6 +104,9 @@ namespace Orbiters.UnitGit.Editor
                 if (run.Cancelled)
                     result.StandardError += (result.StandardError.Length > 0 ? "\n" : string.Empty) +
                                             (superseded?.Invoke() == true ? "Read superseded." : "Command interrupted by editor reload or shutdown.");
+                // A change stopped before its end may have left Git's lock file: say which, once (nothing deletes it).
+                if (write && (run.TimedOut || run.Cancelled))
+                    result.StandardError = UnitGitWriteGate.ExplainLock(result.StandardError, IndexLockOf(workingDirectory, environment));
                 if (run.TimedOut) log?.Invoke("command or output capture timed out");
                 else if (!run.Cancelled) log?.Invoke("exit: " + result.ExitCode);
             }
@@ -118,13 +121,13 @@ namespace Orbiters.UnitGit.Editor
             return result;
         }
 
-        // The lock a change of the index takes: the scoped index's own (GIT_INDEX_FILE), else the repository's.
+        // The lock a change of the index takes: the scoped index's own (GIT_INDEX_FILE), else the repository's (by name only,
+        // never starting Git: this runs when a change was just stopped).
         private static string IndexLockOf(string workingDirectory, IDictionary<string, string> environment)
         {
             if (environment != null && environment.TryGetValue("GIT_INDEX_FILE", out string scoped) && !string.IsNullOrEmpty(scoped))
                 return Path.GetFullPath(Path.Combine(workingDirectory, scoped)) + ".lock";
-            string index = UnitGitPaths.GitPath(workingDirectory, "index");
-            return index == null ? null : index + ".lock";
+            return UnitGitPaths.TryGetKnown(workingDirectory, "index", out string index) ? index + ".lock" : Path.Combine(workingDirectory, ".git", "index.lock");
         }
 
         /// <summary>

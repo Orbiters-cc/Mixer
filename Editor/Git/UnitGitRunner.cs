@@ -21,9 +21,9 @@ namespace Orbiters.UnitGit.Editor
         /// itself), written on a thread of its own while the outputs are read so no pipe can fill up and stall both sides.
         /// Null: stdin is closed at once.</summary>
         public byte[] Input;
-        /// <summary>For a command that changes the repository: the index lock it may take. If the command has to be stopped
-        /// (timeout, reload) and leaves this lock behind, the lock is removed when it is provably that command's.</summary>
-        public string IndexLock;
+        /// <summary>The command changes the repository: a reload or quit lets it finish (up to
+        /// <see cref="UnitGitProcessLifetime.WriteGraceMilliseconds"/>) instead of stopping it at once.</summary>
+        public bool Write;
         /// <summary>Git's stdout as raw bytes, as they come. Return false to stop: the process is stopped and the result says
         /// <see cref="UnitGitRunResult.Stopped"/>. Null: stdout is kept and decoded as UTF-8 text.</summary>
         public Func<byte[], int, int, bool> Output;
@@ -117,12 +117,12 @@ namespace Orbiters.UnitGit.Editor
             if (request.TimeoutMilliseconds <= 0) throw new ArgumentOutOfRangeException(nameof(request));
             var result = new UnitGitRunResult();
             if (UnitGitProcessLifetime.IsStopping || request.Cancelled?.Invoke() == true) { result.Cancelled = true; return result; }
+            bool write = request.Write;
 
             if (request.Input != null && !CleanInput)
                 throw new InvalidOperationException("Git's input would start with a byte order mark on this system.");
 
-            UnitGitLiveProcess process = UnitGitLiveProcess.Start(request.WorkingDirectory, request.Arguments, request.Environment, request.Input != null,
-                UnitGitIndexLock.Guard(request.IndexLock));
+            UnitGitLiveProcess process = UnitGitLiveProcess.Start(request.WorkingDirectory, request.Arguments, request.Environment, request.Input != null, write);
             if (process == null) { result.Cancelled = true; return result; }
             Thread writer = null;
             var text = request.Output == null ? new MemoryStream() : null;
@@ -161,7 +161,8 @@ namespace Orbiters.UnitGit.Editor
                 var idle = new UnitGitRunner.IdleWait();
                 while (true)
                 {
-                    if (UnitGitProcessLifetime.IsStopping || request.Cancelled?.Invoke() == true) { result.Cancelled = true; break; }
+                    // A change keeps running (and its output keeps being read) while a reload gives it time to finish.
+                    if (UnitGitProcessLifetime.ShouldStop(write) || request.Cancelled?.Invoke() == true) { result.Cancelled = true; break; }
                     if (elapsed.ElapsedMilliseconds >= request.TimeoutMilliseconds) { result.TimedOut = true; break; }
 
                     bool read = false;
@@ -186,7 +187,9 @@ namespace Orbiters.UnitGit.Editor
                         if (exitedAt < 0) exitedAt = elapsed.ElapsedMilliseconds;
                         if (process.OutputClosed && process.ErrorClosed)
                         {
-                            result.ExitCode = process.ExitCode;
+                            // Stopped from outside (a reload's grace ran out): its exit code is the job's, not Git's.
+                            if (process.WasStopped) result.Cancelled = true;
+                            else result.ExitCode = process.ExitCode;
                             break;
                         }
                         // Another handle to a pipe keeps it open. When nothing of Git's job runs any more, all it wrote has
@@ -205,7 +208,8 @@ namespace Orbiters.UnitGit.Editor
                                     else { text.Write(process.Chunk, 0, rest); lines?.Add(process.Chunk, rest); }
                                 }
                                 process.DrainError(errorLines);
-                                if (!result.Stopped) result.ExitCode = process.ExitCode;
+                                if (process.WasStopped) result.Cancelled = true;
+                                else if (!result.Stopped) result.ExitCode = process.ExitCode;
                                 break;
                             }
                             result.TimedOut = result.OutputHeldOpen = true;
@@ -309,50 +313,6 @@ namespace Orbiters.UnitGit.Editor
     }
 
     /// <summary>
-    /// Git's index lock after a command that changes the repository had to be stopped (a timeout, a reload): killed, Git
-    /// leaves "index.lock" behind and every later change fails on it. The lock is removed only when it is provably the
-    /// stopped command's: it did not exist when the command started, it was created after, and no other Git runs at all
-    /// (another program's Git may be the one holding it). Anything else leaves it for the user, as Git would.
-    /// </summary>
-    internal static class UnitGitIndexLock
-    {
-        /// <summary>The cleanup to run if the command is stopped while running; null when there is no lock to watch.</summary>
-        internal static Action Guard(string lockPath)
-        {
-            if (string.IsNullOrEmpty(lockPath)) return null;
-            bool existed;
-            try { existed = File.Exists(lockPath); }
-            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException) { return null; }
-            if (existed) return null;
-            DateTime started = DateTime.UtcNow.AddSeconds(-2); // file times are coarse
-            return () => Release(lockPath, started);
-        }
-
-        private static void Release(string lockPath, DateTime startedUtc)
-        {
-            try
-            {
-                var file = new FileInfo(lockPath);
-                if (!file.Exists || file.CreationTimeUtc < startedUtc) return;
-                HashSet<int> ours = UnitGitProcessLifetime.OwnedIds();
-                foreach (Process git in Process.GetProcessesByName("git"))
-                {
-                    using (git)
-                    {
-                        // Our own kept-alive readers never take the lock; any other Git might be the one holding it now.
-                        if (!ours.Contains(git.Id)) return;
-                    }
-                }
-                file.Delete();
-            }
-            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is InvalidOperationException ||
-                                       ex is System.ComponentModel.Win32Exception)
-            {
-            }
-        }
-    }
-
-    /// <summary>
     /// A Git process with its pipes, owned by <see cref="UnitGitProcessLifetime"/>: either one command run to its end by
     /// <see cref="UnitGitRunner.Run"/>, or a process kept alive and asked one thing after the other (<c>cat-file --batch</c>,
     /// a <c>log</c> read page by page). Not thread-safe: one owner reads it at a time; only stdin may be written from
@@ -388,13 +348,13 @@ namespace Orbiters.UnitGit.Editor
 
         /// <summary>Starts Git; null when the editor is stopping (reload, quit). Throws when Git cannot start.</summary>
         internal static UnitGitLiveProcess Start(string workingDirectory, IList<string> arguments, IDictionary<string, string> environment, bool input,
-            Action onStopped = null)
+            bool write = false)
         {
             var process = new Process { StartInfo = UnitGitRunner.StartInfo(workingDirectory, arguments, environment, input) };
             bool started = false;
             try
             {
-                started = UnitGitProcessLifetime.Start(process, onStopped);
+                started = UnitGitProcessLifetime.Start(process, write);
                 if (!started) { process.Dispose(); return null; }
                 return new UnitGitLiveProcess(process);
             }
@@ -411,6 +371,7 @@ namespace Orbiters.UnitGit.Editor
         internal bool ErrorClosed => error.Closed;
         internal bool HasExited { get { try { return process.HasExited; } catch (InvalidOperationException) { return true; } } }
         internal bool JobEmpty => UnitGitProcessLifetime.RunningInJob(process) == 0;
+        internal bool WasStopped => UnitGitProcessLifetime.WasStopped(process);
         internal int ExitCode { get { try { return process.ExitCode; } catch (InvalidOperationException) { return -1; } } }
         internal string StandardError { get { lock (errorText) return errorText.ToString(); } }
         internal bool IsDisposed => disposed != 0;
