@@ -609,6 +609,7 @@ namespace Orbiters.Logger.Editor
         private readonly double[] slowest = new double[4];
         private LogStore store;
         private int epoch = -1;
+        private int firstId = -1;
         private int scanned;
         private int version = -1;
 
@@ -623,10 +624,11 @@ namespace Orbiters.Logger.Editor
                 return;
             }
 
-            if (!ReferenceEquals(source, store) || source.Epoch != epoch)
+            if (!ReferenceEquals(source, store) || source.Epoch != epoch || source.FirstId != firstId)
             {
                 store = source;
                 epoch = source.Epoch;
+                firstId = source.FirstId;
                 entries.Clear();
                 byMessage.Clear();
                 Array.Clear(slowest, 0, slowest.Length);
@@ -657,7 +659,7 @@ namespace Orbiters.Logger.Editor
                 }
 
                 byMessage[i] = profile;
-                entries.Add(new TimingEntry(i, source.TimeAt(Math.Max(0, message.Last)), profile));
+                entries.Add(new TimingEntry(i, source.TimeAt(message.Last), profile));
                 slowest[(int)profile.Kind] = Math.Max(slowest[(int)profile.Kind], profile.TotalMilliseconds);
                 added = true;
             }

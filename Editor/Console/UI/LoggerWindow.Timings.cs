@@ -309,7 +309,7 @@ namespace Orbiters.Logger.Editor
         private void ShowLog(int occurrence, string noun)
         {
             var store = Store;
-            if (store == null || state == null || occurrence < 0 || occurrence >= store.Count)
+            if (store == null || state == null || !store.Contains(occurrence))
             {
                 return;
             }
@@ -360,7 +360,7 @@ namespace Orbiters.Logger.Editor
                 return -1;
             }
 
-            for (int occurrence = store.Count - 1, seen = 0; occurrence >= 0 && seen < 1_000_000; occurrence--, seen++)
+            for (int occurrence = store.EndId - 1, seen = 0; occurrence >= store.FirstId && seen < 1_000_000; occurrence--, seen++)
             {
                 var message = store.Message(store.MessageAt(occurrence));
                 if (message.Level == LogLevel.Error && !message.Resolved && (store.FlagsAt(occurrence) & LogStore.Superseded) == 0)
@@ -386,7 +386,8 @@ namespace Orbiters.Logger.Editor
             }
 
             long since = store.TimeAt(latest) - TimeSpan.TicksPerMinute * 5;
-            for (int occurrence = store.Count - 1, seen = 0; occurrence >= 0 && seen < 20_000 && store.TimeAt(occurrence) >= since; occurrence--, seen++)
+            for (int occurrence = store.EndId - 1, seen = 0; occurrence >= store.FirstId && seen < 20_000 && store.TimeAt(occurrence) >= since; occurrence--, seen++)
+
             {
                 var message = store.Message(store.MessageAt(occurrence));
                 if (message.Level == LogLevel.Error && store.Texts[message.Text].StartsWith(SdkUploadErrors.Prefix, StringComparison.Ordinal))

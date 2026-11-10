@@ -84,7 +84,7 @@ namespace Orbiters.Logger.Editor
             }
             catch (Exception)
             {
-                Store = Store ?? new LogStore();
+                Store = Store ?? NewStore();
             }
 
             EditorApplication.update += Update;
@@ -157,7 +157,7 @@ namespace Orbiters.Logger.Editor
             }
             else
             {
-                Attach(new LogStore());
+                Attach(NewStore());
                 if (unityRows > 0)
                 {
                     // Read a slice per editor update, never here: a project opening waits for this constructor.
@@ -168,12 +168,16 @@ namespace Orbiters.Logger.Editor
             mirror.Reset(unityRows);
         }
 
+        // Ids from LogStore.HistoryRoom: Unity's console history goes in front without renumbering anything.
+        private static LogStore NewStore() => new LogStore(LogStore.HistoryRoom);
+
         private static void Attach(LogStore store)
         {
             Store = store;
             Store.MaxOccurrences = EditorPrefs.GetInt(MaxLogsPref, LogStore.DefaultMaxOccurrences);
             Store.SetGrouping((GroupingMode)EditorPrefs.GetInt(GroupingPref, (int)GroupingMode.SameText));
-            Store.Shifted += mirror.Shift;
+            // Compactions are prepared on a worker and land in Update a few milliseconds at a time.
+            Store.CompactInBackground = true;
         }
 
         // Any thread. Must stay fast and never throw or log: no lock, two interlocked counters, one queue write.
@@ -234,6 +238,7 @@ namespace Orbiters.Logger.Editor
                 }
 
                 Drain(6d);
+                Store.StepMaintenance();
                 // Texts read back lazily (a search over a restored session) add stripped copies while no log arrives.
                 Store.KeepWithinTextBudget();
                 if (history != null && history.Step(Store, ImportBudget()))
@@ -371,7 +376,7 @@ namespace Orbiters.Logger.Editor
             if (!raw.Injected)
             {
                 // Only logs Unity also shows wait for their console row.
-                mirror.Track(occurrence, condition, LogVariants.Level(variant));
+                mirror.Track(Store, occurrence, condition, LogVariants.Level(variant));
             }
         }
 
@@ -436,7 +441,7 @@ namespace Orbiters.Logger.Editor
                     {
                         if (Store.HasActiveCompileMessage(text, out int existing) && Store.Message(existing).Assembly == 0)
                         {
-                            Store.Message(existing).Assembly = assembly;
+                            Store.SetAssembly(existing, assembly);
                         }
 
                         continue;
@@ -514,6 +519,8 @@ namespace Orbiters.Logger.Editor
             try
             {
                 Drain(0d);
+                // A compaction being prepared ends with this domain: the store is saved as it is.
+                Store.StopMaintenance();
                 int unityRows = UnityConsole.Total();
                 var info = new SnapshotInfo
                 {
@@ -562,8 +569,9 @@ namespace Orbiters.Logger.Editor
         public static void RebuildFromUnityConsole()
         {
             Drain(0d);
-            var store = new LogStore();
+            var store = NewStore();
             Attach(store);
+
             long now = Now;
             int unityRows = UnityConsole.Total();
             history = unityRows > 0

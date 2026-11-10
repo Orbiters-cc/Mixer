@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
+using System.Threading;
 
 namespace Orbiters.Logger.Editor
 {
@@ -61,13 +62,20 @@ namespace Orbiters.Logger.Editor
         public override int GetHashCode() => unchecked((Text * 397) ^ (Stack * 7919) ^ (int)Variant);
     }
 
-    /// <summary>What a worker thread reads: arrays and counts taken together on the main thread.</summary>
+    /// <summary>
+    /// What a worker thread reads: the occurrence chunks and counts taken together on the main thread. Occurrences are
+    /// read by id, from <see cref="First"/> to <see cref="End"/>; a chunk's slots for those ids never change but for
+    /// their flags (a compile message superseded), so the view stays valid while logs keep arriving.
+    /// </summary>
     internal readonly struct StoreView
     {
-        public readonly long[] Times;
-        public readonly int[] Owners;
-        public readonly byte[] Flags;
-        public readonly int Count;
+        public readonly long[][] TimeChunks;
+        public readonly int[][] OwnerChunks;
+        public readonly byte[][] FlagChunks;
+        /// <summary>The id of chunk 0's first slot.</summary>
+        public readonly int ChunkBase;
+        public readonly int First;
+        public readonly int End;
         public readonly LogMessage[] Messages;
         public readonly int MessageCount;
         public readonly LogGroup[] Groups;
@@ -76,13 +84,15 @@ namespace Orbiters.Logger.Editor
         public readonly int Epoch;
         public readonly int MessagesVersion;
 
-        public StoreView(long[] times, int[] owners, byte[] flags, int count, LogMessage[] messages, int messageCount,
+        public StoreView(long[][] times, int[][] owners, byte[][] flags, int chunkBase, int first, int end, LogMessage[] messages, int messageCount,
             LogGroup[] groups, int groupCount, TextTable texts, int epoch, int messagesVersion)
         {
-            Times = times;
-            Owners = owners;
-            Flags = flags;
-            Count = count;
+            TimeChunks = times;
+            OwnerChunks = owners;
+            FlagChunks = flags;
+            ChunkBase = chunkBase;
+            First = first;
+            End = end;
             Messages = messages;
             MessageCount = messageCount;
             Groups = groups;
@@ -91,16 +101,61 @@ namespace Orbiters.Logger.Editor
             Epoch = epoch;
             MessagesVersion = messagesVersion;
         }
+
+        public int Count => End - First;
+
+        public long TimeAt(int id)
+        {
+            int slot = id - ChunkBase;
+            return TimeChunks[slot >> LogStore.ChunkShift][slot & LogStore.ChunkMask];
+        }
+
+        public int OwnerAt(int id)
+        {
+            int slot = id - ChunkBase;
+            return OwnerChunks[slot >> LogStore.ChunkShift][slot & LogStore.ChunkMask];
+        }
+
+        public byte FlagsAt(int id)
+        {
+            int slot = id - ChunkBase;
+            return FlagChunks[slot >> LogStore.ChunkShift][slot & LogStore.ChunkMask];
+        }
+
+        /// <summary>
+        /// How many ids from <paramref name="id"/> (before <paramref name="to"/>) lie in one chunk, and where: scans walk a
+        /// chunk's arrays directly.
+        /// </summary>
+        public int Run(int id, int to, out int chunk, out int offset)
+        {
+            int slot = id - ChunkBase;
+            chunk = slot >> LogStore.ChunkShift;
+            offset = slot & LogStore.ChunkMask;
+            return Math.Min(to - id, LogStore.ChunkSize - offset);
+        }
     }
 
     /// <summary>
-    /// Every log of the session, column by column: a time, a message id and flags per occurrence (16 bytes), distinct
-    /// texts stored once. Occurrences are appended in time order and only change all at once (clear, trim, history
-    /// merge, regroup), which bumps <see cref="Epoch"/>. Only the main thread changes the store; worker threads read a
+    /// Every log of the session, column by column: a time, a message id and flags per occurrence (13 bytes), distinct
+    /// texts stored once. Occurrences are appended in time order and keep their id for as long as they are in the store:
+    /// ids run from <see cref="FirstId"/> to <see cref="EndId"/>, a trim moves the first one up (whole chunks of the
+    /// columns go, nothing is copied) and history put in front takes the ids below it. Only a clear or a renumbering
+    /// (<see cref="Emptied"/>) changes what an id means. Only the main thread changes the store; worker threads read a
     /// <see cref="StoreView"/>.
     /// </summary>
-    internal sealed class LogStore
+    internal sealed partial class LogStore
     {
+        public const int ChunkShift = 16;
+        /// <summary>Occurrences per chunk of the columns: what a trim drops at once.</summary>
+        public const int ChunkSize = 1 << ChunkShift;
+        public const int ChunkMask = ChunkSize - 1;
+        /// <summary>
+        /// The first id of LogCapture's stores: room for Unity's console history in front of the first live log without
+        /// renumbering anything (a store that starts lower renumbers when history doesn't fit).
+        /// </summary>
+        public const int HistoryRoom = 1 << 30;
+        // Past this the ids start again from the first one (about a billion logs later), as a clear would.
+        internal const int MaxEnd = int.MaxValue - 2 * ChunkSize;
         public const int DefaultMaxOccurrences = 3_000_000;
         /// <summary>The texts kept alive at most (256 MB of UTF-16), whatever the number of logs: see <see cref="Append"/>.</summary>
         public const long DefaultMaxTextChars = 128L * 1024 * 1024;
@@ -113,58 +168,83 @@ namespace Orbiters.Logger.Editor
         public const string TimingSource = "Timings";
         public const OccurrenceFlags Superseded = (OccurrenceFlags)8;
 
-        private long[] times;
-        private int[] owners;
-        private byte[] flags;
-        private int count;
+        // The columns, a chunk of ChunkSize occurrences each: chunk c holds ids chunkBase + c * ChunkSize onwards. A trim
+        // drops whole chunks; a chunk's slots are written once (its flags excepted), so views taken earlier stay valid.
+        // The directories are replaced, never changed in place below chunkCount.
+        private long[][] timeChunks = new long[8][];
+        private int[][] ownerChunks = new int[8][];
+        private byte[][] flagChunks = new byte[8][];
+        // The object each log is about (an instance id, 0 for none): allocated for a chunk on its first context.
+        private int[][] contextChunks = new int[8][];
+        private int chunkCount;
+        private int chunkBase;
+        private int first;
+        private int end;
+        private readonly int initialFirst;
+        // The lowest id ever given since ids last changed meaning: history in front never takes an id a trimmed log had.
+        private int lowestIssued;
         private LogMessage[] messages = new LogMessage[256];
         private int messageCount;
-        private readonly Dictionary<MessageKey, int> messageIndex = new Dictionary<MessageKey, int>();
+        // Messages without any occurrence (trimmed away, or interned for an import that hasn't put its logs in yet).
+        private int zeroCount;
+        private Dictionary<MessageKey, int> messageIndex = new Dictionary<MessageKey, int>();
         private LogGroup[] groups = new LogGroup[256];
         private int groupCount;
-        private readonly Dictionary<long, int> groupIndex = new Dictionary<long, int>();
-        private readonly Dictionary<int, int> contexts = new Dictionary<int, int>();
+        private Dictionary<long, int> groupIndex = new Dictionary<long, int>();
         private readonly List<SessionEvent> events = new List<SessionEvent>();
         private int maxOccurrences = DefaultMaxOccurrences;
         private long maxTextChars = DefaultMaxTextChars;
+        private StoreCompaction compaction;
 
-        public LogStore(int capacity = 4096)
+        public LogStore() : this(0)
         {
-            capacity = Math.Max(capacity, 64);
-            times = new long[capacity];
-            owners = new int[capacity];
-            flags = new byte[capacity];
+        }
+
+        /// <summary>A store whose first occurrence gets <paramref name="firstId"/> (see <see cref="HistoryRoom"/>).</summary>
+        public LogStore(int firstId)
+        {
+            initialFirst = Math.Max(0, Math.Min(firstId, MaxEnd - 1));
+            first = end = lowestIssued = initialFirst;
             Texts = new TextTable();
         }
 
         public TextTable Texts { get; private set; }
         public SourceCatalog Sources { get; } = new SourceCatalog();
         public GroupingMode Grouping { get; private set; }
-        public int Count => count;
+        /// <summary>Occurrences in the store.</summary>
+        public int Count => end - first;
+        /// <summary>The oldest occurrence's id (the newest is <see cref="EndId"/> - 1).</summary>
+        public int FirstId => first;
+        /// <summary>The id the next occurrence gets.</summary>
+        public int EndId => end;
+        /// <summary>Where ids start after a clear.</summary>
+        public int InitialFirstId => initialFirst;
         public int MessageCount => messageCount;
         public int GroupCount => groupCount;
         /// <summary>Bumps on every append.</summary>
         public int Version { get; private set; }
-        /// <summary>Bumps when occurrence or group ids change meaning: clear, trim, history merge, regroup.</summary>
+        /// <summary>
+        /// Bumps when message or group ids change meaning (clear, regroup, compaction) or occurrence ids do (clear,
+        /// renumbering). A trim or history put in front moves <see cref="FirstId"/> instead.
+        /// </summary>
         public int Epoch { get; private set; }
+        /// <summary>Bumps when occurrence ids change meaning: clear, renumbering, a store put back.</summary>
+        public int IdEpoch { get; private set; }
         /// <summary>Bumps when a message's flags change (compile errors resolved): filters must be recomputed.</summary>
         public int MessagesVersion { get; private set; }
         /// <summary>
-        /// Changes whenever an occurrence's time or message changes (clear, trim, history merge, compaction): until then
-        /// occurrences are only appended, so the session file appends them too.
+        /// Changes whenever an occurrence's time or message changes (clear, history merge, compaction, renumbering): until
+        /// then occurrences are only appended (a trim only drops the oldest), so the session file appends them too.
         /// </summary>
         public long RowsGeneration { get; private set; } = NewRowsGeneration();
-        public long FirstTime => count > 0 ? times[0] : 0L;
-        public long LastTime => count > 0 ? times[count - 1] : 0L;
+        public long FirstTime => end > first ? TimeAt(first) : 0L;
+        public long LastTime => end > first ? TimeAt(end - 1) : 0L;
         public IReadOnlyList<SessionEvent> Events => events;
 
-        /// <summary>Occurrence ids moved by this much (history put in front: positive; oldest trimmed: negative).</summary>
-        public event Action<int> Shifted;
-
-        /// <summary>Everything was cleared: no earlier occurrence or group id means anything any more.</summary>
+        /// <summary>Everything was cleared, or every occurrence renumbered: no earlier occurrence or group id means anything any more.</summary>
         public event Action Emptied;
 
-        /// <summary>Messages were regrouped: group ids changed.</summary>
+        /// <summary>Messages were regrouped (or compacted): group ids changed.</summary>
         public event Action Regrouped;
 
         public int MaxOccurrences
@@ -183,23 +263,96 @@ namespace Orbiters.Logger.Editor
             }
         }
 
-        public long TimeAt(int occurrence) => times[occurrence];
-        public int MessageAt(int occurrence) => owners[occurrence];
-        public OccurrenceFlags FlagsAt(int occurrence) => (OccurrenceFlags)flags[occurrence];
+        /// <summary>
+        /// Where compactions run: on a worker, landing a few milliseconds at a time through <see cref="StepMaintenance"/>
+        /// (LogCapture's store), or right away in the call that made messages dead (the default, for tests and tools).
+        /// </summary>
+        internal bool CompactInBackground { get; set; }
+
+        /// <summary>Tests: never compact (a reference store to compare a compacted one with).</summary>
+        internal bool AllowCompaction { get; set; } = true;
+
+        /// <summary>A compaction is being prepared (see <see cref="StepMaintenance"/>).</summary>
+        internal bool Compacting => compaction != null;
+
+        public bool Contains(int occurrence) => occurrence >= first && occurrence < end;
+
+        public long TimeAt(int occurrence)
+        {
+            int slot = occurrence - chunkBase;
+            return timeChunks[slot >> ChunkShift][slot & ChunkMask];
+        }
+
+        public int MessageAt(int occurrence)
+        {
+            int slot = occurrence - chunkBase;
+            return ownerChunks[slot >> ChunkShift][slot & ChunkMask];
+        }
+
+        public OccurrenceFlags FlagsAt(int occurrence)
+        {
+            int slot = occurrence - chunkBase;
+            return (OccurrenceFlags)flagChunks[slot >> ChunkShift][slot & ChunkMask];
+        }
+
         public ref LogMessage Message(int id) => ref messages[id];
         public ref LogGroup Group(int id) => ref groups[id];
         public LogSource SourceOf(int message) => Sources[messages[message].Source];
 
-        public StoreView View() => new StoreView(times, owners, flags, count, messages, messageCount, groups, groupCount, Texts, Epoch, MessagesVersion);
+        public StoreView View() => new StoreView(timeChunks, ownerChunks, flagChunks, chunkBase, first, end, messages, messageCount, groups, groupCount,
+            Texts, Epoch, MessagesVersion);
 
-        public bool TryGetContext(int occurrence, out int instanceId) => contexts.TryGetValue(occurrence, out instanceId);
+        public bool TryGetContext(int occurrence, out int instanceId)
+        {
+            instanceId = 0;
+            if (!Contains(occurrence))
+            {
+                return false;
+            }
+
+            int slot = occurrence - chunkBase;
+            var chunk = contextChunks[slot >> ChunkShift];
+            instanceId = chunk != null ? chunk[slot & ChunkMask] : 0;
+            return instanceId != 0;
+        }
 
         public void SetContext(int occurrence, int instanceId)
         {
-            if (occurrence >= 0 && occurrence < count && instanceId != 0)
+            if (!Contains(occurrence) || instanceId == 0)
             {
-                contexts[occurrence] = instanceId;
+                return;
             }
+
+            int slot = occurrence - chunkBase;
+            ref var chunk = ref contextChunks[slot >> ChunkShift];
+            chunk = chunk ?? new int[ChunkSize];
+            chunk[slot & ChunkMask] = instanceId;
+        }
+
+        /// <summary>The file and line Unity's console gave a message whose stack trace named none (the mirror's).</summary>
+        public void SetFileIfUnknown(int message, string file, int line)
+        {
+            ref var entry = ref messages[message];
+            if (entry.File != 0 || string.IsNullOrEmpty(file))
+            {
+                return;
+            }
+
+            entry.File = Texts.Intern(StackTraces.NormalizePath(file));
+            entry.Line = line;
+            if (entry.Callsite == 0)
+            {
+                entry.Callsite = Texts.Intern(StackTraces.FileName(file) + (line > 0 ? ":" + line : string.Empty));
+            }
+
+            compaction?.Patched(message);
+        }
+
+        /// <summary>The assembly a compiler message belongs to, learnt after it was filed.</summary>
+        public void SetAssembly(int message, int assembly)
+        {
+            messages[message].Assembly = assembly;
+            compaction?.Patched(message);
         }
 
         public void AddEvent(long time, SessionEventKind kind)
@@ -239,7 +392,7 @@ namespace Orbiters.Logger.Editor
             {
                 var next = new LogMessage[messages.Length * 2];
                 Array.Copy(messages, next, messageCount);
-                messages = next;
+                Volatile.Write(ref messages, next);
             }
 
             id = messageCount;
@@ -257,7 +410,9 @@ namespace Orbiters.Logger.Editor
             Describe(ref message, condition, stack, file, line, column);
             message.Group = GroupFor(text, message.Level);
             messages[id] = message;
-            messageCount = id + 1;
+            // Published after the message is whole: a compaction worker reads the messages before this count.
+            Volatile.Write(ref messageCount, id + 1);
+            zeroCount++;
             if (pendingProfile != null)
             {
                 profiles[id] = pendingProfile;
@@ -405,60 +560,111 @@ namespace Orbiters.Logger.Editor
             return info;
         }
 
-        /// <summary>Adds an occurrence of <paramref name="message"/>. Times never go back: an earlier time is moved up to the last one.</summary>
+        /// <summary>
+        /// Adds an occurrence of <paramref name="message"/> and returns its id, which stays its id while it is in the
+        /// store. Times never go back: an earlier time is moved up to the last one.
+        /// </summary>
         public int Append(long time, int message, OccurrenceFlags occurrenceFlags = OccurrenceFlags.None)
         {
-            if (count == times.Length)
+            if (end >= MaxEnd)
             {
-                Grow(count * 2);
+                Renumber(Math.Min(initialFirst, HistoryRoom));
             }
 
-            if (count > 0 && time < times[count - 1])
+            if (end > first)
             {
-                time = times[count - 1];
+                long last = TimeAt(end - 1);
+                if (time < last)
+                {
+                    time = last;
+                }
             }
 
-            int index = count;
-            times[index] = time;
-            owners[index] = message;
-            flags[index] = (byte)occurrenceFlags;
-            ref var entry = ref messages[message];
-            if (entry.Count == 0)
+            int id = end;
+            if (chunkCount == 0)
             {
-                entry.First = index;
+                chunkBase = id;
             }
 
-            entry.Count++;
-            entry.Last = index;
-            ref var group = ref groups[entry.Group];
-            if (group.Count == 0)
+            int slot = id - chunkBase;
+            int chunk = slot >> ChunkShift;
+            if (chunk == chunkCount)
             {
-                group.First = index;
+                AddChunk();
             }
 
-            group.Count++;
-            group.Last = index;
-            group.Latest = message;
-            count = index + 1;
+            timeChunks[chunk][slot & ChunkMask] = time;
+            ownerChunks[chunk][slot & ChunkMask] = message;
+            flagChunks[chunk][slot & ChunkMask] = (byte)occurrenceFlags;
+            CountIn(message, id);
+            // Published after the slot is written: a compaction worker reads the occurrences before this id.
+            Volatile.Write(ref end, id + 1);
             Version++;
-            if (count > maxOccurrences)
+            if (Count > maxOccurrences && (compaction == null || Count > maxOccurrences + maxOccurrences / 5))
             {
-                // The oldest fifth goes: the new occurrence is still the last one.
+                // The oldest fifth goes: the new occurrence is still the last one. While a compaction is prepared the trim
+                // waits for it (it would start it over), up to a fifth more logs: then it goes ahead and the compaction
+                // starts again from the trimmed store.
                 Trim(maxOccurrences * 4 / 5);
-                return count - 1;
             }
-
-            if (Texts.TotalChars > maxTextChars && pins == 0)
+            else if (Texts.TotalChars > maxTextChars && pins == 0)
             {
                 // Logs that never repeat (an id, a time in the text) keep a new text each: memory is bounded by their
                 // size, not only their number.
                 KeepTextBudget();
-                return count - 1;
             }
 
-            return index;
+            return id;
         }
 
+        // A message's and its group's counters take occurrence `id`, the newest of both.
+        private void CountIn(int message, int id)
+        {
+            ref var entry = ref messages[message];
+            if (entry.Count == 0)
+            {
+                entry.First = id;
+                zeroCount--;
+            }
+
+            entry.Count++;
+            entry.Last = id;
+            ref var group = ref groups[entry.Group];
+            if (group.Count == 0)
+            {
+                group.First = id;
+            }
+
+            group.Count++;
+            group.Last = id;
+            group.Latest = message;
+        }
+
+        private void AddChunk()
+        {
+            if (chunkCount == timeChunks.Length)
+            {
+                // New directories: a view holds the old ones, whose first chunkCount entries stay as they are.
+                int size = timeChunks.Length * 2;
+                timeChunks = Resized(timeChunks, size);
+                ownerChunks = Resized(ownerChunks, size);
+                flagChunks = Resized(flagChunks, size);
+                contextChunks = Resized(contextChunks, size);
+            }
+
+            timeChunks[chunkCount] = new long[ChunkSize];
+            ownerChunks[chunkCount] = new int[ChunkSize];
+            flagChunks[chunkCount] = new byte[ChunkSize];
+            contextChunks[chunkCount] = null;
+            chunkCount++;
+        }
+
+        private static T[] Resized<T>(T[] array, int size)
+        {
+            var next = new T[size];
+            Array.Copy(array, next, Math.Min(array.Length, size));
+            return next;
+        }
         /// <summary>The text as stored: itself, or its first <see cref="MaxTextLength"/> characters and how many were left out.</summary>
         public static string Capped(string text)
         {
@@ -500,11 +706,13 @@ namespace Orbiters.Logger.Editor
 
         // One fixed budget for every text kept (live logs and history alike, stripped copies included): the oldest
         // fifth of the logs goes until the texts fit, each trim compacting what it made dead. The newest log stays.
+        // A compaction prepared in the background stops the loop: it lands, then checks the budget again (so the texts
+        // can exceed it by what arrives while it is prepared, never by more).
         private void KeepTextBudget()
         {
-            while (Texts.TotalChars > maxTextChars && count > 1 && pins == 0 && !Texts.Faulted)
+            while (Texts.TotalChars > maxTextChars && Count > 1 && pins == 0 && !Texts.Faulted && compaction == null)
             {
-                Trim(count * 4 / 5);
+                Trim(Count * 4 / 5);
             }
         }
 
@@ -517,11 +725,13 @@ namespace Orbiters.Logger.Editor
             {
                 message.Flags &= ~MessageFlags.Resolved;
                 MessagesVersion++;
+                compaction?.Patched(id);
             }
 
-            if (message.Count > 0 && message.Last >= 0 && message.Last < count)
+            if (message.Count > 0 && Contains(message.Last))
             {
-                flags[message.Last] |= (byte)Superseded;
+                int slot = message.Last - chunkBase;
+                flagChunks[slot >> ChunkShift][slot & ChunkMask] |= (byte)Superseded;
                 MessagesVersion++;
             }
 
@@ -571,6 +781,7 @@ namespace Orbiters.Logger.Editor
                 }
 
                 message.Flags |= MessageFlags.Resolved;
+                compaction?.Patched(i);
                 resolved++;
             }
 
@@ -597,32 +808,36 @@ namespace Orbiters.Logger.Editor
                 }
             }
 
-            Reset(Math.Min(times.Length, 4096));
+            Reset();
             foreach (var (text, error, assembly, file, line, column) in keep)
             {
                 AddCompile(now, text, error, AssemblyId(assembly), file, line, column);
             }
         }
 
-        private void Reset(int capacity)
+        private void Reset()
         {
-            times = new long[capacity];
-            owners = new int[capacity];
-            flags = new byte[capacity];
-            count = 0;
+            CancelCompaction();
+            timeChunks = new long[8][];
+            ownerChunks = new int[8][];
+            flagChunks = new byte[8][];
+            contextChunks = new int[8][];
+            chunkCount = 0;
+            first = end = lowestIssued = initialFirst;
             messages = new LogMessage[256];
             messageCount = 0;
+            zeroCount = 0;
             messageIndex.Clear();
             groups = new LogGroup[256];
             groupCount = 0;
             groupIndex.Clear();
-            contexts.Clear();
             events.Clear();
             profiles.Clear();
             pins = 0;
             Texts = new TextTable();
             RowsGeneration = NewRowsGeneration();
             Epoch++;
+            IdEpoch++;
             Version++;
             MessagesVersion++;
             Emptied?.Invoke();
@@ -635,6 +850,7 @@ namespace Orbiters.Logger.Editor
                 return;
             }
 
+            CancelCompaction();
             Grouping = mode;
             groups = new LogGroup[Math.Max(256, groupCount)];
             groupCount = 0;
@@ -651,9 +867,13 @@ namespace Orbiters.Logger.Editor
             Regrouped?.Invoke();
         }
 
-        private int GroupFor(int text, LogLevel level)
+        private int GroupFor(int text, LogLevel level) => GroupFor(Texts, Grouping, ref groups, ref groupCount, groupIndex, text, level);
+
+        /// <summary>The group of a message with this text and level in these tables, made when new (the compaction's too).</summary>
+        internal static int GroupFor(TextTable texts, GroupingMode grouping, ref LogGroup[] groups, ref int groupCount, Dictionary<long, int> groupIndex,
+            int text, LogLevel level)
         {
-            int keyText = Grouping == GroupingMode.SameText ? AddressesFolded(text) : Texts.Intern(Similar(Texts.Plain(text)));
+            int keyText = grouping == GroupingMode.SameText ? AddressesFolded(texts, text) : texts.Intern(Similar(texts.Plain(text)));
             long key = ((long)keyText << 2) | (long)level;
             if (groupIndex.TryGetValue(key, out int id))
             {
@@ -676,11 +896,11 @@ namespace Orbiters.Logger.Editor
 
         // Memory addresses never tell two messages apart: Unity lists each leaked allocation with its own
         // ("Allocation of 49 bytes at 000002848112DD10"), dozens of rows of one message without this.
-        private int AddressesFolded(int text)
+        private static int AddressesFolded(TextTable texts, int text)
         {
-            string plain = Texts.Plain(text);
+            string plain = texts.Plain(text);
             string folded = FoldAddresses(plain);
-            return ReferenceEquals(folded, plain) ? text : Texts.Intern(folded);
+            return ReferenceEquals(folded, plain) ? text : texts.Intern(folded);
         }
 
         /// <summary>
@@ -786,138 +1006,113 @@ namespace Orbiters.Logger.Editor
         /// Keeps message ids meaning the same message until <see cref="Unpin"/> (no compaction): for a history import
         /// that interns messages long before it adds their occurrences. A clear forgets every pin.
         /// </summary>
-        public void Pin() => pins++;
+        public void Pin()
+        {
+            pins++;
+            // One being prepared would land with the import's messages dropped (they have no occurrence yet).
+            CancelCompaction();
+        }
 
         // No budget check here: an import unpins just before it puts its occurrences in (Prepend), and a compaction in
         // between would drop the messages it is about to use. Prepend and the next append check the budget.
         public void Unpin() => pins = Math.Max(0, pins - 1);
 
-        /// <summary>Keeps the newest <paramref name="keep"/> occurrences.</summary>
+        /// <summary>
+        /// Keeps the newest <paramref name="keep"/> occurrences: the first id moves up, whole chunks below it go, and only
+        /// the dropped occurrences are visited to fix the counters. A message left without occurrences reads Count 0
+        /// (and First and Last -1); Last stays exact, and First becomes a bound: no occurrence of the message is older,
+        /// though it can be (below <see cref="FirstId"/>) when the message had none among the dropped ones. A group's
+        /// First likewise. Exact again once a compaction recounts.
+        /// </summary>
         public void Trim(int keep)
         {
-            keep = Math.Max(0, Math.Min(keep, count));
-            int drop = count - keep;
+            keep = Math.Max(0, Math.Min(keep, Count));
+            int newFirst = end - keep;
+            if (newFirst <= first)
+            {
+                return;
+            }
+
+            // A compaction being prepared counted the occurrences that go: it starts over from the trimmed store.
+            CancelCompaction();
+            var owners = ownerChunks;
+            for (int id = first; id < newFirst;)
+            {
+                int slot = id - chunkBase;
+                int chunk = slot >> ChunkShift;
+                int offset = slot & ChunkMask;
+                int run = Math.Min(newFirst - id, ChunkSize - offset);
+                var column = owners[chunk];
+                for (int i = offset; i < offset + run; i++)
+                {
+                    CountOut(column[i], newFirst);
+                }
+
+                id += run;
+            }
+
+            first = newFirst;
+            DropChunksBelow(first);
+            long firstTime = FirstTime;
+            events.RemoveAll(e => e.Time < firstTime);
+            Version++;
+            MaybeCompact();
+        }
+
+        private void CountOut(int message, int newFirst)
+        {
+            ref var entry = ref messages[message];
+            if (--entry.Count == 0)
+            {
+                entry.First = entry.Last = -1;
+                zeroCount++;
+            }
+            else if (entry.First < newFirst)
+            {
+                entry.First = newFirst;
+            }
+
+            ref var group = ref groups[entry.Group];
+            if (--group.Count == 0)
+            {
+                group.First = group.Last = group.Latest = -1;
+            }
+            else if (group.First < newFirst)
+            {
+                group.First = newFirst;
+            }
+        }
+
+        // Chunks wholly below `id` go (new directories: views keep theirs).
+        private void DropChunksBelow(int id)
+        {
+            int drop = Math.Min(chunkCount, (id - chunkBase) >> ChunkShift);
             if (drop <= 0)
             {
                 return;
             }
 
-            int capacity = Math.Max(64, Math.Min(times.Length, keep * 2));
-            var nextTimes = new long[capacity];
-            var nextOwners = new int[capacity];
-            var nextFlags = new byte[capacity];
-            Array.Copy(times, drop, nextTimes, 0, keep);
-            Array.Copy(owners, drop, nextOwners, 0, keep);
-            Array.Copy(flags, drop, nextFlags, 0, keep);
-            times = nextTimes;
-            owners = nextOwners;
-            flags = nextFlags;
-            count = keep;
-            RowsGeneration = NewRowsGeneration();
-            ShiftContexts(-drop);
-            long first = count > 0 ? times[0] : 0L;
-            events.RemoveAll(e => e.Time < first);
-            RecountAll();
-            bool compacted = CompactIfMostlyDead();
-            Epoch++;
-            Version++;
-            Shifted?.Invoke(-drop);
-            if (compacted)
-            {
-                Regrouped?.Invoke();
-            }
+            int left = chunkCount - drop;
+            int size = Math.Max(8, left + 8);
+            timeChunks = Shifted(timeChunks, drop, left, size);
+            ownerChunks = Shifted(ownerChunks, drop, left, size);
+            flagChunks = Shifted(flagChunks, drop, left, size);
+            contextChunks = Shifted(contextChunks, drop, left, size);
+            chunkCount = left;
+            chunkBase += drop << ChunkShift;
         }
 
-        /// <summary>
-        /// Messages none of whose logs are left (trimmed), and the texts only they used, go once they are many: a stream
-        /// of logs that never repeat (ids, times in their text) would otherwise keep every text ever seen. Message, group
-        /// and text ids change (new arrays and a new <see cref="Texts"/>, so a filter pass still reading the old ones is
-        /// unaffected); occurrence ids stay. True when it compacted.
-        /// </summary>
-        private bool CompactIfMostlyDead()
+        private static T[] Shifted<T>(T[] array, int from, int length, int size)
         {
-            if (pins > 0 || Texts.Faulted)
-            {
-                // An import holds message ids that have no occurrence yet; or a text could not be read back, and copying
-                // it would keep its placeholder as if it were the log (LogCapture starts over instead).
-                return false;
-            }
-
-            int dead = 0;
-            for (int i = 0; i < messageCount; i++)
-            {
-                if (messages[i].Count == 0)
-                {
-                    dead++;
-                }
-            }
-
-            // Many dead, or texts over budget: then any dead message's texts are worth reclaiming.
-            if (dead == 0 || Texts.TotalChars <= maxTextChars && (dead < 1024 || dead * 4 < messageCount))
-            {
-                return false;
-            }
-
-            var texts = new TextTable(Math.Max(1024, Texts.Count - dead));
-            var map = new int[messageCount];
-            var kept = new LogMessage[Math.Max(256, messageCount - dead)];
-            int live = 0;
-            for (int i = 0; i < messageCount; i++)
-            {
-                var message = messages[i];
-                if (message.Count == 0)
-                {
-                    map[i] = -1;
-                    continue;
-                }
-
-                message.Text = texts.Intern(Texts[message.Text]);
-                message.Stack = texts.Intern(Texts[message.Stack]);
-                message.Callsite = texts.Intern(Texts[message.Callsite]);
-                message.File = texts.Intern(Texts[message.File]);
-                message.Assembly = texts.Intern(Texts[message.Assembly]);
-                map[i] = live;
-                kept[live++] = message;
-            }
-
-            if (Texts.Faulted)
-            {
-                // A text read back from the session file for the copy was damaged: the copy holds its placeholder.
-                // Keep the old table untouched; LogCapture starts over from Unity's console.
-                return false;
-            }
-
-            for (int i = 0; i < count; i++)
-            {
-                owners[i] = map[owners[i]];
-            }
-
-            RowsGeneration = NewRowsGeneration();
-
-            Texts = texts;
-            messages = kept;
-            messageCount = live;
-            // Message ids changed: profiles are parsed again on first use.
-            profiles.Clear();
-            messageIndex.Clear();
-            groups = new LogGroup[Math.Max(256, Math.Min(groupCount, live))];
-            groupCount = 0;
-            groupIndex.Clear();
-            for (int i = 0; i < messageCount; i++)
-            {
-                ref var message = ref messages[i];
-                messageIndex[new MessageKey(message.Text, message.Stack, message.Variant)] = i;
-                message.Group = GroupFor(message.Text, message.Level);
-                groups[message.Group].Variants++;
-            }
-
-            RecountAll();
-            MessagesVersion++;
-            return true;
+            var next = new T[size];
+            Array.Copy(array, from, next, 0, length);
+            return next;
         }
 
         /// <summary>
-        /// Puts occurrences that happened before every occurrence in the store (Unity's console history) in front of them.
+        /// Puts occurrences that happened before every occurrence in the store (Unity's console history) in front of them:
+        /// they take the ids below <see cref="FirstId"/>, so no id in the store changes (a store without room for them
+        /// below renumbers first). <paramref name="historyContexts"/> are keyed by position in the history.
         /// </summary>
         public void Prepend(long[] historyTimes, int[] historyOwners, byte[] historyFlags, int historyCount, Dictionary<int, int> historyContexts)
         {
@@ -926,52 +1121,56 @@ namespace Orbiters.Logger.Editor
                 return;
             }
 
-            int total = historyCount + count;
-            int capacity = Math.Max(total + total / 4, 1024);
-            var nextTimes = new long[capacity];
-            var nextOwners = new int[capacity];
-            var nextFlags = new byte[capacity];
-            Array.Copy(historyTimes, nextTimes, historyCount);
-            Array.Copy(historyOwners, nextOwners, historyCount);
-            Array.Copy(historyFlags, nextFlags, historyCount);
-            Array.Copy(times, 0, nextTimes, historyCount, count);
-            Array.Copy(owners, 0, nextOwners, historyCount, count);
-            Array.Copy(flags, 0, nextFlags, historyCount, count);
+            CancelCompaction();
+            if (first < historyCount)
+            {
+                Renumber(historyCount);
+            }
+            else if (first > lowestIssued)
+            {
+                // Logs were trimmed since: the ids below the first one were theirs. History takes them, so whatever
+                // remembers one of those ids must forget it, as after a clear (a trim during an import, under a flood).
+                ForgetIds();
+            }
 
-            // History is older than what the store already holds: keep times in order.
-            long limit = count > 0 ? times[0] : long.MaxValue;
+            int newFirst = first - historyCount;
+            long limit = Count > 0 ? TimeAt(first) : long.MaxValue;
+            PrepareFront(newFirst);
             long previous = long.MinValue;
             for (int i = 0; i < historyCount; i++)
             {
-                long t = Math.Min(nextTimes[i], limit);
+                // History is older than what the store already holds: keep times in order.
+                long t = Math.Min(historyTimes[i], limit);
                 if (t < previous)
                 {
                     t = previous;
                 }
 
-                nextTimes[i] = t;
                 previous = t;
+                int id = newFirst + i;
+                int slot = id - chunkBase;
+                int chunk = slot >> ChunkShift;
+                timeChunks[chunk][slot & ChunkMask] = t;
+                ownerChunks[chunk][slot & ChunkMask] = historyOwners[i];
+                flagChunks[chunk][slot & ChunkMask] = historyFlags[i];
+                CountInFront(historyOwners[i], id);
             }
 
-            times = nextTimes;
-            owners = nextOwners;
-            flags = nextFlags;
-            count = total;
-            RowsGeneration = NewRowsGeneration();
-            ShiftContexts(historyCount);
+            first = lowestIssued = newFirst;
             if (historyContexts != null)
             {
                 foreach (var pair in historyContexts)
                 {
-                    contexts[pair.Key] = pair.Value;
+                    if (pair.Key >= 0 && pair.Key < historyCount)
+                    {
+                        SetContext(newFirst + pair.Key, pair.Value);
+                    }
                 }
             }
 
-            RecountAll();
-            Epoch++;
+            RowsGeneration = NewRowsGeneration();
             Version++;
-            Shifted?.Invoke(historyCount);
-            if (count > maxOccurrences)
+            if (Count > maxOccurrences)
             {
                 Trim(maxOccurrences * 4 / 5);
             }
@@ -983,65 +1182,141 @@ namespace Orbiters.Logger.Editor
             }
         }
 
-        private void ShiftContexts(int offset)
+        // Fresh chunks for the ids from `newFirst` up to the first one (chunk 0 copied, never written in place: a view
+        // taken before a trim may still read its old slots).
+        private void PrepareFront(int newFirst)
         {
-            if (contexts.Count == 0)
+            if (chunkCount == 0)
+            {
+                chunkBase = newFirst;
+                while (((end - 1 - chunkBase) >> ChunkShift) >= chunkCount)
+                {
+                    AddChunk();
+                }
+
+                return;
+            }
+
+            int before = newFirst >= chunkBase ? 0 : (int)(((long)chunkBase - newFirst + ChunkMask) >> ChunkShift);
+            int size = Math.Max(8, before + chunkCount + 8);
+            var times = new long[size][];
+            var owners = new int[size][];
+            var flags = new byte[size][];
+            var contexts = new int[size][];
+            for (int c = 0; c < before; c++)
+            {
+                times[c] = new long[ChunkSize];
+                owners[c] = new int[ChunkSize];
+                flags[c] = new byte[ChunkSize];
+            }
+
+            times[before] = (long[])timeChunks[0].Clone();
+            owners[before] = (int[])ownerChunks[0].Clone();
+            flags[before] = (byte[])flagChunks[0].Clone();
+            contexts[before] = (int[])contextChunks[0]?.Clone();
+            Array.Copy(timeChunks, 1, times, before + 1, chunkCount - 1);
+            Array.Copy(ownerChunks, 1, owners, before + 1, chunkCount - 1);
+            Array.Copy(flagChunks, 1, flags, before + 1, chunkCount - 1);
+            Array.Copy(contextChunks, 1, contexts, before + 1, chunkCount - 1);
+            timeChunks = times;
+            ownerChunks = owners;
+            flagChunks = flags;
+            contextChunks = contexts;
+            chunkCount += before;
+            chunkBase -= before << ChunkShift;
+        }
+
+        // A history occurrence, older than every one the message and its group had.
+        private void CountInFront(int message, int id)
+        {
+            ref var entry = ref messages[message];
+            if (entry.Count == 0)
+            {
+                zeroCount--;
+                entry.First = entry.Last = id;
+            }
+            else
+            {
+                entry.First = Math.Min(entry.First, id);
+                entry.Last = Math.Max(entry.Last, id);
+            }
+
+            entry.Count++;
+            ref var group = ref groups[entry.Group];
+            if (group.Count == 0)
+            {
+                group.First = group.Last = id;
+                group.Latest = message;
+            }
+            else
+            {
+                group.First = Math.Min(group.First, id);
+                if (id > group.Last)
+                {
+                    group.Last = id;
+                    group.Latest = message;
+                }
+            }
+
+            group.Count++;
+        }
+
+        /// <summary>
+        /// Gives the occurrences new ids from <paramref name="newFirst"/> on, all moved by the same amount: when the ids
+        /// would run out (about a billion logs) or history doesn't fit below the first one. Like a clear for whoever
+        /// remembers an id (<see cref="Emptied"/>, <see cref="IdEpoch"/>); the logs stay.
+        /// </summary>
+        private void Renumber(int newFirst)
+        {
+            int delta = newFirst - first;
+            if (delta == 0)
             {
                 return;
             }
 
-            var shifted = new List<KeyValuePair<int, int>>(contexts);
-            contexts.Clear();
-            foreach (var pair in shifted)
-            {
-                int index = pair.Key + offset;
-                if (index >= 0 && index < count)
-                {
-                    contexts[index] = pair.Value;
-                }
-            }
-        }
-
-        private void Grow(int capacity)
-        {
-            var nextTimes = new long[capacity];
-            var nextOwners = new int[capacity];
-            var nextFlags = new byte[capacity];
-            Array.Copy(times, nextTimes, count);
-            Array.Copy(owners, nextOwners, count);
-            Array.Copy(flags, nextFlags, count);
-            // Readers may still hold the old arrays: their prefix stays valid.
-            flags = nextFlags;
-            owners = nextOwners;
-            times = nextTimes;
-        }
-
-        /// <summary>Recomputes every message's and group's counts from the occurrences.</summary>
-        public void RecountAll()
-        {
+            CancelCompaction();
+            chunkBase += delta;
+            first += delta;
+            end += delta;
             for (int i = 0; i < messageCount; i++)
             {
-                messages[i].Count = 0;
-                messages[i].First = -1;
-                messages[i].Last = -1;
-            }
-
-            for (int i = 0; i < count; i++)
-            {
-                ref var message = ref messages[owners[i]];
-                if (message.Count == 0)
+                ref var message = ref messages[i];
+                if (message.Count > 0)
                 {
-                    message.First = i;
+                    message.First += delta;
+                    message.Last += delta;
                 }
-
-                message.Count++;
-                message.Last = i;
             }
 
-            RecountGroups();
+            for (int i = 0; i < groupCount; i++)
+            {
+                ref var group = ref groups[i];
+                if (group.Count > 0)
+                {
+                    group.First += delta;
+                    group.Last += delta;
+                }
+            }
+
+            lowestIssued = first;
+            RowsGeneration = NewRowsGeneration();
+            Epoch++;
+            ForgetIds();
         }
 
+        // Occurrence ids remembered anywhere may now name other logs.
+        private void ForgetIds()
+        {
+            IdEpoch++;
+            Version++;
+            Emptied?.Invoke();
+        }
+
+        /// <summary>The lowest id given since ids last changed meaning (saved with the session).</summary>
+        internal int LowestIssuedId => lowestIssued;
+
         private void RecountGroups()
+
         {
             for (int i = 0; i < groupCount; i++)
             {
@@ -1075,8 +1350,26 @@ namespace Orbiters.Logger.Editor
             }
         }
 
-        /// <summary>The first occurrence at or after <paramref name="time"/> (binary search: times are in order).</summary>
-        public int LowerBound(long time) => LowerBound(times, count, time);
+        /// <summary>The first occurrence id at or after <paramref name="time"/> (binary search: times are in order); <see cref="EndId"/> when none.</summary>
+        public int LowerBound(long time)
+        {
+            int lo = first;
+            int hi = end;
+            while (lo < hi)
+            {
+                int mid = lo + ((hi - lo) >> 1);
+                if (TimeAt(mid) < time)
+                {
+                    lo = mid + 1;
+                }
+                else
+                {
+                    hi = mid;
+                }
+            }
+
+            return lo;
+        }
 
         public static int LowerBound(long[] values, int length, long time)
         {
@@ -1102,43 +1395,87 @@ namespace Orbiters.Logger.Editor
 
         // ---- Session file ----------------------------------------------------------------------------------------
 
-        internal void ExportColumns(out long[] exportTimes, out int[] exportOwners, out byte[] exportFlags)
-        {
-            exportTimes = times;
-            exportOwners = owners;
-            exportFlags = flags;
-        }
-
         internal LogMessage[] MessagesArray => messages;
         internal LogGroup[] GroupsArray => groups;
-        internal Dictionary<int, int> Contexts => contexts;
+
+        /// <summary>Every occurrence's context, by id, oldest first.</summary>
+        internal List<KeyValuePair<int, int>> ContextPairs()
+        {
+            var pairs = new List<KeyValuePair<int, int>>();
+            for (int c = 0; c < chunkCount; c++)
+            {
+                var chunk = contextChunks[c];
+                if (chunk == null)
+                {
+                    continue;
+                }
+
+                int chunkFirst = chunkBase + (c << ChunkShift);
+                for (int i = 0; i < ChunkSize; i++)
+                {
+                    int id = chunkFirst + i;
+                    if (chunk[i] != 0 && Contains(id))
+                    {
+                        pairs.Add(new KeyValuePair<int, int>(id, chunk[i]));
+                    }
+                }
+            }
+
+            return pairs;
+        }
+
+        /// <summary>A chunk directory with room for <paramref name="count"/> occurrences from chunk 0's first slot.</summary>
+        internal static T[][] NewChunks<T>(int count)
+        {
+            int chunks = (int)(((long)count + ChunkMask) >> ChunkShift);
+            var directory = new T[chunks + 8][];
+            for (int c = 0; c < chunks; c++)
+            {
+                directory[c] = new T[ChunkSize];
+            }
+
+            return directory;
+        }
 
         /// <summary>
-        /// Puts back a store saved by <see cref="SessionFile"/>: every column, message and group as they were, counters
-        /// included, so nothing is recounted, regrouped or read from the texts.
+        /// Puts back a store saved by <see cref="SessionFile"/>: every column (chunks from <see cref="NewChunks{T}"/>, the
+        /// first slot being <paramref name="firstId"/>), message and group as they were, counters included, so nothing is
+        /// recounted, regrouped or read from the texts.
         /// </summary>
-        internal void Restore(TextTable texts, long rowsGeneration, long[] restoredTimes, int[] restoredOwners, byte[] restoredFlags, int restoredCount,
-            LogMessage[] restoredMessages, int restoredMessageCount, LogGroup[] restoredGroups, int restoredGroupCount, GroupingMode grouping,
-            Dictionary<int, int> restoredContexts, List<SessionEvent> restoredEvents)
+        internal void Restore(TextTable texts, long rowsGeneration, int firstId, int lowestId, long[][] restoredTimes, int[][] restoredOwners, byte[][] restoredFlags,
+            int restoredCount, LogMessage[] restoredMessages, int restoredMessageCount, LogGroup[] restoredGroups, int restoredGroupCount, GroupingMode grouping,
+            List<KeyValuePair<int, int>> restoredContexts, List<SessionEvent> restoredEvents)
         {
+            CancelCompaction();
             Texts = texts;
             RowsGeneration = rowsGeneration;
             profiles.Clear();
-            times = restoredTimes;
-            owners = restoredOwners;
-            flags = restoredFlags;
-            count = restoredCount;
+            timeChunks = restoredTimes;
+            ownerChunks = restoredOwners;
+            flagChunks = restoredFlags;
+            contextChunks = new int[restoredTimes.Length][];
+            chunkCount = (int)(((long)restoredCount + ChunkMask) >> ChunkShift);
+            chunkBase = firstId;
+            first = firstId;
+            end = firstId + restoredCount;
+            lowestIssued = Math.Min(lowestId, firstId);
+
             Grouping = grouping;
             messages = restoredMessages;
             messageCount = restoredMessageCount;
             groups = restoredGroups;
             groupCount = restoredGroupCount;
             messageIndex.Clear();
+            zeroCount = 0;
             for (int i = 0; i < messageCount; i++)
             {
                 ref var message = ref messages[i];
                 messageIndex[new MessageKey(message.Text, message.Stack, message.Variant)] = i;
                 message.Explanation = -2;
+                if (message.Count == 0)
+                {
+                    zeroCount++;
+                }
             }
 
             groupIndex.Clear();
@@ -1147,12 +1484,11 @@ namespace Orbiters.Logger.Editor
                 groupIndex[((long)groups[i].Key << 2) | (long)groups[i].Level] = i;
             }
 
-            contexts.Clear();
             if (restoredContexts != null)
             {
                 foreach (var pair in restoredContexts)
                 {
-                    contexts[pair.Key] = pair.Value;
+                    SetContext(pair.Key, pair.Value);
                 }
             }
 
@@ -1163,6 +1499,7 @@ namespace Orbiters.Logger.Editor
             }
 
             Epoch++;
+            IdEpoch++;
             Version++;
             MessagesVersion++;
         }

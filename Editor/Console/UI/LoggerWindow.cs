@@ -115,7 +115,6 @@ namespace Orbiters.Logger.Editor
                 return;
             }
 
-            boundStore.Shifted -= OnShifted;
             boundStore.Emptied -= ClearSelection;
             boundStore.Regrouped -= OnRegrouped;
             boundStore = null;
@@ -202,24 +201,12 @@ namespace Orbiters.Logger.Editor
             boundStore = store;
             if (boundStore != null)
             {
-                boundStore.Shifted += OnShifted;
                 boundStore.Emptied += ClearSelection;
                 boundStore.Regrouped += OnRegrouped;
             }
 
             ClearSelection();
             state = null;
-        }
-
-        // History merged in front of the logs, or the oldest trimmed: selected logs keep pointing at the same logs.
-        private void OnShifted(int offset)
-        {
-            if (grouped)
-            {
-                return;
-            }
-
-            ShiftSelection(offset);
         }
 
         private FilterSpec BuildSpec()
@@ -418,9 +405,12 @@ namespace Orbiters.Logger.Editor
             }
 
             double now = EditorApplication.timeSinceStartup;
-            if (state == null || state.Epoch != store.Epoch || state.MessagesVersion != store.MessagesVersion || !ReferenceEquals(state.Texts, store.Texts))
+            if (state == null || state.Epoch != store.Epoch || state.MessagesVersion != store.MessagesVersion || !ReferenceEquals(state.Texts, store.Texts) ||
+                state.FirstId != store.FirstId)
             {
-                // Row ids no longer match the store: never draw them, recompute (a pass already running gives its result).
+                // Rows or counts no longer match the store (a trim, history in front, a regroup): never draw them,
+                // recompute (a pass already running gives its result). Selected logs keep their ids.
+
                 if (state != null || !runner.Busy)
                 {
                     RefilterInvalidated();

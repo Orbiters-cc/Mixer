@@ -111,16 +111,16 @@ namespace Orbiters.Logger.Editor.Tests
             var masker = new ReferencePrivacy(Home, Secret).Lines();
             var text = new StringBuilder();
             void Line(string line) => text.Append(masker.Mask(line)).Append('\n');
-            Line("# " + LoggerUi.Plural(view.Count, "log") + " from " + LogReport.Stamp(view.Times[0]) + " to " + LogReport.Stamp(view.Times[view.Count - 1]) +
+            Line("# " + LoggerUi.Plural(view.Count, "log") + " from " + LogReport.Stamp(view.TimeAt(view.First)) + " to " + LogReport.Stamp(view.TimeAt(view.End - 1)) +
                  ". ~ marks a time read back from Unity's console (to the second).");
             Line(string.Empty);
             var row = new StringBuilder();
-            for (int i = 0; i < view.Count; i++)
+            for (int i = view.First; i < view.End; i++)
             {
-                int id = view.Owners[i];
+                int id = view.OwnerAt(i);
                 ref var message = ref view.Messages[id];
                 row.Clear();
-                row.Append(LogReport.Stamp(view.Times[i])).Append(((OccurrenceFlags)view.Flags[i] & OccurrenceFlags.ApproximateTime) != 0 ? "~ " : "  ");
+                row.Append(LogReport.Stamp(view.TimeAt(i))).Append(((OccurrenceFlags)view.FlagsAt(i) & OccurrenceFlags.ApproximateTime) != 0 ? "~ " : "  ");
                 row.Append(LogReport.LevelTag(message.Variant)).Append("  ");
                 int source = snapshot.SourceOf[id];
                 row.Append(source >= 0 && source < snapshot.Sources.Length ? snapshot.Sources[source] : "Unity").Append("  ");

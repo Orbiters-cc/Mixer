@@ -185,7 +185,7 @@ namespace Orbiters.Logger.Editor
 
             int key = grouped ? state.GroupRows[index] : state.Rows[index];
             int occurrence = grouped ? state.GroupLast[key] : key;
-            if (occurrence < 0 || occurrence >= store.Count)
+            if (!store.Contains(occurrence))
             {
                 return;
             }
@@ -501,32 +501,6 @@ namespace Orbiters.Logger.Editor
             }
         }
 
-        private void ShiftSelection(int offset)
-        {
-            if (selection.Count == 0 && cursor < 0)
-            {
-                return;
-            }
-
-            var shifted = new List<int>(selection.Count);
-            foreach (int key in selection)
-            {
-                if (key + offset >= 0)
-                {
-                    shifted.Add(key + offset);
-                }
-            }
-
-            selection.Clear();
-            foreach (int key in shifted)
-            {
-                selection.Add(key);
-            }
-
-            cursor = cursor >= 0 && cursor + offset >= 0 ? cursor + offset : -1;
-            anchor = anchor >= 0 && anchor + offset >= 0 ? anchor + offset : -1;
-        }
-
         private void SelectAll()
         {
             if (ItemCount == 0)
@@ -758,10 +732,11 @@ namespace Orbiters.Logger.Editor
             if (grouped)
             {
                 int occurrence = state.GroupLast[key];
-                return occurrence >= 0 && occurrence < store.Count ? store.MessageAt(occurrence) : -1;
+                return store.Contains(occurrence) ? store.MessageAt(occurrence) : -1;
             }
 
-            return key >= 0 && key < store.Count ? store.MessageAt(key) : -1;
+            return store.Contains(key) ? store.MessageAt(key) : -1;
+
         }
 
         private void Copy(bool withStack)

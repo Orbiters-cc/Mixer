@@ -523,7 +523,7 @@ namespace Orbiters.Logger.Editor
             lastFrequency = now;
             frequencyVersion = store.Version;
             var group = store.Group(frequencyGroup);
-            if (group.Count == 0 || group.First < 0)
+            if (group.Count == 0)
             {
                 return;
             }
@@ -567,6 +567,7 @@ namespace Orbiters.Logger.Editor
             private int group = -1;
             private int epoch = -1;
             private int messagesVersion = -1;
+            private int firstId = -1;
             private int scanned;
             private int window;
 
@@ -576,14 +577,16 @@ namespace Orbiters.Logger.Editor
 
             public void Update(LogStore source, int shown)
             {
-                if (!ReferenceEquals(source, store) || shown != group || source.Epoch != epoch || source.MessagesVersion != messagesVersion)
+                if (!ReferenceEquals(source, store) || shown != group || source.Epoch != epoch || source.MessagesVersion != messagesVersion ||
+                    source.FirstId != firstId)
                 {
-                    // Another group, or occurrences that changed meaning (trimmed, merged, superseded): from the start.
+                    // Another group, or occurrences gone or added in front (trimmed, merged) or superseded: from the start.
                     store = source;
                     group = shown;
                     epoch = source.Epoch;
                     messagesVersion = source.MessagesVersion;
-                    scanned = Math.Max(0, source.Group(shown).First);
+                    firstId = source.FirstId;
+                    scanned = Math.Max(source.FirstId, source.Group(shown).First);
                     window = 0;
                     Count = 0;
                     Peak = 0;
@@ -593,7 +596,8 @@ namespace Orbiters.Logger.Editor
                     }
                 }
 
-                int end = Math.Min(source.Group(shown).Last + 1, source.Count);
+                int end = Math.Min(source.Group(shown).Last + 1, source.EndId);
+
                 for (int i = scanned; i < end; i++)
                 {
                     if (source.Message(source.MessageAt(i)).Group != shown || (source.FlagsAt(i) & LogStore.Superseded) != 0)

@@ -416,7 +416,7 @@ namespace Orbiters.Logger.Editor
             LayoutMarkerLabels();
             rangeFrom = from;
             rangeTo = to;
-            bool hasData = state != null && state.HasTimeline && state.Covered > 0;
+            bool hasData = state != null && state.HasTimeline && state.Covered > state.FirstId;
             emptyLabel.style.display = hasData ? DisplayStyle.None : DisplayStyle.Flex;
             if (state != null && state.HasTimeline)
             {
