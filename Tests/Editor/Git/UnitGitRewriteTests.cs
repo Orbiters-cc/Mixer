@@ -5,7 +5,7 @@ using NUnit.Framework;
 
 namespace Orbiters.UnitGit.Editor.Tests
 {
-    // Renaming and squashing read every commit up to HEAD in one go and write each new commit with one process.
+    // Renaming and squashing read every commit up to HEAD in one go and write all new commits with one fast-import.
     public sealed class UnitGitRewriteTests
     {
         [Test]
@@ -42,7 +42,9 @@ namespace Orbiters.UnitGit.Editor.Tests
                 repo.Git.ProcessLogReceived = null;
                 Assert.That(result.Success, Is.True, result.Message);
 
-                Assert.That(commands.Count(line => line.Contains(" commit-tree ")), Is.EqualTo(4), "The renamed commit and the three after it.");
+                // The renamed commit and the three after it, written by one fast-import (commit-tree wrote one each before).
+                Assert.That(commands.Count(line => line.Contains(" fast-import ")), Is.EqualTo(1));
+                Assert.That(commands.Count(line => line.Contains(" commit-tree ")), Is.Zero);
                 Assert.That(commands.Count(line => line.Contains(" show -s") || line.Contains(" log -1 ")), Is.Zero, "No read per commit.");
                 Assert.That(Field("%B", "HEAD~3"), Is.EqualTo("renamed second"));
                 Assert.That(Field("%H", "HEAD~4"), Is.EqualTo(hashes[0]), "Commits below the renamed one are kept.");

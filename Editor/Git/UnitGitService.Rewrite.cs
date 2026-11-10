@@ -154,6 +154,14 @@ namespace Orbiters.UnitGit.Editor
                 }
             }
 
+            // All new commits through one git fast-import (a constant number of processes), else one commit-tree each.
+            var stream = new CommitStream();
+            GitCommandResult streamable = CanStreamRewrite(infos.Values, stream);
+            if (!streamable.Success)
+            {
+                return streamable;
+            }
+
             var rewritten = new Dictionary<string, string>(StringComparer.Ordinal);
             string squashedHash = string.Empty;
             for (int i = startIndex; i < history.Count; i++)
@@ -182,13 +190,22 @@ namespace Orbiters.UnitGit.Editor
                     ? message
                     : (!squash && selected.Contains(originalHash) ? message : source.Message);
 
-                GitCommandResult createResult = CreateCommitFromTree(source, treeHash, parents, commitMessage);
-                if (!createResult.Success)
+                string newHash;
+                if (stream.Enabled)
                 {
-                    return createResult;
+                    newHash = stream.Add(source, treeHash, parents, commitMessage);
+                }
+                else
+                {
+                    GitCommandResult createResult = CreateCommitFromTree(source, treeHash, parents, commitMessage);
+                    if (!createResult.Success)
+                    {
+                        return createResult;
+                    }
+
+                    newHash = FirstNonEmptyLine(createResult.StandardOutput);
                 }
 
-                string newHash = FirstNonEmptyLine(createResult.StandardOutput);
                 if (string.IsNullOrWhiteSpace(newHash))
                 {
                     return Failure("Git did not return a rewritten commit hash.");
@@ -206,10 +223,29 @@ namespace Orbiters.UnitGit.Editor
                 return Failure("Could not resolve the rewritten HEAD.");
             }
 
+            // HEAD is the last commit of the history, so when it was rewritten it is the stream's last commit.
+            string streamRef = null;
+            if (stream.Enabled && newHead.StartsWith(":", StringComparison.Ordinal))
+            {
+                GitCommandResult imported = WriteCommitStream(stream, out streamRef, out newHead);
+                if (!imported.Success)
+                {
+                    RunGit(DefaultTimeoutMilliseconds, "update-ref", "--no-deref", "-d", streamRef);
+                    return imported;
+                }
+            }
+
             // Commit trees are unchanged. Move only the captured branch, and only if nobody advanced it.
             // Do not reset the index or whichever branch another process has since checked out.
             GitCommandResult updateResult = RunGit(DefaultTimeoutMilliseconds, "update-ref", "--no-deref",
                 "-m", "Mixer Git: rewrite history", branchRef, newHead, oldHead);
+            // The scratch ref fast-import wrote (this call named it): gone whether the branch moved or not; the new commits
+            // are reachable from the branch, or left to Git's garbage collection.
+            if (streamRef != null)
+            {
+                RunGit(DefaultTimeoutMilliseconds, "update-ref", "--no-deref", "-d", streamRef);
+            }
+
             if (!updateResult.Success)
             {
                 return updateResult;
@@ -272,7 +308,8 @@ namespace Orbiters.UnitGit.Editor
         // Tree, parents, author and whole message of each commit, in one "git log --no-walk --stdin" fed the hashes.
         private GitCommandResult ReadRewriteInfos(IList<string> hashes, IDictionary<string, CommitRewriteInfo> infos)
         {
-            string[] options = { "log", "--no-walk=unsorted", "-z", "--format=%H%x1f%T%x1f%P%x1f%an%x1f%ae%x1f%aI%x1f%B" };
+            // The author date in Git's own form (seconds and offset): what fast-import and GIT_AUTHOR_DATE both take, exactly.
+            string[] options = { "log", "--no-walk=unsorted", "-z", "--date=raw", "--format=%H%x1f%T%x1f%P%x1f%an%x1f%ae%x1f%ad%x1f%B" };
             GitCommandResult read = RunWithList(null, LongTimeoutMilliseconds, hashes, false, options.Concat(new[] { "--stdin" }).ToArray(), options, new[] { "--" });
             if (!read.Success)
             {
@@ -322,6 +359,120 @@ namespace Orbiters.UnitGit.Editor
             };
             // commit-tree reads the message from stdin when no -m or -F is given; with stdin unusable, from a file.
             return RunCommitWithMessageFile(args, message, environment);
+        }
+
+        /// <summary>
+        /// The new commits of one rewrite as a git fast-import stream: each commit is "the tree with this id" (deleteall,
+        /// then the tree at the root path, which fast-import takes in Git 2.26) with the author, message and parents it would
+        /// get from commit-tree, and the committer commit-tree would write (Git's GIT_COMMITTER_IDENT, read once). Parents
+        /// are object ids or the marks of commits earlier in the stream.
+        /// </summary>
+        private sealed class CommitStream
+        {
+            internal bool Enabled;
+            internal string Committer = string.Empty;
+            internal readonly MemoryStream Bytes = new MemoryStream();
+            private int marks;
+            private string reference = string.Empty;
+
+            internal string Reference
+            {
+                get
+                {
+                    if (reference.Length == 0) reference = "refs/mixer-git/rewrite/" + Guid.NewGuid().ToString("N");
+                    return reference;
+                }
+            }
+
+            internal string Add(CommitRewriteInfo source, string treeHash, IList<string> parents, string message)
+            {
+                string mark = ":" + (++marks).ToString(CultureInfo.InvariantCulture);
+                // A commit with no parent on a ref that already has one in this stream would continue from it: reset first.
+                if (parents.Count == 0) Text("reset " + Reference + "\n");
+                Text("commit " + Reference + "\nmark " + mark + "\n");
+                Text("author " + (source.AuthorName.Length > 0 ? source.AuthorName + " " : string.Empty) + "<" + source.AuthorEmail + "> " +
+                     source.AuthorDate + "\n");
+                Text("committer " + Committer + "\n");
+                // Exactly the bytes commit-tree is given on stdin.
+                byte[] body = UnitGitRunner.Utf8.GetBytes(NormalizeCommitMessage(message) + "\n");
+                Text("data " + body.Length.ToString(CultureInfo.InvariantCulture) + "\n");
+                Bytes.Write(body, 0, body.Length);
+                Text("\n");
+                for (int i = 0; i < parents.Count; i++) Text((i == 0 ? "from " : "merge ") + parents[i] + "\n");
+                Text("deleteall\n");
+                if (treeHash != EmptyTreeSha1 && treeHash != EmptyTreeSha256) Text("M 040000 " + treeHash + " \"\"\n");
+                Text("\n");
+                return mark;
+            }
+
+            internal void Text(string text)
+            {
+                byte[] bytes = UnitGitRunner.Utf8.GetBytes(text);
+                Bytes.Write(bytes, 0, bytes.Length);
+            }
+        }
+
+        private const string EmptyTreeSha1 = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+        private const string EmptyTreeSha256 = "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321";
+
+        /// <summary>For tests: rewrite with one commit-tree per commit, as a repository that signs its commits does.</summary>
+        internal static bool ForceCommitTreeRewrite;
+
+        /// <summary>
+        /// Whether this rewrite can go through fast-import, which writes what commit-tree would except a signature: a
+        /// repository that signs its commits (commit.gpgSign) keeps commit-tree, which signs; so does a system whose stdin
+        /// cannot be clean, and an author whose name or e-mail fast-import cannot carry. Fails only when Git cannot name a
+        /// committer (commit-tree would fail as well).
+        /// </summary>
+        private GitCommandResult CanStreamRewrite(IEnumerable<CommitRewriteInfo> sources, CommitStream stream)
+        {
+            stream.Enabled = false;
+            if (ForceCommitTreeRewrite || !UnitGitRunner.CleanInput ||
+                sources.Any(source => !FitsIdent(source.AuthorName) || !FitsIdent(source.AuthorEmail) || !FitsIdent(source.AuthorDate)))
+            {
+                return new GitCommandResult();
+            }
+
+            GitCommandResult signing = RunGit(DefaultTimeoutMilliseconds, "config", "--bool", "--get", "commit.gpgSign");
+            if (signing.Success && FirstNonEmptyLine(signing.StandardOutput) == "true")
+            {
+                return new GitCommandResult();
+            }
+
+            GitCommandResult ident = RunGit(DefaultTimeoutMilliseconds, "var", "GIT_COMMITTER_IDENT");
+            if (!ident.Success)
+            {
+                return ident;
+            }
+
+            stream.Committer = FirstNonEmptyLine(ident.StandardOutput);
+            stream.Enabled = stream.Committer.Length > 0;
+            return new GitCommandResult();
+        }
+
+        private static bool FitsIdent(string value) =>
+            value != null && value.IndexOf('<') < 0 && value.IndexOf('>') < 0 && value.IndexOf('\n') < 0 && value.IndexOf('\0') < 0;
+
+        // Runs the stream into a scratch ref this call named, and reads the id of its last commit (the new HEAD).
+        private GitCommandResult WriteCommitStream(CommitStream stream, out string streamRef, out string newHead)
+        {
+            streamRef = stream.Reference;
+            newHead = string.Empty;
+            stream.Text("done\n");
+            GitCommandResult imported = RunGitWithInput(LongTimeoutMilliseconds, stream.Bytes.ToArray(), "fast-import", "--quiet", "--done");
+            if (!imported.Success)
+            {
+                return imported;
+            }
+
+            GitCommandResult head = RunGit(DefaultTimeoutMilliseconds, "rev-parse", "--verify", streamRef + "^{commit}");
+            if (!head.Success)
+            {
+                return head;
+            }
+
+            newHead = FirstNonEmptyLine(head.StandardOutput);
+            return string.IsNullOrWhiteSpace(newHead) ? Failure("Git did not return a rewritten commit hash.") : new GitCommandResult();
         }
 
         private static List<string> RewriteParents(IEnumerable<string> parents, IDictionary<string, string> rewritten)
