@@ -231,6 +231,8 @@ namespace Orbiters.Logger.Editor
                 }
 
                 Drain(6d);
+                // Texts read back lazily (a search over a restored session) add stripped copies while no log arrives.
+                Store.KeepWithinTextBudget();
                 if (history != null && history.Step(Store, ImportBudget()))
                 {
                     if (history.Error != null)

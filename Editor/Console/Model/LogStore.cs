@@ -467,8 +467,35 @@ namespace Orbiters.Logger.Editor
                 return text;
             }
 
-            return text.Substring(0, MaxTextLength) + "\n[… " + (text.Length - MaxTextLength).ToString("N0", System.Globalization.CultureInfo.InvariantCulture) +
-                   " more characters left out by the Mixer console]";
+            // The note included, never longer than the limit: capping a capped text changes nothing, whatever path
+            // (the queue, the store, a history import) cut it first.
+            int keep = MaxTextLength - CutNote(text.Length - MaxTextLength).Length;
+            while (keep > 0 && keep + CutNote(text.Length - keep).Length > MaxTextLength)
+            {
+                keep--;
+            }
+
+            if (keep > 0 && char.IsHighSurrogate(text[keep - 1]))
+            {
+                keep--;
+            }
+
+            return text.Substring(0, keep) + CutNote(text.Length - keep);
+        }
+
+        private static string CutNote(int left) =>
+            "\n[… " + left.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) + " more characters left out by the Mixer console]";
+
+        /// <summary>
+        /// Keeps the texts within <see cref="MaxTextChars"/> when they grew without a new log (texts read back after a
+        /// reload keep their stripped copies). Main thread; cheap when within the budget.
+        /// </summary>
+        public void KeepWithinTextBudget()
+        {
+            if (Texts.TotalChars > maxTextChars && pins == 0)
+            {
+                KeepTextBudget();
+            }
         }
 
         // One fixed budget for every text kept (live logs and history alike, stripped copies included): the oldest
@@ -851,6 +878,13 @@ namespace Orbiters.Logger.Editor
                 message.Assembly = texts.Intern(Texts[message.Assembly]);
                 map[i] = live;
                 kept[live++] = message;
+            }
+
+            if (Texts.Faulted)
+            {
+                // A text read back from the session file for the copy was damaged: the copy holds its placeholder.
+                // Keep the old table untouched; LogCapture starts over from Unity's console.
+                return false;
             }
 
             for (int i = 0; i < count; i++)

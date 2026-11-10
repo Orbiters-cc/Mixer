@@ -484,9 +484,12 @@ namespace Orbiters.Logger.Editor
         {
             // A line of a PEM body: base64, or one of its "Proc-Type:" / "DEK-Info:" headers.
             private static readonly Regex KeyMaterial = new Regex(@"^(?:[A-Za-z0-9+/=]{8,}|Proc-Type:.*|DEK-Info:.*)$", RegexOptions.CultureInvariant);
+            // How many key-looking entries a header without its footer can mask: a key is a few dozen lines.
+            private const int MaxKeyEntries = 512;
             private readonly ReportPrivacy privacy;
             private bool valueNext;
             private bool inKey;
+            private int keyEntries;
 
             public EntryMasker(ReportPrivacy privacy) => this.privacy = privacy;
 
@@ -505,12 +508,17 @@ namespace Orbiters.Logger.Editor
                         return false;
                     }
 
-                    if (trimmed.Length == 0 || AllKeyMaterial(trimmed))
+                    // Until the footer, whatever other logs come between (other threads log all the time): when in
+                    // doubt, a harmless base64-looking log is masked too. Unrelated logs stay readable.
+                    if (trimmed.Length > 0 && AllKeyMaterial(trimmed))
                     {
-                        return true;
-                    }
+                        if (++keyEntries <= MaxKeyEntries)
+                        {
+                            return true;
+                        }
 
-                    inKey = false;
+                        inKey = false;
+                    }
                 }
 
                 bool continues = false;
@@ -523,7 +531,11 @@ namespace Orbiters.Logger.Editor
                 if (!continues)
                 {
                     valueNext = oneLine && privacy.AnnouncesSecret(trimmed);
-                    inKey = entry.IndexOf('-') >= 0 && PrivateKeyBegin.IsMatch(entry) && !PrivateKeyEnd.IsMatch(entry);
+                    if (entry.IndexOf('-') >= 0 && PrivateKeyBegin.IsMatch(entry) && !PrivateKeyEnd.IsMatch(entry))
+                    {
+                        inKey = true;
+                        keyEntries = 0;
+                    }
                 }
 
                 return continues;

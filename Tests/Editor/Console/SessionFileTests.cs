@@ -304,6 +304,59 @@ namespace Orbiters.Logger.Editor.Tests
         }
 
         [Test]
+        public void ACompactionThatMeetsADamagedTextKeepsTheOldTable()
+        {
+            var store = new LogStore();
+            for (int i = 0; i < 2000; i++)
+            {
+                store.Add(100 + i, "Distinct " + i, string.Empty, LogVariant.Log);
+            }
+
+            saving.Save(store, Info(), Process, Start);
+            saving.Close();
+
+            // Damage a text the compaction will copy (the newest log's), keeping the file's length.
+            string path = Directory.GetFiles(folder, "texts-*.bin")[0];
+            byte[] bytes = File.ReadAllBytes(path);
+            byte[] needle = System.Text.Encoding.Unicode.GetBytes("Distinct 1999");
+            int at = IndexOf(bytes, needle);
+            Assert.Greater(at, 0);
+            bytes[at + 2] ^= 0x20;
+            File.WriteAllBytes(path, bytes);
+
+            var session = Fresh();
+            var loaded = Load(session);
+            long generation = loaded.Texts.Generation;
+            int newest = loaded.Message(loaded.MessageAt(loaded.Count - 1)).Text;
+            loaded.Trim(500);
+            Assert.AreEqual(500, loaded.Count, "the trim itself happened");
+            Assert.AreEqual(generation, loaded.Texts.Generation, "the compaction was dropped");
+            Assert.IsTrue(loaded.Texts.Faulted, "the store must start over");
+            Assert.AreEqual(newest, loaded.Message(loaded.MessageAt(loaded.Count - 1)).Text, "ids still name the old table");
+            Assert.IsFalse(loaded.Texts.IsLoaded(newest), "and the placeholder was never kept");
+            session.Close();
+        }
+
+        private static int IndexOf(byte[] haystack, byte[] needle)
+        {
+            for (int i = 0; i + needle.Length <= haystack.Length; i++)
+            {
+                int j = 0;
+                while (j < needle.Length && haystack[i + j] == needle[j])
+                {
+                    j++;
+                }
+
+                if (j == needle.Length)
+                {
+                    return i;
+                }
+            }
+
+            return -1;
+        }
+
+        [Test]
         public void HugeCountsInADamagedHeadAllocateNothing()
         {
             var store = new LogStore();

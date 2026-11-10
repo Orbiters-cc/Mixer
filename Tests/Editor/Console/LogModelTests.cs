@@ -190,10 +190,16 @@ namespace Orbiters.Logger.Editor.Tests
 
             // One log larger than the whole budget is cut, and says so.
             var huge = new LogStore();
-            int id = huge.Intern(new string('h', LogStore.MaxTextLength + 5000), string.Empty, LogVariant.Log);
+            string original = new string('h', LogStore.MaxTextLength + 5000);
+            int id = huge.Intern(original, string.Empty, LogVariant.Log);
             string kept = huge.Texts[huge.Message(id).Text];
-            Assert.Less(kept.Length, LogStore.MaxTextLength + 200);
-            StringAssert.Contains("5,000 more characters left out", kept);
+            Assert.LessOrEqual(kept.Length, LogStore.MaxTextLength, "the note included");
+            StringAssert.EndsWith(" more characters left out by the Mixer console]", kept);
+            int shown = kept.IndexOf('\n');
+            StringAssert.Contains("[… " + (original.Length - shown).ToString("N0", System.Globalization.CultureInfo.InvariantCulture) + " more", kept, "the count is what was left out");
+            Assert.AreSame(kept, LogStore.Capped(kept), "capping a capped text changes nothing");
+            Assert.AreEqual(kept, LogStore.Capped(original));
+            Assert.AreEqual(id, huge.Intern(LogStore.Capped(original), string.Empty, LogVariant.Log), "cut in the queue first, the same message");
 
             // Rich text keeps a stripped copy: it counts.
             var tags = new TextTable();

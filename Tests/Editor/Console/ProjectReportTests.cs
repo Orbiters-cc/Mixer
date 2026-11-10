@@ -271,8 +271,9 @@ namespace Orbiters.Logger.Editor.Tests
             long t = TimeSpan.TicksPerSecond;
             foreach (string entry in new[]
                      {
-                         "-----BEGIN RSA PRIVATE KEY-----", "MIIEowIBAAKCAQEAsecretbody1", "Q2FmZWJhYmVzZWNyZXRib2R5Mg==", "-----END RSA PRIVATE KEY-----",
-                         "Player spawned", "-----BEGIN PRIVATE KEY-----", "Loading scene Main", "-accessToken", "tokvalue-9876", "Done"
+                         "-----BEGIN RSA PRIVATE KEY-----", "MIIEowIBAAKCAQEAsecretbody1", "Import finished", "Q2FmZWJhYmVzZWNyZXRib2R5Mg==",
+                         "-----END RSA PRIVATE KEY-----", "Player spawned", "-----BEGIN PRIVATE KEY-----", "Loading scene Main", "UGxheWVyc2VjcmV0Mw==",
+                         "-accessToken", "tokvalue-9876", "Done"
                      })
             {
                 store.Add(t++, entry, string.Empty, LogVariant.Log);
@@ -288,7 +289,9 @@ namespace Orbiters.Logger.Editor.Tests
                 {
                     string text = File.ReadAllText(Path.Combine(staging, "logs", file));
                     StringAssert.DoesNotContain("secretbody1", text, file);
-                    StringAssert.DoesNotContain("Q2FmZWJhYmVzZWNyZXRib2R5Mg", text, file);
+                    StringAssert.DoesNotContain("Q2FmZWJhYmVzZWNyZXRib2R5Mg", text, file + ": a key body after another thread's log");
+                    StringAssert.Contains("Import finished", text, file + ": the log between stays readable");
+                    StringAssert.DoesNotContain("UGxheWVyc2VjcmV0Mw", text, file + ": a header without footer still masks key lines after other logs");
                     StringAssert.DoesNotContain("tokvalue-9876", text, file);
                     StringAssert.Contains("Player spawned", text, file);
                     StringAssert.Contains("Loading scene Main", text, file + ": a header alone doesn't mask the logs after it");
