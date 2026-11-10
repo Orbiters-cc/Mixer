@@ -1233,16 +1233,12 @@ namespace Orbiters.UnitGit.Editor
                 }
             }
 
+            // Every commit from the oldest selected one to HEAD in one read, instead of two reads per commit.
             var infos = new Dictionary<string, CommitRewriteInfo>(StringComparer.Ordinal);
-            for (int i = startIndex; i < history.Count; i++)
+            GitCommandResult infosResult = ReadRewriteInfos(history.GetRange(startIndex, history.Count - startIndex), infos);
+            if (!infosResult.Success)
             {
-                GitCommandResult infoResult = GetCommitRewriteInfo(history[i], out CommitRewriteInfo info);
-                if (!infoResult.Success)
-                {
-                    return infoResult;
-                }
-
-                infos[history[i]] = info;
+                return infosResult;
             }
 
             if (squash)
@@ -1369,75 +1365,62 @@ namespace Orbiters.UnitGit.Editor
             return new GitCommandResult();
         }
 
-        private GitCommandResult GetCommitRewriteInfo(string hash, out CommitRewriteInfo info)
+        // Tree, parents, author and whole message of each commit, in one "git log --no-walk --stdin" fed the hashes.
+        private GitCommandResult ReadRewriteInfos(IList<string> hashes, IDictionary<string, CommitRewriteInfo> infos)
         {
-            info = null;
-            GitCommandResult meta = RunGit(
-                DefaultTimeoutMilliseconds,
-                "show",
-                "-s",
-                "--format=%H%x1f%T%x1f%P%x1f%an%x1f%ae%x1f%aI",
-                hash);
-            if (!meta.Success)
+            GitCommandResult read = RunGitWithInput(LongTimeoutMilliseconds, stream =>
             {
-                return meta;
+                byte[] bytes = Utf8.GetBytes(string.Join("\n", hashes) + "\n");
+                stream.Write(bytes, 0, bytes.Length);
+            }, "log", "--no-walk=unsorted", "--stdin", "-z", "--format=%H%x1f%T%x1f%P%x1f%an%x1f%ae%x1f%aI%x1f%B");
+            if (!read.Success)
+            {
+                return read;
             }
 
-            string firstLine = FirstNonEmptyLine(meta.StandardOutput);
-            string[] fields = firstLine.Split(FieldSeparator);
-            if (fields.Length < 6)
+            foreach (string record in read.StandardOutput.Split('\0'))
             {
-                return Failure("Could not parse commit metadata for " + ShortHash(hash) + ".");
-            }
-
-            GitCommandResult message = GetCommitMessage(hash);
-            if (!message.Success)
-            {
-                return message;
-            }
-
-            info = new CommitRewriteInfo
-            {
-                Hash = fields[0],
-                TreeHash = fields[1],
-                Parents = fields[2]
-                    .Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries)
-                    .ToList(),
-                AuthorName = fields[3],
-                AuthorEmail = fields[4],
-                AuthorDate = fields[5],
-                Message = message.StandardOutput
-            };
-            return new GitCommandResult();
-        }
-
-        private GitCommandResult CreateCommitFromTree(CommitRewriteInfo source, string treeHash, IList<string> parents, string message)
-        {
-            string messagePath = WriteTempCommitMessage(message);
-            try
-            {
-                var args = new List<string> { "commit-tree", treeHash };
-                foreach (string parent in parents)
+                if (record.Length == 0) continue;
+                string[] fields = record.Split(new[] { FieldSeparator }, 7);
+                if (fields.Length < 7)
                 {
-                    args.Add("-p");
-                    args.Add(parent);
+                    return Failure("Could not parse commit metadata for " + ShortHash(fields[0]) + ".");
                 }
 
-                args.Add("-F");
-                args.Add(messagePath);
-
-                var environment = new Dictionary<string, string>(StringComparer.Ordinal)
+                infos[fields[0]] = new CommitRewriteInfo
                 {
-                    { "GIT_AUTHOR_NAME", source.AuthorName },
-                    { "GIT_AUTHOR_EMAIL", source.AuthorEmail },
-                    { "GIT_AUTHOR_DATE", source.AuthorDate }
+                    Hash = fields[0],
+                    TreeHash = fields[1],
+                    Parents = fields[2].Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).ToList(),
+                    AuthorName = fields[3],
+                    AuthorEmail = fields[4],
+                    AuthorDate = fields[5],
+                    Message = TrimTrailingNewlines(fields[6])
                 };
-                return RunGitWithEnvironment(environment, LongTimeoutMilliseconds, args.ToArray());
             }
-            finally
+
+            string missing = hashes.FirstOrDefault(hash => !infos.ContainsKey(hash));
+            return missing == null ? new GitCommandResult() : Failure("Could not read commit " + ShortHash(missing) + ".");
+        }
+
+        // One "git commit-tree" per rewritten commit (each needs its parent's new id); the message goes through stdin.
+        private GitCommandResult CreateCommitFromTree(CommitRewriteInfo source, string treeHash, IList<string> parents, string message)
+        {
+            var args = new List<string> { "commit-tree", treeHash };
+            foreach (string parent in parents)
             {
-                DeleteTempFile(messagePath);
+                args.Add("-p");
+                args.Add(parent);
             }
+
+            var environment = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                { "GIT_AUTHOR_NAME", source.AuthorName },
+                { "GIT_AUTHOR_EMAIL", source.AuthorEmail },
+                { "GIT_AUTHOR_DATE", source.AuthorDate }
+            };
+            // commit-tree reads the message from stdin when no -m or -F is given; with stdin unusable, from a file.
+            return RunCommitWithMessageFile(args, message, environment);
         }
 
         private static List<string> RewriteParents(IEnumerable<string> parents, IDictionary<string, string> rewritten)
