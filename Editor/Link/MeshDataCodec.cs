@@ -336,7 +336,7 @@ namespace Orbiters.Mixer.Editor
             var mesh = target.Working != null ? target.Working : target.Original;
             var s = new MeshSnapshot
             {
-                Id = id, Name = mesh.name.Replace(" (Mixer working)", ""),
+                Id = id, Name = mesh.name.Replace(MeshBuilder.WorkingSuffix, ""),
                 Positions = doc.Positions, Normals = doc.Normals, Triangles = doc.Triangles,
                 FaceMaterial = FaceMaterials(mesh, doc.Triangles.Length / 3), Weld = doc.LinkWeld,
             };
