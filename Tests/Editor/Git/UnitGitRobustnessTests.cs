@@ -55,7 +55,7 @@ namespace Orbiters.UnitGit.Editor.Tests
                 repo.Commit("base");
                 for (int i = 0; i < 3000; i++) repo.Write("Assets/Many/" + i + ".txt", i + "\n");
                 string lockPath = repo.Full(".git/index.lock");
-                GitCommandResult killed = repo.Git.RunGit(150, "add", "-A");
+                GitCommandResult killed = repo.Git.RunGit(GitAccess.Exclusive, 150, "add", "-A");
                 if (killed.Success) Assert.Ignore("git add finished within 150 ms here: nothing was killed.");
                 Assert.That(killed.Message, Does.Contain("index.lock"));
                 Assert.That(killed.Message, Does.Contain("another program may be using the repository; if none is, deleting"));
@@ -111,7 +111,7 @@ namespace Orbiters.UnitGit.Editor.Tests
             using (var repo = UnitGitTestRepo.Create())
             {
                 // The id of empty content: a byte order mark in front would make it another blob.
-                GitCommandResult empty = repo.Git.RunGitWithInput(60000, new byte[0], "hash-object", "--stdin");
+                GitCommandResult empty = repo.Git.RunGitWithInput(GitAccess.Exclusive, 60000, new byte[0], "hash-object", "--stdin");
                 Assert.That(empty.StandardOutput.Trim(), Is.EqualTo("e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"));
             }
         }
@@ -147,6 +147,16 @@ namespace Orbiters.UnitGit.Editor.Tests
 
                         repo.Git.ReadHeadState(out UnitGitHeadState head);
                         GitCommandResult renamed = repo.Git.RenameCommit(first, "first renamed", head);
+                        if (!clean)
+                        {
+                            // A rewrite writes through fast-import, which reads its stream on stdin: without clean stdin it is
+                            // refused, and nothing moves (the commit-tree path that took a message file is gone).
+                            Assert.That(renamed.Success, Is.False);
+                            Assert.That(renamed.Message, Does.Contain("byte order mark"));
+                            Assert.That(repo.Run("log", "--format=%s").Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries),
+                                Is.EqualTo(new[] { "third é", "second", "first" }));
+                            continue;
+                        }
                         Assert.That(renamed.Success, Is.True, renamed.Message);
                         Assert.That(repo.Run("log", "--format=%s").Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries),
                             Is.EqualTo(new[] { "third é", "second", "first renamed" }));
@@ -169,7 +179,7 @@ namespace Orbiters.UnitGit.Editor.Tests
                 repo.Write("Assets/a.txt", "2\n");
                 repo.Run("add", "-A");
                 var author = new Dictionary<string, string> { { "GIT_AUTHOR_NAME", "Zoë Café" }, { "GIT_AUTHOR_EMAIL", "zoe@example.test" } };
-                Assert.That(repo.Git.RunGitWithEnvironment(author, 60000, "commit", "-q", "-m", "café ☕").Success, Is.True);
+                Assert.That(repo.Git.RunGitWithEnvironment(GitAccess.Exclusive, author, 60000, "commit", "-q", "-m", "café ☕").Success, Is.True);
 
                 // A commit stored in Latin-1, with its "encoding" header.
                 repo.Write("Assets/a.txt", "3\n");

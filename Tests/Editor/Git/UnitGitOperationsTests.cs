@@ -347,7 +347,7 @@ namespace Orbiters.UnitGit.Editor.Tests
                 ["GIT_AUTHOR_DATE"] = isoDate,
                 ["GIT_COMMITTER_DATE"] = isoDate
             };
-            AssertOk(repo.Git.RunGitWithEnvironment(environment, 60000, "commit", "-q", "-m", message));
+            AssertOk(repo.Git.RunGitWithEnvironment(GitAccess.Exclusive, environment, 60000, "commit", "-q", "-m", message));
             return repo.Run("rev-parse", "HEAD").Trim();
         }
 

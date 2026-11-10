@@ -208,6 +208,14 @@ namespace Orbiters.UnitGit.Editor
 
         internal static UnitGitReleaseResult HideRelease(string projectRoot, string id)
         {
+            // One operation on the repository (it commits the catalog): it holds its lease (see UnitGitLease).
+            return UnitGitLease.Hold(() => HideReleaseHeld(projectRoot, id), () => Fail(LeaseBusyMessage));
+        }
+
+        private const string LeaseBusyMessage = "Another Git change is running. Try again once it is done.";
+
+        private static UnitGitReleaseResult HideReleaseHeld(string projectRoot, string id)
+        {
             if (string.IsNullOrWhiteSpace(projectRoot))
             {
                 return Fail("Project root is required.");
@@ -368,6 +376,12 @@ namespace Orbiters.UnitGit.Editor
         /// a failed checkpoint never touched it (it stages in a private copy).
         /// </summary>
         private static UnitGitReleaseResult RecordRelease(UnitGitService service, UnitGitReleaseEntry entry, Func<UnitGitReleaseResult> commit)
+        {
+            // One operation: the catalog written and committed under the repository's lease (see UnitGitLease).
+            return UnitGitLease.Hold(() => RecordReleaseHeld(service, entry, commit), () => Fail(LeaseBusyMessage));
+        }
+
+        private static UnitGitReleaseResult RecordReleaseHeld(UnitGitService service, UnitGitReleaseEntry entry, Func<UnitGitReleaseResult> commit)
         {
             if (!Monitor.TryEnter(CatalogGate))
             {
@@ -530,6 +544,14 @@ namespace Orbiters.UnitGit.Editor
         private static UnitGitReleaseResult CommitFiles(UnitGitService service, string commitTitle, string trailingParagraph, string[] projectRelativePaths,
             bool notify = true, bool requireAll = false, bool requireReleaseFile = false)
         {
+            // One operation (a checkpoint commit) under the repository's lease (see UnitGitLease).
+            return UnitGitLease.Hold(() => CommitFilesHeld(service, commitTitle, trailingParagraph, projectRelativePaths, notify, requireAll, requireReleaseFile),
+                () => Fail(LeaseBusyMessage));
+        }
+
+        private static UnitGitReleaseResult CommitFilesHeld(UnitGitService service, string commitTitle, string trailingParagraph, string[] projectRelativePaths,
+            bool notify, bool requireAll, bool requireReleaseFile)
+        {
             if (string.IsNullOrWhiteSpace(commitTitle))
             {
                 return Fail("Commit title is required.");
@@ -607,7 +629,7 @@ namespace Orbiters.UnitGit.Editor
                     Debug.LogWarning("[Mixer Git] " + ex.Message);
                 }
 
-                GitCommandResult head = service.RunGit(10000, "rev-parse", "HEAD");
+                GitCommandResult head = service.RunGit(GitAccess.Read, 10000, "rev-parse", "HEAD");
                 if (head.Success)
                 {
                     result.CommitHash = head.StandardOutput.Trim();
@@ -690,7 +712,7 @@ namespace Orbiters.UnitGit.Editor
                 // "add -A" silently skips ignored files; a release commit without its metadata is not a release.
                 if (requireReleaseFile && index.FilterIgnored(new[] { ReleasesFileName }).Length == 0)
                     return Fail(IgnoredReleaseFileMessage);
-                GitCommandResult stage = index.Run("add", "-A");
+                GitCommandResult stage = index.Run(GitAccess.Exclusive, "add", "-A");
                 if (!stage.Success) return Fail("Staging changes failed: " + stage.Message);
 
                 GitCommandResult commit = index.Commit(title, trailingParagraph);
@@ -705,7 +727,7 @@ namespace Orbiters.UnitGit.Editor
                     result.Message += "\n" + ex.Message;
                     Debug.LogWarning("[Mixer Git] " + ex.Message);
                 }
-                GitCommandResult head = service.RunGit(10000, "rev-parse", "HEAD");
+                GitCommandResult head = service.RunGit(GitAccess.Read, 10000, "rev-parse", "HEAD");
                 if (head.Success) result.CommitHash = head.StandardOutput.Trim();
                 if (notifyChangedExternally) RaiseChangedExternally();
                 return result;
@@ -743,12 +765,12 @@ namespace Orbiters.UnitGit.Editor
         {
             if (UnitGitService.FitsCommandLine(paths))
             {
-                var diffArgs = new List<string> { "diff", "--cached", "--quiet", "--exit-code", "--" };
+                var diffArgs = new List<string> { "diff", "--no-textconv", "--cached", "--quiet", "--exit-code", "--" };
                 diffArgs.AddRange(paths);
-                return index.Run(diffArgs.ToArray());
+                return index.Run(GitAccess.Read, diffArgs.ToArray());
             }
 
-            GitCommandResult names = index.Run("diff", "--cached", "--name-only", "--no-renames", "-z");
+            GitCommandResult names = index.Run(GitAccess.Read, "diff", "--no-textconv", "--cached", "--name-only", "--no-renames", "-z");
             if (!names.Success) return names;
             var wanted = new HashSet<string>(paths, StringComparer.Ordinal);
             bool changed = names.StandardOutput.Split('\0').Any(path => path.Length > 0 &&

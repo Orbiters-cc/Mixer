@@ -5,15 +5,15 @@ using NUnit.Framework;
 
 namespace Orbiters.UnitGit.Editor.Tests
 {
-    // Rename and squash write their new commits through one git fast-import; the commits must be byte for byte the ones
-    // one commit-tree per commit writes (the path a repository that signs its commits keeps). With the committer fixed,
-    // both give the same commit ids.
+    // Rename and squash write their new commits through one git fast-import, on histories with merges, a second root, an
+    // empty tree and odd messages: each succeeds, uses one fast-import, leaves no scratch ref, and with the committer fixed
+    // the same rewrite gives the same commit ids again (nothing depends on time or order but what Git records).
     public sealed class UnitGitRewriteStreamTests
     {
         private static readonly string[] Committer = { "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE" };
 
         [Test]
-        public void FastImportWritesExactlyTheCommitsCommitTreeWrites()
+        public void RewritesOfAnyHistorySucceedAndAreDeterministic()
         {
             var saved = Committer.Select(Environment.GetEnvironmentVariable).ToArray();
             Environment.SetEnvironmentVariable("GIT_COMMITTER_NAME", "Rewriter Ü");
@@ -33,7 +33,7 @@ namespace Orbiters.UnitGit.Editor.Tests
                         {
                             { "GIT_AUTHOR_NAME", author }, { "GIT_AUTHOR_EMAIL", name + "@example.test" }, { "GIT_AUTHOR_DATE", date }
                         };
-                        Assert.That(repo.Git.RunGitWithEnvironment(environment, 60000, "commit", "-q", "--cleanup=verbatim", "-m", message).Success, Is.True);
+                        Assert.That(repo.Git.RunGitWithEnvironment(GitAccess.Exclusive, environment, 60000, "commit", "-q", "--cleanup=verbatim", "-m", message).Success, Is.True);
                         commit[name] = repo.Run("rev-parse", "HEAD").Trim();
                     }
 
@@ -42,7 +42,7 @@ namespace Orbiters.UnitGit.Editor.Tests
                     Make("c2", "two\n\nUnitGit-Release: r1", "B", "1600000200 +1345");
                     repo.Run("checkout", "-q", "--orphan", "side");
                     repo.Run("rm", "-rq", "--cached", ".");
-                    Assert.That(repo.Git.RunGit(60000, "commit", "-q", "--allow-empty", "-m", "empty root").Success, Is.True);
+                    Assert.That(repo.Git.RunGit(GitAccess.Exclusive, 60000, "commit", "-q", "--allow-empty", "-m", "empty root").Success, Is.True);
                     commit["s0"] = repo.Run("rev-parse", "HEAD").Trim();
                     repo.Run("clean", "-fdxq");
                     Make("s1", "side work", "S", "1600000300 +0100");
@@ -82,20 +82,11 @@ namespace Orbiters.UnitGit.Editor.Tests
             Assert.That(repo.Run("for-each-ref", "refs/mixer-git/").Trim(), Is.Empty, "The scratch ref is gone.");
 
             repo.Run("update-ref", "refs/heads/main", before, fast);
-            UnitGitService.ForceCommitTreeRewrite = true;
-            try
-            {
-                repo.Git.ReadHeadState(out head);
-                GitCommandResult each = rewrite(head);
-                Assert.That(each.Success, Is.True, each.Message);
-            }
-            finally
-            {
-                UnitGitService.ForceCommitTreeRewrite = false;
-            }
-
+            repo.Git.ReadHeadState(out head);
+            GitCommandResult again = rewrite(head);
+            Assert.That(again.Success, Is.True, again.Message);
             string slow = repo.Run("rev-parse", "HEAD").Trim();
-            Assert.That(fast, Is.EqualTo(slow), "fast-import and commit-tree wrote different commits:\n" +
+            Assert.That(fast, Is.EqualTo(slow), "The same rewrite wrote different commits:\n" +
                                                repo.Run("cat-file", "-p", fast) + "\n---\n" + repo.Run("cat-file", "-p", slow));
             repo.Run("update-ref", "refs/heads/main", before, slow);
         }

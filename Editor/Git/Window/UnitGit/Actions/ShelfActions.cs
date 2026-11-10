@@ -73,7 +73,7 @@ namespace Orbiters.UnitGit.Editor
                 return;
             }
 
-            RunAction((pop ? "unshelve " : "apply shelf ") + shelf, () => gitService.RunGit(30000, "stash", pop ? "pop" : "apply", shelf), result =>
+            RunAction((pop ? "unshelve " : "apply shelf ") + shelf, () => gitService.RunGit(GitAccess.Exclusive, 30000, "stash", pop ? "pop" : "apply", shelf), result =>
             {
                 ForgetShelfFiles();
                 if (pop && result != null && result.Success) shelfTab.selectedShelf = string.Empty;
@@ -96,7 +96,7 @@ namespace Orbiters.UnitGit.Editor
                 return;
             }
 
-            RunAction("stash drop " + shelf, () => gitService.RunGit(30000, "stash", "drop", shelf), _ => ForgetShelfFiles(), "Deleting the shelf…", "Shelf deleted");
+            RunAction("stash drop " + shelf, () => gitService.RunGit(GitAccess.Exclusive, 30000, "stash", "drop", shelf), _ => ForgetShelfFiles(), "Deleting the shelf…", "Shelf deleted");
             shelfTab.selectedShelf = string.Empty;
             shelfTab.selectedShelfFile = string.Empty;
         }

@@ -24,7 +24,7 @@ namespace Orbiters.UnitGit.Editor
         internal UnitGitScopedIndex(UnitGitService service)
         {
             this.service = service;
-            var resolved = service.RunGit(10000, "rev-parse", "--git-path", "index");
+            var resolved = service.RunGit(GitAccess.Read, 10000, "rev-parse", "--git-path", "index");
             if (!resolved.Success) throw new IOException(resolved.Message);
             indexPath = Path.GetFullPath(Path.Combine(service.ProjectRoot, resolved.StandardOutput.Trim()));
             lockPath = indexPath + ".lock";
@@ -40,8 +40,8 @@ namespace Orbiters.UnitGit.Editor
             catch { Dispose(); throw; }
         }
 
-        internal GitCommandResult Run(params string[] arguments) =>
-            service.RunGitWithEnvironment(environment, UnitGitService.LongTimeoutMilliseconds, arguments);
+        internal GitCommandResult Run(GitAccess access, params string[] arguments) =>
+            service.RunGitWithEnvironment(access, environment, UnitGitService.LongTimeoutMilliseconds, arguments);
 
         /// <summary>A command on these paths, which Git reads from stdin: any number of them (add, commit).</summary>
         internal GitCommandResult RunForPaths(IList<string> paths, params string[] arguments) =>
@@ -56,7 +56,7 @@ namespace Orbiters.UnitGit.Editor
             // check-ignore already takes literal filenames and rejects Git's
             // pathspec-magic mode, unlike add/commit. The paths go on stdin, NUL-separated: any number, any name.
             var ignoreEnvironment = new Dictionary<string, string>(environment) { ["GIT_LITERAL_PATHSPECS"] = "0" };
-            var result = service.RunWithList(ignoreEnvironment, UnitGitService.LongTimeoutMilliseconds, paths, true,
+            var result = service.RunWithList(GitAccess.Read, ignoreEnvironment, UnitGitService.LongTimeoutMilliseconds, paths, true,
                 new[] { "check-ignore", "--stdin", "-z" }, new[] { "-c", "core.quotePath=false", "check-ignore", "--" });
             // check-ignore returns 1 when no paths are ignored. Tracked paths are retained.
             if (result.TimedOut || (result.ExitCode != 0 && result.ExitCode != 1))

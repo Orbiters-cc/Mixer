@@ -9,19 +9,15 @@ using Orbiters.Toolkit.Editor.Processes;
 namespace Orbiters.UnitGit.Editor
 {
     /// <summary>
-    /// The history as one <c>git log</c> read as it streams: "load more" and a search continue where the reading stopped
-    /// instead of reading from the top again (or paging with --skip). Git blocks on its full pipe while nobody reads, so a
-    /// kept process costs nothing until more rows are wanted. A new <see cref="Key"/> (another filter, search or refs)
-    /// starts over. The process stops after a minute unused (Git on Windows cannot delete a pack file a reader holds open)
-    /// and at reload and quit; the next read starts a new one where the last left off. Thread-safe.
+    /// The history as one <c>git log</c> per read, read as it streams and stopped as soon as the read has its rows: nothing
+    /// outlives a read (on Windows a running Git keeps the repository's folder and the pack files it maps from being moved
+    /// or deleted). The commits read are kept: "load more" and a search with the same <see cref="Key"/> start Git again
+    /// after the last commit read (--skip), and check that this commit comes first again, else read from the top. A new key
+    /// (another filter, search or refs) starts over. Thread-safe.
     /// </summary>
     internal sealed class UnitGitHistory : IDisposable
     {
         private const int ReadTimeoutMilliseconds = 60000;
-        private const int IdleMilliseconds = 60000;
-        private static readonly object LiveSync = new object();
-        private static readonly HashSet<UnitGitHistory> Live = new HashSet<UnitGitHistory>();
-        private static Timer idleTimer;
 
         private readonly object gate = new object();
         private readonly MemoryStream record = new MemoryStream();
@@ -31,25 +27,11 @@ namespace Orbiters.UnitGit.Editor
         private string[] arguments = Array.Empty<string>();
         private int consumed; // commits Git printed and this read, matching the search or not
         private string lastConsumed = string.Empty; // the id of the last of them
-        private bool resuming; // a new process after an idle stop: its first commit must be lastConsumed
+        private bool resuming; // a process started after commits were read: its first commit must be lastConsumed
         private bool ended;
         private volatile bool disposed;
-        private long lastUse;
 
-        static UnitGitHistory()
-        {
-            EditorProcessRunner.OnStopping(() =>
-            {
-                lock (LiveSync)
-                {
-                    idleTimer?.Dispose();
-                    idleTimer = null;
-                    Live.Clear();
-                }
-            });
-        }
-
-        /// <summary>How many Git processes this reader started (one per history, unless stopped while idle).</summary>
+        /// <summary>How many Git processes this reader started (one per read that needed more commits).</summary>
         internal int ProcessesStarted { get; private set; }
 
         /// <summary>What the commits held were read for; reads with another key start over.</summary>
@@ -68,7 +50,6 @@ namespace Orbiters.UnitGit.Editor
             lock (gate)
             {
                 if (disposed) return new GitCommandResult { ExitCode = 1, StandardError = "Read superseded." };
-                Interlocked.Exchange(ref lastUse, Stopwatch.GetTimestamp());
                 if (key != historyKey || root != projectRoot)
                 {
                     StopProcess();
@@ -84,17 +65,24 @@ namespace Orbiters.UnitGit.Editor
                 }
 
                 GitCommandResult status = new GitCommandResult();
-                // One more than asked: whether there are more is known without reading a page ahead.
-                while (commits.Count <= count && !ended)
+                try
                 {
-                    if (cancelled?.Invoke() == true) return new GitCommandResult { ExitCode = 1, StandardError = "Read superseded." };
-                    status = ReadNext(cancelled, log);
-                    if (!status.Success) return status;
+                    // One more than asked: whether there are more is known without reading a page ahead.
+                    while (commits.Count <= count && !ended)
+                    {
+                        if (cancelled?.Invoke() == true) return new GitCommandResult { ExitCode = 1, StandardError = "Read superseded." };
+                        status = ReadNext(cancelled, log);
+                        if (!status.Success) return status;
+                    }
+                }
+                finally
+                {
+                    // Stopped and waited for before the read returns, on every path.
+                    StopProcess();
                 }
 
                 result.AddRange(commits.GetRange(0, Math.Min(count, commits.Count)));
                 more = commits.Count > count;
-                Register(true);
                 return status;
             }
         }
@@ -170,48 +158,10 @@ namespace Orbiters.UnitGit.Editor
             Interlocked.Exchange(ref process, null)?.Dispose();
         }
 
-        private void Register(bool live)
-        {
-            lock (LiveSync)
-            {
-                if (live && process != null)
-                {
-                    Live.Add(this);
-                    if (idleTimer == null) idleTimer = new Timer(_ => StopIdle(), null, IdleMilliseconds / 3, IdleMilliseconds / 3);
-                }
-                else Live.Remove(this);
-            }
-        }
-
-        private static void StopIdle()
-        {
-            UnitGitHistory[] all;
-            lock (LiveSync) all = new List<UnitGitHistory>(Live).ToArray();
-            foreach (UnitGitHistory history in all)
-            {
-                if (!Monitor.TryEnter(history.gate)) continue; // reading now: not idle
-                try
-                {
-                    double idle = (Stopwatch.GetTimestamp() - Interlocked.Read(ref history.lastUse)) * 1000d / Stopwatch.Frequency;
-                    if (idle < IdleMilliseconds) continue;
-                    history.StopProcess();
-                    history.Register(false);
-                }
-                finally
-                {
-                    Monitor.Exit(history.gate);
-                }
-            }
-        }
-
-        /// <summary>Stops the process only, keeping what was read, as an idle stop does (the next read resumes).</summary>
+        /// <summary>Stops the process only, keeping what was read (the next read resumes).</summary>
         internal void StopReading()
         {
-            lock (gate)
-            {
-                StopProcess();
-                Register(false);
-            }
+            lock (gate) StopProcess();
         }
 
         /// <summary>Stops the reading now, even while another thread reads (it then ends as superseded): never waits.</summary>
@@ -219,7 +169,6 @@ namespace Orbiters.UnitGit.Editor
         {
             disposed = true;
             StopProcess();
-            Register(false);
         }
     }
 }

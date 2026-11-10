@@ -124,30 +124,37 @@ namespace Orbiters.UnitGit.Editor
         /// </summary>
         public static GitCommandResult Create(UnitGitService git, string folder, int keep)
         {
-            Directory.CreateDirectory(folder);
-            string name = OwnPrefix(git.ProjectRoot) + DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss", CultureInfo.InvariantCulture);
-            string final = System.IO.Path.Combine(folder, name + Extension);
-            for (int n = 2; File.Exists(final); n++) final = System.IO.Path.Combine(folder, name + "_" + n + Extension);
-            string temporary = final + ".partial";
-            var result = Bundle(git, temporary);
-            if (!result.Success)
+            // One operation: it holds the repository's lease from here to its end (see UnitGitLease).
+            return UnitGitLease.Hold(() =>
             {
-                TryDelete(temporary);
-                return result;
-            }
-            var check = Check(git, temporary);
-            if (check.Healthy != true)
-            {
-                TryDelete(temporary);
-                return Failure("The backup could not be read back: " + check.Problem);
-            }
-            File.Move(temporary, final);
-            check.Path = System.IO.Path.GetFullPath(final);
-            Remember(final, check);
-            if (keep > 0)
-                foreach (var old in Own(List(folder), git.ProjectRoot).Where(b => !string.Equals(b.Path, check.Path, StringComparison.OrdinalIgnoreCase)).Skip(keep - 1))
-                    Delete(old.Path);
-            return new GitCommandResult { StandardOutput = "Backed up " + check.Branches + " branch" + (check.Branches == 1 ? "" : "es") + " to " + System.IO.Path.GetFileName(final) + "." };
+                Directory.CreateDirectory(folder);
+                string name = OwnPrefix(git.ProjectRoot) + DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss", CultureInfo.InvariantCulture);
+                string final = System.IO.Path.Combine(folder, name + Extension);
+                for (int n = 2; File.Exists(final); n++) final = System.IO.Path.Combine(folder, name + "_" + n + Extension);
+                string temporary = final + ".partial";
+                // A rename's scratch ref a reload left behind would go into the backup with --all.
+                git.SweepScratchRefs();
+                var result = Bundle(git, temporary);
+                if (!result.Success)
+                {
+                    TryDelete(temporary);
+                    return result;
+                }
+                var check = Check(git, temporary);
+                if (check.Healthy != true)
+                {
+                    TryDelete(temporary);
+                    return Failure("The backup could not be read back: " + check.Problem);
+                }
+                File.Move(temporary, final);
+                check.Path = System.IO.Path.GetFullPath(final);
+                Remember(final, check);
+                if (keep > 0)
+                    foreach (var old in Own(List(folder), git.ProjectRoot).Where(b => !string.Equals(b.Path, check.Path, StringComparison.OrdinalIgnoreCase)).Skip(keep - 1))
+                        Delete(old.Path);
+                return new GitCommandResult { StandardOutput = "Backed up " + check.Branches + " branch" + (check.Branches == 1 ? "" : "es") + " to " + System.IO.Path.GetFileName(final) + "." };
+        
+            });
         }
 
         /// <summary>
@@ -156,13 +163,13 @@ namespace Orbiters.UnitGit.Editor
         /// </summary>
         internal static List<string> RefsToBackUp(UnitGitService git)
         {
-            var refs = git.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "for-each-ref", "--format=%(objectname) %(refname)");
-            var shelves = git.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "stash", "list", "--format=%H");
+            var refs = git.RunGit(GitAccess.Read, UnitGitService.DefaultTimeoutMilliseconds, "for-each-ref", "--format=%(objectname) %(refname)");
+            var shelves = git.RunGit(GitAccess.Read, UnitGitService.DefaultTimeoutMilliseconds, "stash", "list", "--format=%H");
             if (!refs.Success || !shelves.Success) return null;
             var lines = UnitGitService.SplitLines(refs.StandardOutput).Select(line => line.Trim())
                 .Where(line => line.Length > 0 && !line.EndsWith(" refs/stash", StringComparison.Ordinal) && line.IndexOf(" " + ShelfRefs, StringComparison.Ordinal) < 0)
                 .ToList();
-            var head = git.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "rev-parse", "--verify", "--quiet", "HEAD");
+            var head = git.RunGit(GitAccess.Read, UnitGitService.DefaultTimeoutMilliseconds, "rev-parse", "--verify", "--quiet", "HEAD");
             if (head.Success && head.StandardOutput.Trim().Length > 0) lines.Add(head.StandardOutput.Trim() + " HEAD");
             int n = 0;
             foreach (string shelf in UnitGitService.SplitLines(shelves.StandardOutput).Select(line => line.Trim()).Where(line => line.Length > 0))
@@ -176,7 +183,7 @@ namespace Orbiters.UnitGit.Editor
         {
             var refs = RefsToBackUp(git);
             if (refs == null) return Failure("Git could not list the project's branches and shelves.");
-            var common = git.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "rev-parse", "--git-common-dir");
+            var common = git.RunGit(GitAccess.Read, UnitGitService.DefaultTimeoutMilliseconds, "rev-parse", "--git-common-dir");
             if (!common.Success) return common;
             string objects = System.IO.Path.Combine(System.IO.Path.GetFullPath(System.IO.Path.Combine(git.ProjectRoot, common.StandardOutput.Trim())), "objects");
             string staging = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "mixer-git-backup-" + Guid.NewGuid().ToString("N"));
@@ -184,7 +191,7 @@ namespace Orbiters.UnitGit.Editor
             {
                 Directory.CreateDirectory(staging);
                 var scratch = new UnitGitService(staging);
-                var init = scratch.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "init", "--bare", "--quiet");
+                var init = scratch.RunGit(GitAccess.Exclusive, UnitGitService.DefaultTimeoutMilliseconds, "init", "--bare", "--quiet");
                 if (!init.Success) return init;
                 File.WriteAllText(System.IO.Path.Combine(staging, "objects", "info", "alternates"), objects.Replace('\\', '/') + "\n");
                 var packed = new StringBuilder();
@@ -198,7 +205,7 @@ namespace Orbiters.UnitGit.Editor
                 }
                 File.WriteAllText(System.IO.Path.Combine(staging, "packed-refs"), packed.ToString());
                 if (head != null) File.WriteAllText(System.IO.Path.Combine(staging, "HEAD"), head + "\n");
-                return scratch.RunGit(UnitGitService.LongTimeoutMilliseconds, "bundle", "create", file, "--all");
+                return scratch.RunGit(GitAccess.Change, UnitGitService.LongTimeoutMilliseconds, "bundle", "create", file, "--all");
             }
             catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
             {
@@ -228,13 +235,13 @@ namespace Orbiters.UnitGit.Editor
             GitCommandResult verify;
             try
             {
-                verify = git.RunGit(UnitGitService.LongTimeoutMilliseconds, "clone", "--bare", "--quiet", path, scratch);
+                verify = git.RunGit(GitAccess.Change, UnitGitService.LongTimeoutMilliseconds, "clone", "--bare", "--quiet", path, scratch);
             }
             finally
             {
                 DeleteFolder(scratch);
             }
-            var heads = git.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "bundle", "list-heads", path);
+            var heads = git.RunGit(GitAccess.Read, UnitGitService.DefaultTimeoutMilliseconds, "bundle", "list-heads", path);
             backup.Healthy = verify.Success && heads.Success;
             backup.Branches = heads.Success
                 ? heads.StandardOutput.Split('\n').Count(line => line.Contains(" refs/heads/"))
@@ -252,7 +259,7 @@ namespace Orbiters.UnitGit.Editor
         {
             if (Directory.Exists(destination) && Directory.EnumerateFileSystemEntries(destination).Any())
                 return Failure("Choose an empty folder: " + destination + " already has files.");
-            var heads = git.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "bundle", "list-heads", bundle);
+            var heads = git.RunGit(GitAccess.Read, UnitGitService.DefaultTimeoutMilliseconds, "bundle", "list-heads", bundle);
             if (!heads.Success) return heads;
             var refs = UnitGitService.SplitLines(heads.StandardOutput).Select(line => line.Trim().Split(' ')).Where(parts => parts.Length == 2).ToList();
             string commit = refs.Where(parts => parts[1] == "HEAD").Select(parts => parts[0]).FirstOrDefault();
@@ -266,35 +273,35 @@ namespace Orbiters.UnitGit.Editor
             // checked-out commit even when no branch holds it.
             Directory.CreateDirectory(destination);
             var copy = new UnitGitService(destination);
-            var result = copy.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "init", "--quiet");
+            var result = copy.RunGit(GitAccess.Exclusive, UnitGitService.DefaultTimeoutMilliseconds, "init", "--quiet");
             if (result.Success)
-                result = copy.RunGit(UnitGitService.LongTimeoutMilliseconds, "fetch", "--quiet", "--update-head-ok", bundle, "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*",
+                result = copy.RunGit(GitAccess.Exclusive, UnitGitService.LongTimeoutMilliseconds, "fetch", "--quiet", "--update-head-ok", bundle, "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*",
                     "+" + ShelfRefs + "*:" + ShelfRefs + "*", "HEAD");
             if (result.Success)
                 result = branches.Count == 1
-                    ? copy.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "symbolic-ref", "HEAD", "refs/heads/" + branches[0])
-                    : copy.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "update-ref", "--no-deref", "HEAD", commit);
+                    ? copy.RunGit(GitAccess.Exclusive, UnitGitService.DefaultTimeoutMilliseconds, "symbolic-ref", "HEAD", "refs/heads/" + branches[0])
+                    : copy.RunGit(GitAccess.Exclusive, UnitGitService.DefaultTimeoutMilliseconds, "update-ref", "--no-deref", "HEAD", commit);
             if (result.Success)
-                result = copy.RunGit(UnitGitService.LongTimeoutMilliseconds, "reset", "--hard", "--quiet");
+                result = copy.RunGit(GitAccess.Exclusive, UnitGitService.LongTimeoutMilliseconds, "reset", "--hard", "--quiet");
             if (!result.Success) return result;
             // The shelves come back as shelves, oldest first so the newest is on top again.
             var shelves = refs.Where(parts => parts[1].StartsWith(ShelfRefs, StringComparison.Ordinal)).OrderByDescending(parts => parts[1], StringComparer.Ordinal).ToList();
             foreach (var shelf in shelves)
             {
-                var subject = copy.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "log", "-1", "--format=%s", shelf[0]);
+                var subject = copy.RunGit(GitAccess.Read, UnitGitService.DefaultTimeoutMilliseconds, "log", "-1", "--format=%s", shelf[0]);
                 var stored = subject.Success
-                    ? copy.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "stash", "store", "-m", subject.StandardOutput.Trim(), shelf[0])
+                    ? copy.RunGit(GitAccess.Exclusive, UnitGitService.DefaultTimeoutMilliseconds, "stash", "store", "-m", subject.StandardOutput.Trim(), shelf[0])
                     : subject;
                 if (!stored.Success) return Failure("The copy in " + destination + " has the project, but its shelf " + shelf[1].Substring(ShelfRefs.Length) + " could not be restored: " + stored.Message);
             }
             if (shelves.Count > 0)
             {
-                var drop = copy.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "for-each-ref", "--format=delete %(refname)", ShelfRefs);
+                var drop = copy.RunGit(GitAccess.Read, UnitGitService.DefaultTimeoutMilliseconds, "for-each-ref", "--format=delete %(refname)", ShelfRefs);
                 foreach (string line in UnitGitService.SplitLines(drop.StandardOutput).Where(l => l.StartsWith("delete ", StringComparison.Ordinal)))
-                    copy.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "update-ref", "-d", line.Substring("delete ".Length).Trim());
+                    copy.RunGit(GitAccess.Exclusive, UnitGitService.DefaultTimeoutMilliseconds, "update-ref", "-d", line.Substring("delete ".Length).Trim());
             }
             string shortCommit = commit.Substring(0, Math.Min(7, commit.Length));
-            var restored = copy.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "rev-parse", "--verify", "--quiet", "HEAD^{commit}");
+            var restored = copy.RunGit(GitAccess.Read, UnitGitService.DefaultTimeoutMilliseconds, "rev-parse", "--verify", "--quiet", "HEAD^{commit}");
             if (!restored.Success || restored.StandardOutput.Trim() != commit)
                 return Failure("The copy in " + destination + " is not at the backed-up commit " + shortCommit + ": do not use it.");
 
@@ -347,14 +354,14 @@ namespace Orbiters.UnitGit.Editor
             if ((DateTime.Now - last.Created).TotalHours < 24) return false;
             // Everything a backup holds counts: a new commit on a detached HEAD, a new shelf, a remote's ref.
             var current = RefsToBackUp(git);
-            var saved = git.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "bundle", "list-heads", last.Path);
+            var saved = git.RunGit(GitAccess.Read, UnitGitService.DefaultTimeoutMilliseconds, "bundle", "list-heads", last.Path);
             if (current == null || !saved.Success) return true;
             return !SameLines(string.Join("\n", current), saved.StandardOutput.Split('\n'));
         }
 
         private static bool HasHistory(UnitGitService git)
         {
-            return git.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "rev-parse", "--verify", "--quiet", "HEAD").Success;
+            return git.RunGit(GitAccess.Read, UnitGitService.DefaultTimeoutMilliseconds, "rev-parse", "--verify", "--quiet", "HEAD").Success;
         }
 
         private static bool SameLines(string a, IEnumerable<string> b)

@@ -37,9 +37,9 @@ namespace Orbiters.UnitGit.Editor.Tests
                     Assert.That(restore.Success, Is.True, restore.Message);
                     Assert.That(File.ReadAllText(Path.Combine(restored, "Assets", "Avatar.prefab")), Is.EqualTo("v2"));
                     var copy = new UnitGitService(restored);
-                    Assert.That(copy.RunGit(30000, "symbolic-ref", "--short", "HEAD").StandardOutput.Trim(), Is.EqualTo("main"));
-                    Assert.That(copy.RunGit(30000, "rev-parse", "--verify", "experiment").Success, Is.True);
-                    Assert.That(copy.RunGit(30000, "remote").StandardOutput.Trim(), Is.Empty);
+                    Assert.That(copy.RunGit(GitAccess.Read, 30000, "symbolic-ref", "--short", "HEAD").StandardOutput.Trim(), Is.EqualTo("main"));
+                    Assert.That(copy.RunGit(GitAccess.Read, 30000, "rev-parse", "--verify", "experiment").Success, Is.True);
+                    Assert.That(copy.RunGit(GitAccess.Read, 30000, "remote").StandardOutput.Trim(), Is.Empty);
                 }
                 finally
                 {
@@ -114,9 +114,9 @@ namespace Orbiters.UnitGit.Editor.Tests
                     Assert.That(restore.Success, Is.True, restore.Message);
                     StringAssert.Contains("2 shelves", restore.Message);
                     var copy = new UnitGitService(restored);
-                    Assert.That(copy.RunGit(30000, "stash", "list", "--format=%H %gs").StandardOutput, Is.EqualTo(shelvesBefore));
-                    Assert.That(copy.RunGit(30000, "for-each-ref", "--format=%(refname)", "refs/shelves").StandardOutput.Trim(), Is.Empty, "only the shelves are left of the backup's refs");
-                    Assert.That(copy.RunGit(30000, "stash", "apply", "stash@{1}").Success, Is.True, "an older shelf applies");
+                    Assert.That(copy.RunGit(GitAccess.Read, 30000, "stash", "list", "--format=%H %gs").StandardOutput, Is.EqualTo(shelvesBefore));
+                    Assert.That(copy.RunGit(GitAccess.Read, 30000, "for-each-ref", "--format=%(refname)", "refs/shelves").StandardOutput.Trim(), Is.Empty, "only the shelves are left of the backup's refs");
+                    Assert.That(copy.RunGit(GitAccess.Exclusive, 30000, "stash", "apply", "stash@{1}").Success, Is.True, "an older shelf applies");
                     Assert.That(File.ReadAllText(Path.Combine(restored, "Assets", "Avatar.prefab")), Is.EqualTo("older shelf"));
                 }
                 finally
@@ -226,8 +226,8 @@ namespace Orbiters.UnitGit.Editor.Tests
                     Assert.That(restore.Success, Is.True, restore.Message);
                     Assert.That(restore.Message, Does.Contain("no branch checked out"));
                     var copy = new UnitGitService(restored);
-                    Assert.That(copy.RunGit(30000, "rev-parse", "HEAD").StandardOutput.Trim(), Is.EqualTo(detached));
-                    Assert.That(copy.RunGit(30000, "symbolic-ref", "-q", "HEAD").Success, Is.False, "Detached, as it was.");
+                    Assert.That(copy.RunGit(GitAccess.Read, 30000, "rev-parse", "HEAD").StandardOutput.Trim(), Is.EqualTo(detached));
+                    Assert.That(copy.RunGit(GitAccess.Read, 30000, "symbolic-ref", "-q", "HEAD").Success, Is.False, "Detached, as it was.");
                     Assert.That(File.ReadAllText(Path.Combine(restored, "Assets", "Avatar.prefab")), Is.EqualTo("detached work"));
                 }
                 finally
@@ -257,8 +257,8 @@ namespace Orbiters.UnitGit.Editor.Tests
                     Assert.That(restore.Success, Is.True, restore.Message);
                     Assert.That(restore.Message, Does.Contain("feature").And.Contain("main"));
                     var copy = new UnitGitService(restored);
-                    Assert.That(copy.RunGit(30000, "rev-parse", "HEAD").StandardOutput.Trim(), Is.EqualTo(commit));
-                    Assert.That(copy.RunGit(30000, "symbolic-ref", "-q", "HEAD").Success, Is.False, "No branch is picked for the user.");
+                    Assert.That(copy.RunGit(GitAccess.Read, 30000, "rev-parse", "HEAD").StandardOutput.Trim(), Is.EqualTo(commit));
+                    Assert.That(copy.RunGit(GitAccess.Read, 30000, "symbolic-ref", "-q", "HEAD").Success, Is.False, "No branch is picked for the user.");
                 }
                 finally
                 {
