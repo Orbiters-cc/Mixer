@@ -571,7 +571,11 @@ namespace Orbiters.Mixer.Editor
             for (int i = 0; i < Indices.Length; i++) layer.Deltas[Indices[i]] = deltas[i];
             layer.Edited = true;
             doc.MarkEdited(Indices);
-            Target.AfterEdit(Indices, fullRefresh: true);
+            // The world picture follows these vertices (they show only when the shape is the shown layer; the other
+            // shapes' part of the picture comes from the working mesh, which this does not change), once per target
+            // however many steps a jump of the history took, as PositionEdit does.
+            Target.NoteWorldMoved(Indices);
+            RefreshUnlessBatched();
             Target.RefreshNormals(Indices);
         }
     }
