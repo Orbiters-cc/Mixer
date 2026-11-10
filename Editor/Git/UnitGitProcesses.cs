@@ -51,7 +51,10 @@ namespace Orbiters.UnitGit.Editor
             "status", "log", "show", "diff", "ls-files", "ls-tree", "cat-file", "rev-parse", "rev-list", "for-each-ref",
             "merge-base", "check-ignore", "check-attr", "show-ref", "describe", "blame", "name-rev", "version", "--version",
             "grep", "shortlog", "count-objects", "var", "ls-remote", "fetch", "push", "bundle", "hash-object", "merge-tree",
-            "help", "diff-tree", "diff-index", "diff-files", "cherry", "range-diff", "check-ref-format", "verify-commit"
+            "help", "diff-tree", "diff-index", "diff-files", "cherry", "range-diff", "check-ref-format", "verify-commit",
+            // Mixer Git runs merge-file on copies in a temporary folder only (the conflict view's parts): it reads the
+            // repository's settings and writes nothing in it, so a superseded read may stop it and it takes no write gate.
+            "merge-file"
         };
 
         // One step that takes the index lock before doing anything: failing on the lock changed nothing, so it can run again.

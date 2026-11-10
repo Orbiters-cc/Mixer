@@ -30,7 +30,7 @@ namespace Orbiters.UnitGit.Editor
         // Actions run on a worker thread: pass the confirmed selection, never read the live field there.
         private void MergeSelectedBranch()
         {
-            UnitGitBranch branch = selectedBranch;
+            UnitGitBranch branch = logTab.selectedBranch;
             if (branch == null || branch.IsCurrent)
             {
                 ShowToast(branch == null ? "Select a branch first." : "Choose a branch other than the current one.", error: true);
@@ -49,7 +49,7 @@ namespace Orbiters.UnitGit.Editor
         // Git refuses to check out over local changes it would lose: nothing to confirm.
         private void CheckoutSelectedBranch()
         {
-            UnitGitBranch branch = selectedBranch;
+            UnitGitBranch branch = logTab.selectedBranch;
             if (branch == null)
             {
                 ShowToast("Select a branch first.", error: true);
@@ -66,7 +66,7 @@ namespace Orbiters.UnitGit.Editor
 
         private void BringShelfBack(bool pop)
         {
-            string shelf = selectedShelf;
+            string shelf = shelfTab.selectedShelf;
             if (string.IsNullOrWhiteSpace(shelf))
             {
                 ShowToast("Select a shelf first.", error: true);
@@ -76,7 +76,7 @@ namespace Orbiters.UnitGit.Editor
             RunAction((pop ? "unshelve " : "apply shelf ") + shelf, () => gitService.RunGit(30000, "stash", pop ? "pop" : "apply", shelf), result =>
             {
                 ForgetShelfFiles();
-                if (pop && result != null && result.Success) selectedShelf = string.Empty;
+                if (pop && result != null && result.Success) shelfTab.selectedShelf = string.Empty;
                 AssetDatabase.Refresh();
                 if (result != null && !result.Success && HasConflictWork()) SetActiveTab(UnitGitTab.Conflicts);
             }, pop ? "Unshelving…" : "Applying the shelf…", pop ? "Unshelved: the changes are back" : "Applied: the changes are back, the shelf stays");
@@ -84,7 +84,7 @@ namespace Orbiters.UnitGit.Editor
 
         private void DropSelectedShelf()
         {
-            string shelf = selectedShelf;
+            string shelf = shelfTab.selectedShelf;
             if (string.IsNullOrWhiteSpace(shelf))
             {
                 ShowToast("Select a shelf first.", error: true);
@@ -97,16 +97,16 @@ namespace Orbiters.UnitGit.Editor
             }
 
             RunAction("stash drop " + shelf, () => gitService.RunGit(30000, "stash", "drop", shelf), _ => ForgetShelfFiles(), "Deleting the shelf…", "Shelf deleted");
-            selectedShelf = string.Empty;
-            selectedShelfFile = string.Empty;
+            shelfTab.selectedShelf = string.Empty;
+            shelfTab.selectedShelfFile = string.Empty;
         }
 
         // Stash names shift when one is added or removed: what was read about them is read again.
         private void ForgetShelfFiles()
         {
-            shelfFiles.Clear();
-            expandedShelves.Clear();
-            selectedShelfFile = string.Empty;
+            shelfTab.shelfFiles.Clear();
+            shelfTab.expandedShelves.Clear();
+            shelfTab.selectedShelfFile = string.Empty;
         }
     }
 }

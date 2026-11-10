@@ -171,17 +171,15 @@ namespace Orbiters.UnitGit.Editor
             }
 
             string status = busy ? (string.IsNullOrEmpty(busyLabel) ? "Working…" : busyLabel)
-                : commitWhenIncluded != null ? (commitWhenIncluded.Value ? "Committing and pushing…" : "Committing…")
+                : changesTab.commitWhenIncluded != null ? (changesTab.commitWhenIncluded.Value ? "Committing and pushing…" : "Committing…")
                 : refreshingSnapshot && snapshot == null ? "Reading the repository…" : string.Empty;
             statusText.text = status;
             statusArea.EnableInClassList("ug-status--idle", string.IsNullOrEmpty(status));
             foreach (var button in rootVisualElement.Query<Button>(className: "ug-icon-button").ToList())
                 if (button.parent != null && button.parent.ClassListContains("ug-topbar__actions") && button != settingsButton)
-                    button.SetEnabled(ready && !busy && commitWhenIncluded == null);
+                    button.SetEnabled(ready && !busy && changesTab.commitWhenIncluded == null);
             UpdateVisitBanner();
         }
-
-        private void RefreshTopBar() => UpdateTopBar();
 
         private void SetActiveTab(UnitGitTab tab)
         {
@@ -202,10 +200,10 @@ namespace Orbiters.UnitGit.Editor
                 return;
             }
 
-            localChangesListRoot = null;
-            localDiffPaneRoot = null;
-            changesNoticesRoot = null;
-            commitDetailsRoot = null;
+            changesTab.localChangesListRoot = null;
+            changesTab.localDiffPaneRoot = null;
+            changesTab.changesNoticesRoot = null;
+            logTab.commitDetailsRoot = null;
             contentRoot.Clear();
 
             if (snapshot == null)
@@ -289,9 +287,9 @@ namespace Orbiters.UnitGit.Editor
             panel.Add(rootPath);
 
             var excludePackageToggle = new Toggle("Do not include the project-root Package folder in the first commit");
-            excludePackageToggle.value = excludePackageFolderFromInitialCommit;
+            excludePackageToggle.value = changesTab.excludePackageFolderFromInitialCommit;
             excludePackageToggle.AddToClassList("unitgit-init-toggle");
-            excludePackageToggle.RegisterValueChangedCallback(evt => excludePackageFolderFromInitialCommit = evt.newValue);
+            excludePackageToggle.RegisterValueChangedCallback(evt => changesTab.excludePackageFolderFromInitialCommit = evt.newValue);
             panel.Add(excludePackageToggle);
 
             var excludePackageDetail = new Label("Adds /[Pp]ackage/ to .gitignore before staging. This does not ignore Unity's Packages folder.");

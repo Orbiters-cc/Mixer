@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Threading;
+using Orbiters.Toolkit.Editor.Processes;
 
 namespace Orbiters.UnitGit.Editor
 {
@@ -25,19 +26,19 @@ namespace Orbiters.UnitGit.Editor
         private readonly object gate = new object();
         private readonly MemoryStream record = new MemoryStream();
         private readonly List<UnitGitCommit> commits = new List<UnitGitCommit>();
-        private UnitGitLiveProcess process;
+        private EditorLiveProcess process;
         private string key, root, search;
         private string[] arguments = Array.Empty<string>();
         private int consumed; // commits Git printed and this read, matching the search or not
         private string lastConsumed = string.Empty; // the id of the last of them
         private bool resuming; // a new process after an idle stop: its first commit must be lastConsumed
-        private bool ended, withTrailers = true;
+        private bool ended;
         private volatile bool disposed;
         private long lastUse;
 
         static UnitGitHistory()
         {
-            UnitGitProcessLifetime.OnStopping(() =>
+            EditorProcessRunner.OnStopping(() =>
             {
                 lock (LiveSync)
                 {
@@ -76,7 +77,6 @@ namespace Orbiters.UnitGit.Editor
                     lastConsumed = string.Empty;
                     resuming = false;
                     ended = false;
-                    withTrailers = UnitGitService.TrailersSupported != false;
                     key = historyKey;
                     root = projectRoot;
                     search = logSearch;
@@ -103,17 +103,17 @@ namespace Orbiters.UnitGit.Editor
         private GitCommandResult ReadNext(Func<bool> cancelled, UnitGitProcessLogHandler log)
         {
             // A local: Dispose may drop the field from another thread (the window closing) while this reads.
-            UnitGitLiveProcess live = process;
+            EditorLiveProcess live = process;
             if (live == null)
             {
-                var args = new List<string> { "log", "-z", "--pretty=format:" + UnitGitService.CommitLogFormat(withTrailers) };
+                var args = new List<string> { "log", "-z", "--pretty=format:" + UnitGitService.CommitLogFormat() };
                 // After an idle stop: from the last commit already read, which must come first again (else the history
                 // moved under the same refs signature, and it is read again from the top).
                 resuming = consumed > 0;
                 if (resuming) args.Add("--skip=" + (consumed - 1).ToString(CultureInfo.InvariantCulture));
                 args.AddRange(arguments);
                 log?.Invoke(UnitGitRedaction.Redact("> " + UnitGitService.FormatCommandLine("git", args.ToArray())));
-                live = UnitGitLiveProcess.Start(root, args, null, false);
+                live = UnitGitRunner.StartLive(root, args, null, false);
                 ProcessesStarted++;
                 if (live == null) return new GitCommandResult { ExitCode = 1, StandardError = "Command interrupted by editor reload or shutdown." };
                 live.CloseInput();
@@ -138,7 +138,6 @@ namespace Orbiters.UnitGit.Editor
                 }
                 consumed++;
                 lastConsumed = commit.FullHash;
-                if (UnitGitService.TrailersSupported == null && withTrailers) UnitGitService.TrailersSupported = true;
                 if (UnitGitService.MatchesSearch(commit, search)) commits.Add(commit);
                 return new GitCommandResult();
             }
@@ -147,7 +146,7 @@ namespace Orbiters.UnitGit.Editor
             // whole commit.
             if (timedOut) { StopProcess(); return new GitCommandResult { ExitCode = 1, TimedOut = true, StandardError = "Reading the history timed out." }; }
             if (cancelled?.Invoke() == true) { StopProcess(); return new GitCommandResult { ExitCode = 1, StandardError = "Read superseded." }; }
-            if (UnitGitProcessLifetime.IsStopping) { StopProcess(); return new GitCommandResult { ExitCode = 1, StandardError = "Command interrupted by editor reload or shutdown." }; }
+            if (EditorProcessRunner.IsStopping) { StopProcess(); return new GitCommandResult { ExitCode = 1, StandardError = "Command interrupted by editor reload or shutdown." }; }
 
             // The end of the stream: Git is done, or failed (an unknown branch in the filter).
             var waited = Stopwatch.StartNew();
@@ -161,16 +160,6 @@ namespace Orbiters.UnitGit.Editor
             {
                 ended = true;
                 return new GitCommandResult();
-            }
-
-            // Git too old for the release trailer placeholder: once, the same history without it (the field stays, empty).
-            if (consumed == 0 && withTrailers && UnitGitService.TrailersSupported != true)
-            {
-                withTrailers = false;
-                GitCommandResult retry = ReadNext(cancelled, log);
-                if (retry.Success) UnitGitService.TrailersSupported = false;
-                else withTrailers = true;
-                return retry;
             }
 
             return new GitCommandResult { ExitCode = exit == 0 ? 1 : exit, StandardError = string.IsNullOrWhiteSpace(error) ? "git log failed." : error };

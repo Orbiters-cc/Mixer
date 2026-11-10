@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using Orbiters.Toolkit.Editor.Processes;
 using NUnit.Framework;
 
 namespace Orbiters.UnitGit.Editor.Tests
@@ -155,12 +156,12 @@ namespace Orbiters.UnitGit.Editor.Tests
                 repo.Write("Assets/a.txt", "0\n");
                 repo.Commit("first");
                 for (int i = 1; i < 30; i++) repo.Run("commit", "-q", "--allow-empty", "-m", "c" + i);
-                int before = UnitGitProcessLifetime.ActiveCount;
+                int before = EditorProcessRunner.ActiveCount;
                 var history = new UnitGitHistory();
                 repo.Git.BuildSnapshot(new UnitGitSnapshotRequest { History = history, HistoryLimit = 5 });
-                Assert.That(UnitGitProcessLifetime.ActiveCount, Is.EqualTo(before + 1), "The history waits for more rows.");
+                Assert.That(EditorProcessRunner.ActiveCount, Is.EqualTo(before + 1), "The history waits for more rows.");
                 history.Dispose();
-                Assert.That(UnitGitProcessLifetime.ActiveCount, Is.EqualTo(before));
+                Assert.That(EditorProcessRunner.ActiveCount, Is.EqualTo(before));
                 Assert.That(history.Read(repo.Root, "k", new[] { "--all", "--" }, string.Empty, 5, null, out _, out _).Success, Is.False,
                     "A disposed reader reads nothing.");
             }

@@ -26,7 +26,7 @@ namespace Orbiters.UnitGit.Editor
         private const double EditorEventRefreshDelaySeconds = 0.35d;
         private const double EditorEventRefreshCooldownSeconds = 1.25d;
         private const double LogSearchRefreshDelaySeconds = 0.25d;
-        private const int CommitPageSize = 100;
+        internal const int CommitPageSize = 100;
 
         private static readonly Color[] BranchGraphPalette =
         {
@@ -38,8 +38,6 @@ namespace Orbiters.UnitGit.Editor
             new Color(0.34f, 0.75f, 0.80f, 1f)
         };
 
-        private readonly List<string> consoleLines = new List<string>();
-        private readonly ConcurrentQueue<string> pendingConsoleLines = new ConcurrentQueue<string>();
         private readonly ConcurrentQueue<Action> pendingMainThreadActions = new ConcurrentQueue<Action>();
         private readonly Dictionary<string, Vector2> scrollOffsets = new Dictionary<string, Vector2>(StringComparer.Ordinal);
         private readonly Dictionary<string, float> splitSizes = new Dictionary<string, float>(StringComparer.Ordinal);
@@ -47,47 +45,45 @@ namespace Orbiters.UnitGit.Editor
         private UnitGitService gitService;
         private UnitGitProjectInitializer initializer;
         private UnitGitSnapshot snapshot;
-        private UnitGitCommit selectedCommit;
-        private readonly HashSet<string> selectedCommitHashes = new HashSet<string>(StringComparer.Ordinal);
-        private string selectionAnchorHash = string.Empty;
-        private string selectedReleaseId = string.Empty;
-        private UnitGitCommitDetails selectedDetails;
-        private UnitGitBranch selectedBranch;
-        private string selectedChangePath = string.Empty;
-        private string selectedShelf = string.Empty;
         private VisualElement contentRoot;
-        private VisualElement localChangesListRoot;
-        private VisualElement localDiffPaneRoot;
-        private VisualElement commitDetailsRoot;
         private UnitGitTab activeTab = UnitGitTab.Log;
-        private string branchSearch = string.Empty;
-        private string logSearch = string.Empty;
-        private string logSearchDraft = string.Empty;
-        private int historyLimit = CommitPageSize * 3;
-        private string diffSearch = string.Empty;
-        private int diffSearchMatchIndex;
-        private TextField diffSearchField;
         [SerializeField] private string commitMessage = string.Empty;
         [SerializeField] private string commitMessageBeforeAmend = string.Empty;
         [SerializeField] private bool commitAmend;
         [SerializeField] private string pendingCommitDescription;
         [SerializeField] private string commitIssue;
-        private bool excludePackageFolderFromInitialCommit = true;
         private bool busy;
         private bool refreshQueued;
         private bool refreshingSnapshot;
         private bool refreshAgainRequested;
         private bool editorUpdatePumpActive;
-        private bool logSearchRefreshQueued;
         private double queuedRefreshTime;
-        private double queuedLogSearchRefreshTime;
         private double lastEditorEventRefreshTime = -1000d;
         private int refreshRequestId;
-        // The history as it streams: "load more" and searches read on from where it stopped.
-        private UnitGitHistory history;
         // Hidden (another tab of the dock in front): editor events only mark the view stale; it reads Git when shown again.
         private bool visible = true;
         private bool staleWhileHidden;
+
+        // The Log tab: its selection, search, history and the reads it waits for.
+        internal readonly UnitGitLogState logTab = new UnitGitLogState();
+
+        // The Local Changes tab: its list, selection, includes in flight and the diff shown (the commit message fields stay serialized on the window).
+        internal readonly UnitGitChangesState changesTab = new UnitGitChangesState();
+
+        // The Shelf tab: the shelf and file selected, what is expanded and its diff pane.
+        private readonly UnitGitShelfState shelfTab = new UnitGitShelfState();
+
+        // The Conflicts tab: the conflict selected and what was resolved.
+        private readonly UnitGitConflictsState conflictsState = new UnitGitConflictsState();
+
+        // The Console tab: Git's output lines, those waiting for the main thread, and the list showing them.
+        private readonly UnitGitConsoleState consoleTab = new UnitGitConsoleState();
+
+        // The Backups tab: the backup highlighted.
+        private readonly UnitGitBackupsState backupsTab = new UnitGitBackupsState();
+
+        // The visit banner: what is visited, the Back under way and the banner's elements.
+        private readonly UnitGitVisitState visitBar = new UnitGitVisitState();
 
         [MenuItem("Tools/Orbiters/Mixer Git", priority = 2003)]
         internal static void OpenWindow()
@@ -118,21 +114,18 @@ namespace Orbiters.UnitGit.Editor
 
         private void OnDisable()
         {
-            includeGeneration++;
+            changesTab.includeGeneration++;
             refreshRequestId++;
-            diffRead.Dispose();
-            detailsRead.Dispose();
+            changesTab.diffRead.Dispose();
+            logTab.detailsRead.Dispose();
             promptRead.Dispose();
-            history?.Dispose();
-            history = null;
-            if (diffFont != null)
-                DestroyImmediate(diffFont);
+            logTab.history?.Dispose();
+            logTab.history = null;
             ReleaseThumbnailCacheClear();
             EditorApplication.projectChanged -= OnProjectChanged;
             EditorApplication.focusChanged -= OnEditorFocusChanged;
             EditorSceneManager.sceneSaved -= OnSceneSaved;
             UnitGitReleases.ChangedExternally -= OnReleasesChangedExternally;
-            EditorApplication.delayCall -= RunQueuedRefresh;
             EditorApplication.update -= RunQueuedRefresh;
             EditorApplication.update -= RunQueuedLogSearchRefresh;
             EditorApplication.update -= DrainEditorQueues;
@@ -140,31 +133,31 @@ namespace Orbiters.UnitGit.Editor
 
         private void ResetTransientAsyncState()
         {
-            includeGeneration++;
-            includeRunning = false;
-            includeRunningCount = 0;
-            includeQueue.Clear();
-            pendingInclude.Clear();
-            commitWhenIncluded = null;
+            changesTab.includeGeneration++;
+            changesTab.includeRunning = false;
+            changesTab.includeRunningCount = 0;
+            changesTab.includeQueue.Clear();
+            changesTab.pendingInclude.Clear();
+            changesTab.commitWhenIncluded = null;
             refreshRequestId++;
-            requestedDiffPath = null;
-            requestedSelection = null;
+            changesTab.requestedDiffPath = null;
+            logTab.requestedSelection = null;
             busy = false;
             busyLabel = null;
             busySuccess = null;
             // A visit or a Back under way lost its task with the reload (and Unity brings a null string back as ""): what
             // Git reads next is what the banner shows.
-            pendingVisit = null;
-            pendingReturnBranch = null;
-            visitActionDone = 0;
-            visitReturning = false;
+            visitBar.pendingVisit = null;
+            visitBar.pendingReturnBranch = null;
+            visitBar.visitActionDone = 0;
+            visitBar.visitReturning = false;
             refreshQueued = false;
             refreshingSnapshot = false;
             refreshAgainRequested = false;
             editorUpdatePumpActive = false;
-            logSearchRefreshQueued = false;
+            logTab.logSearchRefreshQueued = false;
             gitStorageMeasuring = false;
-            while (pendingConsoleLines.TryDequeue(out _))
+            while (consoleTab.pendingConsoleLines.TryDequeue(out _))
             {
             }
 

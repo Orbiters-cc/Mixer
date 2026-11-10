@@ -288,8 +288,7 @@ namespace Orbiters.UnitGit.Editor
         // One commit as the Log shows it, or null.
         private UnitGitCommit ReadCommit(string revision)
         {
-            GitCommandResult result = RunWithTrailers(withTrailers =>
-                new[] { "log", "-1", "--pretty=format:" + CommitLogFormat(withTrailers), revision, "--" });
+            GitCommandResult result = RunGit(DefaultTimeoutMilliseconds, "log", "-1", "--pretty=format:" + CommitLogFormat(), revision, "--");
             return result.Success ? ParseCommits(result.StandardOutput, string.Empty).FirstOrDefault() : null;
         }
 
@@ -719,7 +718,7 @@ namespace Orbiters.UnitGit.Editor
             }
 
             // Quoted paths keep the file list ASCII whatever the output encoding, and tabs inside names escaped.
-            var result = RunWithTrailers(withTrailers => new[]
+            var result = RunGit(DefaultTimeoutMilliseconds, new[]
             {
                 "-c",
                 "core.quotePath=true",
@@ -728,7 +727,7 @@ namespace Orbiters.UnitGit.Editor
                 "--name-status",
                 "-M",
                 "--date=format-local:%m/%d/%Y %I:%M %p",
-                "--pretty=format:" + CommitDetailsFormat(withTrailers),
+                "--pretty=format:" + CommitDetailsFormat(),
                 fullHash
             });
 
@@ -759,27 +758,19 @@ namespace Orbiters.UnitGit.Editor
                 .Where(hash => !string.IsNullOrWhiteSpace(hash) && !hash.Trim().StartsWith("-", StringComparison.Ordinal))
                 .Select(hash => hash.Trim()).Distinct(StringComparer.Ordinal).ToList();
             if (hashes.Count == 0) return found;
-            GitCommandResult result = null;
-            foreach (bool withTrailers in TrailersSupported == false ? new[] { false } : new[] { true, false })
-            {
-                bool trailers = withTrailers;
-                string[] options = { "log", "--no-walk=unsorted", "-z", "--no-ext-diff", "--name-status", "-M", "--cc",
-                    "--date=format-local:%m/%d/%Y %I:%M %p", "--pretty=format:" + CommitDetailsFormat(trailers) };
-                result = RunWithList(null, DefaultTimeoutMilliseconds, hashes, false, options.Concat(new[] { "--stdin" }).ToArray(), options, new[] { "--" });
-                if (result.Success || TrailersSupported == true || (ReadSuperseded?.Invoke() ?? false)) break;
-            }
-
-            if (result == null || !result.Success) return found;
+            string[] options = { "log", "--no-walk=unsorted", "-z", "--no-ext-diff", "--name-status", "-M", "--cc",
+                "--date=format-local:%m/%d/%Y %I:%M %p", "--pretty=format:" + CommitDetailsFormat() };
+            GitCommandResult result = RunWithList(null, DefaultTimeoutMilliseconds, hashes, false, options.Concat(new[] { "--stdin" }).ToArray(), options, new[] { "--" });
+            if (!result.Success) return found;
             foreach (UnitGitCommitDetails details in ParseCommitDetailsList(result.StandardOutput, hashes))
                 found[details.Commit.FullHash] = details;
             return found;
         }
 
         // Header fields, then the body, then a NUL: the body may span lines, and the file list follows it.
-        private static string CommitDetailsFormat(bool withTrailers)
+        private static string CommitDetailsFormat()
         {
-            return "%h%x1f%H%x1f%s%x1f%an%x1f%ae%x1f%ad%x1f%D%x1f%cn%x1f%ce%x1f%cd%x1f" +
-                   (withTrailers ? ReleaseTrailerFormat : string.Empty) + "%x1f%P%x1f%at%x1f%b%x00";
+            return "%h%x1f%H%x1f%s%x1f%an%x1f%ae%x1f%ad%x1f%D%x1f%cn%x1f%ce%x1f%cd%x1f" + ReleaseTrailerFormat + "%x1f%P%x1f%at%x1f%b%x00";
         }
 
         public GitCommandResult Fetch()
@@ -1556,34 +1547,11 @@ namespace Orbiters.UnitGit.Editor
             return snapshot.Commits;
         }
 
-        /// <summary>
-        /// Whether this Git reads the release trailer placeholder (<c>%(trailers:key=…,valueonly,separator=…)</c>): null until a
-        /// read tells. A failing read is tried without it only while that is unknown, so a log that fails for another reason
-        /// (an unknown branch) is not run twice once a read with it has worked.
-        /// </summary>
-        internal static bool? TrailersSupported;
-
-        private GitCommandResult RunWithTrailers(Func<bool, string[]> arguments)
-        {
-            bool withTrailers = TrailersSupported != false;
-            GitCommandResult result = RunGit(DefaultTimeoutMilliseconds, arguments(withTrailers));
-            if (result.Success)
-            {
-                if (withTrailers && TrailersSupported == null) TrailersSupported = true;
-                return result;
-            }
-
-            if (!withTrailers || TrailersSupported == true || (ReadSuperseded?.Invoke() ?? false)) return result;
-            GitCommandResult without = RunGit(DefaultTimeoutMilliseconds, arguments(false));
-            if (without.Success) TrailersSupported = false;
-            return without.Success ? without : result;
-        }
-
         // One commit as the history lists it. The age is not read: it is worded when shown (UnitGitTime.GitRelative).
-        // Without trailer support the release field stays, empty, so every field keeps its position.
-        internal static string CommitLogFormat(bool withTrailers)
+        // The release trailer placeholder's key=, valueonly and separator= options are all in Git 2.26, the oldest Mixer Git runs.
+        internal static string CommitLogFormat()
         {
-            return "%h%x1f%H%x1f%s%x1f%an%x1f%ae%x1f%D%x1f" + (withTrailers ? ReleaseTrailerFormat : string.Empty) + "%x1f%P%x1f%at";
+            return "%h%x1f%H%x1f%s%x1f%an%x1f%ae%x1f%D%x1f" + ReleaseTrailerFormat + "%x1f%P%x1f%at";
         }
 
         private static void AddLogFilterArguments(List<string> args, UnitGitLogFilter filter)

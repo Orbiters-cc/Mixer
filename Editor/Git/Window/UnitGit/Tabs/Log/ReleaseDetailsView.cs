@@ -15,12 +15,6 @@ namespace Orbiters.UnitGit.Editor
     // releases (MCB versions…) show their name, version, thumbnail and fields.
     internal sealed partial class UnitGitWindow
     {
-        // The release thumbnail, kept while the same file is shown: details are rebuilt on every refresh.
-        private string releaseThumbnailPath = string.Empty;
-        private DateTime releaseThumbnailWrite;
-        private Texture2D releaseThumbnail;
-        // The entrance plays when another release is selected, not on each refresh of the same one.
-        private string releaseShownId = string.Empty;
 
         private VisualElement BuildReleaseDetailsPanel(UnitGitReleaseEntry release)
         {
@@ -169,8 +163,8 @@ namespace Orbiters.UnitGit.Editor
 
             var commit = Group(root, "Commit");
             commit.Add(KeyValue("Author", ReleaseAuthor(release)));
-            if (selectedCommit != null && !string.IsNullOrWhiteSpace(selectedCommit.ShortHash))
-                commit.Add(IdRow("Commit", selectedCommit.ShortHash, selectedCommit.FullHash));
+            if (logTab.selectedCommit != null && !string.IsNullOrWhiteSpace(logTab.selectedCommit.ShortHash))
+                commit.Add(IdRow("Commit", logTab.selectedCommit.ShortHash, logTab.selectedCommit.FullHash));
 
             // Rows without a value go.
             foreach (var group in root.Query(className: "ug-upload__group").ToList())
@@ -185,9 +179,9 @@ namespace Orbiters.UnitGit.Editor
                     title.RemoveFromHierarchy();
             }
 
-            if (!string.Equals(releaseShownId, release.id, StringComparison.Ordinal))
+            if (!string.Equals(logTab.releaseShownId, release.id, StringComparison.Ordinal))
             {
-                releaseShownId = release.id ?? string.Empty;
+                logTab.releaseShownId = release.id ?? string.Empty;
                 UnitGitUi.Enter(root, "ug-upload--enter", 30);
             }
             return root;
@@ -295,7 +289,7 @@ namespace Orbiters.UnitGit.Editor
         {
             var card = new VisualElement();
             card.AddToClassList("unitgit-release-card");
-            Color branchColor = selectedCommit != null ? GetGraphColor(selectedCommit) : new Color(0f, 0.85f, 0.43f);
+            Color branchColor = logTab.selectedCommit != null ? GetGraphColor(logTab.selectedCommit) : new Color(0f, 0.85f, 0.43f);
 
             var headline = new VisualElement();
             headline.AddToClassList("unitgit-release-headline");
@@ -353,8 +347,8 @@ namespace Orbiters.UnitGit.Editor
                         rows.Add(KeyValue(field.key, field.value));
                 }
             }
-            if (selectedCommit != null && !string.IsNullOrWhiteSpace(selectedCommit.ShortHash))
-                rows.Add(IdRow("Commit", selectedCommit.ShortHash, selectedCommit.FullHash));
+            if (logTab.selectedCommit != null && !string.IsNullOrWhiteSpace(logTab.selectedCommit.ShortHash))
+                rows.Add(IdRow("Commit", logTab.selectedCommit.ShortHash, logTab.selectedCommit.FullHash));
             foreach (var row in rows.Children().Where(r => r.userData as string == "empty").ToList()) row.RemoveFromHierarchy();
             card.Add(rows);
             return card;
@@ -363,11 +357,11 @@ namespace Orbiters.UnitGit.Editor
         // ---- Shared --------------------------------------------------------------------------------------------------
 
         private string ReleaseDisplayName(UnitGitReleaseEntry release) =>
-            !string.IsNullOrWhiteSpace(release.name) ? release.name.Trim() : selectedCommit != null ? selectedCommit.Subject : "Release";
+            !string.IsNullOrWhiteSpace(release.name) ? release.name.Trim() : logTab.selectedCommit != null ? logTab.selectedCommit.Subject : "Release";
 
         private string ReleaseAuthor(UnitGitReleaseEntry release) =>
             !string.IsNullOrWhiteSpace(release.author) ? release.author.Trim()
-            : selectedCommit != null && !string.IsNullOrWhiteSpace(selectedCommit.AuthorName) ? selectedCommit.AuthorName : string.Empty;
+            : logTab.selectedCommit != null && !string.IsNullOrWhiteSpace(logTab.selectedCommit.AuthorName) ? logTab.selectedCommit.AuthorName : string.Empty;
 
         // The release's thumbnail, read once per file version.
         private Texture2D LoadReleaseThumbnail(UnitGitReleaseEntry release)
@@ -378,8 +372,8 @@ namespace Orbiters.UnitGit.Editor
             try
             {
                 DateTime write = File.GetLastWriteTimeUtc(fullPath);
-                if (releaseThumbnail != null && string.Equals(releaseThumbnailPath, fullPath, StringComparison.OrdinalIgnoreCase) && releaseThumbnailWrite == write)
-                    return releaseThumbnail;
+                if (logTab.releaseThumbnail != null && string.Equals(logTab.releaseThumbnailPath, fullPath, StringComparison.OrdinalIgnoreCase) && logTab.releaseThumbnailWrite == write)
+                    return logTab.releaseThumbnail;
 
                 ReleaseThumbnailCacheClear();
                 var texture = new Texture2D(2, 2) { hideFlags = HideFlags.HideAndDontSave };
@@ -390,9 +384,9 @@ namespace Orbiters.UnitGit.Editor
                 }
 
                 texture.name = Path.GetFileName(fullPath);
-                releaseThumbnail = texture;
-                releaseThumbnailPath = fullPath;
-                releaseThumbnailWrite = write;
+                logTab.releaseThumbnail = texture;
+                logTab.releaseThumbnailPath = fullPath;
+                logTab.releaseThumbnailWrite = write;
                 return texture;
             }
             catch (IOException)
@@ -407,9 +401,9 @@ namespace Orbiters.UnitGit.Editor
 
         private void ReleaseThumbnailCacheClear()
         {
-            if (releaseThumbnail != null) DestroyImmediate(releaseThumbnail);
-            releaseThumbnail = null;
-            releaseThumbnailPath = string.Empty;
+            if (logTab.releaseThumbnail != null) DestroyImmediate(logTab.releaseThumbnail);
+            logTab.releaseThumbnail = null;
+            logTab.releaseThumbnailPath = string.Empty;
         }
 
         private string ResolveReleaseProjectPath(string projectRelativePath)

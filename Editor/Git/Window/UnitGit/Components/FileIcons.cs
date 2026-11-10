@@ -14,18 +14,6 @@ namespace Orbiters.UnitGit.Editor
 {
     internal sealed partial class UnitGitWindow
     {
-        private static string GetTopFolder(string path)
-        {
-            if (string.IsNullOrWhiteSpace(path))
-            {
-                return "root";
-            }
-
-            string normalized = path.Replace('\\', '/');
-            int slash = normalized.IndexOf('/');
-            return slash > 0 ? normalized.Substring(0, slash) : "root";
-        }
-
         private UnitGitStatusEntry GetSelectedChange()
         {
             if (snapshot == null || snapshot.Changes.Count == 0)
@@ -34,7 +22,7 @@ namespace Orbiters.UnitGit.Editor
             }
 
             var selected = snapshot.Changes.FirstOrDefault(change =>
-                string.Equals(change.Path, selectedChangePath, StringComparison.OrdinalIgnoreCase));
+                string.Equals(change.Path, changesTab.selectedChangePath, StringComparison.OrdinalIgnoreCase));
             return selected ?? snapshot.Changes[0];
         }
 

@@ -59,7 +59,6 @@ namespace Orbiters.UnitGit.Editor
         public string LastError = string.Empty;
         public List<UnitGitBranch> Branches = new List<UnitGitBranch>();
         public List<UnitGitStatusEntry> Changes = new List<UnitGitStatusEntry>();
-        public UnitGitFileList ChangeList = new UnitGitFileList();
         public List<UnitGitCommit> Commits = new List<UnitGitCommit>();
         public bool HasMoreCommits;
         public UnitGitReleaseFile Releases = new UnitGitReleaseFile();

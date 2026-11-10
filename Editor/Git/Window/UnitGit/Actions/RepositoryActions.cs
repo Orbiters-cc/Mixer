@@ -34,15 +34,15 @@ namespace Orbiters.UnitGit.Editor
                 return;
             }
 
-            RunAction("init", () => initializer.Initialize(gitService, excludePackageFolderFromInitialCommit));
+            RunAction("init", () => initializer.Initialize(gitService, changesTab.excludePackageFolderFromInitialCommit));
         }
 
         private void PromptCreateBranch()
         {
             string defaultName = "feature/new-branch";
             // The prompt is modeless: branch from the commit selected when it opened, not whatever is selected on submit.
-            string startPoint = selectedCommit != null && !string.IsNullOrWhiteSpace(selectedCommit.FullHash)
-                ? selectedCommit.FullHash
+            string startPoint = logTab.selectedCommit != null && !string.IsNullOrWhiteSpace(logTab.selectedCommit.FullHash)
+                ? logTab.selectedCommit.FullHash
                 : null;
             UnitGitBranchPromptWindow.Open(defaultName, branchName =>
                 RunAction("create branch " + branchName, () => gitService.CreateBranch(branchName, startPoint)));
@@ -50,7 +50,7 @@ namespace Orbiters.UnitGit.Editor
 
         private void UpdateSelectedBranch()
         {
-            UnitGitBranch branch = selectedBranch;
+            UnitGitBranch branch = logTab.selectedBranch;
             if (branch == null)
             {
                 AppendConsole("update branch", "Select a branch first.");
@@ -63,7 +63,7 @@ namespace Orbiters.UnitGit.Editor
 
         private void DeleteSelectedBranch()
         {
-            UnitGitBranch branch = selectedBranch;
+            UnitGitBranch branch = logTab.selectedBranch;
             if (branch == null)
             {
                 AppendConsole("delete branch", "Select a branch first.");
@@ -156,14 +156,14 @@ namespace Orbiters.UnitGit.Editor
             }
             if (busy) { ShowToast("Wait for " + (busyLabel ?? "the current Git operation") + " to finish. Details are in Console.", error: true); return; }
             commitIssue = null;
-            if (includeRunning || includeQueue.Count > 0)
+            if (changesTab.includeRunning || changesTab.includeQueue.Count > 0)
             {
                 // The boxes were just ticked: the commit follows as soon as Git has the files.
-                commitWhenIncluded = push;
+                changesTab.commitWhenIncluded = push;
                 pendingCommitDescription = "preparing files for your commit";
                 EnsureEditorUpdatePump();
                 UpdateCommitSummary();
-                RefreshTopBar();
+                UpdateTopBar();
                 return;
             }
 
@@ -191,7 +191,7 @@ namespace Orbiters.UnitGit.Editor
                         contentRoot?.Q<TextField>(className: "unitgit-local-commit-message")?.SetValueWithoutNotify(commitMessage);
                         var placeholder = contentRoot?.Q<Label>(className: "unitgit-local-commit-placeholder");
                         if (placeholder != null) placeholder.style.display = DisplayStyle.Flex;
-                        if (amendCheck != null) amendCheck.State = UnitGitCheckState.Off;
+                        if (changesTab.amendCheck != null) changesTab.amendCheck.State = UnitGitCheckState.Off;
                         UpdateCommitSummary();
                     }
                 },

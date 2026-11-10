@@ -14,15 +14,8 @@ namespace Orbiters.UnitGit.Editor
     internal sealed partial class UnitGitWindow
     {
         private const float ShelfRowHeight = 26f;
-        private readonly Dictionary<string, List<ShelfFile>> shelfFiles = new Dictionary<string, List<ShelfFile>>(StringComparer.Ordinal);
-        private readonly HashSet<string> expandedShelves = new HashSet<string>(StringComparer.Ordinal);
-        private string selectedShelfFile = string.Empty;
-        private VisualElement shelfListRoot;
-        private VisualElement shelfDiffRoot;
-        private UnitGitDiffViewer shelfDiffViewer;
-        private int shelfDiffRequest;
 
-        private sealed class ShelfFile
+        internal sealed class ShelfFile
         {
             public string Shelf, Path;
             public char Status;
@@ -49,7 +42,7 @@ namespace Orbiters.UnitGit.Editor
             toolbar.Add(shelve);
             toolbar.Add(UnitGitUi.Spacer());
             var entries = GetShelfEntries();
-            var selected = entries.FirstOrDefault(e => e.Ref == selectedShelf);
+            var selected = entries.FirstOrDefault(e => e.Ref == shelfTab.selectedShelf);
             var unshelve = UnitGitUi.Icon(UnitGitIconKind.Pull, "Unshelve: bring the selected shelf back and remove it", UnshelveSelectedShelf);
             var apply = UnitGitUi.Icon(UnitGitIconKind.Commit, "Apply: bring the selected shelf back and keep it", ApplySelectedShelf);
             var delete = UnitGitUi.Icon(UnitGitIconKind.Delete, "Delete the selected shelf", DropSelectedShelf);
@@ -63,14 +56,14 @@ namespace Orbiters.UnitGit.Editor
             var scroll = new ScrollView();
             scroll.name = "unitgit-shelf-list";
             scroll.AddToClassList("unitgit-shelf-list");
-            shelfListRoot = scroll.contentContainer;
+            shelfTab.shelfListRoot = scroll.contentContainer;
             pane.Add(scroll);
             FillShelves(entries);
             split.Add(pane);
 
-            shelfDiffRoot = new VisualElement();
-            shelfDiffRoot.AddToClassList("unitgit-diff-pane");
-            split.Add(shelfDiffRoot);
+            shelfTab.shelfDiffRoot = new VisualElement();
+            shelfTab.shelfDiffRoot.AddToClassList("unitgit-diff-pane");
+            split.Add(shelfTab.shelfDiffRoot);
             workspace.Add(split);
             ShowShelfDiff();
             return workspace;
@@ -100,8 +93,8 @@ namespace Orbiters.UnitGit.Editor
 
         private void FillShelves(List<ShelfEntry> entries)
         {
-            if (shelfListRoot == null) return;
-            shelfListRoot.Clear();
+            if (shelfTab.shelfListRoot == null) return;
+            shelfTab.shelfListRoot.Clear();
             if (entries.Count == 0)
             {
                 var empty = new VisualElement();
@@ -112,16 +105,16 @@ namespace Orbiters.UnitGit.Editor
                 empty.Add(mark);
                 empty.Add(UnitGitUi.Text("Nothing on the shelf", "ug-empty__title"));
                 empty.Add(UnitGitUi.Text("Shelve changes to set them aside, switch branches or pull, and bring them back later.", "ug-empty__text"));
-                shelfListRoot.Add(empty);
+                shelfTab.shelfListRoot.Add(empty);
                 return;
             }
             foreach (var entry in entries)
             {
-                bool expanded = expandedShelves.Contains(entry.Ref);
+                bool expanded = shelfTab.expandedShelves.Contains(entry.Ref);
                 var row = new VisualElement();
                 row.AddToClassList("ug-row");
                 row.AddToClassList("ug-shelf-row");
-                row.EnableInClassList("ug-row--selected", entry.Ref == selectedShelf && string.IsNullOrEmpty(selectedShelfFile));
+                row.EnableInClassList("ug-row--selected", entry.Ref == shelfTab.selectedShelf && string.IsNullOrEmpty(shelfTab.selectedShelfFile));
                 var chevron = new UnitGitIconElement(expanded ? UnitGitIconKind.ChevronExpanded : UnitGitIconKind.ChevronCollapsed);
                 chevron.AddToClassList("ug-row__chevron");
                 row.Add(chevron);
@@ -136,26 +129,26 @@ namespace Orbiters.UnitGit.Editor
                 row.RegisterCallback<MouseDownEvent>(evt =>
                 {
                     if (evt.button != 0 && evt.button != 1) return;
-                    selectedShelf = item.Ref;
-                    selectedShelfFile = string.Empty;
+                    shelfTab.selectedShelf = item.Ref;
+                    shelfTab.selectedShelfFile = string.Empty;
                     if (evt.button == 0 && evt.clickCount == 2) { UnshelveSelectedShelf(); return; }
                     if (evt.button == 0)
                     {
-                        if (!expandedShelves.Remove(item.Ref)) expandedShelves.Add(item.Ref);
+                        if (!shelfTab.expandedShelves.Remove(item.Ref)) shelfTab.expandedShelves.Add(item.Ref);
                         LoadShelfFiles(item.Ref);
                     }
                     RefreshShelf();
                     if (evt.button == 1) ShowShelfMenu(item);
                 });
-                shelfListRoot.Add(row);
+                shelfTab.shelfListRoot.Add(row);
                 if (!expanded) continue;
-                if (!shelfFiles.TryGetValue(entry.Ref, out var files))
+                if (!shelfTab.shelfFiles.TryGetValue(entry.Ref, out var files))
                 {
                     var loading = UnitGitUi.Text("Reading its files…", "ug-shelf-loading");
-                    shelfListRoot.Add(loading);
+                    shelfTab.shelfListRoot.Add(loading);
                     continue;
                 }
-                foreach (var file in files) shelfListRoot.Add(BuildShelfFileRow(file));
+                foreach (var file in files) shelfTab.shelfListRoot.Add(BuildShelfFileRow(file));
             }
         }
 
@@ -164,7 +157,7 @@ namespace Orbiters.UnitGit.Editor
             var row = new VisualElement();
             row.AddToClassList("ug-row");
             row.style.paddingLeft = 6 + 16 + 18;
-            row.EnableInClassList("ug-row--selected", file.Shelf == selectedShelf && file.Path == selectedShelfFile);
+            row.EnableInClassList("ug-row--selected", file.Shelf == shelfTab.selectedShelf && file.Path == shelfTab.selectedShelfFile);
             row.Add(BuildProjectFileIcon(file.Path, "ug-row__icon"));
             string key = file.Untracked ? "untracked" : CommitStatusKey(file.Status);
             var name = UnitGitUi.Text(GetFileLeaf(file.Path), "ug-row__name");
@@ -178,8 +171,8 @@ namespace Orbiters.UnitGit.Editor
             row.RegisterCallback<MouseDownEvent>(evt =>
             {
                 if (evt.button != 0) return;
-                selectedShelf = file.Shelf;
-                selectedShelfFile = file.Path;
+                shelfTab.selectedShelf = file.Shelf;
+                shelfTab.selectedShelfFile = file.Path;
                 RefreshShelf();
                 ShowShelfDiff();
             });
@@ -189,16 +182,16 @@ namespace Orbiters.UnitGit.Editor
         private void RefreshShelf()
         {
             FillShelves(GetShelfEntries());
-            var toolbar = shelfListRoot?.parent?.parent?.parent?.Q(className: "ug-toolbar");
+            var toolbar = shelfTab.shelfListRoot?.parent?.parent?.parent?.Q(className: "ug-toolbar");
             if (toolbar != null)
                 foreach (var button in toolbar.Query<Button>(className: "ug-icon-button").ToList())
-                    button.SetEnabled(!string.IsNullOrEmpty(selectedShelf));
+                    button.SetEnabled(!string.IsNullOrEmpty(shelfTab.selectedShelf));
         }
 
         // A shelf's files: its tracked changes, and the new files it kept apart (its third parent).
         private void LoadShelfFiles(string reference)
         {
-            if (shelfFiles.ContainsKey(reference)) return;
+            if (shelfTab.shelfFiles.ContainsKey(reference)) return;
             string root = gitService.ProjectRoot;
             Task.Run(() =>
                 {
@@ -213,7 +206,7 @@ namespace Orbiters.UnitGit.Editor
                 })
                 .ContinueWith(task => QueueMainThreadAction(() =>
                 {
-                    shelfFiles[reference] = task.Status == TaskStatus.RanToCompletion ? task.Result : new List<ShelfFile>();
+                    shelfTab.shelfFiles[reference] = task.Status == TaskStatus.RanToCompletion ? task.Result : new List<ShelfFile>();
                     if (activeTab == UnitGitTab.Shelf) RefreshShelf();
                 }));
             EnsureEditorUpdatePump();
@@ -240,13 +233,13 @@ namespace Orbiters.UnitGit.Editor
 
         private void ShowShelfDiff()
         {
-            if (shelfDiffRoot == null) return;
-            shelfDiffRoot.Clear();
-            shelfDiffViewer = null;
-            var file = shelfFiles.TryGetValue(selectedShelf ?? string.Empty, out var files) ? files.FirstOrDefault(f => f.Path == selectedShelfFile) : null;
+            if (shelfTab.shelfDiffRoot == null) return;
+            shelfTab.shelfDiffRoot.Clear();
+            shelfTab.shelfDiffViewer = null;
+            var file = shelfTab.shelfFiles.TryGetValue(shelfTab.selectedShelf ?? string.Empty, out var files) ? files.FirstOrDefault(f => f.Path == shelfTab.selectedShelfFile) : null;
             if (file == null)
             {
-                shelfDiffRoot.Add(BuildDiffPlaceholder(GetShelves().Count == 0 ? "Shelved changes show up here" : "Select a shelved file to see its changes"));
+                shelfTab.shelfDiffRoot.Add(BuildDiffPlaceholder(GetShelves().Count == 0 ? "Shelved changes show up here" : "Select a shelved file to see its changes"));
                 return;
             }
             var toolbar = new VisualElement();
@@ -258,18 +251,18 @@ namespace Orbiters.UnitGit.Editor
             toolbar.Add(name);
             toolbar.Add(UnitGitUi.Text(GetDirectoryLabel(file.Path), "ug-diff-file__path"));
             toolbar.Add(UnitGitUi.Spacer());
-            toolbar.Add(UnitGitDiffViewer.BuildViewOptions(() => shelfDiffViewer, ShowShelfDiff));
+            toolbar.Add(UnitGitDiffViewer.BuildViewOptions(() => shelfTab.shelfDiffViewer, ShowShelfDiff));
             toolbar.Add(UnitGitUi.Separator());
-            toolbar.Add(UnitGitUi.Icon(UnitGitIconKind.PreviousDifference, "Previous change (Shift+F7)", () => shelfDiffViewer?.MoveChange(-1)));
-            toolbar.Add(UnitGitUi.Icon(UnitGitIconKind.NextDifference, "Next change (F7)", () => shelfDiffViewer?.MoveChange(1)));
-            shelfDiffRoot.Add(toolbar);
+            toolbar.Add(UnitGitUi.Icon(UnitGitIconKind.PreviousDifference, "Previous change (Shift+F7)", () => shelfTab.shelfDiffViewer?.MoveChange(-1)));
+            toolbar.Add(UnitGitUi.Icon(UnitGitIconKind.NextDifference, "Next change (F7)", () => shelfTab.shelfDiffViewer?.MoveChange(1)));
+            shelfTab.shelfDiffRoot.Add(toolbar);
             var placeholder = BuildDiffPlaceholder("Loading the diff…", spinner: true);
-            shelfDiffRoot.Add(placeholder);
+            shelfTab.shelfDiffRoot.Add(placeholder);
 
             string root = gitService.ProjectRoot;
             string revision = file.Untracked ? file.Shelf + "^3" : file.Shelf;
             string path = file.Path;
-            int request = ++shelfDiffRequest;
+            int request = ++shelfTab.shelfDiffRequest;
             var whitespace = UnitGitDiffViewer.Whitespace;
             Task.Run(() =>
                 {
@@ -279,22 +272,22 @@ namespace Orbiters.UnitGit.Editor
                 })
                 .ContinueWith(task => QueueMainThreadAction(() =>
                 {
-                    if (request != shelfDiffRequest || shelfDiffRoot == null || activeTab != UnitGitTab.Shelf) return;
+                    if (request != shelfTab.shelfDiffRequest || shelfTab.shelfDiffRoot == null || activeTab != UnitGitTab.Shelf) return;
                     placeholder.RemoveFromHierarchy();
-                    shelfDiffViewer = new UnitGitDiffViewer();
+                    shelfTab.shelfDiffViewer = new UnitGitDiffViewer();
                     var diff = task.Status == TaskStatus.RanToCompletion ? task.Result : new UnitGitDiff();
                     diff.LeftTitle = "Before";
                     diff.RightTitle = "Shelved";
-                    shelfDiffViewer.SetDiff(diff);
-                    shelfDiffViewer.List.focusable = true;
-                    shelfDiffViewer.List.RegisterCallback<KeyDownEvent>(evt =>
+                    shelfTab.shelfDiffViewer.SetDiff(diff);
+                    shelfTab.shelfDiffViewer.List.focusable = true;
+                    shelfTab.shelfDiffViewer.List.RegisterCallback<KeyDownEvent>(evt =>
                     {
                         if (evt.keyCode != KeyCode.F7) return;
-                        shelfDiffViewer?.MoveChange(evt.shiftKey ? -1 : 1);
+                        shelfTab.shelfDiffViewer?.MoveChange(evt.shiftKey ? -1 : 1);
                         evt.StopPropagation();
                     });
-                    shelfDiffRoot.Add(shelfDiffViewer);
-                    var shown = shelfDiffViewer;
+                    shelfTab.shelfDiffRoot.Add(shelfTab.shelfDiffViewer);
+                    var shown = shelfTab.shelfDiffViewer;
                     shown.schedule.Execute(() => shown.MoveChange(1)).StartingIn(30);
                 }));
             EnsureEditorUpdatePump();

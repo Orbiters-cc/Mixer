@@ -19,12 +19,12 @@ namespace Orbiters.UnitGit.Editor.Tests
             var window = ScriptableObject.CreateInstance<UnitGitWindow>();
             try
             {
-                Set(window, "includeRunning", true);
+                window.changesTab.includeRunning = true;
                 Invoke(window, "EnsureEditorUpdatePump");
                 Invoke(window, "DrainEditorQueues");
                 Assert.That(typeof(UnitGitWindow).GetField("editorUpdatePumpActive", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(window), Is.True);
                 bool delivered = false;
-                Invoke(window, "QueueMainThreadAction", (Action)(() => { delivered = true; Set(window, "includeRunning", false); }));
+                Invoke(window, "QueueMainThreadAction", (Action)(() => { delivered = true; window.changesTab.includeRunning = false; }));
                 Invoke(window, "DrainEditorQueues");
                 Assert.True(delivered);
             }
@@ -45,7 +45,7 @@ namespace Orbiters.UnitGit.Editor.Tests
                 var flags = BindingFlags.Instance | BindingFlags.NonPublic;
                 Assert.That(typeof(UnitGitWindow).GetField("commitMessage", flags).GetValue(restored), Is.EqualTo("my pending work"));
                 StringAssert.Contains("Unity reloaded", (string)typeof(UnitGitWindow).GetField("commitIssue", flags).GetValue(restored));
-                Assert.IsNull(typeof(UnitGitWindow).GetField("commitWhenIncluded", flags).GetValue(restored));
+                Assert.IsNull(restored.changesTab.commitWhenIncluded);
             }
             finally { UnityEngine.Object.DestroyImmediate(window); UnityEngine.Object.DestroyImmediate(restored); }
         }
@@ -181,14 +181,20 @@ namespace Orbiters.UnitGit.Editor.Tests
                 var snapshot = new UnitGitSnapshot { HasCommits = true, HasRepository = true, GitAvailable = true, IsUnityProject = true };
                 snapshot.Changes = Enumerable.Range(0, 100000)
                     .Select(i => new UnitGitStatusEntry { Path = "file" + i.ToString("D6") + ".txt", WorkTreeStatus = 'M' }).ToList();
-                snapshot.ChangeList = UnitGitFileList.FromChanges(snapshot.Changes);
                 var diff = new UnitGitDiff { Path = snapshot.Changes[0].Path, MaxLineLength = 1000000 };
                 diff.Lines = Enumerable.Range(0, 100000).Select(i => new UnitGitDiffLine { Right = "line " + i }).ToList();
                 diff.Lines[0].Right = new string('x', 500000) + "needle" + new string('y', 499994);
                 Set(owner, "snapshot", snapshot);
-                Set(owner, "selectedChangePath", diff.Path);
-                Set(owner, "requestedDiffPath", diff.Path);
-                Set(owner, "loadedDiff", diff);
+                owner.changesTab.selectedChangePath = diff.Path;
+                owner.changesTab.requestedDiffPath = diff.Path;
+                owner.changesTab.loadedDiff = diff;
+                // The shown diff is current for what it depends on (its key), as after a read: entering Text then reads
+                // nothing, and the test's diff stays. With no key the window reads the file again (it cannot know the shown
+                // diff is still right), and that read of a file that does not exist replaces it.
+                var root = ((UnitGitService)typeof(UnitGitWindow).GetField("gitService", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(owner)).ProjectRoot;
+                UnitGitPaths.GitPath(root, "index");
+                owner.changesTab.requestedDiffKey = (string)Invoke(owner, "TextDiffKey", snapshot.Changes[0], UnitGitDiffViewer.Whitespace);
+                Assert.That(owner.changesTab.requestedDiffKey, Is.Not.Null, "The project must be in a Git repository for its index to be known.");
                 host.position = new Rect(0, 0, 1200, 700);
                 host.rootVisualElement.style.width = 1200;
                 host.rootVisualElement.style.height = 700;
@@ -209,7 +215,7 @@ namespace Orbiters.UnitGit.Editor.Tests
                 Assert.That(labels.Count, Is.GreaterThan(20));
                 Assert.That(labels, Has.Count.LessThan(350));
                 Assert.That(labels.All(label => (label.text ?? "").Length < 2000), Is.True);
-                Set(owner, "diffSearch", "needle");
+                owner.changesTab.diffSearch = "needle";
                 Invoke(owner, "UpdateDiffSearch", true);
                 for (int i = 0; i < 5; i++)
                     yield return null;

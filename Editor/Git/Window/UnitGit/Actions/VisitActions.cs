@@ -14,18 +14,6 @@ namespace Orbiters.UnitGit.Editor
     // is kept per project (UnitGitSettings.Visit) so it outlives domain reloads and restarts.
     internal sealed partial class UnitGitWindow
     {
-        private VisualElement visitBanner;
-        private Label visitTitle;
-        private Label visitDetail;
-        private Button visitNewBranchButton;
-        private Button visitBackButton;
-        // Shown before Git is done: the commit a visit checks out, the branch "Back" checks out.
-        private UnitGitCommit pendingVisit;
-        private string pendingReturnBranch;
-        // When the last visit or return finished (UTC ticks): Git state read after it replaces the pending state.
-        private long visitActionDone;
-        // The visit ends through Back, which says itself what became of the shelf.
-        private bool visitReturning;
 
         // What a visit or Back is checked against before anything is asked, read off the main thread.
         private sealed class VisitFacts
@@ -46,67 +34,67 @@ namespace Orbiters.UnitGit.Editor
         // Between the top bar and the content: what is being visited, how far behind the branch it is, and the way back.
         private VisualElement BuildVisitBanner()
         {
-            visitBanner = new VisualElement();
-            visitBanner.AddToClassList("ug-visit");
-            visitBanner.style.display = DisplayStyle.None;
+            visitBar.visitBanner = new VisualElement();
+            visitBar.visitBanner.AddToClassList("ug-visit");
+            visitBar.visitBanner.style.display = DisplayStyle.None;
             var icon = new UnitGitIconElement(UnitGitIconKind.Log);
             icon.AddToClassList("ug-visit__icon");
-            visitBanner.Add(icon);
+            visitBar.visitBanner.Add(icon);
             var texts = new VisualElement();
             texts.AddToClassList("ug-visit__texts");
-            visitTitle = UnitGitUi.Text(string.Empty, "ug-visit__title");
-            texts.Add(visitTitle);
-            visitDetail = UnitGitUi.Text(string.Empty, "ug-visit__detail");
-            texts.Add(visitDetail);
-            visitBanner.Add(texts);
-            visitNewBranchButton = UnitGitUi.Pill("New Branch Here…", () => PromptCreateBranchFrom(snapshot?.DetachedCommit?.FullHash), "ghost",
+            visitBar.visitTitle = UnitGitUi.Text(string.Empty, "ug-visit__title");
+            texts.Add(visitBar.visitTitle);
+            visitBar.visitDetail = UnitGitUi.Text(string.Empty, "ug-visit__detail");
+            texts.Add(visitBar.visitDetail);
+            visitBar.visitBanner.Add(texts);
+            visitBar.visitNewBranchButton = UnitGitUi.Pill("New Branch Here…", () => PromptCreateBranchFrom(snapshot?.DetachedCommit?.FullHash), "ghost",
                 UnitGitIconKind.CreateBranch, "Make a branch at this commit and check it out: commits you make here then belong to it.");
-            visitNewBranchButton.AddToClassList("ug-visit__button");
-            visitBanner.Add(visitNewBranchButton);
-            visitBackButton = UnitGitUi.Pill("Back", () => ReturnFromVisit(visitBackButton), "primary", UnitGitIconKind.Undo);
-            visitBackButton.AddToClassList("ug-visit__button");
-            visitBanner.Add(visitBackButton);
-            return visitBanner;
+            visitBar.visitNewBranchButton.AddToClassList("ug-visit__button");
+            visitBar.visitBanner.Add(visitBar.visitNewBranchButton);
+            visitBar.visitBackButton = UnitGitUi.Pill("Back", () => ReturnFromVisit(visitBar.visitBackButton), "primary", UnitGitIconKind.Undo);
+            visitBar.visitBackButton.AddToClassList("ug-visit__button");
+            visitBar.visitBanner.Add(visitBar.visitBackButton);
+            return visitBar.visitBanner;
         }
 
         private void UpdateVisitBanner()
         {
-            if (visitBanner == null) return;
+            if (visitBar.visitBanner == null) return;
             bool ready = snapshot != null && snapshot.HasRepository && snapshot.HasCommits && string.IsNullOrWhiteSpace(snapshot.LastError);
             bool visiting = ready && IsVisiting;
-            UnitGitCommit commit = pendingVisit ?? (visiting ? snapshot.DetachedCommit : null);
-            bool show = pendingReturnBranch != null || commit != null;
-            visitBanner.style.display = show ? DisplayStyle.Flex : DisplayStyle.None;
+            UnitGitCommit commit = visitBar.pendingVisit ?? (visiting ? snapshot.DetachedCommit : null);
+            bool show = visitBar.pendingReturnBranch != null || commit != null;
+            visitBar.visitBanner.style.display = show ? DisplayStyle.Flex : DisplayStyle.None;
             if (!show) return;
 
-            bool idle = !busy && commitWhenIncluded == null && pendingVisit == null && pendingReturnBranch == null;
-            visitBackButton.SetEnabled(idle);
-            visitNewBranchButton.SetEnabled(idle);
-            if (pendingReturnBranch != null)
+            bool idle = !busy && changesTab.commitWhenIncluded == null && visitBar.pendingVisit == null && visitBar.pendingReturnBranch == null;
+            visitBar.visitBackButton.SetEnabled(idle);
+            visitBar.visitNewBranchButton.SetEnabled(idle);
+            if (visitBar.pendingReturnBranch != null)
             {
-                visitTitle.text = "Going back to ‘" + pendingReturnBranch + "’…";
-                visitDetail.text = string.Empty;
-                visitBanner.tooltip = null;
+                visitBar.visitTitle.text = "Going back to ‘" + visitBar.pendingReturnBranch + "’…";
+                visitBar.visitDetail.text = string.Empty;
+                visitBar.visitBanner.tooltip = null;
                 return;
             }
 
-            visitTitle.text = "Visiting " + commit.ShortHash;
-            string branch = pendingVisit != null ? string.Empty : snapshot.ReturnBranch;
+            visitBar.visitTitle.text = "Visiting " + commit.ShortHash;
+            string branch = visitBar.pendingVisit != null ? string.Empty : snapshot.ReturnBranch;
             var parts = new List<string>();
             if (!string.IsNullOrWhiteSpace(commit.Subject)) parts.Add(Shorten(commit.Subject, 80));
             if (!string.IsNullOrWhiteSpace(commit.RelativeDate)) parts.Add(commit.RelativeDate);
-            if (pendingVisit != null) parts.Add("checking out…");
+            if (visitBar.pendingVisit != null) parts.Add("checking out…");
             else if (branch.Length > 0 && snapshot.NewerCommits > 0)
                 parts.Add(snapshot.NewerCommits + " newer commit" + (snapshot.NewerCommits == 1 ? string.Empty : "s") + " on ‘" + branch + "’");
-            visitDetail.text = string.Join("  ·  ", parts);
+            visitBar.visitDetail.text = string.Join("  ·  ", parts);
 
             UnitGitVisit visit = UnitGitSettings.Visit;
             bool shelved = visit != null && visit.branch == branch && HasShelf(visit.shelf);
-            UnitGitUi.SetText(visitBackButton, branch.Length > 0 ? "Back to ‘" + Shorten(branch, 28) + "’" : "Back to a Branch…");
-            visitBackButton.tooltip = branch.Length > 0
+            UnitGitUi.SetText(visitBar.visitBackButton, branch.Length > 0 ? "Back to ‘" + Shorten(branch, 28) + "’" : "Back to a Branch…");
+            visitBar.visitBackButton.tooltip = branch.Length > 0
                 ? "Check out ‘" + branch + "’ again, at its latest commit" + (shelved ? ", and bring back the changes shelved before visiting." : ".")
                 : "Choose the branch to check out again.";
-            visitBanner.tooltip = "You are looking at the project as it was at " + commit.ShortHash + " (" + commit.RelativeDate + "). No branch is checked out " +
+            visitBar.visitBanner.tooltip = "You are looking at the project as it was at " + commit.ShortHash + " (" + commit.RelativeDate + "). No branch is checked out " +
                                   "(Git calls it a detached HEAD): every branch keeps its later commits, and the Log still shows them." +
                                   (visit != null && !string.IsNullOrWhiteSpace(visit.branchTip) && branch.Length > 0 && visit.branch == branch
                                       ? "\n‘" + branch + "’ was at " + visit.branchTip.Substring(0, Math.Min(7, visit.branchTip.Length)) + " when the visit started."
@@ -122,7 +110,7 @@ namespace Orbiters.UnitGit.Editor
         private bool CanStartVisitAction()
         {
             if (gitService == null || snapshot == null) return false;
-            if (busy || commitWhenIncluded != null)
+            if (busy || changesTab.commitWhenIncluded != null)
             {
                 ShowToast("Wait for " + (busyLabel ?? "the current Git operation") + " to finish.", error: true);
                 return false;
@@ -278,14 +266,14 @@ namespace Orbiters.UnitGit.Editor
             visit.commit = commit.FullHash;
             // Kept before Git starts: a domain reload during the checkout still knows the way back.
             UnitGitSettings.Visit = visit;
-            pendingVisit = commit;
+            visitBar.pendingVisit = commit;
             string hash = commit.FullHash;
             string shelfMessage = shelf;
             bool discardChanges = discard;
             bool shelved = false;
             RunAction("visit " + commit.ShortHash, () => gitService.VisitCommit(hash, shelfMessage, discardChanges, out shelved, overwriteIgnored), result =>
             {
-                visitActionDone = DateTime.UtcNow.Ticks;
+                visitBar.visitActionDone = DateTime.UtcNow.Ticks;
                 if (shelved) ForgetShelfFiles();
                 if (keepShelf && !shelved && result != null && result.Success)
                 {
@@ -361,13 +349,13 @@ namespace Orbiters.UnitGit.Editor
             // The shelf made before visiting goes back onto its own branch only.
             UnitGitVisit visit = UnitGitSettings.Visit;
             string restore = visit != null && visit.branch == branch && HasShelf(visit.shelf) ? visit.shelf : string.Empty;
-            visitReturning = restore.Length > 0;
-            pendingReturnBranch = branch;
+            visitBar.visitReturning = restore.Length > 0;
+            visitBar.pendingReturnBranch = branch;
             bool discardChanges = discard;
             // The service shelves what changed while visiting only once the way back is known to be open.
             RunAction("back to " + branch, () => gitService.ReturnFromVisit(branch, discardChanges, restore, changedShelf), result =>
             {
-                visitActionDone = DateTime.UtcNow.Ticks;
+                visitBar.visitActionDone = DateTime.UtcNow.Ticks;
                 ForgetShelfFiles();
                 if (result != null && !result.Success && HasConflictWork()) SetActiveTab(UnitGitTab.Conflicts);
             }, "Going back to ‘" + branch + "’…", "Back on ‘" + branch + "’" + (restore.Length > 0 ? ", with your changes from before the visit" : string.Empty),
@@ -378,26 +366,26 @@ namespace Orbiters.UnitGit.Editor
         /// <summary>After each refresh: the pending state gives way to Git's, and a visit that ended (Back, a checkout, a new branch) is forgotten.</summary>
         private void ReconcileVisit(long readStarted)
         {
-            if (pendingVisit != null || pendingReturnBranch != null)
+            if (visitBar.pendingVisit != null || visitBar.pendingReturnBranch != null)
             {
-                if (visitActionDone == 0 || readStarted < visitActionDone) return;
-                pendingVisit = null;
-                pendingReturnBranch = null;
-                visitActionDone = 0;
+                if (visitBar.visitActionDone == 0 || readStarted < visitBar.visitActionDone) return;
+                visitBar.pendingVisit = null;
+                visitBar.pendingReturnBranch = null;
+                visitBar.visitActionDone = 0;
             }
 
             if (snapshot == null || !snapshot.HasRepository || !string.IsNullOrWhiteSpace(snapshot.LastError)) return;
             if (snapshot.IsDetached)
             {
-                visitReturning = false;
+                visitBar.visitReturning = false;
                 return;
             }
 
             UnitGitVisit visit = UnitGitSettings.Visit;
             if (visit == null || readStarted < visit.started) return;
             UnitGitSettings.Visit = null;
-            bool returning = visitReturning;
-            visitReturning = false;
+            bool returning = visitBar.visitReturning;
+            visitBar.visitReturning = false;
             if (!returning && HasShelf(visit.shelf))
                 ShowToast("Your changes from before the visit are on the shelf ‘" + Shorten(visit.shelf, 48) + "’", false, "Shelf", () => SetActiveTab(UnitGitTab.Shelf));
         }

@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Text.RegularExpressions;
 using System.Threading;
+using Orbiters.Toolkit.Editor.Processes;
 
 namespace Orbiters.UnitGit.Editor
 {
@@ -27,12 +28,12 @@ namespace Orbiters.UnitGit.Editor
         private readonly string root;
         private readonly object gate = new object();
         private readonly MemoryStream header = new MemoryStream();
-        private UnitGitLiveProcess contents, info;
+        private EditorLiveProcess contents, info;
         private long lastUse;
 
         static UnitGitObjects()
         {
-            UnitGitProcessLifetime.OnStopping(StopAll);
+            EditorProcessRunner.OnStopping(StopAll);
         }
 
         private UnitGitObjects(string root)
@@ -99,7 +100,7 @@ namespace Orbiters.UnitGit.Editor
             lock (gate)
             {
                 Interlocked.Exchange(ref lastUse, Stopwatch.GetTimestamp());
-                UnitGitLiveProcess process = withContents ? contents : info;
+                EditorLiveProcess process = withContents ? contents : info;
                 bool fresh = false;
                 if (process == null || process.IsDisposed || process.HasExited)
                 {
@@ -146,12 +147,12 @@ namespace Orbiters.UnitGit.Editor
             return Answer.Failed;
         }
 
-        private UnitGitLiveProcess StartBatch(bool withContents)
+        private EditorLiveProcess StartBatch(bool withContents)
         {
-            UnitGitLiveProcess process = null;
+            EditorLiveProcess process = null;
             try
             {
-                process = UnitGitLiveProcess.Start(root, new[] { "cat-file", withContents ? "--batch" : "--batch-check" }, null, true);
+                process = UnitGitRunner.StartLive(root, new[] { "cat-file", withContents ? "--batch" : "--batch-check" }, null, true);
                 if (process == null) return null;
                 // An empty first request answers " missing": anything stdin may have gained in front of it (a byte order mark
                 // from the console's encoding) is consumed with it, and the process is known to answer.
