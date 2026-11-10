@@ -127,6 +127,10 @@ namespace Orbiters.Logger.Editor
         private const int MaxSparkGroups = 50_000;
         // Messages a worker pass searches on several cores (fewer are not worth the hand-off).
         private const int ParallelSearchAbove = 20_000;
+        // What one pass may spend on a regular expression in all (each text also has its own timeout): past it, the texts
+        // left are not tested (counted in LogQuery.Timeouts, not remembered as misses), so a pathological pattern
+        // typed or saved with the window can't keep a worker busy for minutes.
+        private const long SearchBudgetMs = 10_000;
         private const byte BaseBit = 1;
         private const byte LevelBit = 2;
         private const byte SourceBit = 4;
@@ -169,6 +173,7 @@ namespace Orbiters.Logger.Editor
 
         private byte[] textMatch = new byte[0];
         private Regex regex;
+        private long searchDeadline;
         private byte[] messagePass = new byte[0];
         private bool[] groupMuted = new bool[0];
         private int groupsKnown;
@@ -208,6 +213,7 @@ namespace Orbiters.Logger.Editor
             state.groupsKnown = 0;
             state.UpdateMutes(view);
             state.regex = spec.Query.RegexFor(view.MessageCount);
+            state.searchDeadline = spec.Query.UseRegex ? Stopwatch.GetTimestamp() + SearchBudgetMs * Stopwatch.Frequency / 1000 : 0L;
             if (!spec.Query.IsEmpty && cancelled != null && view.MessageCount >= ParallelSearchAbove && !state.SearchInParallel(view, textCount, cancelled))
             {
                 return null;
@@ -250,6 +256,7 @@ namespace Orbiters.Logger.Editor
             }
 
             state.Covered = view.Count;
+            state.searchDeadline = 0L;
             state.SortGroups(view);
             state.Milliseconds = clock.Elapsed.TotalMilliseconds;
             return state;
@@ -409,6 +416,12 @@ namespace Orbiters.Logger.Editor
             byte known = textMatch[text];
             if (known == 0)
             {
+                if (searchDeadline != 0L && Stopwatch.GetTimestamp() > searchDeadline)
+                {
+                    query.CountTimeout();
+                    return false;
+                }
+
                 known = query.Matches(Texts.Plain(text), regex) ? (byte)2 : (byte)1;
                 textMatch[text] = known;
             }
@@ -789,7 +802,8 @@ namespace Orbiters.Logger.Editor
                 ? spec.Query.Reuse(previous.Spec.Query, previous.KnownTextMatches)
                 : null;
             long work = view.Count + (spec.Query.IsEmpty ? 0 : (spec.Query.IncludeStack ? 40L : 4L) * view.MessageCount);
-            if (!allowAsync || work <= SynchronousLimit)
+            // A regular expression can be slow on any store: never on the editor's thread unless the caller needs it there.
+            if (!allowAsync || work <= SynchronousLimit && !spec.Query.UseRegex)
             {
                 running = false;
                 ready = null;

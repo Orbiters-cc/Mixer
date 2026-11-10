@@ -177,7 +177,8 @@ namespace Orbiters.Logger.Editor
 
             Bind(Store);
             timings.Update(Store);
-            Refilter(allowAsync: false);
+            // After every script reload with the window open: the window shows at once, the pass may take a worker.
+            RefilterInvalidated();
             list.ScrollToEnd();
             rootVisualElement.schedule.Execute(Tick).Every(TickMs);
             rootVisualElement.schedule.Execute(KeepFocusInside);
@@ -285,6 +286,23 @@ namespace Orbiters.Logger.Editor
             buckets = Mathf.Clamp((int)(timeline.PlotWidth / 4f), 30, 500);
         }
 
+        // The rows no longer match the store (or there are none yet): they go at once, and the pass that makes new ones
+        // runs on a worker when it could take long (a big store, a regular expression); the status says "Filtering…"
+        // meanwhile. Never a full pass on the editor's thread at a window's creation, a trim, a merge or a regroup.
+        private void RefilterInvalidated()
+        {
+            if (state != null)
+            {
+                state = null;
+                newRows = 0;
+                list?.SetItemCount(0, keepAtEnd: false);
+                chromeDirty = true;
+                detailsDirty = true;
+            }
+
+            Refilter(allowAsync: true);
+        }
+
         // Only the time axis moved: the chart and sparklines are counted again, the rows and groups stay.
         private void Rechart(LogStore store)
         {
@@ -305,7 +323,7 @@ namespace Orbiters.Logger.Editor
             if (!result.Extend(store, store.Sources.All))
             {
                 // The store changed shape while the pass ran (cleared, merged): start again.
-                Refilter(allowAsync: false);
+                RefilterInvalidated();
                 return;
             }
 
@@ -371,7 +389,7 @@ namespace Orbiters.Logger.Editor
             if (store != boundStore)
             {
                 Bind(store);
-                Refilter(allowAsync: false);
+                RefilterInvalidated();
             }
 
             timings.Update(store);
@@ -402,8 +420,11 @@ namespace Orbiters.Logger.Editor
             double now = EditorApplication.timeSinceStartup;
             if (state == null || state.Epoch != store.Epoch || state.MessagesVersion != store.MessagesVersion || !ReferenceEquals(state.Texts, store.Texts))
             {
-                // Row ids no longer match the store: never draw them, recompute now.
-                Refilter(allowAsync: false);
+                // Row ids no longer match the store: never draw them, recompute (a pass already running gives its result).
+                if (state != null || !runner.Busy)
+                {
+                    RefilterInvalidated();
+                }
             }
             else if (store.Version != seenVersion)
             {
@@ -465,7 +486,7 @@ namespace Orbiters.Logger.Editor
             bool atEnd = list.AtEnd;
             if (!state.Extend(store, store.Sources.All))
             {
-                Refilter(allowAsync: false);
+                RefilterInvalidated();
                 return;
             }
 

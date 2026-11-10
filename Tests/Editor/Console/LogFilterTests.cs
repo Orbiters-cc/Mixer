@@ -351,6 +351,26 @@ namespace Orbiters.Logger.Editor.Tests
             }
         }
 
+        [Test]
+        public void RegexPassesNeverRunOnTheCallersThread()
+        {
+            var store = Sample();
+            var runner = new FilterRunner();
+            var spec = new FilterSpec { Query = new LogQuery("pl(a)+yer", true, false, false) };
+            Assert.IsNull(runner.Request(store, spec, null, store.FirstTime, store.LastTime, 10, allowAsync: true), "even a tiny store goes to a worker");
+            FilterState result = null;
+            var watch = Stopwatch.StartNew();
+            while (result == null && watch.ElapsedMilliseconds < 10_000)
+            {
+                System.Threading.Thread.Sleep(5);
+                result = runner.TryTake();
+            }
+
+            Assert.IsNotNull(result);
+            Assert.AreEqual(4, result.RowCount, "Player spawned ×3 and Player died");
+            Assert.IsNotNull(runner.Request(store, new FilterSpec(), null, store.FirstTime, store.LastTime, 10, allowAsync: true), "plain small passes stay in place");
+        }
+
         private static int Sum(int[] values)
         {
             int total = 0;

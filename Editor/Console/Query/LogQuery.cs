@@ -56,6 +56,8 @@ namespace Orbiters.Logger.Editor
         /// <summary>Texts a pass could not test because the expression took too long on them (counted as no match).</summary>
         public int Timeouts => Volatile.Read(ref timeouts);
 
+        internal void CountTimeout() => Interlocked.Increment(ref timeouts);
+
         /// <summary>
         /// Search results of <paramref name="previous"/> (per text id: 0 untested, 1 no match, 2 match) that still hold
         /// for this query, or null when none do. The same query keeps all of them. A plain text that contains the previous
