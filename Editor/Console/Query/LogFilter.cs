@@ -175,12 +175,19 @@ namespace Orbiters.Logger.Editor
         private byte[] textMatch = new byte[0];
         private Regex regex;
         private long searchDeadline;
+        private bool onEditorThread;
         // Messages from here on may not be tested yet (a pass that ran out of time): the occurrences after the first of
         // theirs wait (Covered stops there) until Extend tests them, a slice at a time.
         private int firstUnknown;
         private int searchTimeouts;
         // What one Extend (on the caller's thread) may spend on testing texts before it leaves the rest for the next one.
         private const double ExtendBudgetMs = 6d;
+
+        // Where the next Extend goes on testing (it stops at its deadline, not only its matching).
+        private int extendNext;
+
+        /// <summary>Texts the editor's thread gave up on wait for a worker pass (the window asks for one).</summary>
+        public bool WorkerPending { get; private set; }
 
         /// <summary>Messages are left to test: the list is still filling in (a slice per Extend).</summary>
         public bool SearchPending { get; private set; }
@@ -219,6 +226,13 @@ namespace Orbiters.Logger.Editor
             if (knownMatches != null)
             {
                 Array.Copy(knownMatches, state.textMatch, Math.Min(knownMatches.Length, state.textMatch.Length));
+                foreach (byte known in state.textMatch)
+                {
+                    if (known == LogQuery.TimedOut)
+                    {
+                        state.searchTimeouts++;
+                    }
+                }
             }
 
             state.PrepareSources(sources);
@@ -312,21 +326,32 @@ namespace Orbiters.Logger.Editor
             var query = Spec.Query;
             var foreground = regex;
             regex = query.ForegroundRegex;
+            onEditorThread = true;
             searchDeadline = query.IsEmpty ? 0L : Stopwatch.GetTimestamp() + (long)(ExtendBudgetMs * Stopwatch.Frequency / 1000d);
             try
             {
-                for (int m = firstUnknown; m < view.MessageCount; m++)
+                int m = extendNext > firstUnknown && extendNext < view.MessageCount ? extendNext : firstUnknown;
+                for (; m < view.MessageCount; m++)
                 {
+                    if (searchDeadline != 0L && Stopwatch.GetTimestamp() > searchDeadline)
+                    {
+                        break;
+                    }
+
                     if ((messagePass[m] & KnownBit) == 0)
                     {
                         messagePass[m] = Pass(ref view.Messages[m], textCount);
                     }
                 }
+
+                // Out of time: the next call goes on from here; through to the end: from the first untested again.
+                extendNext = m < view.MessageCount ? m : 0;
             }
             finally
             {
                 regex = foreground;
                 searchDeadline = 0L;
+                onEditorThread = false;
             }
 
             FindUnknown(view.MessageCount, firstUnknown);
@@ -459,6 +484,12 @@ namespace Orbiters.Logger.Editor
             }
 
             byte known = textMatch[text];
+            if (known == LogQuery.ForWorker)
+            {
+                // Left for a worker pass by an earlier Extend: not retried on the editor's thread.
+                return Untested;
+            }
+
             if (known == Untested)
             {
                 if (searchDeadline != 0L && Stopwatch.GetTimestamp() > searchDeadline)
@@ -467,16 +498,25 @@ namespace Orbiters.Logger.Editor
                 }
 
                 known = query.TryMatch(Texts.Plain(text), regex, out bool timedOut) ? Hit : Miss;
+                if (timedOut && onEditorThread)
+                {
+                    // The short editor-thread timeout: the worker's compiled expression may well finish it.
+                    textMatch[text] = LogQuery.ForWorker;
+                    WorkerPending = true;
+                    return Untested;
+                }
+
                 if (timedOut)
                 {
-                    // Undecided, and said so in the status; remembered as a miss so it isn't retried at every tick.
+                    // A worker gave up too: left out of the results, and said so in the status.
+                    known = LogQuery.TimedOut;
                     Interlocked.Increment(ref searchTimeouts);
                 }
 
                 textMatch[text] = known;
             }
 
-            return known;
+            return known == LogQuery.TimedOut ? Miss : known;
         }
 
         // The first message from `from` on not tested yet.

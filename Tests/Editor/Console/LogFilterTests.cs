@@ -406,6 +406,34 @@ namespace Orbiters.Logger.Editor.Tests
             }
         }
 
+        [Test]
+        public void TimedOutTextsStayUndecidedAndSayIt()
+        {
+            // A pattern that backtracks exponentially on these texts: every attempt runs into its timeout.
+            string slow = new string('a', 34) + "b";
+            var store = new LogStore();
+            store.Add(TimeSpan.TicksPerSecond, slow, Stack, LogVariant.Log);
+            store.Add(TimeSpan.TicksPerSecond * 2, "aa", Stack, LogVariant.Warning);
+            var query = new LogQuery("^(a+)+$", true, false, false);
+            var worker = Run(store, new FilterSpec { Query = query });
+            Assert.AreEqual(1, worker.SearchTimeouts, "a worker that gives up says so");
+            Assert.AreEqual(1, worker.RowCount, "and leaves the text out");
+
+            // Another level filter with the same query: the undecided text stays undecided, the notice stays.
+            var spec = new FilterSpec { Query = query, LevelMask = 1 << (int)LogLevel.Warning };
+            var again = FilterState.Compute(store.View(), spec, store.Sources.All, query.Reuse(worker.Spec.Query, worker.KnownTextMatches),
+                store.FirstTime, store.LastTime, 10, null);
+            Assert.AreEqual(1, again.SearchTimeouts);
+
+            // On the editor's thread a timeout is not settled: the text waits for a worker pass.
+            store.Add(TimeSpan.TicksPerSecond * 3, new string('a', 34) + "c", Stack, LogVariant.Log);
+            Assert.IsTrue(worker.Extend(store, store.Sources.All));
+            Assert.IsTrue(worker.WorkerPending);
+            Assert.IsTrue(worker.SearchPending);
+            var reused = query.Reuse(query, worker.KnownTextMatches);
+            Assert.AreEqual(0, reused[store.Message(store.MessageAt(2)).Text], "the next worker pass tests it again");
+        }
+
         private static int Sum(int[] values)
         {
             int total = 0;

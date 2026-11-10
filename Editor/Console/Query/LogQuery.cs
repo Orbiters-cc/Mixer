@@ -72,7 +72,7 @@ namespace Orbiters.Logger.Editor
 
             if (SameAs(previous))
             {
-                return (byte[])known.Clone();
+                return Retest((byte[])known.Clone(), 0);
             }
 
             if (UseRegex || previous.UseRegex || MatchCase != previous.MatchCase || IncludeStack != previous.IncludeStack)
@@ -95,16 +95,27 @@ namespace Orbiters.Logger.Editor
                 return null;
             }
 
-            var result = (byte[])known.Clone();
-            for (int i = 0; i < result.Length; i++)
+            return Retest((byte[])known.Clone(), retest);
+        }
+
+        /// <summary>Per text: 0 untested, 1 miss, 2 match, 3 timed out (a worker gave up: left out, said in the status),
+        /// 4 timed out on the editor's thread (waits for a worker).</summary>
+        internal const byte TimedOut = 3;
+        internal const byte ForWorker = 4;
+
+        // Results to test again become 0: those equal to `retest`, and every undecided one (the new pass may finish it).
+        private static byte[] Retest(byte[] results, byte retest)
+        {
+            for (int i = 0; i < results.Length; i++)
             {
-                if (result[i] == retest)
+                byte value = results[i];
+                if (value == ForWorker || retest != 0 && (value == retest || value == TimedOut))
                 {
-                    result[i] = 0;
+                    results[i] = 0;
                 }
             }
 
-            return result;
+            return results;
         }
 
         /// <summary>

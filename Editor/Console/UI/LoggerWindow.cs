@@ -430,6 +430,11 @@ namespace Orbiters.Logger.Editor
             {
                 // New logs, or a search that goes on a slice at a time.
                 Catchup(store, now);
+                if (state != null && state.WorkerPending && !runner.Busy && !specDirty)
+                {
+                    // Texts too slow for the editor's thread: a worker pass (with what is known kept) tests them.
+                    QueueRefilter();
+                }
             }
 
             if (seenWindow != TimelineWindow.Version)
