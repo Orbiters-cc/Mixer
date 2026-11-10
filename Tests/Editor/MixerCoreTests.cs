@@ -258,6 +258,29 @@ namespace Orbiters.Mixer.Editor.Tests
             Assert.That(hit.Found, Is.True, "the BVH follows the picture");
         }
 
+        // A session opened outside the brush modes builds no brush structures until Sculpt or Weight Paint is entered;
+        // brushes driven by code still work (the structures are built when first asked for).
+        [Test]
+        public void BrushStructuresWaitForABrushMode()
+        {
+            var modeBefore = MixerSceneTool.Mode;
+            try
+            {
+                MixerSceneTool.Mode = MixerMode.None;
+                var target = MixerSession.Edit(renderer);
+                Assert.That(target.Prewarmed, Is.False, "opened in Object mode");
+                MixerSceneTool.Mode = MixerMode.Sculpt;
+                Assert.That(target.Prewarmed, Is.True, "Sculpt starts them");
+                var edit = MixerSceneTool.StrokeBetween(target, Brushes.Named("Inflate"), new Vector3(0.3f, 0.5f, 0f), new Vector3(0.3f, 0.6f, 0f), 3, 0.2f, 1f, Vector3.forward);
+                Assert.That(edit, Is.Not.Null);
+            }
+            finally
+            {
+                MixerSceneTool.Mode = MixerMode.None;
+                MixerSceneTool.Mode = modeBefore;
+            }
+        }
+
         // Listeners learn what changed: a session starting, a stroke's geometry, a layer, a group, the coarse event each time.
         [Test]
         public void SessionEventsSayWhatChanged()

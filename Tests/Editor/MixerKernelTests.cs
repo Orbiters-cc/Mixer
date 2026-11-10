@@ -399,5 +399,36 @@ namespace Orbiters.Mixer.Editor.Tests
             Assert.That(min, Is.EqualTo(new Vector3(-4f, -2f, -6f)));
             Assert.That(max, Is.EqualTo(new Vector3(2f, 5f, 3f)));
         }
+
+        // ---- The history's budget ---------------------------------------------------------------------------------
+
+        private sealed class SizedEntry : HistoryEntry
+        {
+            public long Size;
+            public override long Bytes => Size;
+            public override void Undo() { }
+            public override void Redo() { }
+        }
+
+        private sealed class HeavyCommit : HistoryEntry
+        {
+            public override long Bytes => 4L << 30;
+            public override void Undo() { }
+            public override void Redo() { }
+        }
+
+        [Test]
+        public void InPlaceCommitsAreKeptByCountOutsideTheCap()
+        {
+            var list = new List<HistoryEntry> { new SizedEntry { Size = 100 } };
+            for (int i = 0; i < MixerHistory.KeptCommitCopies; i++) list.Add(new InPlaceCommitEdit { Label = "Commit " + i });
+            list.Add(new SizedEntry { Size = 50 });
+            Assert.That(MixerHistory.BudgetedBytes(list), Is.EqualTo(150), "the commits' copies are not part of the cap");
+            Assert.That(MixerHistory.CommitCopyToDrop(list, list.Count), Is.EqualTo(-1), "as many commits as are kept");
+            list.Add(new InPlaceCommitEdit { Label = "Commit more" });
+            Assert.That(MixerHistory.CommitCopyToDrop(list, list.Count), Is.EqualTo(1), "the oldest commit goes, the strokes stay");
+            Assert.That(MixerHistory.CommitCopyToDrop(list, 1), Is.EqualTo(-1), "an undone commit (waiting for redo) is not dropped");
+            Assert.That(MixerHistory.BudgetedBytes(new List<HistoryEntry> { new HeavyCommit() }), Is.EqualTo(4L << 30), "only Mixer's own commits are kept outside");
+        }
     }
 }

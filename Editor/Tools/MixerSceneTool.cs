@@ -122,6 +122,9 @@ namespace Orbiters.Mixer.Editor
                 // Edit Armature is Blender's: bones move where the skin rests, whatever started the mode (the mode strip,
                 // the window's page, the MCP tool). The window's switch can still turn rest-pose editing off.
                 if (mode == MixerMode.Armature) ArmatureEdit.Active = true;
+                // The brushes' structures start building for the meshes being edited (see EditTarget.Prewarm).
+                if (mode == MixerMode.Sculpt || mode == MixerMode.Weights)
+                    foreach (var target in MixerSession.Targets) if (target.Alive) target.Prewarm();
                 Changed?.Invoke();
                 SceneView.RepaintAll();
             }

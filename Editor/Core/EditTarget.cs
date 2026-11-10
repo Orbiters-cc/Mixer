@@ -102,9 +102,19 @@ namespace Orbiters.Mixer.Editor
         }
 
         // What the first stroke needs and takes about a second to build on a body (welds, mirror, BVH) starts on worker
-        // threads as the session opens: they read the original's arrays and the world picture only.
-        private void Prewarm()
+        // threads as the session opens in Sculpt or Weight Paint, or when one of them is entered: they read the original's
+        // arrays and the world picture only. A session opened for anything else (Edit Armature's rig mates, a shape added
+        // from the inspector) builds none of it until a brush needs it.
+        private bool prewarmed;
+
+        /// <summary>For tests: whether <see cref="Prewarm"/> ran.</summary>
+        internal bool Prewarmed => prewarmed;
+
+        /// <summary>Starts building what brushes need on worker threads (once; the getters build it anyway when asked first).</summary>
+        public void Prewarm()
         {
+            if (prewarmed) return;
+            prewarmed = true;
             var doc = Document;
             doc.Prewarm();
             var neighbors = doc.NeighborsTask;
@@ -143,7 +153,7 @@ namespace Orbiters.Mixer.Editor
             World = new Vector3[Document.VertexCount];
             Skin = SkinningMap.For(renderer, working, Document);
             RebuildWorld();
-            Prewarm();
+            if (MixerSceneTool.Mode == MixerMode.Sculpt || MixerSceneTool.Mode == MixerMode.Weights) Prewarm();
         }
 
         /// <summary>The mesh the renderer shows now.</summary>

@@ -196,10 +196,43 @@ namespace Orbiters.Mixer.Editor
             nameAfterEvent = Undo.GetCurrentGroupName() ?? "";
         }
 
+        // In-place commits keep two whole copies of a mesh (for a body with hundreds of shapes, more than the whole cap):
+        // they are kept by count, outside the cap, so one commit never drops every other step of every mesh.
+        internal const int KeptCommitCopies = 4;
+
+        /// <summary>The oldest in-place commit that is in effect beyond the newest <see cref="KeptCommitCopies"/>, or -1.</summary>
+        internal static int CommitCopyToDrop(IReadOnlyList<HistoryEntry> list, int inEffect)
+        {
+            int kept = 0;
+            for (int i = list.Count - 1; i >= 0; i--)
+            {
+                if (!(list[i] is InPlaceCommitEdit)) continue;
+                if (++kept > KeptCommitCopies && i < inEffect) return i;
+            }
+            return -1;
+        }
+
+        /// <summary>What counts against the cap: every entry but the in-place commits' copies.</summary>
+        internal static long BudgetedBytes(IReadOnlyList<HistoryEntry> list)
+        {
+            long total = 0;
+            foreach (var e in list) if (!(e is InPlaceCommitEdit)) total += e.Bytes;
+            return total;
+        }
+
         private static void Trim()
         {
+            for (int i = CommitCopyToDrop(entries, cursor); i >= 0; i = CommitCopyToDrop(entries, cursor))
+            {
+                // Its Unity step stays, as a no-op that says so (as for a forgotten session's).
+                bytes -= entries[i].Bytes;
+                forgotten.Add(entries[i].Serial);
+                entries[i].Dropped();
+                entries.RemoveAt(i);
+                cursor--;
+            }
             long cap = Cap;
-            while (entries.Count > 1 && bytes > cap && cursor > 0)
+            while (entries.Count > 1 && BudgetedBytes(entries) > cap && cursor > 0)
             {
                 bytes -= entries[0].Bytes;
                 floor = Math.Max(floor, entries[0].Serial);
