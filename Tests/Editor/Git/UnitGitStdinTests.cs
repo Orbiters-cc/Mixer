@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using Orbiters.Toolkit.Editor.Processes;
 using NUnit.Framework;
 
 namespace Orbiters.UnitGit.Editor.Tests
@@ -108,7 +109,7 @@ namespace Orbiters.UnitGit.Editor.Tests
             {
                 for (int i = 0; i < 300; i++) repo.Write("Assets/f" + i + ".txt", i + "\n");
                 repo.Commit("files");
-                int before = UnitGitProcessLifetime.ActiveCount;
+                int before = EditorProcessRunner.ActiveCount;
                 long seen = 0;
                 GitCommandResult result = repo.Git.ReadGitStream(60000, (bytes, offset, count) =>
                 {
@@ -117,7 +118,7 @@ namespace Orbiters.UnitGit.Editor.Tests
                 }, "ls-files", "-z");
                 Assert.That(result.Success && result.Stopped, Is.True, result.Message);
                 Assert.That(seen, Is.GreaterThan(0));
-                Assert.That(UnitGitProcessLifetime.ActiveCount, Is.LessThanOrEqualTo(before), "The stopped process is gone.");
+                Assert.That(EditorProcessRunner.ActiveCount, Is.LessThanOrEqualTo(before), "The stopped process is gone.");
 
                 GitCommandResult whole = repo.Git.ReadGitStream(60000, (bytes, offset, count) => true, "ls-files", "-z");
                 Assert.That(whole.Success && !whole.Stopped, Is.True, whole.Message);

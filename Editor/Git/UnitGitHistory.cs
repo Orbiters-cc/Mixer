@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Threading;
+using Orbiters.Toolkit.Editor.Processes;
 
 namespace Orbiters.UnitGit.Editor
 {
@@ -25,7 +26,7 @@ namespace Orbiters.UnitGit.Editor
         private readonly object gate = new object();
         private readonly MemoryStream record = new MemoryStream();
         private readonly List<UnitGitCommit> commits = new List<UnitGitCommit>();
-        private UnitGitLiveProcess process;
+        private EditorLiveProcess process;
         private string key, root, search;
         private string[] arguments = Array.Empty<string>();
         private int consumed; // commits Git printed and this read, matching the search or not
@@ -37,7 +38,7 @@ namespace Orbiters.UnitGit.Editor
 
         static UnitGitHistory()
         {
-            UnitGitProcessLifetime.OnStopping(() =>
+            EditorProcessRunner.OnStopping(() =>
             {
                 lock (LiveSync)
                 {
@@ -103,7 +104,7 @@ namespace Orbiters.UnitGit.Editor
         private GitCommandResult ReadNext(Func<bool> cancelled, UnitGitProcessLogHandler log)
         {
             // A local: Dispose may drop the field from another thread (the window closing) while this reads.
-            UnitGitLiveProcess live = process;
+            EditorLiveProcess live = process;
             if (live == null)
             {
                 var args = new List<string> { "log", "-z", "--pretty=format:" + UnitGitService.CommitLogFormat(withTrailers) };
@@ -113,7 +114,7 @@ namespace Orbiters.UnitGit.Editor
                 if (resuming) args.Add("--skip=" + (consumed - 1).ToString(CultureInfo.InvariantCulture));
                 args.AddRange(arguments);
                 log?.Invoke(UnitGitRedaction.Redact("> " + UnitGitService.FormatCommandLine("git", args.ToArray())));
-                live = UnitGitLiveProcess.Start(root, args, null, false);
+                live = UnitGitRunner.StartLive(root, args, null, false);
                 ProcessesStarted++;
                 if (live == null) return new GitCommandResult { ExitCode = 1, StandardError = "Command interrupted by editor reload or shutdown." };
                 live.CloseInput();
@@ -147,7 +148,7 @@ namespace Orbiters.UnitGit.Editor
             // whole commit.
             if (timedOut) { StopProcess(); return new GitCommandResult { ExitCode = 1, TimedOut = true, StandardError = "Reading the history timed out." }; }
             if (cancelled?.Invoke() == true) { StopProcess(); return new GitCommandResult { ExitCode = 1, StandardError = "Read superseded." }; }
-            if (UnitGitProcessLifetime.IsStopping) { StopProcess(); return new GitCommandResult { ExitCode = 1, StandardError = "Command interrupted by editor reload or shutdown." }; }
+            if (EditorProcessRunner.IsStopping) { StopProcess(); return new GitCommandResult { ExitCode = 1, StandardError = "Command interrupted by editor reload or shutdown." }; }
 
             // The end of the stream: Git is done, or failed (an unknown branch in the filter).
             var waited = Stopwatch.StartNew();

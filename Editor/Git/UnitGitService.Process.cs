@@ -80,7 +80,7 @@ namespace Orbiters.UnitGit.Editor
             log?.Invoke("cwd: " + workingDirectory);
             try
             {
-                UnitGitRunResult run = UnitGitRunner.Run(new UnitGitRunRequest
+                EditorProcessResult run = UnitGitRunner.Run(new UnitGitRunRequest
                 {
                     WorkingDirectory = workingDirectory,
                     Arguments = arguments,

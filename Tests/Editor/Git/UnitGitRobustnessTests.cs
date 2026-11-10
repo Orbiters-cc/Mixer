@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using Orbiters.Toolkit.Editor.Processes;
 using NUnit.Framework;
 
 namespace Orbiters.UnitGit.Editor.Tests
@@ -30,8 +31,8 @@ namespace Orbiters.UnitGit.Editor.Tests
                 worker.Start();
                 // Once git add runs, "reload": reads stop at once, the change gets its grace time.
                 var wait = System.Diagnostics.Stopwatch.StartNew();
-                while (UnitGitProcessLifetime.ActiveCount == 0 && wait.ElapsedMilliseconds < 10000 && worker.IsAlive) System.Threading.Thread.Sleep(1);
-                UnitGitProcessLifetime.StopAllThenResume(UnitGitProcessLifetime.WriteGraceMilliseconds);
+                while (EditorProcessRunner.ActiveCount == 0 && wait.ElapsedMilliseconds < 10000 && worker.IsAlive) System.Threading.Thread.Sleep(1);
+                EditorProcessRunner.StopAllThenResume(EditorProcessRunner.WriteGraceMilliseconds);
                 Assert.That(worker.Join(30000), Is.True);
                 // Finished within the grace time: a correct result. (Past it, the change is stopped and says so instead.)
                 if (!staged.Success)
