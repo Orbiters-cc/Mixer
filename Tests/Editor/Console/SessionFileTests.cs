@@ -392,6 +392,75 @@ namespace Orbiters.Logger.Editor.Tests
         }
 
         [Test]
+        public void AFailedSaveKeepsTheLastCommittedSession()
+        {
+            var store = new LogStore();
+            store.Add(100, "Saved before", string.Empty, LogVariant.Log);
+            saving.Save(store, Info(), Process, Start);
+
+            // The next save fails after appending (its head can't be written): nothing committed is touched.
+            store.Add(200, "Never committed", string.Empty, LogVariant.Log);
+            Directory.CreateDirectory(Path.Combine(folder, "head.tmp"));
+            Assert.Catch<Exception>(() => saving.Save(store, Info(), Process, Start));
+            saving.MarkSaveFailed();
+            Directory.Delete(Path.Combine(folder, "head.tmp"));
+
+            var loaded = Fresh().Load(Process, Start, out var info, out string problem);
+            Assert.IsNotNull(loaded, "the committed session is still there");
+            Assert.AreEqual(1, loaded.Count);
+            Assert.AreEqual(12, info.UnityRows);
+            StringAssert.Contains("save before this reload failed", problem, "and the next load says so");
+        }
+
+        [Test]
+        public void TheNewestValidHeadWins()
+        {
+            var store = new LogStore();
+            store.Add(100, "First", string.Empty, LogVariant.Log);
+            saving.Save(store, Info(), Process, Start);
+            saving.Close();
+            string committed = Directory.GetFiles(folder, "head-*.bin")[0];
+            byte[] bytes = File.ReadAllBytes(committed);
+
+            // A newer head that is damaged (cut): the older, whole one is read, and the damage is said.
+            var cut = new byte[bytes.Length - 3];
+            Array.Copy(bytes, cut, cut.Length);
+            File.WriteAllBytes(Path.Combine(folder, "head-0000000009.bin"), cut);
+            var loaded = Fresh().Load(Process, Start, out _, out string problem);
+            Assert.IsNotNull(loaded);
+            Assert.AreEqual(1, loaded.Count);
+            Assert.IsNotNull(problem);
+        }
+
+        [Test]
+        public void StrippedCopiesReadBackCountAgainstTheBudget()
+        {
+            var store = new LogStore();
+            for (int i = 0; i < 3000; i++)
+            {
+                store.Add(100 + i, "<b>Rich text log number " + i + " with some padding</b>", string.Empty, LogVariant.Log);
+            }
+
+            saving.Save(store, Info(), Process, Start);
+            var loaded = Load();
+            long raw = loaded.Texts.TotalChars;
+            loaded.MaxTextChars = raw + 1000;
+            loaded.KeepWithinTextBudget();
+            Assert.AreEqual(3000, loaded.Count, "within the budget: nothing goes");
+
+            // A search reads every text back, with its stripped copy, while no log arrives.
+            for (int i = 0; i < loaded.MessageCount; i++)
+            {
+                loaded.Texts.Plain(loaded.Message(i).Text);
+            }
+
+            Assert.Greater(loaded.Texts.TotalChars, loaded.MaxTextChars, "the copies are counted");
+            loaded.KeepWithinTextBudget();
+            Assert.LessOrEqual(loaded.Texts.TotalChars, loaded.MaxTextChars);
+            Assert.Less(loaded.Count, 3000);
+        }
+
+        [Test]
         public void StableHashIsTheSameEverywhere()
         {
             Assert.AreEqual(unchecked((int)2166136261u), TextTable.Hash(string.Empty));

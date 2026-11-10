@@ -125,9 +125,10 @@ namespace Orbiters.Logger.Editor
             var restored = LogSnapshot.TryLoad(out var info, out string problem);
             if (problem != null)
             {
-                // Queued like any log (the callback is in place): the one line that says logs before the reload are lost.
-                Debug.LogWarning("[Mixer console] The logs from before the script reload could not be read back (" + problem +
-                    "): the Mixer console starts again from Unity's console.");
+                // Queued like any log (the callback is in place): the one line that says what was not read back.
+                Debug.LogWarning(restored == null
+                    ? "[Mixer console] The logs from before the script reload could not be read back (" + problem + "): the Mixer console starts again from Unity's console."
+                    : "[Mixer console] Not every log from before the script reload was read back (" + problem + ").");
             }
 
             if (restored != null)
@@ -529,8 +530,8 @@ namespace Orbiters.Logger.Editor
             }
             catch (Exception)
             {
-                // Without a snapshot the next domain reads Unity's console instead.
-                LogSnapshot.Delete();
+                // The last committed session stays: the next domain reads it, then Unity's console for the rest, and says so.
+                LogSnapshot.SaveFailed();
             }
             finally
             {

@@ -356,6 +356,64 @@ namespace Orbiters.Logger.Editor.Tests
             }
 
             Assert.AreEqual(0, texts.Chars, "every charge went with the last log holding its text");
+
+            // A small budget, texts filed and logged again (held again from zero): the bound holds throughout.
+            var small = new QueueTexts(10_000);
+            var held = new System.Collections.Concurrent.ConcurrentQueue<SharedText>();
+            long peak = 0;
+            done = 0;
+            for (int p = 0; p < producers; p++)
+            {
+                int seed = p;
+                threads[p] = new System.Threading.Thread(() =>
+                {
+                    var recent = new QueueTexts.Recent();
+                    string repeated = new string((char)('a' + seed), 100);
+                    for (int i = 0; i < 20_000; i++)
+                    {
+                        if (small.Admit(recent, repeated, i % 5 == 0 ? new string('s', 100) + i : null, out var c, out var s))
+                        {
+                            held.Enqueue(c);
+                            if (s != null)
+                            {
+                                held.Enqueue(s);
+                            }
+
+                            long now = small.Chars;
+                            long seen;
+                            while (now > (seen = System.Threading.Interlocked.Read(ref peak)) &&
+                                   System.Threading.Interlocked.CompareExchange(ref peak, now, seen) != seen)
+                            {
+                            }
+                        }
+                    }
+
+                    System.Threading.Interlocked.Increment(ref done);
+                });
+                threads[p].Start();
+            }
+
+            while (System.Threading.Volatile.Read(ref done) < producers || !held.IsEmpty)
+            {
+                if (held.TryDequeue(out var text))
+                {
+                    small.Release(text);
+                }
+            }
+
+            foreach (var thread in threads)
+            {
+                thread.Join();
+            }
+
+            while (held.TryDequeue(out var text))
+            {
+                small.Release(text);
+            }
+
+            // Each thread may have one refused reservation in flight (taken back at once).
+            Assert.LessOrEqual(peak, 10_000 + producers * 250, "a revived text is reserved like a new one");
+            Assert.AreEqual(0, small.Chars);
         }
 
         [Test]
@@ -530,6 +588,16 @@ namespace Orbiters.Logger.Editor.Tests
                     Assert.IsTrue(reader.TryRead(0, out _));
                 }
             }
+        }
+
+        [Test]
+        public void AJournalBelongsToOneProcessStart()
+        {
+            int self = System.Diagnostics.Process.GetCurrentProcess().Id;
+            long started = System.Diagnostics.Process.GetCurrentProcess().StartTime.ToUniversalTime().Ticks;
+            Assert.IsTrue(UnityConsole.ShowAll.IsRunning(self, started));
+            Assert.IsFalse(UnityConsole.ShowAll.IsRunning(self, started - TimeSpan.TicksPerMinute), "the same id given to a new process");
+            Assert.IsFalse(UnityConsole.ShowAll.IsRunning(self, 0L));
         }
 
         [Test]

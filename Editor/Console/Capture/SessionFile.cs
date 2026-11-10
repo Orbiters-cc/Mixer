@@ -306,39 +306,90 @@ namespace Orbiters.Logger.Editor
         {
             info = null;
             problem = null;
+            string skipped = null;
+            // Newest first; the first one that reads back whole wins (a newer one that doesn't is said, not hidden).
+            foreach (int number in Heads())
+            {
+                Forget();
+                headNumber = number;
+                LogStore store = null;
+                string why;
+                try
+                {
+                    store = Read(processId, editorStart, out info, out why);
+                }
+                catch (Exception exception)
+                {
+                    why = exception.GetType().Name + ": " + exception.Message;
+                }
+
+                if (store != null)
+                {
+                    problem = skipped ?? (File.Exists(FailedMarker)
+                        ? "the save before this reload failed; the logs since the reload before it come from Unity's console"
+                        : null);
+                    return store;
+                }
+
+                info = null;
+                if (why == null)
+                {
+                    // Another editor's or another version's: none of the older ones is ours either.
+                    break;
+                }
+
+                skipped = skipped ?? why;
+            }
+
+            Forget();
+            problem = skipped;
+            return null;
+        }
+
+        private string FailedMarker => Path.Combine(directory, "save-failed");
+
+        /// <summary>
+        /// A save failed: the last committed head and its files stay as they are (the next domain reads them, then
+        /// Unity's console for what came after), and the next load says so. Never throws.
+        /// </summary>
+        public void MarkSaveFailed()
+        {
+            Close();
+            try
+            {
+                File.WriteAllText(FailedMarker, string.Empty);
+            }
+            catch (Exception)
+            {
+                // Without the marker the next load only misses the warning.
+            }
+        }
+
+        // Head numbers present, newest first.
+        private List<int> Heads()
+        {
+            var numbers = new List<int>();
+            if (System.IO.Directory.Exists(directory))
+            {
+                foreach (string path in System.IO.Directory.GetFiles(directory, "head-*.bin"))
+                {
+                    if (int.TryParse(Path.GetFileNameWithoutExtension(path).Substring(5), out int number) && number > 0)
+                    {
+                        numbers.Add(number);
+                    }
+                }
+            }
+
+            numbers.Sort((x, y) => y.CompareTo(x));
+            return numbers;
+        }
+
+        private void Forget()
+        {
             Close();
             textGeneration = rowsGeneration = 0;
             textsSaved = rowsSaved = 0;
             textBytes = 0;
-            headNumber = NewestHead();
-            if (headNumber == 0)
-            {
-                return null;
-            }
-
-            try
-            {
-                var store = Read(processId, editorStart, out info, out problem);
-                if (store == null)
-                {
-                    Close();
-                    textGeneration = rowsGeneration = 0;
-                    textsSaved = rowsSaved = 0;
-                    textBytes = 0;
-                }
-
-                return store;
-            }
-            catch (Exception exception)
-            {
-                Close();
-                textGeneration = rowsGeneration = 0;
-                textsSaved = rowsSaved = 0;
-                textBytes = 0;
-                info = null;
-                problem = exception.GetType().Name + ": " + exception.Message;
-                return null;
-            }
         }
 
         private LogStore Read(int processId, long editorStart, out SnapshotInfo info, out string problem)

@@ -49,22 +49,28 @@ namespace Orbiters.Logger.Editor
         /// </summary>
         public bool Admit(Recent recent, string condition, string stack, out SharedText sharedCondition, out SharedText sharedStack)
         {
-            bool reuseCondition = Same(recent.Condition, condition);
-            bool reuseStack = Same(recent.Stack, stack);
-            long need = (reuseCondition ? 0 : condition?.Length ?? 0) + (reuseStack ? 0 : stack?.Length ?? 0);
+            // A text equal to the thread's previous one is held first; one that every queued log had already let go of
+            // (held again from zero) needs a charge again, reserved like a new text's.
+            var heldCondition = Hold(recent.Condition, condition, out bool reviveCondition);
+            var heldStack = Hold(recent.Stack, stack, out bool reviveStack);
+            long need = (heldCondition == null || reviveCondition ? condition?.Length ?? 0 : 0) +
+                        (heldStack == null || reviveStack ? stack?.Length ?? 0 : 0);
             if (need > 0)
             {
                 long after = Interlocked.Add(ref chars, need);
                 if (after > max && after != need)
                 {
                     Interlocked.Add(ref chars, -need);
+                    // Let go of what was held: a revived text was never charged; a live one goes like any release.
+                    Unhold(heldCondition, reviveCondition);
+                    Unhold(heldStack, reviveStack);
                     sharedCondition = sharedStack = null;
                     return false;
                 }
             }
 
-            sharedCondition = Take(ref recent.Condition, condition, reuseCondition);
-            sharedStack = Take(ref recent.Stack, stack, reuseStack);
+            sharedCondition = heldCondition ?? New(ref recent.Condition, condition);
+            sharedStack = heldStack ?? New(ref recent.Stack, stack);
             return true;
         }
 
@@ -77,26 +83,45 @@ namespace Orbiters.Logger.Editor
             }
         }
 
-        private SharedText Take(ref SharedText previous, string text, bool reuse)
+        // The thread's previous text, held once more, when equal; `revived` when nobody held it any more (no charge).
+        private static SharedText Hold(SharedText previous, string text, out bool revived)
+        {
+            revived = false;
+            if (!Same(previous, text))
+            {
+                return null;
+            }
+
+            revived = Interlocked.Increment(ref previous.Refs) == 1;
+            return previous;
+        }
+
+        private void Unhold(SharedText held, bool revived)
+        {
+            if (held == null)
+            {
+                return;
+            }
+
+            if (revived)
+            {
+                Interlocked.Decrement(ref held.Refs);
+            }
+            else
+            {
+                Release(held);
+            }
+        }
+
+        // Charged by Admit.
+        private static SharedText New(ref SharedText previous, string text)
         {
             if (text == null)
             {
                 return null;
             }
 
-            if (!reuse)
-            {
-                // Charged by Admit.
-                previous = new SharedText(text) { Refs = 1 };
-                return previous;
-            }
-
-            if (Interlocked.Increment(ref previous.Refs) == 1)
-            {
-                // Every log that held it was filed in between, and its charge went: it is charged again.
-                Interlocked.Add(ref chars, text.Length);
-            }
-
+            previous = new SharedText(text) { Refs = 1 };
             return previous;
         }
 

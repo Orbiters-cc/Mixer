@@ -412,19 +412,20 @@ namespace Orbiters.Logger.Editor
                         return;
                     }
 
-                    var parts = saved.Split(new[] { ';' }, 5);
-                    if (parts.Length == 5 && int.TryParse(parts[0], out int owner) && owner != CurrentProcess && IsRunningEditor(owner))
+                    var parts = saved.Split(new[] { ';' }, 6);
+                    if (parts.Length == 6 && int.TryParse(parts[0], out int owner) && long.TryParse(parts[1], out long started) &&
+                        !(owner == CurrentProcess && started == StartTicks(CurrentProcess)) && IsRunning(owner, started))
                     {
-                        // Another editor still running borrowed them: its journal, not ours to give back.
+                        // The editor that borrowed them still runs (the same process id and start time): not ours.
                         return;
                     }
 
-                    if (Available && parts.Length == 5 && int.TryParse(parts[1], out int bits) && int.TryParse(parts[2], out int values))
+                    if (Available && parts.Length == 6 && int.TryParse(parts[2], out int bits) && int.TryParse(parts[3], out int values))
                     {
                         changedBits = bits;
                         savedFlags = values;
-                        changedFilter = parts[3] == "1";
-                        savedFilter = parts[4];
+                        changedFilter = parts[4] == "1";
+                        savedFilter = parts[5];
                         Release();
                     }
 
@@ -440,7 +441,7 @@ namespace Orbiters.Logger.Editor
             {
                 try
                 {
-                    EditorPrefs.SetString(RecoveryPref, CurrentProcess + ";" + changedBits + ";" + savedFlags + ";" + (changedFilter ? "1" : "0") + ";" + savedFilter);
+                    EditorPrefs.SetString(RecoveryPref, CurrentProcess + ";" + StartTicks(CurrentProcess) + ";" + changedBits + ";" + savedFlags + ";" + (changedFilter ? "1" : "0") + ";" + savedFilter);
                 }
                 catch (Exception)
                 {
@@ -463,21 +464,24 @@ namespace Orbiters.Logger.Editor
                 }
             }
 
-            private static bool IsRunningEditor(int processId)
+            // When a process started (UTC ticks), or 0 when it doesn't exist or can't be asked.
+            private static long StartTicks(int processId)
             {
                 try
                 {
                     using (var process = System.Diagnostics.Process.GetProcessById(processId))
                     {
-                        return !process.HasExited && process.ProcessName.IndexOf("Unity", StringComparison.OrdinalIgnoreCase) >= 0;
+                        return process.HasExited ? 0L : process.StartTime.ToUniversalTime().Ticks;
                     }
                 }
                 catch (Exception)
                 {
-                    // No such process: the editor that wrote it is gone.
-                    return false;
+                    return 0L;
                 }
             }
+
+            // The very process that wrote a journal: its id alone could have been given to a new process since.
+            internal static bool IsRunning(int processId, long startTicks) => startTicks != 0L && StartTicks(processId) == startTicks;
 
             private static void ClearRecovery()
             {

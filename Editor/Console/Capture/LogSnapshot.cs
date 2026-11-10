@@ -52,6 +52,9 @@ namespace Orbiters.Logger.Editor
             session.Close();
         }
 
+        /// <summary>A save before a reload failed: the last committed session stays for the next domain (see <see cref="SessionFile.MarkSaveFailed"/>).</summary>
+        public static void SaveFailed() => session.MarkSaveFailed();
+
         public static void Delete()
         {
             session.Delete();
