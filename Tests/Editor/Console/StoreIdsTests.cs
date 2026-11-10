@@ -475,19 +475,16 @@ namespace Orbiters.Logger.Editor.Tests
         }
 
         [Test]
-        public void ATrimOrAPinCancelsACompactionBeingPrepared()
+        public void ATrimOrHistoryCancelsACompactionBeingPrepared()
         {
             var store = new LogStore(LogStore.HistoryRoom) { CompactInBackground = true };
             Fill(store);
             store.Trim(1000);
             Assert.IsTrue(store.Compacting);
-            store.Pin();
-            Assert.IsFalse(store.Compacting, "an import's messages have no occurrence yet");
             int imported = store.Intern("From Unity's console", string.Empty, LogVariant.Log);
-            store.Trim(500);
-            Assert.IsFalse(store.Compacting, "never while pinned");
-            store.Unpin();
+            // Interned and put in front in one step, as an import's slice is: nothing can compact in between.
             store.Prepend(new long[] { 1 }, new[] { imported }, new byte[1], 1, null);
+            Assert.IsFalse(store.Compacting, "history in front starts it over");
             Assert.AreEqual("From Unity's console", store.Texts[store.Message(store.MessageAt(store.FirstId)).Text]);
             store.Trim(400);
             store.FinishMaintenance();

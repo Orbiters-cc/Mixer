@@ -9,8 +9,11 @@ namespace Orbiters.Logger.Editor
     /// update so a console with millions of entries never freezes the editor. Each row costs one short read (its first
     /// two lines and timestamp); the full entry is only read the first time a message is seen.
     /// <para>
-    /// <see cref="Placement.Before"/> collects into its own columns and puts them in front of the store at the end;
-    /// <see cref="Placement.After"/> appends directly (the few logs Unity received during a script reload).
+    /// <see cref="Placement.Before"/> reads from the newest row back and puts each slice in front of the store at the end
+    /// of its update: nothing is held across updates (no pin), so the store's text budget and ceiling hold during the
+    /// whole import. Before a new message is interned, its texts must fit the budget; once they don't, the import stops:
+    /// the older history goes, as the store's own trim would have decided (the newest logs win).
+    /// <see cref="Placement.After"/> appends directly, oldest first (the few logs Unity received during a script reload).
     /// </para>
     /// </summary>
     internal sealed class ConsoleHistory
@@ -28,19 +31,23 @@ namespace Orbiters.Logger.Editor
         private readonly long fallbackTime;
         private readonly DateTime startDay;
         private readonly int startSeconds;
+        private readonly DateTime nowDay;
+        private readonly int nowSeconds;
         private readonly Dictionary<(LogVariant variant, string text), int> signatures = new Dictionary<(LogVariant variant, string text), int>();
+        // The store and epoch the cached message ids belong to (a compaction or a clear renumbers messages).
+        private LogStore signaturesStore;
+        private int signaturesEpoch = -1;
+        // After: the next row to read (forward). Before: one past the next row to read (backward).
         private int next;
         private bool verified;
-        // The store whose message ids this import remembers (pinned until it ends).
-        private LogStore pinned;
         private int lastSeconds = -1;
         private long lastTicks;
         private int dayOffset;
-        private long[] times = new long[0];
-        private int[] owners = new int[0];
-        private byte[] flags = new byte[0];
-        private int count;
-        private readonly Dictionary<int, int> contexts = new Dictionary<int, int>();
+        // One slice of history (Before), newest first, put in front at the end of the update that read it.
+        private readonly List<long> times = new List<long>();
+        private readonly List<int> owners = new List<int>();
+        private readonly List<byte> flags = new List<byte>();
+        private readonly List<KeyValuePair<int, int>> contexts = new List<KeyValuePair<int, int>>();
 
         public ConsoleHistory(int from, int to, Placement placement, long fallbackTime, params (int row, string text)[] anchors)
         {
@@ -49,28 +56,38 @@ namespace Orbiters.Logger.Editor
             this.placement = placement;
             this.fallbackTime = fallbackTime;
             this.anchors = anchors ?? new (int, string)[0];
-            next = this.from;
+            next = placement == Placement.Before ? this.to : this.from;
             var editorStart = DateTime.Now - TimeSpan.FromSeconds(UnityEditor.EditorApplication.timeSinceStartup);
             startDay = editorStart.Date;
             startSeconds = (int)editorStart.TimeOfDay.TotalSeconds;
-            if (placement == Placement.Before)
-            {
-                int capacity = Math.Min(this.to - this.from, 1 << 20);
-                times = new long[capacity];
-                owners = new int[capacity];
-                flags = new byte[capacity];
-            }
+            var now = DateTime.Now;
+            nowDay = now.Date;
+            nowSeconds = (int)now.TimeOfDay.TotalSeconds;
         }
 
         public int From => from;
-        public int To => to;
+
+        /// <summary>Where the rows come from: Unity's console (tests give their own).</summary>
+        internal IConsoleSource Source { get; set; } = UnityConsoleSource.Instance;
+
+        /// <summary>The end of the rows still to import (Before: what is left goes up to here).</summary>
+        public int To => placement == Placement.Before ? next : to;
+
         public bool Prepends => placement == Placement.Before;
 
-        /// <summary>The anchor text of the last row read, saved with the session when scripts reload mid-import.</summary>
+        /// <summary>
+        /// The anchor text of the last row still to import, saved with the session when scripts reload mid-import (read
+        /// from Unity's console now: rows above it are already in the store).
+        /// </summary>
         public string EndAnchor
         {
             get
             {
+                if (placement == Placement.Before && next < to)
+                {
+                    return next > from ? Anchor(next - 1) : string.Empty;
+                }
+
                 foreach (var (row, text) in anchors)
                 {
                     if (row == to - 1)
@@ -82,8 +99,9 @@ namespace Orbiters.Logger.Editor
                 return string.Empty;
             }
         }
+
         public int Total => to - from;
-        public int Done => next - from;
+        public int Done => placement == Placement.Before ? to - next : next - from;
         public bool Finished { get; private set; }
         public bool Failed { get; private set; }
 
@@ -123,50 +141,60 @@ namespace Orbiters.Logger.Editor
                 return true;
             }
 
-            if (!UnityConsole.Available || to <= from)
+            if (!Source.Available || to <= from)
             {
-                return Finish(store, failed: !UnityConsole.Available);
+                return Finish(failed: !Source.Available);
             }
 
-            if (pinned == null)
+            if (!ReferenceEquals(store, signaturesStore) || store.Epoch != signaturesEpoch)
             {
-                pinned = store;
-                store.Pin();
+                signatures.Clear();
+                signaturesStore = store;
+                signaturesEpoch = store.Epoch;
             }
 
             var clock = Stopwatch.StartNew();
             // Held until the import ends (Finish), unless a Unity Console window may show the borrowed settings.
-            bool changed = UnityConsole.ShowAll.Take(timestamps: true);
+            bool changed = Source.TakeAll();
             try
             {
-                if (ReadSlice(store, budgetMs, changed, clock, out bool failed))
+                bool over = ReadSlice(store, budgetMs, changed, clock, out bool failed);
+                // The slice goes in at once: no message id is held across updates.
+                PutInFront(store);
+                // A full store would trim older history again at once: the import ends (the newest logs win).
+                over |= placement == Placement.Before && store.Count >= store.MaxOccurrences;
+                if (over)
                 {
-                    return Finish(store, failed);
+                    return Finish(failed);
                 }
             }
             catch (Exception exception)
             {
-                // Never retried: the same row would fail at every update while the store stays pinned. Finish gives the
-                // console settings and the pin back; the caller reports Error once.
+                // Never retried: the same row would fail at every update. Finish gives the console settings back; the
+                // caller reports Error once.
                 Error = exception;
-                return Finish(store, failed: true);
+                times.Clear();
+                owners.Clear();
+                flags.Clear();
+                contexts.Clear();
+                return Finish(failed: true);
             }
             finally
             {
-                if (!Finished && UnityConsole.ConsoleWindowMayShow)
+                if (!Finished && Source.WindowMayShow)
                 {
-                    UnityConsole.ShowAll.Release();
+                    Source.ReleaseAll();
                 }
             }
 
             return false;
         }
 
-        // True when the import is over (read to the end, or the console no longer holds its rows).
+        // True when the import is over (read to the end, the budget is full, or the console no longer holds its rows).
         private bool ReadSlice(LogStore store, double budgetMs, bool changed, Stopwatch clock, out bool failed)
         {
             failed = false;
-            using (var reader = UnityConsole.Reader.Open())
+            using (var reader = Source.Open())
             {
                 if (reader == null || reader.Count < to)
                 {
@@ -197,30 +225,49 @@ namespace Orbiters.Logger.Editor
 
                 // Changing the console's filters costs Unity a pass over its entries: take bigger slices then.
                 double budget = changed ? Math.Max(budgetMs, 40d) : budgetMs;
-                while (next < to)
+                int read = 0;
+                if (placement == Placement.After)
                 {
-                    ReadRow(store, reader, next);
-                    next++;
-                    if ((next & 255) == 0 && clock.Elapsed.TotalMilliseconds >= budget)
+                    while (next < to)
+                    {
+                        ReadRow(store, reader, next);
+                        next++;
+                        if ((++read & 255) == 0 && clock.Elapsed.TotalMilliseconds >= budget)
+                        {
+                            break;
+                        }
+                    }
+
+                    return next >= to;
+                }
+
+                while (next > from)
+                {
+                    if (!ReadRow(store, reader, next - 1))
+                    {
+                        // The store's texts are full: older history would only be trimmed again.
+                        return true;
+                    }
+
+                    next--;
+                    if ((++read & 255) == 0 && clock.Elapsed.TotalMilliseconds >= budget)
                     {
                         break;
                     }
                 }
             }
 
-            return next >= to;
+            return next <= from;
         }
 
-        private void ReadRow(LogStore store, UnityConsole.Reader reader, int row)
+        // False when the row's message is new and its texts don't fit the store's budget (nothing is interned then).
+        private bool ReadRow(LogStore store, IConsoleRows reader, int row)
         {
             string lines = reader.Lines(row, 2, out int mode);
             long time = fallbackTime;
             var occurrenceFlags = OccurrenceFlags.ApproximateTime | OccurrenceFlags.FromUnityConsole;
-            if (UnityConsole.TrySplitTimestamp(lines, out int seconds, out string text))
-            {
-                time = TimeOf(seconds);
-            }
-            else
+            bool stamped = UnityConsole.TrySplitTimestamp(lines, out int seconds, out string text);
+            if (!stamped)
             {
                 text = lines;
             }
@@ -230,17 +277,33 @@ namespace Orbiters.Logger.Editor
             int instanceId = 0;
             if (!signatures.TryGetValue(signature, out int message))
             {
+                string condition = text;
+                string stack = string.Empty;
+                string file = null;
+                int line = 0;
+                int column = 0;
                 if (reader.TryRead(row, out var entry))
                 {
                     instanceId = entry.InstanceId;
-                    message = store.Intern(entry.Condition, LogVariants.IsCompile(variant) ? string.Empty : entry.Stack, variant, 0, entry.File, entry.Line, entry.Column);
-                }
-                else
-                {
-                    message = store.Intern(text, string.Empty, variant);
+                    condition = entry.Condition;
+                    stack = LogVariants.IsCompile(variant) ? string.Empty : entry.Stack;
+                    file = entry.File;
+                    line = entry.Line;
+                    column = entry.Column;
                 }
 
+                if (placement == Placement.Before && !store.HasRoomFor(condition, stack))
+                {
+                    return false;
+                }
+
+                message = store.Intern(condition, stack, variant, 0, file, line, column);
                 signatures[signature] = message;
+            }
+
+            if (stamped)
+            {
+                time = placement == Placement.Before ? TimeBackOf(seconds) : TimeOf(seconds);
             }
 
             if (placement == Placement.After)
@@ -251,26 +314,67 @@ namespace Orbiters.Logger.Editor
                     store.SetContext(occurrence, instanceId);
                 }
 
-                return;
-            }
+                if (store.Epoch != signaturesEpoch)
+                {
+                    // The append compacted (the text ceiling): message ids changed.
+                    signatures.Clear();
+                    signaturesEpoch = store.Epoch;
+                }
 
-            if (count == times.Length)
-            {
-                int size = Math.Max(1024, times.Length * 2);
-                Array.Resize(ref times, size);
-                Array.Resize(ref owners, size);
-                Array.Resize(ref flags, size);
+                return true;
             }
 
             if (instanceId != 0)
             {
-                contexts[count] = instanceId;
+                contexts.Add(new KeyValuePair<int, int>(times.Count, instanceId));
             }
 
-            times[count] = time;
-            owners[count] = message;
-            flags[count] = (byte)occurrenceFlags;
-            count++;
+            times.Add(time);
+            owners.Add(message);
+            flags.Add((byte)occurrenceFlags);
+            return true;
+        }
+
+        // The slice read (newest first) in front of the store, oldest first.
+        private void PutInFront(LogStore store)
+        {
+            int count = times.Count;
+            if (count == 0)
+            {
+                return;
+            }
+
+            var sliceTimes = new long[count];
+            var sliceOwners = new int[count];
+            var sliceFlags = new byte[count];
+            for (int i = 0; i < count; i++)
+            {
+                sliceTimes[i] = times[count - 1 - i];
+                sliceOwners[i] = owners[count - 1 - i];
+                sliceFlags[i] = flags[count - 1 - i];
+            }
+
+            Dictionary<int, int> sliceContexts = null;
+            if (contexts.Count > 0)
+            {
+                sliceContexts = new Dictionary<int, int>(contexts.Count);
+                foreach (var pair in contexts)
+                {
+                    sliceContexts[count - 1 - pair.Key] = pair.Value;
+                }
+            }
+
+            times.Clear();
+            owners.Clear();
+            flags.Clear();
+            contexts.Clear();
+            store.Prepend(sliceTimes, sliceOwners, sliceFlags, count, sliceContexts);
+            // Prepend may compact (budget, ceiling): cached message ids would name other messages.
+            if (store.Epoch != signaturesEpoch)
+            {
+                signatures.Clear();
+                signaturesEpoch = store.Epoch;
+            }
         }
 
         // Unity's console timestamps are local times of day: rows are in order, so a jump back means midnight passed.
@@ -296,27 +400,35 @@ namespace Orbiters.Logger.Editor
             return lastTicks;
         }
 
-        private bool Finish(LogStore store, bool failed)
+        // The same read from the newest row back: the newest is today unless it is later than now (then yesterday), and a
+        // jump forward going back means midnight passed.
+        private long TimeBackOf(int seconds)
+        {
+            if (seconds == lastSeconds)
+            {
+                return lastTicks;
+            }
+
+            if (lastSeconds < 0)
+            {
+                dayOffset = seconds > nowSeconds + 300 ? -1 : 0;
+            }
+            else if (seconds > lastSeconds + 3600)
+            {
+                dayOffset--;
+            }
+
+            lastSeconds = seconds;
+            var local = nowDay.AddDays(dayOffset).AddSeconds(seconds);
+            lastTicks = local.ToUniversalTime().Ticks;
+            return lastTicks;
+        }
+
+        private bool Finish(bool failed)
         {
             Finished = true;
             Failed = failed;
-            UnityConsole.ShowAll.Release();
-            if (pinned != null)
-            {
-                // The ids go into the store's own columns now: a compaction after this remaps them with the rest.
-                pinned.Unpin();
-                pinned = null;
-            }
-
-            if (!failed && placement == Placement.Before && count > 0)
-            {
-                store.Prepend(times, owners, flags, count, contexts);
-            }
-
-            times = new long[0];
-            owners = new int[0];
-            flags = new byte[0];
-            count = 0;
+            Source.ReleaseAll();
             return true;
         }
     }

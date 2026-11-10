@@ -508,6 +508,46 @@ namespace Orbiters.Logger.Editor.Tests
             Assert.Less(loaded.Count, 3000);
         }
 
+        // Stripped copies read back lazily (a search, any thread) never take the table past the ceiling: past it they are
+        // made again when asked for instead of kept, and still read right.
+        [Test]
+        public void AStrippedCopyBurstNeverPassesTheCeiling()
+        {
+            var store = new LogStore();
+            for (int i = 0; i < 3000; i++)
+            {
+                store.Add(100 + i, "<b>Rich text log number " + i + " with some padding</b>", string.Empty, LogVariant.Log);
+            }
+
+            saving.Save(store, Info(), Process, Start);
+            var loaded = Load();
+            loaded.MaxTextChars = loaded.Texts.TotalChars + 1000;
+            for (int i = 0; i < loaded.MessageCount; i++)
+            {
+                int text = loaded.Message(i).Text;
+                Assert.AreEqual("Rich text log number " + i + " with some padding", loaded.Texts.Plain(text));
+                Assert.AreEqual("Rich text log number " + i + " with some padding", loaded.Texts.Plain(text), "asked again");
+                Assert.LessOrEqual(loaded.Texts.TotalChars, loaded.TextCeiling, "after text " + i);
+            }
+
+            Assert.Greater(loaded.Texts.TotalChars, loaded.MaxTextChars, "copies were kept up to the ceiling");
+        }
+
+        // Whatever the budget, one log fits it: its texts are cut to an eighth of the budget.
+        [Test]
+        public void OneLogFitsTheSmallestBudget()
+        {
+            var store = new LogStore { MaxTextChars = 1 };
+            string text = "<b>" + new string('t', LogStore.MaxTextLength) + "</b>";
+            string stack = new string('s', LogStore.MaxTextLength);
+            int id = store.Add(100, text, stack, LogVariant.Log);
+            Assert.AreEqual(1, store.Count);
+            Assert.IsTrue(store.Contains(id), "the newest log stays");
+            Assert.LessOrEqual(store.Texts.TotalChars, store.MaxTextChars);
+            StringAssert.EndsWith(" more characters left out by the Mixer console]", store.Texts[store.Message(store.MessageAt(id)).Text]);
+            Assert.LessOrEqual(store.Texts[store.Message(store.MessageAt(id)).Stack].Length, store.MaxTextChars / 8);
+        }
+
         [Test]
         public void StableHashIsTheSameEverywhere()
         {

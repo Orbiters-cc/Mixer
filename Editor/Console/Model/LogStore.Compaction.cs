@@ -19,7 +19,8 @@ namespace Orbiters.Logger.Editor
         /// <summary>
         /// The most characters of text the store ever holds outside an import: the budget plus a quarter. A compaction in
         /// the background is an optimisation the budget never depends on: past this, the oldest logs go and what they
-        /// leave dead is compacted at once, on the editor's thread (the synchronous path), whatever runs in the background.
+        /// leave dead is compacted at once, on the editor's thread (the synchronous path), whatever runs in the background,
+        /// imports included (they hold nothing across updates).
         /// Compactions share the store's strings (<see cref="TextTable.InternCopy"/>) and a cancelled one lets go of its
         /// tables at its next occurrence, so the store's own table is what holds the characters.
         /// </summary>
@@ -40,10 +41,10 @@ namespace Orbiters.Logger.Editor
         /// </summary>
         private void MaybeCompact()
         {
-            if (!AllowCompaction || compaction != null || pins > 0 || Texts.Faulted)
+            if (!AllowCompaction || compaction != null || Texts.Faulted)
             {
-                // An import holds message ids that have no occurrence yet; or a text could not be read back, and copying
-                // it would keep its placeholder as if it were the log (LogCapture starts over instead).
+                // A text could not be read back, and copying it would keep its placeholder as if it were the log
+                // (LogCapture starts over instead).
                 return;
             }
 
@@ -69,7 +70,7 @@ namespace Orbiters.Logger.Editor
         // now (trims and synchronous compactions).
         private void EnforceCeiling()
         {
-            if (Texts.TotalChars <= TextCeiling || pins > 0 || Texts.Faulted || compactNow)
+            if (Texts.TotalChars <= TextCeiling || Texts.Faulted || compactNow)
             {
                 return;
             }
@@ -185,7 +186,7 @@ namespace Orbiters.Logger.Editor
             Epoch++;
             Version++;
             Regrouped?.Invoke();
-            if (Texts.TotalChars > maxTextChars && pins == 0)
+            if (Texts.TotalChars > maxTextChars)
             {
                 // Still over budget: the next oldest fifth goes (and compacts in turn).
                 KeepTextBudget();
