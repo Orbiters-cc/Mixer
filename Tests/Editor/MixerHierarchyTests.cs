@@ -772,6 +772,26 @@ namespace Orbiters.Mixer.Editor.Tests
             finally { Toolkit.Editor.EditorChangeBus.Changed -= listen; }
         }
 
+        // Unity results: while searching, an object renamed by a script (no Undo, no change event) and a root made by a script
+        // are found at the next refresh, the roots in Unity's order.
+        [Test]
+        public void ASearchFindsScriptEditsThatRaisedNoEvent()
+        {
+            var model = new HierarchyModel();
+            var filter = new HierarchyFilter { Pattern = new Toolkit.Editor.SearchPattern("MixerNoEvent", false, false) };
+            model.SetExpanded(root.GetInstanceID(), true);
+            model.Rebuild(filter);
+            var cube = root.transform.GetChild(2).GetChild(0).gameObject;
+            cube.name = "MixerNoEvent renamed";
+            var made = new GameObject("MixerNoEvent root");
+            SceneManager.MoveGameObjectToScene(made, scene);
+            made.transform.SetSiblingIndex(0);
+            model.Refresh(filter);
+            var matches = model.Rows.Where(r => r.Object != null && r.Match).Select(r => r.Object).ToList();
+            Assert.That(matches, Does.Contain(cube).And.Contain(made));
+            Assert.That(model.Verify(filter), Is.Empty);
+        }
+
         // Review of the pictures: scrolling binds rows and makes pictures between rebuilds; the window's tick frees the
         // oldest past the cap, never one on screen.
         [Test]

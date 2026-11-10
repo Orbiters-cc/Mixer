@@ -168,6 +168,14 @@ namespace Orbiters.Mixer.Editor
         /// </summary>
         public void Refresh(HierarchyFilter filter)
         {
+            using (RefreshMarker.Auto()) RefreshRows(filter);
+        }
+
+        // Measured in the profiler (and with OrbitersEditorHost-style timings) as "Mixer.HierarchyRefresh".
+        private static readonly Unity.Profiling.ProfilerMarker RefreshMarker = new Unity.Profiling.ProfilerMarker("Mixer.HierarchyRefresh");
+
+        private void RefreshRows(HierarchyFilter filter)
+        {
             if (!loaded) LoadExpanded();
             NeedsRefresh = false;
             if (linkStale) RefreshLinkState();
@@ -221,9 +229,18 @@ namespace Orbiters.Mixer.Editor
 
         private List<HierarchyRow> RootsOf(Scene scene)
         {
-            if (sceneRoots.TryGetValue(scene.handle, out var roots)) return roots;
+            // Roots made, removed, moved between scenes or reordered by a script raise no event: the kept list is checked
+            // against Unity's, in Unity's order, at every refresh (one array per scene).
+            var now = scene.GetRootGameObjects();
+            if (sceneRoots.TryGetValue(scene.handle, out var roots))
+            {
+                bool same = roots.Count == now.Length;
+                for (int i = 0; same && i < now.Length; i++) same = ReferenceEquals(roots[i].Object, now[i]);
+                if (same) return roots;
+                revision++;
+            }
             roots = new List<HierarchyRow>();
-            foreach (var go in scene.GetRootGameObjects())
+            foreach (var go in now)
             {
                 var node = NodeOf(go);
                 node.Parent = null;
@@ -280,16 +297,13 @@ namespace Orbiters.Mixer.Editor
             }
             if ((go.hideFlags & HideFlags.HideInHierarchy) != 0) return;
             if (node.FactsStale) RefreshFacts(node);
-            // A row shown (no search: the rows are what is on the list) reads again what a script can change without any
-            // change event: its name, whether it is active, and its children. Searching uses the kept facts (a keystroke
-            // reads nothing from the scene).
-            if (!filter.Any)
-            {
-                string name = go.name;
-                if (name != node.Name) { node.Name = name; revision++; }
-                node.ActiveStale = true;
-                if (!node.ChildrenStale && node.Children != null && ChildrenDiffer(node)) MarkCachedUp(node, Mark.Meshes | Mark.Tools | Mark.Picture);
-            }
+            // Every object walked (the rows listed; while searching, every object) reads again what a script can change
+            // without any change event: its name, whether it is active, and its children (their order too). These are
+            // cheap reads; the heavy facts (prefab state, components, avatar tools, meshes below) stay kept until a change.
+            string name = go.name;
+            if (name != node.Name) { node.Name = name; revision++; }
+            node.ActiveStale = true;
+            if (!node.ChildrenStale && node.Children != null && ChildrenDiffer(node)) { revision++; MarkCachedUp(node, Mark.Meshes | Mark.Tools | Mark.Picture); }
             if (node.ActiveStale) { node.Active = go.activeInHierarchy; node.ActiveStale = false; }
             if (node.VisibilityStale)
             {
@@ -837,7 +851,26 @@ namespace Orbiters.Mixer.Editor
                 string what = Differs(Rows[i], fresh.Rows[i]);
                 if (what != null) differences.Add("row " + i + " (" + fresh.Rows[i].Name + "): " + what);
             }
+            if (differences.Count > 0)
+            {
+                differences.Add("kept: " + Describe(Rows));
+                differences.Add("from scratch: " + Describe(fresh.Rows));
+            }
             return differences;
+        }
+
+        // Every row as "name (depth, scene)" (at most 300), for a failure that reads without replaying.
+        private static string Describe(List<HierarchyRow> rows)
+        {
+            var text = new System.Text.StringBuilder();
+            for (int i = 0; i < rows.Count && i < 300; i++)
+            {
+                var row = rows[i];
+                if (i > 0) text.Append(" | ");
+                text.Append(i).Append(' ').Append(row.IsScene ? "[scene] " : "").Append(row.Name).Append(" (").Append(row.Depth).Append(", ")
+                    .Append(row.Scene.IsValid() ? row.Scene.name : "?").Append(row.Match ? "" : ", dim").Append(')');
+            }
+            return text.ToString();
         }
 
         private static string Differs(HierarchyRow a, HierarchyRow b)
