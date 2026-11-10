@@ -844,7 +844,11 @@ namespace Orbiters.Mixer.Editor
             {
                 known = new Vector3[count];
                 for (int w = 0; w < count; w++) { int v = representative[w]; known[w] = deltas != null ? basePositions[v] + deltas[v] : basePositions[v]; }
-                if (Send(MixerLinkProtocol.FrameType.Positions, MeshDataCodec.EncodePositions(meshId, layer, topology, known))) sentLayers[key] = known;
+                if (Send(MixerLinkProtocol.FrameType.Positions, MeshDataCodec.EncodePositions(meshId, layer, topology, known)))
+                {
+                    sentLayers[key] = known;
+                    if (layer == null) ForgetShapeLayers(meshId);
+                }
                 return;
             }
             movedIndices.Clear();
@@ -864,6 +868,19 @@ namespace Orbiters.Mixer.Editor
                 return;
             }
             for (int i = 0; i < movedIndices.Count; i++) known[movedIndices[i]] = movedPositions[i];
+            if (layer == null) ForgetShapeLayers(meshId);
+        }
+
+        // A base frame moves every shape of the mesh with it on the other side (Blender's keys keep their offsets, Unity's
+        // shapes are deltas on the base): what Unity knew of the shapes is no longer what Blender has, so each shape's
+        // next frame is whole.
+        private void ForgetShapeLayers(string meshId)
+        {
+            if (sentLayers.Count == 0) return;
+            leavingKeys.Clear();
+            foreach (var key in sentLayers.Keys) if (key.mesh == meshId && key.layer.Length > 0) leavingKeys.Add(key);
+            foreach (var key in leavingKeys) sentLayers.Remove(key);
+            leavingKeys.Clear();
         }
 
         // Blender's copy of the mesh may now differ from what Unity's frames left it: the next frame of each layer is whole.
@@ -1214,14 +1231,28 @@ namespace Orbiters.Mixer.Editor
         {
             if (!Connected || target == null || channel.IsNone || !graphNodes.Contains(target.Id) || IsBlenderOwned(target)) return;
             SendChannel(target, channel, vertices);
-            var lists = target.Document.Influences;
-            if (channel.IsGroup || lists == null) return;
+            if (channel.IsGroup) return;
+            // The bones the vertices have now, and those they had before the stroke (one that fell under a thousandth left
+            // the vertex: it goes as 0, which takes the vertex out of its group in Blender). The stroke pushed its history
+            // entry just before (WeightStroke.End), with the influences before and after.
             var others = new HashSet<int>();
-            foreach (int v in vertices)
-                if (v >= 0 && v < lists.Length)
-                    foreach (var influence in lists[v])
-                        if (influence.Bone != channel.Bone && influence.Bone >= 0) others.Add(influence.Bone);
-            foreach (int bone in others) SendChannel(target, WeightChannel.OfBone(bone), vertices);
+            var lists = target.Document.Influences;
+            if (lists != null)
+                foreach (int v in vertices)
+                    if (v >= 0 && v < lists.Length)
+                        foreach (var influence in lists[v]) others.Add(influence.Bone);
+            if (MixerHistory.Last is WeightEdit stroke && stroke.Target == target)
+            {
+                var touched = new HashSet<int>(vertices);
+                for (int i = 0; i < stroke.Indices.Length; i++)
+                {
+                    if (!touched.Contains(stroke.Indices[i])) continue;
+                    foreach (var influence in stroke.Before[i]) others.Add(influence.Bone);
+                    foreach (var influence in stroke.After[i]) others.Add(influence.Bone);
+                }
+            }
+            others.Remove(channel.Bone);
+            foreach (int bone in others) if (bone >= 0) SendChannel(target, WeightChannel.OfBone(bone), vertices);
         }
 
         // One channel's weights on these vertices (welded once each), as they are now.

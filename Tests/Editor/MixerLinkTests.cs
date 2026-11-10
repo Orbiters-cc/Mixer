@@ -958,6 +958,122 @@ namespace Orbiters.Mixer.Editor.Tests
             }
         }
 
+        // A base frame moves the shapes with it on the other side: the next frame of a shape is whole, so a shape edited
+        // back to where Unity last sent it still reaches Blender (base, shape, base, shape).
+        [Test]
+        public void AShapeFrameAfterABaseFrameIsWhole()
+        {
+            using (var host = MixerLinkHost.OpenPrivate(scene))
+            using (var blender = new FakeBlender(host))
+            {
+                blender.Hello();
+                blender.Pump(5, MixerLinkProtocol.FrameType.MeshData);
+                var target = MixerSession.Edit(renderer);
+                blender.Pump(0.3);
+                var doc = target.Document;
+                int v = doc.LinkWeld.Representative[0];
+                var layer = doc.Shape("Wide", create: true);
+                doc.Layer = "Wide";
+                var shapeAt = doc.Positions[v] + layer.Deltas[v] + Vector3.right;
+                doc.SetLayerPosition("Wide", v, shapeAt);
+                host.NotePositions(target);
+                Assert.That(PositionsOf(blender.Pump(1.0, MixerLinkProtocol.FrameType.Positions)).Last().Shape, Is.EqualTo("Wide"));
+                doc.Layer = null;
+                doc.SetLayerPosition(null, v, doc.Positions[v] + Vector3.right);
+                host.NotePositions(target);
+                var baseFrame = PositionsOf(blender.Pump(1.0, MixerLinkProtocol.FrameType.Positions)).Last();
+                Assert.That(baseFrame.Shape, Is.Null);
+                // The shape back at the place Unity sent before the base moved: Blender's key moved with the base, so it goes.
+                doc.Layer = "Wide";
+                doc.SetLayerPosition("Wide", v, shapeAt);
+                host.NotePositions(target);
+                var shapeFrame = PositionsOf(blender.Pump(1.0, MixerLinkProtocol.FrameType.Positions)).LastOrDefault();
+                Assert.That(shapeFrame, Is.Not.Null, "the shape's edit reaches Blender");
+                Assert.That(shapeFrame.Shape, Is.EqualTo("Wide"));
+                Assert.That(shapeFrame.Indices, Is.Null, "whole, as Unity no longer knows what Blender has of the shape");
+                Assert.That(shapeFrame.Positions[0], Is.EqualTo(shapeAt));
+                // And again after one more base frame.
+                doc.Layer = null;
+                doc.SetLayerPosition(null, v, doc.Positions[v] - Vector3.right);
+                host.NotePositions(target);
+                blender.Pump(1.0, MixerLinkProtocol.FrameType.Positions);
+                doc.Layer = "Wide";
+                host.NotePositions(target);
+                Assert.That(PositionsOf(blender.Pump(1.0, MixerLinkProtocol.FrameType.Positions)).LastOrDefault()?.Indices, Is.Null, "whole again");
+            }
+        }
+
+        // Undo and Redo of a base edit between shape edits: each base frame they send makes the shape's next frame whole.
+        [Test]
+        public void UndoAndRedoOfTheBaseBetweenShapeEditsKeepTheShapeWhole()
+        {
+            using (var host = MixerLinkHost.OpenPrivate(scene))
+            using (var blender = new FakeBlender(host))
+            {
+                blender.Hello();
+                blender.Pump(5, MixerLinkProtocol.FrameType.MeshData);
+                var target = MixerSession.Edit(renderer);
+                blender.Pump(0.3);
+                var doc = target.Document;
+                int v = doc.LinkWeld.Representative[0];
+                doc.Shape("Wide", create: true);
+                doc.Layer = "Wide";
+                doc.SetLayerPosition("Wide", v, doc.GetLayerPosition("Wide", v) + Vector3.up);
+                host.NotePositions(target);
+                blender.Pump(1.0, MixerLinkProtocol.FrameType.Positions);
+                var before = doc.Positions[v];
+                var after = before + Vector3.forward;
+                doc.SetLayerPosition(null, v, after);
+                MixerHistory.Push(new PositionEdit { Target = target, Label = "Test base move", Layer = null, Indices = new[] { v }, Before = new[] { before }, After = new[] { after } });
+                host.NotePositions(target);
+                blender.Pump(1.0, MixerLinkProtocol.FrameType.Positions);
+                foreach (bool undo in new[] { true, false })
+                {
+                    if (undo) Undo.PerformUndo(); else Undo.PerformRedo();
+                    var frames = PositionsOf(blender.Pump(1.0, MixerLinkProtocol.FrameType.Positions)).ToList();
+                    Assert.That(frames.Any(f => f.Shape == null), Is.True, undo ? "the undo sends the base" : "the redo sends the base");
+                    doc.Layer = "Wide";
+                    host.NotePositions(target);
+                    var shape = PositionsOf(blender.Pump(1.0, MixerLinkProtocol.FrameType.Positions)).LastOrDefault(f => f.Shape == "Wide");
+                    Assert.That(shape, Is.Not.Null, "the shape follows");
+                    Assert.That(shape.Indices, Is.Null, "whole");
+                    Assert.That(shape.Positions[0], Is.EqualTo(doc.GetLayerPosition("Wide", v)));
+                }
+            }
+        }
+
+        // A bone a normalised stroke takes out of a vertex entirely (to 0, or under the thousandth Unity keeps) goes to
+        // Blender as 0, so Blender's copy does not keep it beside the painted bone.
+        [Test]
+        public void ABoneANormalizedStrokeRemovesGoesAsZero()
+        {
+            using (var host = MixerLinkHost.OpenPrivate(scene))
+            using (var blender = new FakeBlender(host))
+            {
+                blender.Hello();
+                blender.Pump(5, MixerLinkProtocol.FrameType.MeshData);
+                var target = MixerSession.Edit(renderer);
+                blender.Pump(0.3);
+                var doc = target.Document;
+                var n = doc.LinkWeld;
+                foreach (var (painted, value) in new[] { (n.Representative[1], 1f), (n.Representative[2], 0.9995f) })
+                {
+                    doc.SetInfluences(painted, new[] { new MeshDocument.Influence(0, 0.75f), new MeshDocument.Influence(1, 0.25f) });
+                    var recorder = new WeightRecorder(target, null, "Test stroke");
+                    recorder.Touch(painted);
+                    doc.SetBoneWeight(painted, 1, value, normalize: true);
+                    Assume.That(doc.BoneWeight(painted, 0), Is.EqualTo(0f), "Unity dropped bone 0 from the vertex");
+                    MixerHistory.Push(recorder.Finish());
+                    host.SendWeights(target, WeightChannel.OfBone(1), new[] { painted });
+                    var frames = blender.Pump(0.5).Where(f => f.type == MixerLinkProtocol.FrameType.Weights).Select(f => MeshDataCodec.DecodeWeights(f.payload)).ToList();
+                    var gone = frames.FirstOrDefault(f => f.Bone == 0);
+                    Assert.That(gone, Is.Not.Null, "the bone that left the vertex is sent (stroke to " + value + ")");
+                    Assert.That(gone.Weights, Is.EqualTo(new[] { 0f }), "as 0");
+                    Assert.That(frames.Single(f => f.Bone == 1).Weights[0], Is.EqualTo(doc.BoneWeight(painted, 1)));
+                }
+            }
+        }
+
         private static IEnumerable<MeshDataCodec.PositionsFrame> PositionsOf(List<(MixerLinkProtocol.FrameType type, byte[] payload)> frames) =>
             frames.Where(f => f.type == MixerLinkProtocol.FrameType.Positions).Select(f => MeshDataCodec.DecodePositions(f.payload));
 
