@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UIElements;
@@ -53,5 +54,24 @@ namespace Orbiters.UnitGit.Editor
         internal Button commitPushButton;
         internal UnitGitCheck amendCheck;
         internal Button addButton;
+
+        /// <summary>After a snapshot: the changed files selected follow what the repository now has (the first change when the selected one is gone).</summary>
+        internal void Reconcile(UnitGitSnapshot snapshot)
+        {
+            var present = new HashSet<string>(snapshot.Changes.Select(change => change.Path), StringComparer.OrdinalIgnoreCase);
+            selectedChangePaths.RemoveWhere(path => !present.Contains(path));
+            if (snapshot.Changes.Count > 0 &&
+                (string.IsNullOrWhiteSpace(selectedChangePath) ||
+                 snapshot.Changes.All(change => !string.Equals(change.Path, selectedChangePath, StringComparison.OrdinalIgnoreCase))))
+            {
+                selectedChangePath = snapshot.Changes[0].Path;
+            }
+            else if (snapshot.Changes.Count == 0)
+            {
+                selectedChangePath = string.Empty;
+            }
+            if (selectedChangePaths.Count == 0 && !string.IsNullOrEmpty(selectedChangePath))
+                selectedChangePaths.Add(selectedChangePath);
+        }
     }
 }

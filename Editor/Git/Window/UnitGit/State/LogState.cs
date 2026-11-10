@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UIElements;
@@ -45,5 +46,55 @@ namespace Orbiters.UnitGit.Editor
         internal Texture2D releaseThumbnail;
         // The entrance plays when another release is selected, not on each refresh of the same one.
         internal string releaseShownId = string.Empty;
+
+        /// <summary>After a snapshot: the branch, commits and details selected follow what the repository now has (the current branch, the newest commit, when they are gone).</summary>
+        internal void Reconcile(UnitGitSnapshot snapshot)
+        {
+            string selectedRef = selectedBranch?.FullRef;
+            selectedBranch = snapshot.Branches.FirstOrDefault(branch => branch.FullRef == selectedRef)
+                ?? snapshot.Branches.FirstOrDefault(branch => branch.IsCurrent)
+                ?? snapshot.Branches.FirstOrDefault();
+
+            if (snapshot.HasRepository && snapshot.Commits.Count > 0)
+            {
+                var availableHashes = new HashSet<string>(snapshot.Commits.Select(commit => commit.FullHash), StringComparer.Ordinal);
+                selectedCommitHashes.RemoveWhere(hash => !availableHashes.Contains(hash));
+                if (!string.IsNullOrWhiteSpace(selectionAnchorHash) &&
+                    snapshot.Commits.All(commit => commit.FullHash != selectionAnchorHash))
+                {
+                    selectionAnchorHash = string.Empty;
+                }
+
+                if (selectedCommit == null || snapshot.Commits.All(commit => commit.FullHash != selectedCommit.FullHash))
+                {
+                    selectedCommit = selectedCommitHashes.Count > 0
+                        ? snapshot.Commits.FirstOrDefault(commit => selectedCommitHashes.Contains(commit.FullHash)) ?? snapshot.Commits[0]
+                        : snapshot.Commits[0];
+                    selectedReleaseId = string.Empty;
+                }
+
+                if (selectedCommitHashes.Count == 0 && selectedCommit != null && string.IsNullOrEmpty(selectedReleaseId))
+                {
+                    selectedCommitHashes.Add(selectedCommit.FullHash);
+                    selectionAnchorHash = selectedCommit.FullHash;
+                }
+
+                if (selectedDetails == null ||
+                         selectedDetails.Commit == null ||
+                         selectedCommit == null ||
+                         selectedDetails.Commit.FullHash != selectedCommit.FullHash)
+                {
+                    selectedDetails = null;
+                }
+            }
+            else
+            {
+                selectedCommit = null;
+                selectedCommitHashes.Clear();
+                selectionAnchorHash = string.Empty;
+                selectedReleaseId = string.Empty;
+                selectedDetails = null;
+            }
+        }
     }
 }

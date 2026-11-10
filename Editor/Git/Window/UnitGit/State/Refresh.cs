@@ -325,68 +325,11 @@ namespace Orbiters.UnitGit.Editor
             }
         }
 
+        // After each snapshot: every tab's selection follows what the repository now has.
         private void ReconcileSnapshotSelection()
         {
-            string selectedRef = logTab.selectedBranch?.FullRef;
-            logTab.selectedBranch = snapshot.Branches.FirstOrDefault(branch => branch.FullRef == selectedRef)
-                ?? snapshot.Branches.FirstOrDefault(branch => branch.IsCurrent)
-                ?? snapshot.Branches.FirstOrDefault();
-
-            var present = new HashSet<string>(snapshot.Changes.Select(change => change.Path), StringComparer.OrdinalIgnoreCase);
-            changesTab.selectedChangePaths.RemoveWhere(path => !present.Contains(path));
-            if (snapshot.Changes.Count > 0 &&
-                (string.IsNullOrWhiteSpace(changesTab.selectedChangePath) ||
-                 snapshot.Changes.All(change => !string.Equals(change.Path, changesTab.selectedChangePath, StringComparison.OrdinalIgnoreCase))))
-            {
-                changesTab.selectedChangePath = snapshot.Changes[0].Path;
-            }
-            else if (snapshot.Changes.Count == 0)
-            {
-                changesTab.selectedChangePath = string.Empty;
-            }
-            if (changesTab.selectedChangePaths.Count == 0 && !string.IsNullOrEmpty(changesTab.selectedChangePath))
-                changesTab.selectedChangePaths.Add(changesTab.selectedChangePath);
-
-            if (snapshot.HasRepository && snapshot.Commits.Count > 0)
-            {
-                var availableHashes = new HashSet<string>(snapshot.Commits.Select(commit => commit.FullHash), StringComparer.Ordinal);
-                logTab.selectedCommitHashes.RemoveWhere(hash => !availableHashes.Contains(hash));
-                if (!string.IsNullOrWhiteSpace(logTab.selectionAnchorHash) &&
-                    snapshot.Commits.All(commit => commit.FullHash != logTab.selectionAnchorHash))
-                {
-                    logTab.selectionAnchorHash = string.Empty;
-                }
-
-                if (logTab.selectedCommit == null || snapshot.Commits.All(commit => commit.FullHash != logTab.selectedCommit.FullHash))
-                {
-                    logTab.selectedCommit = logTab.selectedCommitHashes.Count > 0
-                        ? snapshot.Commits.FirstOrDefault(commit => logTab.selectedCommitHashes.Contains(commit.FullHash)) ?? snapshot.Commits[0]
-                        : snapshot.Commits[0];
-                    logTab.selectedReleaseId = string.Empty;
-                }
-
-                if (logTab.selectedCommitHashes.Count == 0 && logTab.selectedCommit != null && string.IsNullOrEmpty(logTab.selectedReleaseId))
-                {
-                    logTab.selectedCommitHashes.Add(logTab.selectedCommit.FullHash);
-                    logTab.selectionAnchorHash = logTab.selectedCommit.FullHash;
-                }
-
-                if (logTab.selectedDetails == null ||
-                         logTab.selectedDetails.Commit == null ||
-                         logTab.selectedCommit == null ||
-                         logTab.selectedDetails.Commit.FullHash != logTab.selectedCommit.FullHash)
-                {
-                    logTab.selectedDetails = null;
-                }
-            }
-            else
-            {
-                logTab.selectedCommit = null;
-                logTab.selectedCommitHashes.Clear();
-                logTab.selectionAnchorHash = string.Empty;
-                logTab.selectedReleaseId = string.Empty;
-                logTab.selectedDetails = null;
-            }
+            logTab.Reconcile(snapshot);
+            changesTab.Reconcile(snapshot);
         }
 
         private sealed class SnapshotRefreshResult
