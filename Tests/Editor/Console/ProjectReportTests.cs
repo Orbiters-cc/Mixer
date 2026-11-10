@@ -229,6 +229,42 @@ namespace Orbiters.Logger.Editor.Tests
         }
 
         [Test]
+        public void LogFilesMaskEachTextOnceAndWhole()
+        {
+            const string secretLog = "Signed in with token s3cret-session-value";
+            const string keyLog = "Could not read key.pem: -----BEGIN RSA PRIVATE KEY-----\nMIIEow";
+            var store = new LogStore();
+            store.Add(TimeSpan.TicksPerSecond * 1, secretLog, string.Empty, LogVariant.Log);
+            store.Add(TimeSpan.TicksPerSecond * 2, keyLog, string.Empty, LogVariant.Error);
+            store.Add(TimeSpan.TicksPerSecond * 3, "Player spawned", string.Empty, LogVariant.Log);
+            store.Add(TimeSpan.TicksPerSecond * 4, secretLog, string.Empty, LogVariant.Log);
+            var snapshot = LogReport.Take(store);
+            snapshot.EditorLog = null;
+            string staging = Path.Combine(Path.GetTempPath(), "LoggerReportLogs-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                var privacy = Privacy();
+                var context = new ReportContext(staging, privacy, null, new[] { ReportPart.Logs });
+                LogReport.Write(context, snapshot, null);
+                string logs = File.ReadAllText(Path.Combine(staging, "logs", "logs.txt"));
+                StringAssert.DoesNotContain("s3cret-session-value", logs);
+                StringAssert.Contains("Player spawned", logs, "a cut key header doesn't mask the logs after it");
+                StringAssert.DoesNotContain("MIIEow", logs);
+                StringAssert.Contains(privacy.Mask(secretLog), logs);
+                string messages = File.ReadAllText(Path.Combine(staging, "logs", "messages.txt"));
+                StringAssert.Contains("Player spawned", messages);
+                StringAssert.DoesNotContain("s3cret-session-value", messages);
+            }
+            finally
+            {
+                if (Directory.Exists(staging))
+                {
+                    Directory.Delete(staging, true);
+                }
+            }
+        }
+
+        [Test]
         public void TextsAreMaskedBeforeTheyAreCut()
         {
             // A token across the cut would otherwise leave its first half in the report.

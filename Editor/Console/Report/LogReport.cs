@@ -211,6 +211,7 @@ namespace Orbiters.Logger.Editor
                 var counts = new int[view.MessageCount];
                 var first = new long[view.MessageCount];
                 var last = new long[view.MessageCount];
+                var masked = new Masked(context.Privacy, view.Texts, snapshot.Sources.Length);
                 using (var writer = context.OpenText("logs/logs.txt", "Every log of the session, oldest first (stack traces in messages.txt)"))
                 {
                     writer.Line("# " + LoggerUi.Plural(view.Count, "log") + " from " + Stamp(view.Times[0]) + " to " + Stamp(view.Times[view.Count - 1]) +
@@ -231,9 +232,10 @@ namespace Orbiters.Logger.Editor
                         line.Clear();
                         line.Append(Stamp(time)).Append(((OccurrenceFlags)view.Flags[i] & OccurrenceFlags.ApproximateTime) != 0 ? "~ " : "  ");
                         line.Append(LevelTag(message.Variant)).Append("  ");
-                        line.Append(SourceName(snapshot, id)).Append("  ");
-                        AppendIndented(line, view.Texts.Plain(message.Text), "    ");
-                        writer.Line(line.ToString());
+                        line.Append(masked.Source(snapshot, id)).Append("  ");
+                        // Time and level hold nothing to mask; the source and text are masked once each.
+                        AppendIndented(line, masked.Text(message.Text), "    ");
+                        writer.Raw(line.ToString());
                         written++;
                         if ((i & 0x3FFF) == 0)
                         {
@@ -242,7 +244,7 @@ namespace Orbiters.Logger.Editor
                     }
                 }
 
-                WriteMessages(context, snapshot, counts, first, last);
+                WriteMessages(context, snapshot, masked, counts, first, last);
             }
 
             progress?.Invoke(0.8f);
@@ -258,7 +260,7 @@ namespace Orbiters.Logger.Editor
             return LoggerUi.Plural(written, "log") + (copied ? " · Editor.log" : string.Empty);
         }
 
-        private static void WriteMessages(ReportContext context, Snapshot snapshot, int[] counts, long[] first, long[] last)
+        private static void WriteMessages(ReportContext context, Snapshot snapshot, Masked masked, int[] counts, long[] first, long[] last)
         {
             var view = snapshot.View;
             var order = Enumerable.Range(0, view.MessageCount).Where(i => counts[i] > 0)
@@ -271,16 +273,17 @@ namespace Orbiters.Logger.Editor
                     ref var message = ref view.Messages[id];
                     writer.Line();
                     writer.Line(new string('─', 100));
-                    writer.Line(LevelTag(message.Variant).Trim() + " · " + LogVariants.Label(message.Variant) + " · ×" + counts[id].ToString("N0", CultureInfo.InvariantCulture) +
-                                " · " + SourceName(snapshot, id) + (message.Resolved ? " · fixed by a later compilation" : string.Empty));
-                    writer.Line("first " + Stamp(first[id]) + " · last " + Stamp(last[id]));
-                    writer.Line();
-                    writer.Line(view.Texts.Plain(message.Text));
+                    writer.Raw(LevelTag(message.Variant).Trim() + " · " + LogVariants.Label(message.Variant) + " · ×" + counts[id].ToString("N0", CultureInfo.InvariantCulture) +
+                               " · " + masked.Source(snapshot, id) + (message.Resolved ? " · fixed by a later compilation" : string.Empty));
+                    writer.Raw("first " + Stamp(first[id]) + " · last " + Stamp(last[id]));
+                    writer.Raw(string.Empty);
+                    // Each text masked whole: a key header in one message can't mask the messages after it.
+                    writer.Raw(masked.Text(message.Text));
                     string stack = view.Texts.Plain(message.Stack);
                     if (!string.IsNullOrWhiteSpace(stack))
                     {
-                        writer.Line();
-                        writer.Line(stack.TrimEnd());
+                        writer.Raw(string.Empty);
+                        writer.Raw(context.Privacy.Mask(stack.TrimEnd()));
                     }
                 }
             }
@@ -324,10 +327,46 @@ namespace Orbiters.Logger.Editor
             }
         }
 
-        private static string SourceName(Snapshot snapshot, int message)
+        /// <summary>
+        /// Log texts and source names masked once each, the first time a log needs them: a message logged 100,000 times
+        /// goes through the privacy masker once. Each text is masked as a whole (<see cref="ReportPrivacy.Mask"/>).
+        /// </summary>
+        internal sealed class Masked
         {
-            int source = snapshot.SourceOf[message];
-            return source >= 0 && source < snapshot.Sources.Length ? snapshot.Sources[source] : "Unity";
+            private readonly ReportPrivacy privacy;
+            private readonly TextTable texts;
+            private readonly string[] byText;
+            private readonly string[] bySource;
+            private string unity;
+
+            public Masked(ReportPrivacy privacy, TextTable texts, int sources)
+            {
+                this.privacy = privacy;
+                this.texts = texts;
+                byText = new string[texts.Count];
+                bySource = new string[sources];
+            }
+
+            public string Text(int id)
+            {
+                if (id <= 0 || id >= byText.Length)
+                {
+                    return id > 0 ? privacy.Mask(texts.Plain(id)) : string.Empty;
+                }
+
+                return byText[id] ?? (byText[id] = privacy.Mask(texts.Plain(id)));
+            }
+
+            public string Source(Snapshot snapshot, int message)
+            {
+                int source = snapshot.SourceOf[message];
+                if (source < 0 || source >= bySource.Length)
+                {
+                    return unity ?? (unity = privacy.Mask("Unity"));
+                }
+
+                return bySource[source] ?? (bySource[source] = privacy.Mask(snapshot.Sources[source]));
+            }
         }
 
         internal static string LevelTag(LogVariant variant)

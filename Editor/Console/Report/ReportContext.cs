@@ -145,6 +145,9 @@ namespace Orbiters.Logger.Editor
 
         public void Line(string text = "") => writer.WriteLine(lines.Mask(text));
 
+        /// <summary>A line already masked by the caller (each distinct log text is masked once, not once per log).</summary>
+        public void Raw(string text) => writer.WriteLine(text ?? string.Empty);
+
         public void Write(string text) => writer.Write(privacy.Mask(text));
 
         public void Dispose() => writer.Dispose();
