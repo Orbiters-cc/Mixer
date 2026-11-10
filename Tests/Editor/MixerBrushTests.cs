@@ -144,10 +144,10 @@ namespace Orbiters.Mixer.Editor.Tests
             foreach (int v in vertices)
             {
                 int w = n.Weld[v];
-                if (n.Adjacent[w].Length == 0) continue;
+                if (n.AdjacentTo(w).Length == 0) continue;
                 var mean = Vector3.zero;
-                foreach (int a in n.Adjacent[w]) mean += p[n.Representative[a]];
-                mean /= n.Adjacent[w].Length;
+                foreach (int a in n.AdjacentTo(w)) mean += p[n.Representative[a]];
+                mean /= n.AdjacentTo(w).Length;
                 total += (p[v] - mean).magnitude; count++;
             }
             return count > 0 ? total / count : 0f;
@@ -260,7 +260,7 @@ namespace Orbiters.Mixer.Editor.Tests
             {
                 // Welded seam vertices share faces with their twins: count only vertices whose own and twins' faces held still.
                 if (facesMoved[v]) { touched++; continue; }
-                bool twinMoved = doc.NormalWeld.Members[doc.NormalWeld.Weld[v]].Any(m => facesMoved[m]);
+                bool twinMoved = doc.NormalWeld.MembersOf(doc.NormalWeld.Weld[v]).ToArray().Any(m => facesMoved[m]);
                 if (twinMoved) continue;
                 still++;
                 Assert.That(Vector3.Angle(doc.Normals[v], authored[v]), Is.LessThan(0.01f), "a vertex whose faces did not move keeps its authored normal");

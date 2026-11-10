@@ -167,7 +167,9 @@ namespace Orbiters.Mixer.Editor.Tests
             Assert.That(decoded.InfluenceCount.Length, Is.EqualTo(n.WeldedCount));
             Assert.That(decoded.InfluenceBone.Length, Is.EqualTo(decoded.InfluenceCount.Sum(c => c)), "the influences add up");
             Assert.That(decoded.CornerAttribute, Is.EqualTo(mesh.triangles), "a corner's attribute is the Unity vertex it came from");
-            Assert.That(decoded.AttributeUv, Is.EqualTo(mesh.uv), "whose UV travels once");
+            // Protocol 4 always carries UV0 (Blender makes its UV map from it): a mesh without UVs sends zeros, as protocol 3 did.
+            var uv = mesh.uv.Length == mesh.vertexCount ? mesh.uv : new Vector2[mesh.vertexCount];
+            Assert.That(decoded.AttributeUv, Is.EqualTo(uv), "whose UV travels once");
             Assert.That(decoded.Shapes.Count, Is.EqualTo(1));
             Assert.That(decoded.Shapes[0].name, Is.EqualTo("Wide"));
             Assert.That(decoded.Shapes[0].indices.Length, Is.GreaterThan(10));
@@ -855,6 +857,96 @@ namespace Orbiters.Mixer.Editor.Tests
             }
         }
 
+        // A stroke names the vertices it moved (through MixerSession's geometry event): the frame holds those that differ
+        // from what Blender has, the same frame the full comparison gave; several notes before the frame leaves collapse
+        // into one; a note that names nothing compares every vertex again; and a note on another layer is its own frame.
+        [Test]
+        public void AStrokesNamedVerticesGiveTheFrameTheFullComparisonGave()
+        {
+            using (var host = MixerLinkHost.OpenPrivate(scene))
+            using (var blender = new FakeBlender(host))
+            {
+                blender.Hello();
+                blender.Pump(5, MixerLinkProtocol.FrameType.MeshData);
+                var target = MixerSession.Edit(renderer);
+                blender.Pump(0.5);
+                var doc = target.Document;
+                var n = doc.LinkWeld;
+                host.NotePositions(target);
+                Assert.That(PositionsOf(blender.Pump(1.0, MixerLinkProtocol.FrameType.Positions)).LastOrDefault()?.Indices, Is.Null, "the first frame is whole");
+
+                // Two strokes before the frame leaves, each naming the mesh vertices it moved (every member of a welded vertex).
+                int a = n.Representative[3], b = n.Representative[5];
+                var first = n.MembersOf(3).ToArray();
+                var second = n.MembersOf(5).ToArray().Concat(new[] { a }).ToArray();
+                foreach (int v in first) doc.SetLayerPosition(null, v, doc.Positions[v] + Vector3.right);
+                MixerSession.NoteEdited(target, SessionChange.Geometry, null, first);
+                foreach (int v in n.MembersOf(5).ToArray()) doc.SetLayerPosition(null, v, doc.Positions[v] + Vector3.up);
+                MixerSession.NoteEdited(target, SessionChange.Geometry, null, second);
+                var frame = PositionsOf(blender.Pump(1.0, MixerLinkProtocol.FrameType.Positions)).LastOrDefault();
+                Assert.That(frame, Is.Not.Null, "the strokes reach Blender through the session's event");
+                Assert.That(frame.Indices, Is.EqualTo(new[] { 3, 5 }), "both strokes' vertices, ascending, once each");
+                Assert.That(frame.Positions[0], Is.EqualTo(doc.Positions[a]));
+                Assert.That(frame.Positions[1], Is.EqualTo(doc.Positions[b]));
+
+                // Named but not moved: nothing goes. Moved without a list: found by comparing everything.
+                MixerSession.NoteEdited(target, SessionChange.Geometry, null, first);
+                Assert.That(PositionsOf(blender.Pump(0.5)).Any(), Is.False, "a named vertex that is where Blender has it is not sent");
+                int c = n.Representative[7];
+                foreach (int v in n.MembersOf(7).ToArray()) doc.SetLayerPosition(null, v, doc.Positions[v] + Vector3.forward);
+                MixerSession.NoteEdited(target, SessionChange.Geometry, null, first);
+                MixerSession.NoteEdited(target, SessionChange.Geometry, null, null);
+                frame = PositionsOf(blender.Pump(1.0, MixerLinkProtocol.FrameType.Positions)).LastOrDefault();
+                Assert.That(frame?.Indices, Is.EqualTo(new[] { 7 }), "a note without a list compares every vertex");
+                Assert.That(frame.Positions[0], Is.EqualTo(doc.Positions[c]));
+
+                // A mask or weights alone send no positions.
+                MixerSession.NoteEdited(target, SessionChange.Mask | SessionChange.Weights);
+                Assert.That(PositionsOf(blender.Pump(0.5)).Any(), Is.False, "no geometry, no positions frame");
+            }
+        }
+
+        // The lists of named vertices live only while their frame is due: once the frames of several layers left, or their
+        // session ended before they did, nothing is held but a bounded number of spares.
+        [Test]
+        public void NamedVertexListsGoWithTheirFramesAndTheirSessions()
+        {
+            using (var host = MixerLinkHost.OpenPrivate(scene))
+            using (var blender = new FakeBlender(host))
+            {
+                blender.Hello();
+                blender.Pump(5, MixerLinkProtocol.FrameType.MeshData);
+                var target = MixerSession.Edit(renderer);
+                blender.Pump(0.5);
+                var doc = target.Document;
+                var n = doc.LinkWeld;
+                var named = n.MembersOf(2).ToArray();
+                var layers = new string[] { null, "A", "B", "C", "D" };
+                foreach (string layer in layers) if (layer != null) doc.Shape(layer, create: true);
+                foreach (string layer in layers)
+                {
+                    foreach (int v in named) doc.SetLayerPosition(layer, v, doc.GetLayerPosition(layer, v) + Vector3.up);
+                    MixerSession.NoteEdited(target, SessionChange.Geometry, layer, named);
+                }
+                Assert.That(host.DueVertexLists, Is.EqualTo(layers.Length), "a list per layer while its frame is due");
+                var frames = PositionsOf(blender.Pump(1.0, MixerLinkProtocol.FrameType.Positions)).ToList();
+                Assert.That(frames.Count, Is.GreaterThanOrEqualTo(layers.Length), "every layer's frame left");
+                Assert.That(frames[0].Shape, Is.Null, "the base first");
+                Assert.That(host.DueVertexLists, Is.EqualTo(0), "the lists went with their frames");
+                Assert.That(host.SpareDueLists, Is.LessThanOrEqualTo(2), "and only a few are kept for reuse");
+
+                // Notes whose session ends before their frames leave: the lists go with the session.
+                foreach (string layer in layers) MixerSession.NoteEdited(target, SessionChange.Geometry, layer, named);
+                Assert.That(host.DueVertexLists, Is.EqualTo(layers.Length));
+                MixerSession.Revert(target);
+                Assert.That(host.DueVertexLists, Is.EqualTo(0), "a reverted session keeps no list");
+                blender.Pump(0.5);
+                Assert.That(host.DueVertexLists, Is.EqualTo(0));
+                Assert.That(host.SpareDueLists, Is.LessThanOrEqualTo(2));
+            }
+            Assert.That(MixerSession.TargetOf(renderer), Is.Null);
+        }
+
         // Blender's sparse frames: each holds only what moved since its last one, so every one must land, in order.
         [Test]
         public void SparseFramesFromBlenderAllLand()
@@ -878,7 +970,7 @@ namespace Orbiters.Mixer.Editor.Tests
                 blender.Pump(1.0);
                 Assert.That(doc.Positions[a], Is.EqualTo(pa), "the first frame landed");
                 Assert.That(doc.Positions[b], Is.EqualTo(pb), "and the second, sent right after it");
-                foreach (int v in n.Members[0]) Assert.That(doc.Positions[v], Is.EqualTo(mesh.vertices[v]), "what no frame named stays");
+                foreach (int v in n.MembersOf(0).ToArray()) Assert.That(doc.Positions[v], Is.EqualTo(mesh.vertices[v]), "what no frame named stays");
                 blender.Release(renderer);
             }
         }
@@ -1066,6 +1158,8 @@ namespace Orbiters.Mixer.Editor.Tests
                 }
                 var b0 = doc.Positions[v];
                 var b1 = b0 + Vector3.forward;
+                // The shape as it is before both steps (a delta on the base): what the undo gives back.
+                var before = doc.GetLayerPosition("Wide", v);
                 doc.SetLayerPosition(null, v, b1);
                 var s0 = doc.GetLayerPosition("Wide", v);
                 var s1 = s0 + Vector3.up;
@@ -1090,7 +1184,11 @@ namespace Orbiters.Mixer.Editor.Tests
                     Assert.That(shapeAt, Is.GreaterThan(baseAt), "and the shape after it");
                     Assert.That(frames[shapeAt].Indices, Is.Null, "whole");
                     Assert.That(frames[shapeAt].Positions[0], Is.EqualTo(doc.GetLayerPosition("Wide", v)));
-                    Assert.That(doc.GetLayerPosition("Wide", v), Is.EqualTo(undo ? s0 : s1).Using<Vector3>((a, b) => (a - b).sqrMagnitude < 1e-10f ? 0 : 1));
+                    // Undone, the steps go back in reverse: the shape's step puts its delta back (s0 over the moved base), then
+                    // the base's step moves the base back, and the shape with it (a shape is a delta on the base): the shape
+                    // is where it was before both steps, not at s0. Redone, the base goes first, then the shape is s1.
+                    Assert.That(doc.Positions[v], Is.EqualTo(undo ? b0 : b1));
+                    Assert.That(doc.GetLayerPosition("Wide", v), Is.EqualTo(undo ? before : s1).Using<Vector3>((a, b) => (a - b).sqrMagnitude < 1e-10f ? 0 : 1));
                 }
             }
         }

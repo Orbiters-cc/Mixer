@@ -132,6 +132,19 @@ namespace Orbiters.Mixer.Editor
             return m;
         }
 
+        /// <summary>
+        /// What <see cref="BlendedMatrix"/> reads, for a kernel that places many vertices (<see cref="StrokeKernels.Move"/>):
+        /// whether the vertices follow bones, the bone matrices, the transform and the document's influence slots.
+        /// </summary>
+        internal void SkinArrays(out bool isSkinned, out Matrix4x4[] bones, out Matrix4x4 transform, out int[] boneOf, out float[] weightOf, out byte[] counts, out int slots)
+        {
+            isSkinned = skinned;
+            bones = skinned ? boneMatrices : null;
+            transform = transformMatrix;
+            if (skinned) document.InfluenceArrays(out boneOf, out weightOf, out counts, out slots);
+            else { boneOf = null; weightOf = null; counts = null; slots = 0; }
+        }
+
         /// <summary>A mesh-space point of vertex <paramref name="v"/> in the world.</summary>
         public Vector3 PointToWorld(int v, Vector3 p) => BlendedMatrix(v).MultiplyPoint3x4(p);
 

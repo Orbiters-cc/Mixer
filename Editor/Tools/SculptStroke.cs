@@ -25,7 +25,8 @@ namespace Orbiters.Mixer.Editor
         // stamp instead of filling sets: what Gather saw, the mesh-space move a step gives (and its mirror).
         private readonly StrokeScratch scratch;
         private readonly BrushContext ctx;
-        private readonly List<int> moved, local, mirrored;
+        private readonly List<int> local, mirrored;
+        private readonly IndexList moved;
         private readonly int[] moveStamp, mirrorStamp;
         private readonly Vector3[] moveOf, mirrorOf;
         private Vector3 planePoint;
@@ -58,8 +59,7 @@ namespace Orbiters.Mixer.Editor
             moveStamp = scratch.MoveMark; mirrorStamp = scratch.MirrorMark;
             moveOf = scratch.MoveOf; mirrorOf = scratch.MirrorOf;
             recorder = new StrokeRecorder(target, brush.Name + (target.Document.Layer != null ? " on " + target.Document.Layer : ""), scratch);
-            ctx.Welded.Clear();
-            ctx.Weight.Clear();
+            ctx.Count = 0;
             ctx.Delta = 0f;
             ctx.Target = target;
             ctx.Radius = radius;
@@ -179,7 +179,7 @@ namespace Orbiters.Mixer.Editor
             }
             target.EndStroke();
             MixerHistory.Push(edit);
-            MixerSession.NoteEdited(target, SessionChange.Geometry);
+            MixerSession.NoteEdited(target, SessionChange.Geometry, edit.Layer, edit.Indices);
             return edit;
         }
 
@@ -188,13 +188,13 @@ namespace Orbiters.Mixer.Editor
         // The welded vertices within the radius (each once, by its representative), with their falloff and mask weight.
         private void Gather(Vector3 center)
         {
-            StrokeGather.Sphere(target, scratch, center, Radius, falloff, brush.PaintsMask, ctx.Welded, ctx.Weight);
-            if (scratch.Moves.Length < ctx.Welded.Count) scratch.Moves = new Vector3[Mathf.NextPowerOfTwo(ctx.Welded.Count)];
+            ctx.Count = StrokeGather.Sphere(target, scratch, center, Radius, falloff, brush.PaintsMask);
+            if (scratch.Moves.Length < ctx.Count) scratch.Moves = new Vector3[Mathf.NextPowerOfTwo(ctx.Count)];
         }
 
         private void Apply()
         {
-            if (ctx.Welded.Count == 0) return;
+            if (ctx.Count == 0) return;
             Steps++;
             if (brush.PaintsMask) { PaintMask(); return; }
             var moves = scratch.Moves;
@@ -204,7 +204,7 @@ namespace Orbiters.Mixer.Editor
             int mark = NextStamp();
             // Mesh-space move per welded vertex; mirrored onto the other side when symmetry is on.
             local.Clear();
-            for (int i = 0; i < ctx.Welded.Count; i++)
+            for (int i = 0; i < ctx.Count; i++)
             {
                 var m = moves[i];
                 if (m.sqrMagnitude < 1e-16f) continue;
@@ -237,34 +237,33 @@ namespace Orbiters.Mixer.Editor
         }
 
         // The mask brush: adds to the mask under it (Ctrl takes away), on every member of each welded vertex and, with
-        // symmetry, on the mirror side.
+        // symmetry, on the mirror side (after every straight one, as before).
         private void PaintMask()
         {
             var doc = target.Document;
             var n = doc.Neighbors;
             var mask = doc.EnsureMask();
             float amount = Strength * 0.35f * (ctx.Invert ? -1f : 1f);
-            var welded = new List<int>(ctx.Welded.Count * 2);
-            var weights = new List<float>(ctx.Welded.Count * 2);
-            for (int i = 0; i < ctx.Welded.Count; i++) { welded.Add(ctx.Welded[i]); weights.Add(ctx.Weight[i]); }
+            for (int i = 0; i < ctx.Count; i++) PaintMask(n, mask, ctx.Welded[i], amount * ctx.Weight[i]);
             if (symmetry)
             {
                 var mirror = target.Mirror;
-                for (int i = 0; i < ctx.Welded.Count; i++)
+                for (int i = 0; i < ctx.Count; i++)
                 {
                     int other = mirror.Of[ctx.Welded[i]];
-                    if (other >= 0 && other != ctx.Welded[i]) { welded.Add(other); weights.Add(ctx.Weight[i]); }
-                }
-            }
-            for (int i = 0; i < welded.Count; i++)
-            {
-                foreach (int v in n.Members[welded[i]])
-                {
-                    if (!maskBefore.ContainsKey(v)) maskBefore[v] = mask[v];
-                    mask[v] = Mathf.Clamp01(mask[v] + amount * weights[i]);
+                    if (other >= 0 && other != ctx.Welded[i]) PaintMask(n, mask, other, amount * ctx.Weight[i]);
                 }
             }
             doc.Revision++;
+        }
+
+        private void PaintMask(Orbiters.Toolkit.Meshes.MeshNeighbors n, float[] mask, int welded, float amount)
+        {
+            foreach (int v in n.MembersOf(welded))
+            {
+                if (!maskBefore.ContainsKey(v)) maskBefore[v] = mask[v];
+                mask[v] = Mathf.Clamp01(mask[v] + amount);
+            }
         }
     }
 }

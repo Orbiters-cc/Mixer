@@ -77,9 +77,13 @@ namespace Orbiters.Mixer.Editor
             // positions so far are in the session, which the reload keeps.
             AssemblyReloadEvents.beforeAssemblyReload += () => { live?.Dispose(deleteEndpoint: false, endEdits: false); live = null; };
             EditorApplication.playModeStateChanged += OnPlayMode;
-            // A session event (every stroke ends with one) changes no object of the graph but the sessions' renderers,
-            // which may show another mesh, and transforms Mixer's tools moved: those alone are looked at again.
-            MixerSession.Changed += () => ForEach(h => h.MarkSessionsChanged(0.3));
+            // Session events say what they changed. Sessions that began or ended may show another mesh on their renderers,
+            // and rest-pose edits move transforms: those alone are looked at again (a stroke, a layer, weights or a mask
+            // change no object of the graph). Moved positions go to Blender as live frames, those of the vertices the
+            // stroke names when it does.
+            MixerSession.Edited += OnSessionEdited;
+            MixerSession.GeometryEdited += OnGeometryEdited;
+            MixerSession.WeightsEdited += (target, channel, vertices) => { for (int i = hosts.Count - 1; i >= 0; i--) if (i < hosts.Count) hosts[i].SendWeights(target, channel, vertices); };
             if (Enabled) EditorApplication.delayCall += EnsureRunning;
         }
 
@@ -245,20 +249,28 @@ namespace Orbiters.Mixer.Editor
         /// <summary>Queues the mesh of a node for Blender.</summary>
         public static void SendMesh(string nodeId) => live?.SendMesh(nodeId);
 
-        /// <summary>Bones moved in rest-pose mode or were added: Blender gets the graph again and rebuilds its armatures.</summary>
-        public static void NoteArmatureChanged() => ForEach(h => h.MarkGraphDirty(0.4));
 
         /// <summary>The exclusions changed: the hierarchy and the popup refresh.</summary>
         public static void NoteSettingsChanged() => RaiseChanged();
 
-        /// <summary>A Mixer stroke moved a target: Blender gets the new positions soon (collapsed, at most every 100 ms).</summary>
-        public static void NotePositions(EditTarget target) => ForEach(h => h.NotePositions(target));
+        private static void OnSessionEdited(EditTarget target, SessionChange change)
+        {
+            if ((change & (SessionChange.Sessions | SessionChange.RestPose)) == 0) return;
+            for (int i = hosts.Count - 1; i >= 0; i--)
+            {
+                if (i >= hosts.Count) continue;
+                // Bones moved in rest-pose mode or were added: Blender gets the graph again and rebuilds its armatures.
+                if ((change & SessionChange.RestPose) != 0) hosts[i].MarkGraphDirty(0.4);
+                hosts[i].MarkSessionsChanged(0.3);
+            }
+        }
 
-        /// <summary>A Mixer stroke changed weights: Blender gets the sparse change now.</summary>
-        public static void SendWeights(EditTarget target, WeightChannel channel, IReadOnlyList<int> vertices) => ForEach(h => h.SendWeights(target, channel, vertices));
+        private static void OnGeometryEdited(EditTarget target, string layer, IReadOnlyList<int> vertices)
+        {
+            for (int i = hosts.Count - 1; i >= 0; i--) if (i < hosts.Count) hosts[i].NotePositions(target, layer, vertices);
+        }
 
-        /// <summary>A Mixer session opened. It does not hold the mesh against Blender (a stroke does, while it runs).</summary>
-        public static void ClaimForUnity(EditTarget target) => ForEach(h => h.SessionOpened(target));
+
 
         /// <summary>A Mixer session was committed or reverted: Blender gets the mesh Unity shows now, and lets go of its own edit of it.</summary>
         public static void ReleaseForUnity(EditTarget target) => ForEach(h => h.SessionClosed(target));
@@ -358,6 +370,14 @@ namespace Orbiters.Mixer.Editor
         // changed otherwise (a whole mesh either way, a claim of Blender's, a new connection): the next frame is then whole.
         private readonly Dictionary<(string mesh, string layer), Vector3[]> sentLayers = new Dictionary<(string, string), Vector3[]>();
         private readonly List<int> movedIndices = new List<int>();
+        private readonly List<int> sortedNamed = new List<int>();
+
+        private static void SortedCopy(IReadOnlyList<int> values, List<int> into)
+        {
+            into.Clear();
+            for (int i = 0; i < values.Count; i++) into.Add(values[i]);
+            into.Sort();
+        }
         private readonly List<Vector3> movedPositions = new List<Vector3>();
         private readonly Dictionary<string, int> checkedRevision = new Dictionary<string, int>();
 
@@ -416,6 +436,10 @@ namespace Orbiters.Mixer.Editor
             if (endEdits) foreach (string mesh in blenderMeshes.Keys.ToList()) ReleaseFromBlender(mesh);
             blenderMeshes.Clear();
             blenderClaims.Clear();
+            // Before a domain reload too (the host is disposed then): no list of named vertices outlives it.
+            positionsDue.Clear();
+            dueVertices.Clear();
+            spareDue.Clear();
             var server = Server;
             Server = null;
             connection = -1;
@@ -498,6 +522,8 @@ namespace Orbiters.Mixer.Editor
             inFlightBefore = null;
             assembler.Reset();
             positionsDue.Clear();
+            dueVertices.Clear();
+            spareDue.Clear();
             sentLayers.Clear();
             unityEditing = unityEditingNode = null;
         }
@@ -711,8 +737,6 @@ namespace Orbiters.Mixer.Editor
             }
         }
 
-        public void SessionOpened(EditTarget target) { }
-
         public void SessionClosed(EditTarget target)
         {
             if (target == null) return;
@@ -831,7 +855,11 @@ namespace Orbiters.Mixer.Editor
         // The welded positions of one layer of a session (null: the base) that Blender does not have yet, as live
         // positions: every one when Unity does not know what Blender has of that layer, else those that differ from it.
         // The layer is resolved once (its deltas array), not per vertex.
-        private void SendLayer(EditTarget target, string layer)
+        private void SendLayer(EditTarget target, string layer) => SendLayer(target, layer, null);
+
+        /// <param name="named">The link-welded vertices that may have moved (a stroke's), when known: only those are
+        /// compared with what Blender has. Null compares every one.</param>
+        private void SendLayer(EditTarget target, string layer, IReadOnlyList<int> named)
         {
             var doc = target.Document;
             if (layer != null && !doc.HasShape(layer)) return;
@@ -857,8 +885,12 @@ namespace Orbiters.Mixer.Editor
             }
             movedIndices.Clear();
             movedPositions.Clear();
-            for (int w = 0; w < count; w++)
+            // In ascending welded order either way, as the frame lists them.
+            if (named != null) SortedCopy(named, sortedNamed);
+            for (int i = 0, end = named != null ? sortedNamed.Count : count; i < end; i++)
             {
+                int w = named != null ? sortedNamed[i] : i;
+                if ((uint)w >= (uint)count) continue;
                 int v = representative[w];
                 var p = deltas != null ? basePositions[v] + deltas[v] : basePositions[v];
                 if (!MeshDocument.Differs(p, known[w])) continue;
@@ -902,7 +934,7 @@ namespace Orbiters.Mixer.Editor
             if (targetId == null || positionsDue.Count == 0) return;
             leavingKeys.Clear();
             foreach (var key in positionsDue.Keys) if (key.target == targetId) leavingKeys.Add(key);
-            foreach (var key in leavingKeys) positionsDue.Remove(key);
+            foreach (var key in leavingKeys) { positionsDue.Remove(key); DropDue(key); }
             leavingKeys.Clear();
         }
 
@@ -1220,12 +1252,85 @@ namespace Orbiters.Mixer.Editor
         }
 
         /// <summary>A Mixer stroke moved a target's shown layer: Blender gets what moved of it soon (at most every 100 ms).</summary>
-        public void NotePositions(EditTarget target)
+        public void NotePositions(EditTarget target) => NotePositions(target, target?.Document.Layer, null);
+
+        /// <summary>
+        /// Positions of <paramref name="layer"/> (null: the base) of a target moved: Blender gets them soon (at most every
+        /// 100 ms, collapsed). With <paramref name="vertices"/> (the mesh vertices a stroke moved) only those are looked at
+        /// when the frame goes; without, or once any note of the layer came without them, every welded vertex is compared
+        /// with what Blender has.
+        /// </summary>
+        public void NotePositions(EditTarget target, string layer, IReadOnlyList<int> vertices)
         {
             if (!Connected || target == null || !graphNodes.Contains(target.Id) || IsBlenderOwned(target)) return;
-            var key = (target.Id, target.Document.Layer ?? "");
-            positionsDue[key] = Math.Min(positionsDue.TryGetValue(key, out double due) ? due : double.MaxValue, EditorApplication.timeSinceStartup + 0.1);
+            var key = (target.Id, layer ?? "");
+            bool waiting = positionsDue.TryGetValue(key, out double due);
+            positionsDue[key] = Math.Min(waiting ? due : double.MaxValue, EditorApplication.timeSinceStartup + 0.1);
+            // A key has its list exactly while its frame is due (positionsDue): made, or taken from the spares, by the first
+            // note, given back when the frame leaves or the key is forgotten.
+            if (!dueVertices.TryGetValue(key, out var named))
+            {
+                if (spareDue.Count > 0) { named = spareDue[spareDue.Count - 1]; spareDue.RemoveAt(spareDue.Count - 1); }
+                else named = new DueVertices();
+                dueVertices[key] = named;
+                named.Reset();
+            }
+            // A note on a key that waited without its own list (a frame not yet due) keeps comparing everything.
+            else if (!waiting) named.Reset();
+            if (named.All) return;
+            if (vertices == null) { named.All = true; return; }
+            named.Add(vertices, target.Document.LinkWeld);
         }
+
+        // The link-welded vertices notes named for one (session, layer) since its last frame, each once (a mark per welded
+        // vertex instead of a set). Kept per key from frame to frame: a stroke's note allocates nothing once it has grown.
+        private sealed class DueVertices
+        {
+            public bool All;
+            public readonly IndexList Welded = new IndexList();
+            private int[] mark;
+            private int serial = 1;
+
+            public void Reset()
+            {
+                All = false;
+                Welded.Clear();
+                if (++serial == int.MaxValue) { if (mark != null) Array.Clear(mark, 0, mark.Length); serial = 1; }
+            }
+
+            public void Add(IReadOnlyList<int> vertices, Orbiters.Toolkit.Meshes.MeshNeighbors weld)
+            {
+                if (mark == null || mark.Length != weld.WeldedCount) { mark = new int[weld.WeldedCount]; serial = 1; Welded.Clear(); }
+                var of = weld.Weld;
+                for (int i = 0; i < vertices.Count; i++)
+                {
+                    int v = vertices[i];
+                    if ((uint)v >= (uint)of.Length) { All = true; return; }
+                    int w = of[v];
+                    if (mark[w] == serial) continue;
+                    mark[w] = serial;
+                    Welded.Add(w);
+                }
+            }
+        }
+
+        private readonly Dictionary<(string target, string layer), DueVertices> dueVertices = new Dictionary<(string, string), DueVertices>();
+        // Lists given back, for the next notes to reuse (a stroke's note then allocates nothing): at most this many, each
+        // with its marks only while they fit one mesh (Add makes them again for another), so nothing grows with the
+        // number of layers or sessions ever edited.
+        private const int MaxSpareDue = 2;
+        private readonly List<DueVertices> spareDue = new List<DueVertices>();
+
+        private void DropDue((string target, string layer) key)
+        {
+            if (!dueVertices.TryGetValue(key, out var named)) return;
+            dueVertices.Remove(key);
+            if (spareDue.Count < MaxSpareDue) { named.Reset(); spareDue.Add(named); }
+        }
+
+        /// <summary>For tests: the (session, layer) lists of named vertices held now, and the spare ones kept for reuse.</summary>
+        internal int DueVertexLists => dueVertices.Count;
+        internal int SpareDueLists => spareDue.Count;
 
         /// <summary>
         /// A Mixer stroke changed weights: Blender gets the sparse change now. For a bone, every bone the vertices have
@@ -1356,8 +1461,13 @@ namespace Orbiters.Mixer.Editor
                 positionsDue.Remove((targetId, layer));
                 EditTarget target = null;
                 foreach (var t in MixerSession.Targets) if (t.Id == targetId) { target = t; break; }
-                if (target == null || !target.Alive || IsBlenderOwned(target) || queuedMeshes.Contains(target.Id)) continue;
-                SendLayer(target, layer.Length == 0 ? null : layer);
+                if (target != null && target.Alive && !IsBlenderOwned(target) && !queuedMeshes.Contains(target.Id))
+                {
+                    dueVertices.TryGetValue((targetId, layer), out var named);
+                    SendLayer(target, layer.Length == 0 ? null : layer, named != null && !named.All ? named.Welded : null);
+                }
+                // The frame left (or its session or layer is gone): its list goes too.
+                DropDue((targetId, layer));
             }
         }
     }

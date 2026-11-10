@@ -169,7 +169,7 @@ namespace Orbiters.Mixer.Editor
                 {
                     int w = frame.Indices != null ? frame.Indices[i] : i;
                     var p = frame.Positions[i];
-                    foreach (int v in n.Members[w])
+                    foreach (int v in n.MembersOf(w))
                     {
                         // Unity's == on purpose: welded members a hair apart are not pulled onto their representative.
                         if ((layer != null ? basePositions[v] + layer.Deltas[v] : basePositions[v]) == p) continue;
@@ -213,7 +213,7 @@ namespace Orbiters.Mixer.Editor
                 for (int w = 0; w < n.WeldedCount; w++)
                 {
                     var p = data.Vertices[w];
-                    foreach (int v in n.Members[w])
+                    foreach (int v in n.MembersOf(w))
                     {
                         if (doc.Positions[v] == p) continue;
                         baseRecorder.Touch(v);
@@ -237,7 +237,7 @@ namespace Orbiters.Mixer.Editor
                         layer = layer ?? doc.Shape(name);
                         var recorder = ShapeOf(edit, name);
                         for (int w = 0; w < n.WeldedCount; w++)
-                            foreach (int v in n.Members[w])
+                            foreach (int v in n.MembersOf(w))
                             {
                                 if (layer.Deltas[v] == welded[w]) continue;
                                 recorder.Touch(v, layer);
@@ -282,7 +282,7 @@ namespace Orbiters.Mixer.Editor
                         }
                         cursor += count;
                         MeshDocument.Influence[] influences = null;
-                        foreach (int v in n.Members[w])
+                        foreach (int v in n.MembersOf(w))
                         {
                             if (SameInfluences(doc.InfluencesOf(v), list)) continue;
                             recorder.Touch(v);
@@ -315,7 +315,7 @@ namespace Orbiters.Mixer.Editor
                     {
                         int w = indices[i];
                         if (w < 0 || w >= full.Length || full[w] < 1e-6f) continue;
-                        foreach (int v in n.Members[w]) if (!group.Weights.ContainsKey(v)) changes.Add((v, full[w]));
+                        foreach (int v in n.MembersOf(w)) if (!group.Weights.ContainsKey(v)) changes.Add((v, full[w]));
                     }
                     foreach (var (v, wanted) in changes)
                     {
@@ -404,7 +404,7 @@ namespace Orbiters.Mixer.Editor
                         int w = frame.Indices[i];
                         if (w < 0 || w >= n.WeldedCount) continue;
                         float value = frame.Weights[i];
-                        foreach (int v in n.Members[w])
+                        foreach (int v in n.MembersOf(w))
                         {
                             float current = group.Weights.TryGetValue(v, out float cw) ? cw : 0f;
                             if (Mathf.Abs(current - value) < 1e-6f) continue;
@@ -426,7 +426,7 @@ namespace Orbiters.Mixer.Editor
                         int w = frame.Indices[i];
                         if (w < 0 || w >= n.WeldedCount) continue;
                         float value = Mathf.Clamp01(frame.Weights[i]);
-                        foreach (int v in n.Members[w])
+                        foreach (int v in n.MembersOf(w))
                         {
                             if (Mathf.Abs(doc.BoneWeight(v, bone) - value) < 1e-6f) continue;
                             recorder.Touch(v);
@@ -571,7 +571,11 @@ namespace Orbiters.Mixer.Editor
             for (int i = 0; i < Indices.Length; i++) layer.Deltas[Indices[i]] = deltas[i];
             layer.Edited = true;
             doc.MarkEdited(Indices);
-            Target.AfterEdit(Indices, fullRefresh: true);
+            // The world picture follows these vertices (they show only when the shape is the shown layer; the other
+            // shapes' part of the picture comes from the working mesh, which this does not change), once per target
+            // however many steps a jump of the history took, as PositionEdit does.
+            Target.NoteWorldMoved(Indices);
+            RefreshUnlessBatched();
             Target.RefreshNormals(Indices);
         }
     }
