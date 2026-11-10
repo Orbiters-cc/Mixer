@@ -22,8 +22,7 @@ namespace Orbiters.UnitGit.Editor
         private readonly HashSet<string> collapsedChangeFolders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         // Boxes ticked or cleared but not yet written by Git: shown at once, reconciled by the next refresh.
         private readonly Dictionary<string, bool> pendingInclude = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
-        // paths: the files Git must act on; covered: every file the user chose (a ticked folder may already be partly done).
-        private readonly List<(List<string> paths, bool include, List<string> covered)> includeQueue = new List<(List<string> paths, bool include, List<string> covered)>();
+        private readonly List<(List<string> paths, bool include)> includeQueue = new List<(List<string> paths, bool include)>();
         private bool includeRunning;
         private int includeGeneration;
         private int includeRunningCount;
@@ -466,17 +465,15 @@ namespace Orbiters.UnitGit.Editor
         private void SetIncluded(IEnumerable<UnitGitStatusEntry> files, bool include)
         {
             var paths = new List<string>();
-            var covered = new List<string>();
             foreach (var file in files)
             {
                 pendingInclude[file.Path] = include;
-                covered.Add(file.Path);
                 if (include ? file.IsUnstaged || file.IsUntracked : file.IsStaged) paths.Add(file.Path);
             }
             changesListView?.RefreshItems();
             UpdateCommitSummary();
             if (paths.Count == 0) return;
-            includeQueue.Add((paths, include, covered));
+            includeQueue.Add((paths, include));
             RunIncludeQueue();
         }
 
@@ -494,17 +491,15 @@ namespace Orbiters.UnitGit.Editor
             if (includeRunningCount > 8) includePaths += "\n…and " + (includeRunningCount - 8) + " more files";
             UpdateCommitSummary();
             string root = gitService.ProjectRoot;
-            // Every path Git reported changed: a ticked folder goes to Git as one pathspec only when none of them is left out.
-            var changed = snapshot == null ? new List<string>() : snapshot.Changes.SelectMany(change => new[] { change.Path, change.OriginalPath }).ToList();
             Task.Run(() =>
                 {
                     var service = new UnitGitService(root);
                     service.ProcessLogReceived = line => QueueConsoleLine("prepare commit", line);
                     GitCommandResult last = null;
-                    foreach (var (paths, include, covered) in batch)
+                    // Exactly the files the user ticked, all in one command (Git reads the list on stdin).
+                    foreach (var (paths, include) in batch)
                     {
-                        List<string> pathspecs = UnitGitPathspecs.Collapse(paths, covered, changed);
-                        last = include ? service.Stage(pathspecs) : service.Unstage(pathspecs);
+                        last = include ? service.Stage(paths) : service.Unstage(paths);
                         if (last != null && !last.Success) return last;
                     }
                     return last;

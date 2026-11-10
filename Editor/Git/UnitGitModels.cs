@@ -72,7 +72,6 @@ namespace Orbiters.UnitGit.Editor
         public string RefsSignature = string.Empty; // HEAD, the branch, every branch, tag and the stash
         public string ConfigStamp = string.Empty; // Git's config file (the remotes)
         public string StashStamp = string.Empty; // the stash and its reflog (the shelves)
-        public string GitDirStamp = string.Empty; // Git's own files, taken before the read (see UnitGitRepositoryStamp)
         // Files Git still tracks although the ignore rules now leave them out (MCB version downloads).
         public List<string> TrackedIgnoredDownloads = new List<string>();
         public long TrackedIgnoredDownloadBytes;

@@ -29,6 +29,8 @@ namespace Orbiters.UnitGit.Editor
         private string key, root, search;
         private string[] arguments = Array.Empty<string>();
         private int consumed; // commits Git printed and this read, matching the search or not
+        private string lastConsumed = string.Empty; // the id of the last of them
+        private bool resuming; // a new process after an idle stop: its first commit must be lastConsumed
         private bool ended, withTrailers = true;
         private volatile bool disposed;
         private long lastUse;
@@ -71,6 +73,8 @@ namespace Orbiters.UnitGit.Editor
                     StopProcess();
                     commits.Clear();
                     consumed = 0;
+                    lastConsumed = string.Empty;
+                    resuming = false;
                     ended = false;
                     withTrailers = UnitGitService.TrailersSupported != false;
                     key = historyKey;
@@ -103,7 +107,10 @@ namespace Orbiters.UnitGit.Editor
             if (live == null)
             {
                 var args = new List<string> { "log", "-z", "--pretty=format:" + UnitGitService.CommitLogFormat(withTrailers) };
-                if (consumed > 0) args.Add("--skip=" + consumed.ToString(CultureInfo.InvariantCulture));
+                // After an idle stop: from the last commit already read, which must come first again (else the history
+                // moved under the same refs signature, and it is read again from the top).
+                resuming = consumed > 0;
+                if (resuming) args.Add("--skip=" + (consumed - 1).ToString(CultureInfo.InvariantCulture));
                 args.AddRange(arguments);
                 log?.Invoke(UnitGitRedaction.Redact("> " + UnitGitService.FormatCommandLine("git", args.ToArray())));
                 live = UnitGitLiveProcess.Start(root, args, null, false);
@@ -119,7 +126,18 @@ namespace Orbiters.UnitGit.Editor
                 string text = UnitGitRunner.Utf8.GetString(record.GetBuffer(), 0, (int)record.Length).TrimStart('\n');
                 UnitGitCommit commit = UnitGitService.ParseCommit(text);
                 if (commit == null) return new GitCommandResult();
+                if (resuming)
+                {
+                    resuming = false;
+                    if (commit.FullHash == lastConsumed) return new GitCommandResult();
+                    StopProcess();
+                    commits.Clear();
+                    consumed = 0;
+                    lastConsumed = string.Empty;
+                    return new GitCommandResult();
+                }
                 consumed++;
+                lastConsumed = commit.FullHash;
                 if (UnitGitService.TrailersSupported == null && withTrailers) UnitGitService.TrailersSupported = true;
                 if (UnitGitService.MatchesSearch(commit, search)) commits.Add(commit);
                 return new GitCommandResult();
@@ -194,6 +212,16 @@ namespace Orbiters.UnitGit.Editor
                 {
                     Monitor.Exit(history.gate);
                 }
+            }
+        }
+
+        /// <summary>Stops the process only, keeping what was read, as an idle stop does (the next read resumes).</summary>
+        internal void StopReading()
+        {
+            lock (gate)
+            {
+                StopProcess();
+                Register(false);
             }
         }
 

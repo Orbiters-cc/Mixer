@@ -116,17 +116,16 @@ namespace Orbiters.UnitGit.Editor
             UnitGitSnapshot previous = request.Previous;
             if (previous != null && (previous.ProjectRoot != ProjectRoot || !previous.HasRepository || !string.IsNullOrEmpty(previous.LastError)))
                 previous = null;
-            if (request.HistoryOnly && previous != null)
+            // Older commits only ("load more"): everything else is what was read a moment ago, as long as the refs did not
+            // move since (else more of the old history would be mixed with the new: then the whole refresh runs).
+            if (request.HistoryOnly && previous != null && CurrentRefsSignature() == previous.RefsSignature)
             {
-                // Older commits only ("load more"): everything else is what was read a moment ago.
                 UnitGitSnapshot more = previous.CopyWithoutHistory();
                 ReadHistory(more, request);
                 return more;
             }
 
             UnitGitProjectInitializer.EnsureDefaultRules(ProjectRoot);
-            // Before anything is read: a change made while reading shows as a change next time.
-            snapshot.GitDirStamp = UnitGitRepositoryStamp.Read(ProjectRoot);
 
             // Exact renames only (a file moved unchanged, as Unity moves assets): guessing renames from similar content reads
             // every added and deleted file, which takes many seconds with big textures and models. Every untracked file is
@@ -198,6 +197,18 @@ namespace Orbiters.UnitGit.Editor
             }
 
             return snapshot;
+        }
+
+        // The refs signature as a full refresh computes it, from for-each-ref and HEAD alone (no status).
+        private string CurrentRefsSignature()
+        {
+            GitCommandResult refs = RunGit(DefaultTimeoutMilliseconds, "for-each-ref", "--format=" + RefFormat, "refs/heads", "refs/remotes", "refs/tags", "refs/stash");
+            GitCommandResult head = RunGit(DefaultTimeoutMilliseconds, "rev-parse", "HEAD", "--symbolic-full-name", "HEAD");
+            if (!refs.Success || !head.Success) return null;
+            string[] lines = SplitLines(head.StandardOutput).Select(line => line.Trim()).Where(line => line.Length > 0).ToArray();
+            if (lines.Length < 2) return null;
+            string branch = lines[1].StartsWith("refs/heads/", StringComparison.Ordinal) ? lines[1].Substring("refs/heads/".Length) : string.Empty;
+            return Signature(lines[0] + "\n" + branch + "\n" + refs.StandardOutput);
         }
 
         // The history slice: read on (or again) through the request's history, which keeps where it stopped.
@@ -759,12 +770,9 @@ namespace Orbiters.UnitGit.Editor
             foreach (bool withTrailers in TrailersSupported == false ? new[] { false } : new[] { true, false })
             {
                 bool trailers = withTrailers;
-                result = RunGitWithInput(DefaultTimeoutMilliseconds, stream =>
-                    {
-                        byte[] bytes = Utf8.GetBytes(string.Join("\n", hashes) + "\n");
-                        stream.Write(bytes, 0, bytes.Length);
-                    }, "log", "--no-walk=unsorted", "--stdin", "-z", "--no-ext-diff", "--name-status", "-M", "--cc",
-                    "--date=format-local:%m/%d/%Y %I:%M %p", "--pretty=format:" + CommitDetailsFormat(trailers));
+                string[] options = { "log", "--no-walk=unsorted", "-z", "--no-ext-diff", "--name-status", "-M", "--cc",
+                    "--date=format-local:%m/%d/%Y %I:%M %p", "--pretty=format:" + CommitDetailsFormat(trailers) };
+                result = RunWithList(null, DefaultTimeoutMilliseconds, hashes, false, options.Concat(new[] { "--stdin" }).ToArray(), options, new[] { "--" });
                 if (result.Success || TrailersSupported == true || (ReadSuperseded?.Invoke() ?? false)) break;
             }
 
@@ -1069,7 +1077,7 @@ namespace Orbiters.UnitGit.Editor
                 // The message on stdin: no temporary file to write and delete per commit.
                 byte[] bytes = UnitGitRunner.Utf8.GetBytes(NormalizeCommitMessage(message) + "\n");
                 var stdinArgs = new List<string>(baseArguments) { "-F", "-" };
-                return RunGitWithInput(environment, LongTimeoutMilliseconds, stream => stream.Write(bytes, 0, bytes.Length), stdinArgs.ToArray());
+                return RunGitWithInput(environment, LongTimeoutMilliseconds, bytes, stdinArgs.ToArray());
             }
 
             string messagePath = WriteTempCommitMessage(message);

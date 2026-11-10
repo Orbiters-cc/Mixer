@@ -272,11 +272,8 @@ namespace Orbiters.UnitGit.Editor
         // Tree, parents, author and whole message of each commit, in one "git log --no-walk --stdin" fed the hashes.
         private GitCommandResult ReadRewriteInfos(IList<string> hashes, IDictionary<string, CommitRewriteInfo> infos)
         {
-            GitCommandResult read = RunGitWithInput(LongTimeoutMilliseconds, stream =>
-            {
-                byte[] bytes = Utf8.GetBytes(string.Join("\n", hashes) + "\n");
-                stream.Write(bytes, 0, bytes.Length);
-            }, "log", "--no-walk=unsorted", "--stdin", "-z", "--format=%H%x1f%T%x1f%P%x1f%an%x1f%ae%x1f%aI%x1f%B");
+            string[] options = { "log", "--no-walk=unsorted", "-z", "--format=%H%x1f%T%x1f%P%x1f%an%x1f%ae%x1f%aI%x1f%B" };
+            GitCommandResult read = RunWithList(null, LongTimeoutMilliseconds, hashes, false, options.Concat(new[] { "--stdin" }).ToArray(), options, new[] { "--" });
             if (!read.Success)
             {
                 return read;

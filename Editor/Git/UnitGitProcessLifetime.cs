@@ -21,6 +21,8 @@ namespace Orbiters.UnitGit.Editor
     {
         private static readonly object Sync = new object();
         private static readonly Dictionary<Process, UnitGitProcessJob> Active = new Dictionary<Process, UnitGitProcessJob>();
+        // Called after a process had to be stopped while it still ran (see UnitGitIndexLock).
+        private static readonly Dictionary<Process, Action> OnStopped = new Dictionary<Process, Action>();
         private static readonly List<Action> StopListeners = new List<Action>();
         private static volatile bool stopping;
 
@@ -39,7 +41,8 @@ namespace Orbiters.UnitGit.Editor
             lock (Sync) StopListeners.Add(listener);
         }
 
-        internal static bool Start(Process process)
+        /// <param name="onStopped">Called when the process is stopped while it still runs (never when it ended by itself).</param>
+        internal static bool Start(Process process, Action onStopped = null)
         {
             lock (Sync)
             {
@@ -52,6 +55,7 @@ namespace Orbiters.UnitGit.Editor
                     started = true;
                     job?.Assign(process);
                     Active.Add(process, job);
+                    if (onStopped != null) OnStopped[process] = onStopped;
                 }
                 catch
                 {
@@ -66,15 +70,73 @@ namespace Orbiters.UnitGit.Editor
         /// <summary>Stops the process and everything it started, then forgets it.</summary>
         internal static void Stop(Process process)
         {
+            Action stopped = StopWithoutCallback(process);
+            Invoke(stopped);
+        }
+
+        // Stops the process; returns its stop callback when it was still running (to call once it is gone).
+        private static Action StopWithoutCallback(Process process)
+        {
             UnitGitProcessJob job;
-            lock (Sync) { Active.TryGetValue(process, out job); Active.Remove(process); }
-            if (job != null) { job.Dispose(); KillRoot(process); return; }
-            try
+            Action stopped;
+            lock (Sync)
             {
-                if (!process.HasExited && Path.DirectorySeparatorChar != '\\') StopUnixChildren(process.Id);
+                Active.TryGetValue(process, out job);
+                Active.Remove(process);
+                OnStopped.TryGetValue(process, out stopped);
+                OnStopped.Remove(process);
             }
-            catch (Exception ex) when (ex is InvalidOperationException || ex is Win32Exception || ex is IOException) { }
+            bool running;
+            try { running = !process.HasExited; }
+            catch (InvalidOperationException) { running = false; }
+            if (job != null) job.Dispose();
+            else
+            {
+                try
+                {
+                    if (running && Path.DirectorySeparatorChar != '\\') StopUnixChildren(process.Id);
+                }
+                catch (Exception ex) when (ex is InvalidOperationException || ex is Win32Exception || ex is IOException) { }
+            }
             KillRoot(process);
+            if (!running) return null;
+            try { process.WaitForExit(2000); }
+            catch (InvalidOperationException) { }
+            catch (Win32Exception) { }
+            return stopped;
+        }
+
+        private static void Invoke(Action action)
+        {
+            if (action == null) return;
+            try { action(); }
+            catch (Exception) { /* A cleanup that fails leaves things as Git left them. */ }
+        }
+
+        /// <summary>
+        /// How many processes of this one's job still run (it and everything it started); -1 when unknown (no job). Zero
+        /// after it exited: everything it and its children wrote is in its pipes, whoever else may still hold them.
+        /// </summary>
+        internal static int RunningInJob(Process process)
+        {
+            UnitGitProcessJob job;
+            lock (Sync) Active.TryGetValue(process, out job);
+            return job == null ? -1 : job.ActiveProcesses();
+        }
+
+        /// <summary>The ids of the Git processes this editor runs now.</summary>
+        internal static HashSet<int> OwnedIds()
+        {
+            var ids = new HashSet<int>();
+            lock (Sync)
+            {
+                foreach (Process process in Active.Keys)
+                {
+                    try { ids.Add(process.Id); }
+                    catch (InvalidOperationException) { }
+                }
+            }
+            return ids;
         }
 
         private static void KillRoot(Process process)
@@ -99,7 +161,10 @@ namespace Orbiters.UnitGit.Editor
                 try { listener(); }
                 catch (Exception) { /* Stopping goes on for the others. */ }
             }
-            foreach (Process process in processes) Stop(process);
+            // Every process first, then the cleanups: a stale lock is only removed once no Git of ours runs.
+            var stopped = new List<Action>();
+            foreach (Process process in processes) stopped.Add(StopWithoutCallback(process));
+            foreach (Action action in stopped) Invoke(action);
         }
 
         private static void StopUnixChildren(int root)
@@ -269,6 +334,27 @@ namespace Orbiters.UnitGit.Editor
         }
 
         protected override bool ReleaseHandle() => CloseHandle(handle);
+
+        internal int ActiveProcesses()
+        {
+            if (IsClosed || IsInvalid) return -1;
+            var accounting = new Accounting();
+            return QueryInformationJobObject(this, 1, ref accounting, (uint)Marshal.SizeOf(typeof(Accounting)), IntPtr.Zero)
+                ? (int)accounting.ActiveProcesses
+                : -1;
+        }
+
+        // JOBOBJECT_BASIC_ACCOUNTING_INFORMATION
+        [StructLayout(LayoutKind.Sequential)]
+        private struct Accounting
+        {
+            public long TotalUserTime, TotalKernelTime, ThisPeriodTotalUserTime, ThisPeriodTotalKernelTime;
+            public uint TotalPageFaultCount, TotalProcesses, ActiveProcesses, TotalTerminatedProcesses;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool QueryInformationJobObject(UnitGitProcessJob job, int infoClass, ref Accounting info, uint size, IntPtr returned);
 
         [StructLayout(LayoutKind.Sequential)]
         private struct BasicLimits

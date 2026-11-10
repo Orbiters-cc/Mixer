@@ -88,42 +88,6 @@ namespace Orbiters.UnitGit.Editor.Tests
         }
 
         [Test]
-        public void AFolderTickedWholeIsSentAsOnePathspec()
-        {
-            var changed = new[] { "Assets/Pack/a.txt", "Assets/Pack/b.txt", "Assets/Pack/Sub/c.txt", "Assets/Other/d.txt", "Assets/Other/e.txt" };
-            Assert.That(UnitGitPathspecs.Collapse(changed.Take(3).ToList(), changed.Take(3), changed),
-                Is.EqualTo(new[] { "Assets/Pack" }));
-            // A file of the folder left out (unticked, or hidden by a filter): the files themselves.
-            Assert.That(UnitGitPathspecs.Collapse(new[] { "Assets/Pack/a.txt", "Assets/Pack/Sub/c.txt" }, new[] { "Assets/Pack/a.txt", "Assets/Pack/Sub/c.txt" }, changed),
-                Is.EqualTo(new[] { "Assets/Pack/a.txt", "Assets/Pack/Sub/c.txt" }));
-            // Already done files of the ticked folder still count as covered.
-            Assert.That(UnitGitPathspecs.Collapse(new[] { "Assets/Pack/a.txt", "Assets/Pack/Sub/c.txt" }, changed.Take(3), changed),
-                Is.EqualTo(new[] { "Assets/Pack" }));
-            // The project root is never one pathspec, and one file is never replaced by its folder.
-            Assert.That(UnitGitPathspecs.Collapse(changed, changed, changed), Is.EqualTo(new[] { "Assets" }));
-            Assert.That(UnitGitPathspecs.Collapse(new[] { "top.txt", "other.txt" }, null, new[] { "top.txt", "other.txt" }),
-                Is.EqualTo(new[] { "top.txt", "other.txt" }));
-            Assert.That(UnitGitPathspecs.Collapse(new[] { "Assets/Solo/x.txt" }, null, new[] { "Assets/Solo/x.txt" }),
-                Is.EqualTo(new[] { "Assets/Solo/x.txt" }));
-            // A rename's old path under the folder is a change of it too.
-            Assert.That(UnitGitPathspecs.Collapse(new[] { "Assets/Pack/a.txt", "Assets/Pack/b.txt" }, null,
-                new[] { "Assets/Pack/a.txt", "Assets/Pack/b.txt", "Assets/Pack/old.txt", "Assets/Moved/new.txt" }),
-                Is.EqualTo(new[] { "Assets/Pack/a.txt", "Assets/Pack/b.txt" }));
-
-            using (var repo = UnitGitTestRepo.Create())
-            {
-                repo.Write("Assets/keep.txt", "base\n");
-                repo.Commit("base");
-                foreach (string path in changed) repo.Write(path, "new\n");
-                AssertOk(repo.Git.Stage(UnitGitPathspecs.Collapse(changed.Take(3).ToList(), changed.Take(3), changed)));
-                var status = StatusOf(repo);
-                Assert.That(status["Assets/Pack/a.txt"], Is.EqualTo("A "));
-                Assert.That(status["Assets/Pack/Sub/c.txt"], Is.EqualTo("A "));
-                Assert.That(status["Assets/Other/d.txt"], Is.EqualTo("??"));
-            }
-        }
-
-        [Test]
         public void CommitMessagesThroughStdinKeepEveryCharacter()
         {
             using (var repo = UnitGitTestRepo.Create())
@@ -134,26 +98,6 @@ namespace Orbiters.UnitGit.Editor.Tests
                 AssertOk(repo.Git.Commit(message, "Trailer-Key: value"));
                 Assert.That(repo.Run("log", "-1", "--format=%B").TrimEnd('\n'),
                     Is.EqualTo(message + "\n\nTrailer-Key: value"));
-            }
-        }
-
-        [Test]
-        public void AWriterThatFailsNeverHandsGitAPartialList()
-        {
-            using (var repo = UnitGitTestRepo.Create())
-            {
-                repo.Write("Assets/a.txt", "one\n");
-                repo.Write("Assets/b.txt", "one\n");
-                // Two paths written, then a failure: Git must be stopped before it reads an end and adds "a.txt".
-                GitCommandResult result = repo.Git.RunGitWithInput(60000, stream =>
-                {
-                    byte[] bytes = Encoding.UTF8.GetBytes("Assets/a.txt\0");
-                    stream.Write(bytes, 0, bytes.Length);
-                    stream.Flush();
-                    throw new IOException("the list could not be read");
-                }, "--literal-pathspecs", "add", "-A", "--pathspec-file-nul", "--pathspec-from-file=-");
-                Assert.That(result.Success, Is.False);
-                Assert.That(repo.Run("diff", "--cached", "--name-only").Trim(), Is.Empty);
             }
         }
 

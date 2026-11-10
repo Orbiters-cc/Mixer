@@ -17,9 +17,13 @@ namespace Orbiters.UnitGit.Editor
         public int TimeoutMilliseconds = UnitGitService.DefaultTimeoutMilliseconds;
         public IDictionary<string, string> Environment;
         public Func<bool> Cancelled;
-        /// <summary>Writes Git's stdin on a thread of its own, while the outputs are read (no pipe can fill up and stall
-        /// both sides). The stream is closed after it returns. Null: stdin is closed at once.</summary>
-        public Action<Stream> Input;
+        /// <summary>Git's whole stdin, complete before Git starts (nothing can fail halfway through a list but the pipe
+        /// itself), written on a thread of its own while the outputs are read so no pipe can fill up and stall both sides.
+        /// Null: stdin is closed at once.</summary>
+        public byte[] Input;
+        /// <summary>For a command that changes the repository: the index lock it may take. If the command has to be stopped
+        /// (timeout, reload) and leaves this lock behind, the lock is removed when it is provably that command's.</summary>
+        public string IndexLock;
         /// <summary>Git's stdout as raw bytes, as they come. Return false to stop: the process is stopped and the result says
         /// <see cref="UnitGitRunResult.Stopped"/>. Null: stdout is kept and decoded as UTF-8 text.</summary>
         public Func<byte[], int, int, bool> Output;
@@ -31,7 +35,7 @@ namespace Orbiters.UnitGit.Editor
     {
         public int ExitCode = -1;
         public bool TimedOut, Cancelled, Stopped;
-        /// <summary>Writing stdin failed while Git still ran: Git was stopped before it could read an end of input.</summary>
+        /// <summary>Git stopped reading its input before the end (it failed); its exit code and error say why.</summary>
         public bool InputFailed;
         /// <summary>Git exited, but a program it started kept its output open: what was read may be incomplete.</summary>
         public bool OutputHeldOpen;
@@ -50,28 +54,43 @@ namespace Orbiters.UnitGit.Editor
         private const int DrainTimeoutMilliseconds = 1000;
         internal static readonly Encoding Utf8 = new UTF8Encoding(false);
 
-        // Mono's Process writes stdin with Console.InputEncoding: with Windows' "UTF-8 for worldwide language support" that
-        // is UTF-8 with a byte order mark, which would land in front of the first path. Where the start info can name the
-        // encoding it is set to UTF-8 without one; where it cannot and the console's would add one, stdin is not used.
+        // Mono's Process writes the encoding's preamble to stdin as soon as the process starts (its StreamWriter flushes at
+        // once), with Console.InputEncoding unless told otherwise: with Windows' "UTF-8 for worldwide language support" that
+        // is a byte order mark in front of the first path, revision or name. Every start therefore names UTF-8 without one,
+        // and the bytes Mixer Git writes go to the base stream, never through a writer.
         private static readonly PropertyInfo InputEncoding = typeof(ProcessStartInfo).GetProperty("StandardInputEncoding");
 
-        /// <summary>False when Git's stdin would start with a byte order mark: send paths and messages in a file instead.</summary>
+        /// <summary>
+        /// Whether Git's stdin starts with exactly the bytes written (the start info could name a preamble-free encoding,
+        /// or the console's has no preamble). When false, <see cref="Run"/> refuses input rather than send it with a mark
+        /// in front; path lists and messages then go in a file. Tests set <see cref="ForceNoCleanInput"/>.
+        /// </summary>
         internal static bool CleanInput
         {
             get
             {
+                if (ForceNoCleanInput) return false;
                 if (InputEncoding != null && InputEncoding.CanWrite) return true;
                 try { return Console.InputEncoding.GetPreamble().Length == 0; }
                 catch (IOException) { return true; }
             }
         }
 
+        internal static bool ForceNoCleanInput;
+
+        /// <summary>
+        /// Prepended to every Git command: what Git prints of commits is UTF-8 and what it records is marked UTF-8, whatever
+        /// the user's i18n settings (a commit stored in another encoding is re-encoded when read), since Mixer Git reads and
+        /// writes UTF-8.
+        /// </summary>
+        internal static readonly string[] EncodingArguments = { "-c", "i18n.logOutputEncoding=UTF-8", "-c", "i18n.commitEncoding=UTF-8" };
+
         internal static ProcessStartInfo StartInfo(string workingDirectory, IList<string> arguments, IDictionary<string, string> environment, bool input)
         {
             var start = new ProcessStartInfo
             {
                 FileName = "git",
-                Arguments = string.Join(" ", arguments.Select(UnitGitService.EscapeArgument).ToArray()),
+                Arguments = string.Join(" ", EncodingArguments.Concat(arguments).Select(UnitGitService.EscapeArgument).ToArray()),
                 WorkingDirectory = Directory.Exists(workingDirectory) ? workingDirectory : Directory.GetCurrentDirectory(),
                 UseShellExecute = false,
                 RedirectStandardInput = true,
@@ -81,7 +100,7 @@ namespace Orbiters.UnitGit.Editor
                 StandardErrorEncoding = Utf8,
                 CreateNoWindow = true
             };
-            if (input && InputEncoding != null && InputEncoding.CanWrite) InputEncoding.SetValue(start, Utf8);
+            if (InputEncoding != null && InputEncoding.CanWrite) InputEncoding.SetValue(start, Utf8);
             start.EnvironmentVariables["GIT_TERMINAL_PROMPT"] = "0";
             // Reads (a refresh's status) must not take the index lock: a commit or a staging starting meanwhile would fail on it.
             start.EnvironmentVariables["GIT_OPTIONAL_LOCKS"] = "0";
@@ -99,7 +118,11 @@ namespace Orbiters.UnitGit.Editor
             var result = new UnitGitRunResult();
             if (UnitGitProcessLifetime.IsStopping || request.Cancelled?.Invoke() == true) { result.Cancelled = true; return result; }
 
-            UnitGitLiveProcess process = UnitGitLiveProcess.Start(request.WorkingDirectory, request.Arguments, request.Environment, request.Input != null);
+            if (request.Input != null && !CleanInput)
+                throw new InvalidOperationException("Git's input would start with a byte order mark on this system.");
+
+            UnitGitLiveProcess process = UnitGitLiveProcess.Start(request.WorkingDirectory, request.Arguments, request.Environment, request.Input != null,
+                UnitGitIndexLock.Guard(request.IndexLock));
             if (process == null) { result.Cancelled = true; return result; }
             Thread writer = null;
             var text = request.Output == null ? new MemoryStream() : null;
@@ -111,18 +134,20 @@ namespace Orbiters.UnitGit.Editor
                 if (request.Input != null)
                 {
                     Stream input = process.Input;
-                    Action<Stream> write = request.Input;
+                    byte[] bytes = request.Input;
                     writer = new Thread(() =>
                     {
-                        // Stdin is closed only once everything is written. A list cut short must never reach Git as a complete
-                        // one (an empty path list is the whole tree to "add -A"): a failed write leaves stdin open, and the
-                        // loop below stops the process before it can read an end.
+                        // The input is complete before Git starts: only the pipe can fail here, when Git stopped reading (it
+                        // failed, and says why). Stdin is closed only after the last byte, so a cut list never reaches Git
+                        // as a complete one.
                         try
                         {
-                            write(input);
+                            for (int offset = 0; offset < bytes.Length; offset += 65536)
+                                input.Write(bytes, offset, Math.Min(65536, bytes.Length - offset));
+                            input.Flush();
                             process.CloseInput();
                         }
-                        catch (Exception)
+                        catch (Exception ex) when (ex is IOException || ex is ObjectDisposedException || ex is InvalidOperationException)
                         {
                             Interlocked.Exchange(ref inputFailed, 1);
                         }
@@ -138,13 +163,6 @@ namespace Orbiters.UnitGit.Editor
                 {
                     if (UnitGitProcessLifetime.IsStopping || request.Cancelled?.Invoke() == true) { result.Cancelled = true; break; }
                     if (elapsed.ElapsedMilliseconds >= request.TimeoutMilliseconds) { result.TimedOut = true; break; }
-                    // Git still running after its input failed (else it stopped reading on its own, and its error says why).
-                    if (inputFailed != 0 && !process.HasExited)
-                    {
-                        process.Dispose();
-                        result.InputFailed = true;
-                        break;
-                    }
 
                     bool read = false;
                     int count = process.ReadOutput();
@@ -171,8 +189,28 @@ namespace Orbiters.UnitGit.Editor
                             result.ExitCode = process.ExitCode;
                             break;
                         }
-                        // A descendant may still hold a pipe: never wait for its end without limit.
-                        if (elapsed.ElapsedMilliseconds - exitedAt >= DrainTimeoutMilliseconds) { result.TimedOut = result.OutputHeldOpen = true; break; }
+                        // Another handle to a pipe keeps it open. When nothing of Git's job runs any more, all it wrote has
+                        // arrived (the holder is a process that inherited the handle while starting at the same moment, and
+                        // writes nothing): what is left is read and the run is complete. Else a descendant may still write:
+                        // never wait for its end without limit.
+                        if (elapsed.ElapsedMilliseconds - exitedAt >= DrainTimeoutMilliseconds)
+                        {
+                            if (process.JobEmpty)
+                            {
+                                while (true)
+                                {
+                                    int rest = process.ReadOutput();
+                                    if (rest <= 0) break;
+                                    if (request.Output != null) { if (!request.Output(process.Chunk, 0, rest)) { result.Stopped = true; break; } }
+                                    else { text.Write(process.Chunk, 0, rest); lines?.Add(process.Chunk, rest); }
+                                }
+                                process.DrainError(errorLines);
+                                if (!result.Stopped) result.ExitCode = process.ExitCode;
+                                break;
+                            }
+                            result.TimedOut = result.OutputHeldOpen = true;
+                            break;
+                        }
                     }
 
                     if (read) idle.Reset();
@@ -183,7 +221,7 @@ namespace Orbiters.UnitGit.Editor
             {
                 process.Dispose();
                 writer?.Join(1000);
-                if (Interlocked.CompareExchange(ref inputFailed, 0, 0) != 0) result.InputFailed = true;
+                if (Interlocked.CompareExchange(ref inputFailed, 0, 0) != 0 && result.ExitCode != 0) result.InputFailed = true;
                 lines?.Finish();
                 errorLines?.Finish();
                 if (text != null) result.StandardOutput = Decode(text.GetBuffer(), (int)text.Length);
@@ -271,6 +309,50 @@ namespace Orbiters.UnitGit.Editor
     }
 
     /// <summary>
+    /// Git's index lock after a command that changes the repository had to be stopped (a timeout, a reload): killed, Git
+    /// leaves "index.lock" behind and every later change fails on it. The lock is removed only when it is provably the
+    /// stopped command's: it did not exist when the command started, it was created after, and no other Git runs at all
+    /// (another program's Git may be the one holding it). Anything else leaves it for the user, as Git would.
+    /// </summary>
+    internal static class UnitGitIndexLock
+    {
+        /// <summary>The cleanup to run if the command is stopped while running; null when there is no lock to watch.</summary>
+        internal static Action Guard(string lockPath)
+        {
+            if (string.IsNullOrEmpty(lockPath)) return null;
+            bool existed;
+            try { existed = File.Exists(lockPath); }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException) { return null; }
+            if (existed) return null;
+            DateTime started = DateTime.UtcNow.AddSeconds(-2); // file times are coarse
+            return () => Release(lockPath, started);
+        }
+
+        private static void Release(string lockPath, DateTime startedUtc)
+        {
+            try
+            {
+                var file = new FileInfo(lockPath);
+                if (!file.Exists || file.CreationTimeUtc < startedUtc) return;
+                HashSet<int> ours = UnitGitProcessLifetime.OwnedIds();
+                foreach (Process git in Process.GetProcessesByName("git"))
+                {
+                    using (git)
+                    {
+                        // Our own kept-alive readers never take the lock; any other Git might be the one holding it now.
+                        if (!ours.Contains(git.Id)) return;
+                    }
+                }
+                file.Delete();
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is InvalidOperationException ||
+                                       ex is System.ComponentModel.Win32Exception)
+            {
+            }
+        }
+    }
+
+    /// <summary>
     /// A Git process with its pipes, owned by <see cref="UnitGitProcessLifetime"/>: either one command run to its end by
     /// <see cref="UnitGitRunner.Run"/>, or a process kept alive and asked one thing after the other (<c>cat-file --batch</c>,
     /// a <c>log</c> read page by page). Not thread-safe: one owner reads it at a time; only stdin may be written from
@@ -305,13 +387,14 @@ namespace Orbiters.UnitGit.Editor
         }
 
         /// <summary>Starts Git; null when the editor is stopping (reload, quit). Throws when Git cannot start.</summary>
-        internal static UnitGitLiveProcess Start(string workingDirectory, IList<string> arguments, IDictionary<string, string> environment, bool input)
+        internal static UnitGitLiveProcess Start(string workingDirectory, IList<string> arguments, IDictionary<string, string> environment, bool input,
+            Action onStopped = null)
         {
             var process = new Process { StartInfo = UnitGitRunner.StartInfo(workingDirectory, arguments, environment, input) };
             bool started = false;
             try
             {
-                started = UnitGitProcessLifetime.Start(process);
+                started = UnitGitProcessLifetime.Start(process, onStopped);
                 if (!started) { process.Dispose(); return null; }
                 return new UnitGitLiveProcess(process);
             }
@@ -327,6 +410,7 @@ namespace Orbiters.UnitGit.Editor
         internal bool OutputClosed => output.Closed && start == end;
         internal bool ErrorClosed => error.Closed;
         internal bool HasExited { get { try { return process.HasExited; } catch (InvalidOperationException) { return true; } } }
+        internal bool JobEmpty => UnitGitProcessLifetime.RunningInJob(process) == 0;
         internal int ExitCode { get { try { return process.ExitCode; } catch (InvalidOperationException) { return -1; } } }
         internal string StandardError { get { lock (errorText) return errorText.ToString(); } }
         internal bool IsDisposed => disposed != 0;

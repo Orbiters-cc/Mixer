@@ -45,19 +45,16 @@ namespace Orbiters.UnitGit.Editor
             visible = false;
         }
 
-        // Editor events come in bursts (a save, an import, the focus): one read after the last of them. A focus gain alone
-        // reads nothing when Git's files did not move and the editor reported no change (see RunQueuedRefresh).
+        // Editor events come in bursts (a save, an import, the focus): one read after the last of them. Each read runs status
+        // and the refs (another program may have changed anything); the further slices are read only when those moved.
         private void QueueRefreshFromEditorEvent(bool focusGain = false)
         {
-            if (!focusGain) workTreeDirty = true;
             if (!visible)
             {
                 staleWhileHidden = true;
                 return;
             }
 
-            if (!refreshQueued) queuedForFocusOnly = true;
-            queuedForFocusOnly &= focusGain;
             double now = EditorApplication.timeSinceStartup;
             double nextAllowedRefresh = lastEditorEventRefreshTime + EditorEventRefreshCooldownSeconds;
             queuedRefreshTime = Math.Max(now + EditorEventRefreshDelaySeconds, nextAllowedRefresh);
@@ -92,11 +89,6 @@ namespace Orbiters.UnitGit.Editor
                 return;
             }
 
-            if (queuedForFocusOnly && NothingChangedSinceLastRead())
-            {
-                return;
-            }
-
             if (busy)
             {
                 refreshAgainRequested = true;
@@ -107,15 +99,7 @@ namespace Orbiters.UnitGit.Editor
             RefreshSnapshot();
         }
 
-        // Git's own files as they were when the last read began, no change reported by the editor since, and a recent read.
-        private bool NothingChangedSinceLastRead()
-        {
-            if (workTreeDirty || snapshot == null || !snapshot.HasRepository || !string.IsNullOrEmpty(snapshot.LastError) ||
-                string.IsNullOrEmpty(snapshot.GitDirStamp) || gitService == null)
-                return false;
-            if (EditorApplication.timeSinceStartup - lastRefreshStartTime > FocusRefreshMaxAgeSeconds) return false;
-            return UnitGitRepositoryStamp.TryRead(gitService.ProjectRoot, out string stamp) && stamp == snapshot.GitDirStamp;
-        }
+
 
         private void QueueLogSearchRefresh()
         {
@@ -197,8 +181,6 @@ namespace Orbiters.UnitGit.Editor
             int requestedHistoryLimit = historyLimit;
             historyOnly &= snapshot != null;
             bool readHeadMessage = commitAmend;
-            if (!historyOnly) workTreeDirty = false; // a change reported from now on is newer than this read
-            lastRefreshStartTime = EditorApplication.timeSinceStartup;
             if (history == null) history = new UnitGitHistory();
             UnitGitHistory reader = history;
             // Read before the worker starts (EditorPrefs is main-thread only); what was read before a visit began is older than it.

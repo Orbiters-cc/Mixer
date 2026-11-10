@@ -181,8 +181,9 @@ namespace Orbiters.UnitGit.Editor
                 pane.Add(mode == DiffMode.Scene ? BuildLocalSceneView(change) : BuildLocalModelView(change));
                 return pane;
             }
-            // Shown in Text now after another view: its text diff was never read.
-            if (loadedDiff == null && requestedDiffKey == null) RequestLocalDiff(change);
+            // Entering Text (also back from the Scene or 3D view, during which the file may have changed): the text diff's
+            // key decides whether it is read again.
+            RequestLocalDiff(change);
             if (loadedDiff == null)
             {
                 pane.Add(BuildDiffPlaceholder("Loading the diff…", spinner: true));
@@ -380,7 +381,7 @@ namespace Orbiters.UnitGit.Editor
             var whitespace = UnitGitDiffViewer.Whitespace;
             // Nothing the diff depends on moved (the file, the index, HEAD, the option): what is shown is still it.
             string key = TextDiffKey(change, whitespace);
-            if (!changedPath && loadedDiff != null && key != null && key == requestedDiffKey) return;
+            if (!changedPath && key != null && key == requestedDiffKey && (loadedDiff != null || diffRead.IsBusy)) return;
             requestedDiffKey = key ?? string.Empty;
             var previous = loadedDiff;
             string root = gitService.ProjectRoot;

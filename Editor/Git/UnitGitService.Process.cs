@@ -24,7 +24,7 @@ namespace Orbiters.UnitGit.Editor
             var log = ProcessLogReceived;
             var superseded = ReadSuperseded;
             return UnitGitWriteGate.Run(arguments, timeoutMilliseconds,
-                () => RunProcess("git", "Git command timed out.", ProjectRoot, timeoutMilliseconds, log, null, superseded, arguments),
+                () => RunStreaming(ProjectRoot, timeoutMilliseconds, log, superseded, null, null, null, arguments),
                 line => log?.Invoke(line));
         }
 
@@ -32,21 +32,21 @@ namespace Orbiters.UnitGit.Editor
         {
             var log = ProcessLogReceived;
             return UnitGitWriteGate.Run(arguments, timeoutMilliseconds,
-                () => RunProcess("git", "Git command timed out.", ProjectRoot, timeoutMilliseconds, log, environment, null, arguments),
+                () => RunStreaming(ProjectRoot, timeoutMilliseconds, log, null, environment, null, null, arguments),
                 line => log?.Invoke(line));
         }
 
         /// <summary>
-        /// Runs Git with <paramref name="input"/> written to its stdin while its output is read. A command that changes the
-        /// repository takes the write gate as <see cref="RunGit"/> does; a retry on another program's index lock writes the
-        /// input again.
+        /// Runs Git with <paramref name="input"/> (complete before Git starts) written to its stdin while its output is read. A
+        /// command that changes the repository takes the write gate as <see cref="RunGit"/> does; a retry on another
+        /// program's index lock writes the input again.
         /// </summary>
-        internal GitCommandResult RunGitWithInput(int timeoutMilliseconds, Action<Stream> input, params string[] arguments)
+        internal GitCommandResult RunGitWithInput(int timeoutMilliseconds, byte[] input, params string[] arguments)
         {
             return RunGitWithInput(null, timeoutMilliseconds, input, arguments);
         }
 
-        internal GitCommandResult RunGitWithInput(IDictionary<string, string> environment, int timeoutMilliseconds, Action<Stream> input, params string[] arguments)
+        internal GitCommandResult RunGitWithInput(IDictionary<string, string> environment, int timeoutMilliseconds, byte[] input, params string[] arguments)
         {
             var log = ProcessLogReceived;
             var superseded = ReadSuperseded;
@@ -65,8 +65,11 @@ namespace Orbiters.UnitGit.Editor
         }
 
         private static GitCommandResult RunStreaming(string workingDirectory, int timeoutMilliseconds, UnitGitProcessLogHandler logHandler,
-            Func<bool> superseded, IDictionary<string, string> environment, Action<Stream> input, Func<byte[], int, int, bool> output, string[] arguments)
+            Func<bool> superseded, IDictionary<string, string> environment, byte[] input, Func<byte[], int, int, bool> output, string[] arguments)
         {
+            // A change is never stopped because a newer read superseded the refresh that asked for it: it runs to its end.
+            bool write = !UnitGitWriteGate.IsRead(arguments);
+            if (write) superseded = null;
             if (superseded != null && superseded())
                 return Failure("Read superseded.");
             var result = new GitCommandResult();
@@ -84,6 +87,7 @@ namespace Orbiters.UnitGit.Editor
                     TimeoutMilliseconds = timeoutMilliseconds,
                     Environment = environment,
                     Cancelled = superseded,
+                    IndexLock = write ? IndexLockOf(workingDirectory, environment) : null,
                     Input = input,
                     Output = output,
                     // A read's output only fills the log: its lines are not logged (the command, its exit and errors are).
@@ -114,6 +118,15 @@ namespace Orbiters.UnitGit.Editor
             return result;
         }
 
+        // The lock a change of the index takes: the scoped index's own (GIT_INDEX_FILE), else the repository's.
+        private static string IndexLockOf(string workingDirectory, IDictionary<string, string> environment)
+        {
+            if (environment != null && environment.TryGetValue("GIT_INDEX_FILE", out string scoped) && !string.IsNullOrEmpty(scoped))
+                return Path.GetFullPath(Path.Combine(workingDirectory, scoped)) + ".lock";
+            string index = UnitGitPaths.GitPath(workingDirectory, "index");
+            return index == null ? null : index + ".lock";
+        }
+
         /// <summary>
         /// Runs "git --literal-pathspecs &lt;arguments&gt;" once for all <paramref name="paths"/>, which Git reads from stdin
         /// (NUL-separated: any name, spaces, quotes, line breaks and leading dashes included). No paths run nothing: Git
@@ -135,18 +148,7 @@ namespace Orbiters.UnitGit.Editor
             var args = new List<string> { "--literal-pathspecs" };
             args.AddRange(arguments);
             args.Add("--pathspec-file-nul");
-            Action<Stream> writePaths = stream =>
-            {
-                var bytes = new byte[0];
-                foreach (string path in paths)
-                {
-                    int length = UnitGitRunner.Utf8.GetMaxByteCount(path.Length) + 1;
-                    if (bytes.Length < length) bytes = new byte[Math.Max(length, 4096)];
-                    int count = UnitGitRunner.Utf8.GetBytes(path, 0, path.Length, bytes, 0);
-                    bytes[count++] = 0;
-                    stream.Write(bytes, 0, count);
-                }
-            };
+            byte[] writePaths = NulSeparated(paths);
             if (UnitGitRunner.CleanInput)
             {
                 args.Add("--pathspec-from-file=-");
@@ -157,7 +159,7 @@ namespace Orbiters.UnitGit.Editor
             string file = Path.Combine(Path.GetTempPath(), "mixer-git-paths-" + Guid.NewGuid().ToString("N") + ".txt");
             try
             {
-                using (var stream = File.Create(file)) writePaths(stream);
+                File.WriteAllBytes(file, writePaths);
                 args.Add("--pathspec-from-file=" + file);
                 return environment == null ? RunGit(timeoutMilliseconds, args.ToArray()) : RunGitWithEnvironment(environment, timeoutMilliseconds, args.ToArray());
             }
@@ -165,6 +167,50 @@ namespace Orbiters.UnitGit.Editor
             {
                 DeleteTempFile(file);
             }
+        }
+
+        /// <summary>
+        /// A read that takes a list on stdin (revisions for "log --stdin", paths for "check-ignore --stdin"): on stdin when it
+        /// can be clean (<see cref="UnitGitRunner.CleanInput"/>), else on as many command lines as it takes, the outputs
+        /// joined. Exit 1 (check-ignore: none of these) is kept only when every part says it.
+        /// </summary>
+        internal GitCommandResult RunWithList(IDictionary<string, string> environment, int timeoutMilliseconds, IList<string> items, bool nul,
+            string[] stdinArguments, string[] argumentsBeforeItems, string[] argumentsAfterItems = null)
+        {
+            if (UnitGitRunner.CleanInput)
+                return RunGitWithInput(environment, timeoutMilliseconds,
+                    nul ? NulSeparated(items) : UnitGitRunner.Utf8.GetBytes(string.Join("\n", items) + "\n"), stdinArguments);
+            var output = new StringBuilder();
+            var error = new StringBuilder();
+            int exit = 1;
+            int index = 0;
+            while (index < items.Count)
+            {
+                var batch = new List<string> { items[index++] };
+                while (index < items.Count && FitsCommandLine(batch.Concat(new[] { items[index] }).ToList())) batch.Add(items[index++]);
+                var args = new List<string>(argumentsBeforeItems);
+                args.AddRange(batch);
+                if (argumentsAfterItems != null) args.AddRange(argumentsAfterItems);
+                GitCommandResult part = environment == null ? RunGit(timeoutMilliseconds, args.ToArray()) : RunGitWithEnvironment(environment, timeoutMilliseconds, args.ToArray());
+                if (part.TimedOut || (part.ExitCode != 0 && part.ExitCode != 1)) return part;
+                output.Append(part.StandardOutput);
+                error.Append(part.StandardError);
+                if (part.ExitCode == 0) exit = 0;
+            }
+            return new GitCommandResult { ExitCode = items.Count == 0 ? 0 : exit, StandardOutput = output.ToString(), StandardError = error.ToString() };
+        }
+
+        /// <summary>Each text in UTF-8 followed by a NUL: a path list as Git reads it with -z / --pathspec-file-nul.</summary>
+        internal static byte[] NulSeparated(IEnumerable<string> texts)
+        {
+            var bytes = new MemoryStream();
+            foreach (string text in texts)
+            {
+                byte[] encoded = UnitGitRunner.Utf8.GetBytes(text ?? string.Empty);
+                bytes.Write(encoded, 0, encoded.Length);
+                bytes.WriteByte(0);
+            }
+            return bytes.ToArray();
         }
 
         // The paths of these files that Git has in HEAD (ls-tree) or in the index (ls-files): neither takes a path list on
