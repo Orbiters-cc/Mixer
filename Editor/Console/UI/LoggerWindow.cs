@@ -261,15 +261,7 @@ namespace Orbiters.Logger.Editor
                 return;
             }
 
-            long now = LogCapture.Now;
-            long chartTo = Math.Max(store.LastTime, now);
-            long chartFrom = store.Count > 0 ? TimelineWindow.From(store.FirstTime, chartTo, TimelineWindow.Minutes) : now - TimeSpan.TicksPerMinute;
-            if (chartTo - chartFrom < TimeSpan.TicksPerSecond * 30)
-            {
-                chartTo = chartFrom + TimeSpan.TicksPerSecond * 30;
-            }
-
-            int buckets = Mathf.Clamp((int)(timeline.PlotWidth / 4f), 30, 500);
+            ChartAxis(store, out long chartFrom, out long chartTo, out int buckets);
             lastFullPass = EditorApplication.timeSinceStartup;
             fullPassVersion = store.Version;
             var result = runner.Request(store, BuildSpec(), state, chartFrom, chartTo, buckets, allowAsync);
@@ -277,6 +269,29 @@ namespace Orbiters.Logger.Editor
             {
                 Adopt(result);
             }
+        }
+
+        // The chart runs from the oldest log (or the window's start) to now, at least 30 seconds, a bucket per 4 pixels.
+        private void ChartAxis(LogStore store, out long chartFrom, out long chartTo, out int buckets)
+        {
+            long now = LogCapture.Now;
+            chartTo = Math.Max(store.LastTime, now);
+            chartFrom = store.Count > 0 ? TimelineWindow.From(store.FirstTime, chartTo, TimelineWindow.Minutes) : now - TimeSpan.TicksPerMinute;
+            if (chartTo - chartFrom < TimeSpan.TicksPerSecond * 30)
+            {
+                chartTo = chartFrom + TimeSpan.TicksPerSecond * 30;
+            }
+
+            buckets = Mathf.Clamp((int)(timeline.PlotWidth / 4f), 30, 500);
+        }
+
+        // Only the time axis moved: the chart and sparklines are counted again, the rows and groups stay.
+        private void Rechart(LogStore store)
+        {
+            ChartAxis(store, out long chartFrom, out long chartTo, out int buckets);
+            lastFullPass = EditorApplication.timeSinceStartup;
+            fullPassVersion = store.Version;
+            runner.RequestChart(store, state, chartFrom, chartTo, buckets);
         }
 
         private void Adopt(FilterState result)
@@ -372,6 +387,18 @@ namespace Orbiters.Logger.Editor
                 Adopt(ready);
             }
 
+            if (runner.TryTakeChart(store, state))
+            {
+                if (grouped)
+                {
+                    // Sparklines are drawn by the rows.
+                    list?.RefreshRows();
+                }
+
+                chromeDirty = true;
+                detailsDirty = true;
+            }
+
             double now = EditorApplication.timeSinceStartup;
             if (state == null || state.Epoch != store.Epoch || state.MessagesVersion != store.MessagesVersion || !ReferenceEquals(state.Texts, store.Texts))
             {
@@ -395,11 +422,12 @@ namespace Orbiters.Logger.Editor
             }
             else if (!runner.Busy && timeline != null && timeline.resolvedStyle.display != DisplayStyle.None)
             {
-                // The chart keeps up with time: every 3 seconds while logs arrive, every 15 seconds otherwise.
+                // The chart keeps up with time: every 3 seconds while logs arrive, every 15 seconds otherwise. Only its
+                // counts are redone (a full pass would also rebuild the rows, groups and search results that didn't change).
                 double age = now - lastFullPass;
                 if (age > 3d && store.Version != fullPassVersion || age > 15d)
                 {
-                    Refilter(allowAsync: true);
+                    Rechart(store);
                 }
             }
 

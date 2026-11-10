@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
+using System.Threading;
 
 namespace Orbiters.Logger.Editor
 {
@@ -11,6 +12,13 @@ namespace Orbiters.Logger.Editor
     internal sealed class LogQuery
     {
         public static readonly LogQuery Empty = new LogQuery(string.Empty, false, false, false);
+        /// <summary>Texts a pass tests before the regular expression is worth compiling to IL.</summary>
+        public const int CompileAbove = 4096;
+        private static readonly TimeSpan MatchTimeout = TimeSpan.FromMilliseconds(250);
+        // Compiled expressions by pattern and options: typing back to an earlier pattern, or toggling an option, reuses one.
+        private static readonly Dictionary<(string, RegexOptions), Regex> compiled = new Dictionary<(string, RegexOptions), Regex>();
+        private Regex compiledRegex;
+        private int timeouts;
 
         public LogQuery(string text, bool useRegex, bool matchCase, bool includeStack)
         {
@@ -23,7 +31,7 @@ namespace Orbiters.Logger.Editor
                 try
                 {
                     var options = RegexOptions.CultureInvariant | RegexOptions.Multiline | (MatchCase ? RegexOptions.None : RegexOptions.IgnoreCase);
-                    Regex = new Regex(Text, options, TimeSpan.FromMilliseconds(250));
+                    Regex = new Regex(Text, options, MatchTimeout);
                 }
                 catch (ArgumentException exception)
                 {
@@ -45,6 +53,103 @@ namespace Orbiters.Logger.Editor
         public bool SameAs(LogQuery other) =>
             other != null && Text == other.Text && UseRegex == other.UseRegex && MatchCase == other.MatchCase && IncludeStack == other.IncludeStack;
 
+        /// <summary>Texts a pass could not test because the expression took too long on them (counted as no match).</summary>
+        public int Timeouts => Volatile.Read(ref timeouts);
+
+        /// <summary>
+        /// Search results of <paramref name="previous"/> (per text id: 0 untested, 1 no match, 2 match) that still hold
+        /// for this query, or null when none do. The same query keeps all of them. A plain text that contains the previous
+        /// one (typing on) can only match texts that matched before: those are tested again, the others stay out. A plain
+        /// text the previous one contains (deleting) still matches everything that matched: only the others are tested.
+        /// </summary>
+        public byte[] Reuse(LogQuery previous, byte[] known)
+        {
+            if (known == null || previous == null || previous.IsEmpty || IsEmpty)
+            {
+                return null;
+            }
+
+            if (SameAs(previous))
+            {
+                return (byte[])known.Clone();
+            }
+
+            if (UseRegex || previous.UseRegex || MatchCase != previous.MatchCase || IncludeStack != previous.IncludeStack)
+            {
+                return null;
+            }
+
+            var comparison = MatchCase ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+            byte retest;
+            if (Text.IndexOf(previous.Text, comparison) >= 0)
+            {
+                retest = 2;
+            }
+            else if (previous.Text.IndexOf(Text, comparison) >= 0)
+            {
+                retest = 1;
+            }
+            else
+            {
+                return null;
+            }
+
+            var result = (byte[])known.Clone();
+            for (int i = 0; i < result.Length; i++)
+            {
+                if (result[i] == retest)
+                {
+                    result[i] = 0;
+                }
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// The expression to test many texts with: compiled to IL once (on the calling worker thread) when the pass is
+        /// big enough to pay for it, else the interpreted one.
+        /// </summary>
+        public Regex RegexFor(int texts)
+        {
+            if (Regex == null || texts < CompileAbove)
+            {
+                return Regex;
+            }
+
+            var ready = Volatile.Read(ref compiledRegex);
+            if (ready != null)
+            {
+                return ready;
+            }
+
+            var key = (Text, Regex.Options);
+            lock (compiled)
+            {
+                if (!compiled.TryGetValue(key, out ready))
+                {
+                    try
+                    {
+                        ready = new Regex(Text, Regex.Options | RegexOptions.Compiled, MatchTimeout);
+                    }
+                    catch (Exception)
+                    {
+                        ready = Regex;
+                    }
+
+                    if (compiled.Count >= 16)
+                    {
+                        compiled.Clear();
+                    }
+
+                    compiled[key] = ready;
+                }
+            }
+
+            Volatile.Write(ref compiledRegex, ready);
+            return ready;
+        }
+
         public bool Matches(string text)
         {
             if (IsEmpty)
@@ -62,12 +167,29 @@ namespace Orbiters.Logger.Editor
                 return text.IndexOf(Text, MatchCase ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase) >= 0;
             }
 
+            return Matches(text, Regex);
+        }
+
+        /// <summary><see cref="Matches(string)"/> with the expression of <see cref="RegexFor"/>.</summary>
+        public bool Matches(string text, Regex regex)
+        {
+            if (regex == null)
+            {
+                return Matches(text);
+            }
+
+            if (string.IsNullOrEmpty(text))
+            {
+                return false;
+            }
+
             try
             {
-                return Regex.IsMatch(text);
+                return regex.IsMatch(text);
             }
             catch (RegexMatchTimeoutException)
             {
+                Interlocked.Increment(ref timeouts);
                 return false;
             }
         }

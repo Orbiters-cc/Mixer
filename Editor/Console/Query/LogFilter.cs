@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace Orbiters.Logger.Editor
 {
@@ -123,6 +125,8 @@ namespace Orbiters.Logger.Editor
     {
         public const int SparkBuckets = 24;
         private const int MaxSparkGroups = 50_000;
+        // Messages a worker pass searches on several cores (fewer are not worth the hand-off).
+        private const int ParallelSearchAbove = 20_000;
         private const byte BaseBit = 1;
         private const byte LevelBit = 2;
         private const byte SourceBit = 4;
@@ -162,6 +166,7 @@ namespace Orbiters.Logger.Editor
         public int SparkMax = 1;
 
         private byte[] textMatch = new byte[0];
+        private Regex regex;
         private byte[] messagePass = new byte[0];
         private bool[] groupMuted = new bool[0];
         private int groupsKnown;
@@ -200,9 +205,17 @@ namespace Orbiters.Logger.Editor
             state.Grow(view.MessageCount, view.GroupCount);
             state.groupsKnown = 0;
             state.UpdateMutes(view);
+            state.regex = spec.Query.RegexFor(view.MessageCount);
+            if (!spec.Query.IsEmpty && cancelled != null && view.MessageCount >= ParallelSearchAbove && !state.SearchInParallel(view, textCount, cancelled))
+            {
+                return null;
+            }
+
+            // A slow expression gets checked for cancellation every message, plain text every 1,024.
+            int check = spec.Query.UseRegex ? 0 : 1023;
             for (int m = 0; m < view.MessageCount; m++)
             {
-                if ((m & 1023) == 0 && cancelled != null && cancelled())
+                if ((m & check) == 0 && cancelled != null && cancelled())
                 {
                     return null;
                 }
@@ -393,11 +406,46 @@ namespace Orbiters.Logger.Editor
             byte known = textMatch[text];
             if (known == 0)
             {
-                known = query.Matches(Texts.Plain(text)) ? (byte)2 : (byte)1;
+                known = query.Matches(Texts.Plain(text), regex) ? (byte)2 : (byte)1;
                 textMatch[text] = known;
             }
 
             return known == 2;
+        }
+
+        // Fills the search results of every message's texts on several cores; the serial pass then only reads them.
+        // Each text id has its own byte, so threads never share a write (two messages with one text write the same value).
+        private bool SearchInParallel(StoreView view, int textCount, Func<bool> cancelled)
+        {
+            var query = Spec.Query;
+            var messages = view.Messages;
+            int chunk = 4096;
+            int chunks = (view.MessageCount + chunk - 1) / chunk;
+            var options = new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount / 2) };
+            var result = Parallel.For(0, chunks, options, (c, loop) =>
+            {
+                int end = Math.Min(view.MessageCount, (c + 1) * chunk);
+                for (int m = c * chunk; m < end; m++)
+                {
+                    if ((query.UseRegex || (m & 63) == 0) && (loop.ShouldExitCurrentIteration || cancelled()))
+                    {
+                        loop.Stop();
+                        return;
+                    }
+
+                    ref var message = ref messages[m];
+                    if (message.Resolved || message.Group < groupMuted.Length && groupMuted[message.Group])
+                    {
+                        continue;
+                    }
+
+                    if (!TextMatches(message.Text, query, textCount) && query.IncludeStack && message.Stack > 0)
+                    {
+                        TextMatches(message.Stack, query, textCount);
+                    }
+                }
+            });
+            return result.IsCompleted && !cancelled();
         }
 
         private void Scan(StoreView view, int from, int to)
@@ -544,6 +592,134 @@ namespace Orbiters.Logger.Editor
             Array.Sort(GroupRows, 0, GroupRowCount, Comparer<int>.Create(comparison));
         }
 
+        /// <summary>
+        /// The chart and sparklines of this state for another time axis, computed from what the state already knows
+        /// (which messages show): only the occurrences' times are read again, nothing is allocated but the count arrays,
+        /// and rows, groups and search results stay. Safe on a worker thread (see <see cref="AdoptChart"/>).
+        /// </summary>
+        public ChartPass ComputeChart(StoreView view, long chartFrom, long chartTo, int buckets, int[] spareSparks, Func<bool> cancelled)
+        {
+            var pass = new ChartPass
+            {
+                Epoch = view.Epoch,
+                MessagesVersion = view.MessagesVersion,
+                Texts = view.Texts,
+                From = chartFrom,
+                To = Math.Max(chartTo, chartFrom + TimeSpan.TicksPerSecond),
+                Clips = view.Count > 0 && chartFrom > view.Times[0],
+                Buckets = Math.Max(1, buckets),
+                Covered = Math.Min(view.Count, Covered)
+            };
+            pass.Timeline = new int[3 * pass.Buckets];
+            if (Sparks != null)
+            {
+                pass.SparkGroups = SparkGroups;
+                int size = Math.Max(1, SparkGroups) * SparkBuckets;
+                pass.Sparks = spareSparks != null && spareSparks.Length == size ? spareSparks : new int[size];
+                Array.Clear(pass.Sparks, 0, pass.Sparks.Length);
+            }
+
+            var passes = messagePass;
+            for (int from = 0; from < pass.Covered; from += 1 << 18)
+            {
+                if (cancelled != null && cancelled())
+                {
+                    return null;
+                }
+
+                ChartScan(view, passes, pass, from, Math.Min(pass.Covered, from + (1 << 18)));
+            }
+
+            return pass;
+        }
+
+        /// <summary>
+        /// Takes a chart computed by <see cref="ComputeChart"/> (main thread), adding the occurrences that arrived since.
+        /// False when the store changed shape meanwhile: the pass is dropped. The old sparkline array is handed back for
+        /// the next pass.
+        /// </summary>
+        public bool AdoptChart(ChartPass pass, StoreView view, out int[] spareSparks)
+        {
+            spareSparks = null;
+            if (pass == null || pass.Epoch != Epoch || pass.MessagesVersion != MessagesVersion || !ReferenceEquals(pass.Texts, Texts) ||
+                view.Epoch != Epoch || pass.Covered > Covered || Timeline == null)
+            {
+                return false;
+            }
+
+            if (Sparks == null)
+            {
+                pass.Sparks = null;
+                pass.SparkGroups = 0;
+            }
+            else if (pass.Sparks == null || pass.SparkGroups < SparkGroups)
+            {
+                // Groups that appeared since: their sparklines start empty, as Extend makes them.
+                Array.Resize(ref pass.Sparks, Math.Max(1, SparkGroups) * SparkBuckets);
+                pass.SparkGroups = SparkGroups;
+            }
+
+            ChartScan(view, messagePass, pass, pass.Covered, Covered);
+            spareSparks = Sparks;
+            ChartFrom = pass.From;
+            ChartTo = pass.To;
+            ChartClips = pass.Clips;
+            Buckets = pass.Buckets;
+            Timeline = pass.Timeline;
+            Sparks = pass.Sparks;
+            SparkGroups = pass.SparkGroups;
+            SparkMax = pass.SparkMax;
+            return true;
+        }
+
+        // The chart half of Scan, by the same rules.
+        private static void ChartScan(StoreView view, byte[] passes, ChartPass pass, int from, int to)
+        {
+            var times = view.Times;
+            var owners = view.Owners;
+            var flags = view.Flags;
+            var messages = view.Messages;
+            long chartFrom = pass.From;
+            long span = Math.Max(1L, pass.To - pass.From);
+            int buckets = pass.Buckets;
+            var timeline = pass.Timeline;
+            var sparks = pass.Sparks;
+            int sparkGroups = pass.SparkGroups;
+            for (int i = from; i < to; i++)
+            {
+                if ((flags[i] & SupersededBit) != 0)
+                {
+                    continue;
+                }
+
+                int m = owners[i];
+                if (m >= passes.Length || (passes[m] & ViewBits) != ViewBits)
+                {
+                    continue;
+                }
+
+                long time = times[i];
+                if (pass.Clips && time < chartFrom)
+                {
+                    continue;
+                }
+
+                ref var message = ref messages[m];
+                long offset = time - chartFrom;
+                int bucket = offset <= 0 ? 0 : offset >= span ? buckets - 1 : (int)(offset * buckets / span);
+                timeline[(int)message.Level * buckets + bucket]++;
+                if (sparks != null && message.Group < sparkGroups)
+                {
+                    int spark = offset <= 0 ? 0 : offset >= span ? SparkBuckets - 1 : (int)(offset * SparkBuckets / span);
+                    int value = ++sparks[message.Group * SparkBuckets + spark];
+                    if (value > pass.SparkMax)
+                    {
+                        pass.SparkMax = value;
+                    }
+                }
+            }
+        }
+
         /// <summary>The row position of an occurrence (binary search: rows are in time order), or -1.</summary>
         public int RowOf(int occurrence)
         {
@@ -572,6 +748,23 @@ namespace Orbiters.Logger.Editor
         }
     }
 
+    /// <summary>A <see cref="FilterState"/>'s chart for a moved time axis (<see cref="FilterState.ComputeChart"/>).</summary>
+    internal sealed class ChartPass
+    {
+        public int Epoch;
+        public int MessagesVersion;
+        public TextTable Texts;
+        public long From;
+        public long To;
+        public bool Clips;
+        public int Buckets;
+        public int Covered;
+        public int[] Timeline;
+        public int[] Sparks;
+        public int SparkGroups;
+        public int SparkMax = 1;
+    }
+
     /// <summary>
     /// Runs filter passes: on the main thread when the store is small, on a worker thread otherwise, so typing in the
     /// search field never waits for a million logs. Only the newest request's result is kept.
@@ -590,11 +783,13 @@ namespace Orbiters.Logger.Editor
         public FilterState Request(LogStore store, FilterSpec spec, FilterState previous, long chartFrom, long chartTo, int buckets, bool allowAsync)
         {
             int id = Interlocked.Increment(ref generation);
+            Interlocked.Increment(ref chartGeneration);
+            readyChart = null;
             var view = store.View();
             var sources = new List<LogSource>(store.Sources.All);
-            byte[] known = previous != null && previous.Spec != null && previous.Spec.Query.SameAs(spec.Query) &&
-                           ReferenceEquals(previous.Texts, store.Texts)
-                ? (byte[])previous.KnownTextMatches.Clone()
+            // What the previous search found still holds for the same query, and in part for one typed on or back.
+            byte[] known = previous != null && previous.Spec != null && ReferenceEquals(previous.Texts, store.Texts)
+                ? spec.Query.Reuse(previous.Spec.Query, previous.KnownTextMatches)
                 : null;
             long work = view.Count + (spec.Query.IsEmpty ? 0 : (spec.Query.IncludeStack ? 40L : 4L) * view.MessageCount);
             if (!allowAsync || work <= SynchronousLimit)
@@ -631,6 +826,78 @@ namespace Orbiters.Logger.Editor
             return null;
         }
 
+        private int chartGeneration;
+        private volatile ChartPass readyChart;
+        private int readyChartGeneration;
+        private volatile bool charting;
+        private int[] spareSparks;
+
+        /// <summary>
+        /// Moves the chart of <paramref name="state"/> to a new time axis without a filter pass. The result comes from
+        /// <see cref="TryTakeChart"/>; a full <see cref="Request"/> drops it.
+        /// </summary>
+        public void RequestChart(LogStore store, FilterState state, long chartFrom, long chartTo, int buckets)
+        {
+            if (state == null || charting)
+            {
+                return;
+            }
+
+            int id = Interlocked.Increment(ref chartGeneration);
+            int full = Volatile.Read(ref generation);
+            var view = store.View();
+            var spare = spareSparks;
+            spareSparks = null;
+            if (view.Count <= SynchronousLimit)
+            {
+                readyChartGeneration = id;
+                readyChart = state.ComputeChart(view, chartFrom, chartTo, buckets, spare, null);
+                return;
+            }
+
+            charting = true;
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                try
+                {
+                    var result = state.ComputeChart(view, chartFrom, chartTo, buckets, spare,
+                        () => Volatile.Read(ref chartGeneration) != id || Volatile.Read(ref generation) != full);
+                    if (result != null && Volatile.Read(ref chartGeneration) == id)
+                    {
+                        readyChartGeneration = id;
+                        readyChart = result;
+                    }
+                }
+                catch (Exception)
+                {
+                    // The next request tries again.
+                }
+                finally
+                {
+                    charting = false;
+                }
+            });
+        }
+
+        /// <summary>Puts the latest chart into <paramref name="state"/> (main thread). True when it changed.</summary>
+        public bool TryTakeChart(LogStore store, FilterState state)
+        {
+            var result = readyChart;
+            if (result == null || readyChartGeneration != Volatile.Read(ref chartGeneration))
+            {
+                return false;
+            }
+
+            readyChart = null;
+            if (state == null || !state.AdoptChart(result, store.View(), out int[] spare))
+            {
+                return false;
+            }
+
+            spareSparks = spare;
+            return true;
+        }
+
         /// <summary>The finished result of the latest request, once.</summary>
         public FilterState TryTake()
         {
@@ -648,6 +915,8 @@ namespace Orbiters.Logger.Editor
         public void Cancel()
         {
             Interlocked.Increment(ref generation);
+            Interlocked.Increment(ref chartGeneration);
+            readyChart = null;
             ready = null;
             running = false;
         }

@@ -247,6 +247,91 @@ namespace Orbiters.Logger.Editor.Tests
             Assert.AreEqual(HiddenBy.Gone, new FilterSpec().WhatHides(store, again), "fixed since");
         }
 
+        [Test]
+        public void AMovedChartAxisCountsLikeAFullPass()
+        {
+            var store = Sample();
+            var spec = new FilterSpec { Grouped = true, LevelMask = (1 << (int)LogLevel.Info) | (1 << (int)LogLevel.Error) };
+            var state = Run(store, spec, 12);
+            long to = store.LastTime + TimeSpan.TicksPerSecond * 30;
+            var pass = state.ComputeChart(store.View(), store.FirstTime, to, 20, null, null);
+
+            // Logs that arrive while the chart pass runs are counted when it is taken.
+            store.Add(TimeSpan.TicksPerSecond * 7, "Player spawned", Stack, LogVariant.Log);
+            store.Add(TimeSpan.TicksPerSecond * 8, "A new error", Stack, LogVariant.Error);
+            Assert.IsTrue(state.Extend(store, store.Sources.All));
+            Assert.IsTrue(state.AdoptChart(pass, store.View(), out _));
+
+            var full = FilterState.Compute(store.View(), spec, store.Sources.All, null, store.FirstTime, to, 20, null);
+            Assert.AreEqual(full.Buckets, state.Buckets);
+            Assert.AreEqual(full.ChartTo, state.ChartTo);
+            CollectionAssert.AreEqual(full.Timeline, state.Timeline);
+            Assert.AreEqual(full.SparkGroups, state.SparkGroups);
+            CollectionAssert.AreEqual(full.Sparks, state.Sparks);
+            Assert.AreEqual(full.SparkMax, state.SparkMax);
+            Assert.AreEqual(full.RowCount, state.RowCount, "rows were not touched");
+
+            // A chart computed before the store changed shape is dropped.
+            var stale = state.ComputeChart(store.View(), store.FirstTime, to, 20, null, null);
+            store.Clear(0);
+            Assert.IsFalse(state.AdoptChart(stale, store.View(), out _));
+        }
+
+        [Test]
+        public void SearchResultsCarryOverWhileTyping()
+        {
+            var store = Sample();
+            var known = new byte[] { 0, 2, 1, 2, 1 };
+            var nul = new LogQuery("pla", false, false, false);
+            var typedOn = new LogQuery("PLAY", false, false, false);
+            CollectionAssert.AreEqual(new byte[] { 0, 0, 1, 0, 1 }, typedOn.Reuse(nul, known), "only former matches are tested again");
+            var deleted = new LogQuery("p", false, false, false);
+            CollectionAssert.AreEqual(new byte[] { 0, 2, 0, 2, 0 }, deleted.Reuse(nul, known), "former matches still match");
+            CollectionAssert.AreEqual(known, new LogQuery("pla", false, false, false).Reuse(nul, known));
+            Assert.IsNull(new LogQuery("xyz", false, false, false).Reuse(nul, known), "an unrelated query starts over");
+            Assert.IsNull(new LogQuery("PLAY", false, true, false).Reuse(nul, known), "another case rule starts over");
+            Assert.IsNull(new LogQuery("play", true, false, false).Reuse(nul, known), "so does a regular expression");
+
+            // Typing on with real passes gives what a fresh search gives.
+            var first = Run(store, new FilterSpec { Query = new LogQuery("pl", false, false, false) });
+            var spec = new FilterSpec { Query = new LogQuery("player s", false, false, false) };
+            var carried = FilterState.Compute(store.View(), spec, store.Sources.All, spec.Query.Reuse(first.Spec.Query, first.KnownTextMatches),
+                store.FirstTime, store.LastTime, 10, null);
+            var fresh = Run(store, spec);
+            Assert.AreEqual(3, fresh.RowCount);
+            Assert.AreEqual(fresh.RowCount, carried.RowCount);
+            CollectionAssert.AreEqual(fresh.KnownTextMatches, carried.KnownTextMatches);
+        }
+
+        [Test]
+        public void BigRegexPassesUseOneCompiledExpression()
+        {
+            var query = new LogQuery("pl(a)+yer", true, false, false);
+            Assert.AreSame(query.Regex, query.RegexFor(10), "small passes interpret");
+            var compiled = query.RegexFor(LogQuery.CompileAbove);
+            Assert.AreNotSame(query.Regex, compiled);
+            Assert.AreSame(compiled, new LogQuery("pl(a)+yer", true, false, true).RegexFor(LogQuery.CompileAbove), "compiled once per pattern");
+            Assert.IsTrue(query.Matches("The PLAAYER spawned", compiled));
+            Assert.IsFalse(query.Matches("The plyer spawned", compiled));
+        }
+
+        [Test]
+        public void ParallelSearchFindsWhatTheSerialOneFinds()
+        {
+            var store = new LogStore();
+            for (int i = 0; i < 25_000; i++)
+            {
+                store.Add(TimeSpan.TicksPerSecond + i, (i % 7 == 0 ? "Needle " : "Hay ") + i, i % 3 == 0 ? SdkStack : Stack, LogVariant.Log);
+            }
+
+            var spec = new FilterSpec { Query = new LogQuery("needle", false, false, true) };
+            var serial = Run(store, spec);
+            var parallel = FilterState.Compute(store.View(), spec, store.Sources.All, null, store.FirstTime, store.LastTime, 10, () => false);
+            Assert.AreEqual((25_000 + 6) / 7, serial.RowCount);
+            Assert.AreEqual(serial.RowCount, parallel.RowCount);
+            CollectionAssert.AreEqual(serial.KnownTextMatches, parallel.KnownTextMatches);
+        }
+
         private static int Sum(int[] values)
         {
             int total = 0;
