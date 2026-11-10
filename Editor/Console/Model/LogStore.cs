@@ -393,6 +393,122 @@ namespace Orbiters.Logger.Editor
             return Append(time, Intern(condition, stack, variant), occurrenceFlags);
         }
 
+        /// <summary>
+        /// At most what interning a new message with these arguments adds to <see cref="Texts"/>: the lengths of exactly
+        /// the strings <see cref="Intern"/> would keep for it (text, stack, group key, and the file, call-site, compiler
+        /// location or timing texts <see cref="Describe"/> derives), each with its stripped copy, derived by the same code
+        /// (<see cref="GroupKeyText"/>, <see cref="CompileTexts"/>, <see cref="TimingSummary"/>, <see cref="OutputLine"/>,
+        /// <see cref="StackTexts"/>, <see cref="FileTexts"/>) without interning anything. Strings the store holds already
+        /// are counted too: never less than the real growth. The history import's measure uses it.
+        /// </summary>
+        internal long InternCost(string condition, string stack, LogVariant variant, string file = null, int line = 0, int column = 0)
+        {
+            string text = Capped(condition, TextLimit) ?? string.Empty;
+            string frames = Capped(stack, TextLimit) ?? string.Empty;
+            long cost = Cost(text) + Cost(frames);
+            string plain = RichText.StripOrNull(text) ?? text;
+            string key = GroupKeyText(Grouping, plain);
+            if (!ReferenceEquals(key, plain))
+            {
+                cost += Cost(key);
+            }
+
+            if (LogVariants.IsCompile(variant))
+            {
+                CompileTexts(condition, ref file, ref line, ref column, out string path, out string callsite);
+                return cost + Cost(path) + Cost(callsite);
+            }
+
+            if (TimingProfile.IsTimings(stack))
+            {
+                return cost + Cost(TimingSummary(stack, null, out _));
+            }
+
+            if (StackTraces.IsOutput(stack))
+            {
+                return cost + Cost(OutputLine(stack));
+            }
+
+            if (StackTexts(stack, out _, out _, out string stackFile, out _, out string stackCallsite))
+            {
+                return cost + Cost(stackFile) + Cost(stackCallsite);
+            }
+
+            if (!string.IsNullOrEmpty(file))
+            {
+                FileTexts(file, line, out string path, out string callsite);
+                cost += Cost(path) + Cost(callsite);
+            }
+
+            return cost;
+        }
+
+        // What TextTable.Intern keeps for a string: it and its stripped copy.
+        private static long Cost(string text) => string.IsNullOrEmpty(text) ? 0 : text.Length + (long)(RichText.StripOrNull(text)?.Length ?? 0);
+
+        // The texts a message derives are cut as its own are: one log always fits, whatever the budget (with the default
+        // budget the cut is MaxTextLength, longer than any path or call site).
+        private string Cut(string text) => Capped(text, TextLimit);
+
+        // A compiler message: its file (from its text when not given) and "path:line".
+        private void CompileTexts(string condition, ref string file, ref int line, ref int column, out string path, out string callsite)
+        {
+            if (string.IsNullOrEmpty(file))
+            {
+                StackTraces.TryParseCompilerLocation(condition, out file, out line, out column);
+            }
+
+            path = Cut(StackTraces.NormalizePath(file));
+            callsite = string.IsNullOrEmpty(path) ? null : Cut(path + (line > 0 ? ":" + line : string.Empty));
+        }
+
+        // A timing log: its profile (the one given, else parsed from its text) and its largest shares.
+        private static string TimingSummary(string stack, TimingProfile given, out TimingProfile profile)
+        {
+            profile = given ?? TimingProfile.Parse(stack);
+            return profile != null ? profile.Summary(4) : string.Empty;
+        }
+
+        // A command's log: its timing line.
+        private static string OutputLine(string stack) => RichText.FirstLine(stack.Substring(StackTraces.OutputPrefix.Length), 160);
+
+        // What a stack trace says about who logged: its frames, the call site's index, and its file and call-site texts.
+        // False when it has no call site.
+        private bool StackTexts(string stack, out List<StackFrame> frames, out int callsite, out string file, out int line, out string callsiteText)
+        {
+            frames = StackTraces.Parse(stack);
+            callsite = StackTraces.FindCallsite(frames);
+            file = null;
+            line = 0;
+            callsiteText = null;
+            if (callsite < 0)
+            {
+                return false;
+            }
+
+            var frame = frames[callsite];
+            string method = StackTraces.ShortMethod(frame.Method);
+            if (frame.HasFile)
+            {
+                file = Cut(StackTraces.NormalizePath(frame.File));
+                line = frame.Line;
+                callsiteText = Cut(method + "  ·  " + StackTraces.FileName(file) + ":" + frame.Line);
+            }
+            else
+            {
+                callsiteText = Cut(method);
+            }
+
+            return true;
+        }
+
+        // The file Unity's console named for a log without a call site, and "File.cs:line".
+        private void FileTexts(string file, int line, out string path, out string callsite)
+        {
+            path = Cut(StackTraces.NormalizePath(file));
+            callsite = Cut(StackTraces.FileName(path) + (line > 0 ? ":" + line : string.Empty));
+        }
+
         /// <summary>The id of the message with this text, stack trace and type, created when new.</summary>
         public int Intern(string condition, string stack, LogVariant variant, int assembly = 0, string file = null, int line = 0, int column = 0)
         {
@@ -448,16 +564,11 @@ namespace Orbiters.Logger.Editor
             pendingProfile = null;
             if (LogVariants.IsCompile(message.Variant))
             {
-                if (string.IsNullOrEmpty(file))
-                {
-                    StackTraces.TryParseCompilerLocation(condition, out file, out line, out column);
-                }
-
-                string path = StackTraces.NormalizePath(file);
+                CompileTexts(condition, ref file, ref line, ref column, out string path, out string compileCallsite);
                 message.File = Texts.Intern(path);
                 message.Line = line;
                 message.Column = column;
-                message.Callsite = string.IsNullOrEmpty(path) ? 0 : Texts.Intern(path + (line > 0 ? ":" + line : string.Empty));
+                message.Callsite = compileCallsite == null ? 0 : Texts.Intern(compileCallsite);
                 message.Source = SourceCatalog.Compiler;
                 return;
             }
@@ -467,9 +578,8 @@ namespace Orbiters.Logger.Editor
                 // A timing log: its largest shares under the message.
                 message.Flags |= MessageFlags.Timing;
                 message.Source = Sources.Get(TimingSource);
-                var profile = given ?? TimingProfile.Parse(stack);
+                message.Callsite = Texts.Intern(TimingSummary(stack, given, out var profile));
                 pendingProfile = profile;
-                message.Callsite = Texts.Intern(profile != null ? profile.Summary(4) : string.Empty);
                 return;
             }
 
@@ -478,7 +588,7 @@ namespace Orbiters.Logger.Editor
                 // A command's log: its timing line under the message.
                 message.Flags |= MessageFlags.Output;
                 message.Source = Sources.Resolve(message.Variant, condition, -1);
-                message.Callsite = Texts.Intern(RichText.FirstLine(stack.Substring(StackTraces.OutputPrefix.Length), 160));
+                message.Callsite = Texts.Intern(OutputLine(stack));
                 return;
             }
 
@@ -492,7 +602,7 @@ namespace Orbiters.Logger.Editor
             }
             else if (!string.IsNullOrEmpty(file))
             {
-                string path = StackTraces.NormalizePath(file);
+                FileTexts(file, line, out string path, out string fileCallsite);
                 if (message.Source == SourceCatalog.Unity)
                 {
                     // Unity cut the stack trace ("<message truncated>"): the file its console names says who logged it.
@@ -501,7 +611,7 @@ namespace Orbiters.Logger.Editor
 
                 message.File = Texts.Intern(path);
                 message.Line = line;
-                message.Callsite = Texts.Intern(StackTraces.FileName(path) + (line > 0 ? ":" + line : string.Empty));
+                message.Callsite = Texts.Intern(fileCallsite);
             }
         }
 
@@ -577,24 +687,14 @@ namespace Orbiters.Logger.Editor
                 return info;
             }
 
-            var frames = StackTraces.Parse(stack);
-            int callsite = StackTraces.FindCallsite(frames);
-            info = new StackInfo { Source = Sources.FromFrames(frames, callsite), HasCallsite = callsite >= 0 };
-            if (callsite >= 0)
+            bool hasCallsite = StackTexts(stack, out var frames, out int callsite, out string file, out int line, out string callsiteText);
+            info = new StackInfo { Source = Sources.FromFrames(frames, callsite), HasCallsite = hasCallsite };
+            if (hasCallsite)
             {
-                var frame = frames[callsite];
-                string method = StackTraces.ShortMethod(frame.Method);
-                if (frame.HasFile)
-                {
-                    string path = StackTraces.NormalizePath(frame.File);
-                    info.File = Texts.Intern(path);
-                    info.Line = frame.Line;
-                    info.Callsite = Texts.Intern(method + "  ·  " + StackTraces.FileName(path) + ":" + frame.Line);
-                }
-                else
-                {
-                    info.Callsite = Texts.Intern(method);
-                }
+                // Texts.Intern(null) is 0: no file.
+                info.File = Texts.Intern(file);
+                info.Line = line;
+                info.Callsite = Texts.Intern(callsiteText);
             }
 
             stackInfos[stackId] = info;
@@ -939,7 +1039,10 @@ namespace Orbiters.Logger.Editor
         internal static int GroupFor(TextTable texts, GroupingMode grouping, ref LogGroup[] groups, ref int groupCount, Dictionary<long, int> groupIndex,
             int text, LogLevel level)
         {
-            int keyText = grouping == GroupingMode.SameText ? AddressesFolded(texts, text) : texts.Intern(Similar(texts.Plain(text)));
+            string plain = texts.Plain(text);
+            string keyString = GroupKeyText(grouping, plain);
+            // The same instance: the text itself is the key (no other text).
+            int keyText = ReferenceEquals(keyString, plain) ? text : texts.Intern(keyString);
             long key = ((long)keyText << 2) | (long)level;
             if (groupIndex.TryGetValue(key, out int id))
             {
@@ -960,14 +1063,11 @@ namespace Orbiters.Logger.Editor
             return id;
         }
 
-        // Memory addresses never tell two messages apart: Unity lists each leaked allocation with its own
-        // ("Allocation of 49 bytes at 000002848112DD10"), dozens of rows of one message without this.
-        private static int AddressesFolded(TextTable texts, int text)
-        {
-            string plain = texts.Plain(text);
-            string folded = FoldAddresses(plain);
-            return ReferenceEquals(folded, plain) ? text : texts.Intern(folded);
-        }
+        // A group's key for a message's plain text: the text with memory addresses folded (the same instance when it has
+        // none) or, grouping similar texts, with every number folded. Memory addresses never tell two messages apart:
+        // Unity lists each leaked allocation with its own ("Allocation of 49 bytes at 000002848112DD10").
+        internal static string GroupKeyText(GroupingMode grouping, string plain) =>
+            grouping == GroupingMode.SameText ? FoldAddresses(plain) : Similar(plain);
 
         /// <summary>
         /// The text with memory addresses (16 hex digits, or 0x and 6 to 16 of them) replaced by <c>#</c>; the same string
