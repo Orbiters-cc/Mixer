@@ -82,6 +82,9 @@ namespace Orbiters.UnitGit.Editor
         // The Backups tab: the backup highlighted.
         private readonly UnitGitBackupsState backupsTab = new UnitGitBackupsState();
 
+        // The visit banner: what is visited, the Back under way and the banner's elements.
+        private readonly UnitGitVisitState visitBar = new UnitGitVisitState();
+
         [MenuItem("Tools/Orbiters/Mixer Git", priority = 2003)]
         internal static void OpenWindow()
         {
@@ -147,10 +150,10 @@ namespace Orbiters.UnitGit.Editor
             busySuccess = null;
             // A visit or a Back under way lost its task with the reload (and Unity brings a null string back as ""): what
             // Git reads next is what the banner shows.
-            pendingVisit = null;
-            pendingReturnBranch = null;
-            visitActionDone = 0;
-            visitReturning = false;
+            visitBar.pendingVisit = null;
+            visitBar.pendingReturnBranch = null;
+            visitBar.visitActionDone = 0;
+            visitBar.visitReturning = false;
             refreshQueued = false;
             refreshingSnapshot = false;
             refreshAgainRequested = false;
