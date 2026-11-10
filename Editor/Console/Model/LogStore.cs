@@ -102,6 +102,9 @@ namespace Orbiters.Logger.Editor
     internal sealed class LogStore
     {
         public const int DefaultMaxOccurrences = 3_000_000;
+        /// <summary>The texts kept alive at most (256 MB of UTF-16), whatever the number of logs: see <see cref="Append"/>.</summary>
+        public const long DefaultMaxTextChars = 128L * 1024 * 1024;
+        private const int MinTrimmedForText = 10_000;
         /// <summary>The source of timing logs (script reloads, Play Mode, avatar builds and uploads).</summary>
         public const string TimingSource = "Timings";
         public const OccurrenceFlags Superseded = (OccurrenceFlags)8;
@@ -119,6 +122,8 @@ namespace Orbiters.Logger.Editor
         private readonly Dictionary<int, int> contexts = new Dictionary<int, int>();
         private readonly List<SessionEvent> events = new List<SessionEvent>();
         private int maxOccurrences = DefaultMaxOccurrences;
+        private long maxTextChars = DefaultMaxTextChars;
+        private long textCharsLimit = DefaultMaxTextChars;
 
         public LogStore(int capacity = 4096)
         {
@@ -163,6 +168,17 @@ namespace Orbiters.Logger.Editor
         {
             get => maxOccurrences;
             set => maxOccurrences = Math.Max(10_000, value);
+        }
+
+        /// <summary>How many characters of distinct texts the store keeps before the oldest logs go (tests lower it).</summary>
+        internal long MaxTextChars
+        {
+            get => maxTextChars;
+            set
+            {
+                maxTextChars = Math.Max(1L << 16, value);
+                textCharsLimit = maxTextChars;
+            }
         }
 
         public long TimeAt(int occurrence) => times[occurrence];
@@ -278,29 +294,18 @@ namespace Orbiters.Logger.Editor
             {
                 // A command's log: its timing line under the message.
                 message.Flags |= MessageFlags.Output;
-                message.Source = Sources.Resolve(message.Variant, condition, new List<StackFrame>(), -1, null);
+                message.Source = Sources.Resolve(message.Variant, condition, -1);
                 message.Callsite = Texts.Intern(RichText.FirstLine(stack.Substring(StackTraces.OutputPrefix.Length), 160));
                 return;
             }
 
-            var frames = StackTraces.Parse(stack);
-            int callsite = StackTraces.FindCallsite(frames);
-            message.Source = Sources.Resolve(message.Variant, condition, frames, callsite, null);
-            if (callsite >= 0)
+            var info = StackInfoOf(message.Stack, stack);
+            message.Source = Sources.Resolve(message.Variant, condition, info.Source);
+            if (info.HasCallsite)
             {
-                var frame = frames[callsite];
-                string method = StackTraces.ShortMethod(frame.Method);
-                if (frame.HasFile)
-                {
-                    string path = StackTraces.NormalizePath(frame.File);
-                    message.File = Texts.Intern(path);
-                    message.Line = frame.Line;
-                    message.Callsite = Texts.Intern(method + "  ·  " + StackTraces.FileName(path) + ":" + frame.Line);
-                }
-                else
-                {
-                    message.Callsite = Texts.Intern(method);
-                }
+                message.File = info.File;
+                message.Line = info.Line;
+                message.Callsite = info.Callsite;
             }
             else if (!string.IsNullOrEmpty(file))
             {
@@ -315,6 +320,58 @@ namespace Orbiters.Logger.Editor
                 message.Line = line;
                 message.Callsite = Texts.Intern(StackTraces.FileName(path) + (line > 0 ? ":" + line : string.Empty));
             }
+        }
+
+        // What a stack trace says about who logged, parsed once per distinct stack: a flood of logs whose text changes
+        // (a counter, an id) from one line of code parses its stack once, not once per log.
+        private struct StackInfo
+        {
+            public int Source;
+            public bool HasCallsite;
+            public int Callsite;
+            public int File;
+            public int Line;
+        }
+
+        private readonly Dictionary<int, StackInfo> stackInfos = new Dictionary<int, StackInfo>();
+        private TextTable stackInfoTexts;
+
+        private StackInfo StackInfoOf(int stackId, string stack)
+        {
+            if (!ReferenceEquals(stackInfoTexts, Texts))
+            {
+                // Text ids changed meaning (cleared, compacted).
+                stackInfos.Clear();
+                stackInfoTexts = Texts;
+            }
+
+            if (stackInfos.TryGetValue(stackId, out var info))
+            {
+                return info;
+            }
+
+            var frames = StackTraces.Parse(stack);
+            int callsite = StackTraces.FindCallsite(frames);
+            info = new StackInfo { Source = Sources.FromFrames(frames, callsite), HasCallsite = callsite >= 0 };
+            if (callsite >= 0)
+            {
+                var frame = frames[callsite];
+                string method = StackTraces.ShortMethod(frame.Method);
+                if (frame.HasFile)
+                {
+                    string path = StackTraces.NormalizePath(frame.File);
+                    info.File = Texts.Intern(path);
+                    info.Line = frame.Line;
+                    info.Callsite = Texts.Intern(method + "  ·  " + StackTraces.FileName(path) + ":" + frame.Line);
+                }
+                else
+                {
+                    info.Callsite = Texts.Intern(method);
+                }
+            }
+
+            stackInfos[stackId] = info;
+            return info;
         }
 
         /// <summary>Adds an occurrence of <paramref name="message"/>. Times never go back: an earlier time is moved up to the last one.</summary>
@@ -357,6 +414,16 @@ namespace Orbiters.Logger.Editor
             {
                 // The oldest fifth goes: the new occurrence is still the last one.
                 Trim(maxOccurrences * 4 / 5);
+                return count - 1;
+            }
+
+            if (Texts.TotalChars > textCharsLimit && count >= MinTrimmedForText)
+            {
+                // Logs that never repeat (an id, a time in the text) keep a new text each: memory is bounded by their
+                // size, not only their number. The oldest fifth goes, and their texts with it once they are many dead
+                // (a compaction). Texts still in use may keep the table big: then wait for a quarter more.
+                Trim(count * 4 / 5);
+                textCharsLimit = Math.Max(maxTextChars, Texts.TotalChars + Texts.TotalChars / 4);
                 return count - 1;
             }
 
@@ -473,7 +540,9 @@ namespace Orbiters.Logger.Editor
             groupIndex.Clear();
             contexts.Clear();
             events.Clear();
+            pins = 0;
             Texts = new TextTable();
+            textCharsLimit = maxTextChars;
             RowsGeneration = NewRowsGeneration();
             Epoch++;
             Version++;
@@ -633,6 +702,16 @@ namespace Orbiters.Logger.Editor
 
         private static bool IsHex(char c) => c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F';
 
+        private int pins;
+
+        /// <summary>
+        /// Keeps message ids meaning the same message until <see cref="Unpin"/> (no compaction): for a history import
+        /// that interns messages long before it adds their occurrences. A clear forgets every pin.
+        /// </summary>
+        public void Pin() => pins++;
+
+        public void Unpin() => pins = Math.Max(0, pins - 1);
+
         /// <summary>Keeps the newest <paramref name="keep"/> occurrences.</summary>
         public void Trim(int keep)
         {
@@ -677,6 +756,12 @@ namespace Orbiters.Logger.Editor
         /// </summary>
         private bool CompactIfMostlyDead()
         {
+            if (pins > 0)
+            {
+                // An import holds message ids that have no occurrence yet.
+                return false;
+            }
+
             int dead = 0;
             for (int i = 0; i < messageCount; i++)
             {

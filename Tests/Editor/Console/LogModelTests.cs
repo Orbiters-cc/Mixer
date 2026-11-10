@@ -129,6 +129,108 @@ namespace Orbiters.Logger.Editor.Tests
         }
 
         [Test]
+        public void StackTracesAreReadOncePerStackWithTheSameResult()
+        {
+            const string unityOnly = "UnityEngine.Debug:LogWarning (object)\nUnityEditor.EditorApplication:Internal_CallUpdateFunctions ()\n";
+            var conditions = new[]
+            {
+                "Count 1", "Count 2", "[Mixer] tagged", "Packages/orbiters.toolkit/Editor/UI/orbit.uss (line 27): warning", "[VRCFury] Building"
+            };
+
+            // One store sees every text with each stack (cached after the first); each fresh store sees one message only.
+            var shared = new LogStore();
+            foreach (string stack in new[] { LogStack, ExceptionStack, unityOnly, string.Empty })
+            {
+                foreach (string condition in conditions)
+                {
+                    int a = shared.Intern(condition, stack, LogVariant.Warning);
+                    var fresh = new LogStore();
+                    int b = fresh.Intern(condition, stack, LogVariant.Warning);
+                    ref var cached = ref shared.Message(a);
+                    ref var alone = ref fresh.Message(b);
+                    string label = condition + " / " + stack.Length;
+                    Assert.AreEqual(fresh.SourceOf(b).Name, shared.SourceOf(a).Name, label);
+                    Assert.AreEqual(fresh.Texts[alone.Callsite], shared.Texts[cached.Callsite], label);
+                    Assert.AreEqual(fresh.Texts[alone.File], shared.Texts[cached.File], label);
+                    Assert.AreEqual(alone.Line, cached.Line, label);
+                }
+            }
+        }
+
+        [Test]
+        public void TextsAreBoundedBySizeNotOnlyByCount()
+        {
+            var store = new LogStore { MaxTextChars = 1 << 20 };
+            string padding = new string('x', 100);
+            for (int i = 0; i < 40_000; i++)
+            {
+                store.Add(1000 + i, "Distinct log " + i + " " + padding, LogStack, LogVariant.Log);
+            }
+
+            Assert.Less(store.Texts.TotalChars, 2L << 20, "texts nobody logs any more were let go");
+            Assert.Less(store.Count, 40_000);
+            Assert.AreEqual(1000 + 39_999, store.LastTime);
+            Assert.AreEqual("Distinct log 39999 " + padding, store.Texts[store.Message(store.MessageAt(store.Count - 1)).Text]);
+            Assert.AreEqual(store.Count, CountAll(store), "counters still add up after the trims");
+        }
+
+        [Test]
+        public void PinnedMessagesSurviveATrim()
+        {
+            var store = new LogStore();
+            int imported = store.Intern("From Unity's console", string.Empty, LogVariant.Log);
+            store.Pin();
+            for (int i = 0; i < 6000; i++)
+            {
+                store.Add(100 + i, "Distinct " + i, string.Empty, LogVariant.Log);
+            }
+
+            store.Trim(1000);
+            Assert.AreEqual("From Unity's console", store.Texts[store.Message(imported).Text], "no compaction while pinned");
+            store.Unpin();
+            store.Prepend(new long[] { 1 }, new[] { imported }, new byte[1], 1, null);
+            Assert.AreEqual("From Unity's console", store.Texts[store.Message(store.MessageAt(0)).Text]);
+            long texts = store.Texts.Generation;
+            store.Trim(500);
+            Assert.AreNotEqual(texts, store.Texts.Generation, "unpinned, the dead messages go");
+            Assert.AreEqual("Distinct 5999", store.Texts[store.Message(store.MessageAt(store.Count - 1)).Text]);
+            Assert.AreEqual(store.Count, CountAll(store));
+        }
+
+        private static int CountAll(LogStore store)
+        {
+            int total = 0;
+            for (int i = 0; i < store.MessageCount; i++)
+            {
+                total += store.Message(i).Count;
+            }
+
+            return total;
+        }
+
+        [Test]
+        public void RepeatedLogsShareTheirTexts()
+        {
+            var recent = new LogCapture.Recent();
+            int chars = 0;
+            string first = LogCapture.Recent.Share(ref recent.Stack, "at Thing.Do ()" + 1, ref chars);
+            Assert.AreEqual(15, chars);
+            string again = LogCapture.Recent.Share(ref recent.Stack, "at Thing.Do ()" + 1, ref chars);
+            Assert.AreSame(first, again, "an equal text keeps the earlier instance");
+            Assert.AreEqual(15, chars, "and adds nothing to the queue");
+            string other = LogCapture.Recent.Share(ref recent.Stack, "at Thing.Do ()" + 2, ref chars);
+            Assert.AreNotSame(first, other);
+            Assert.AreEqual(30, chars);
+            Assert.IsNull(LogCapture.Recent.Share(ref recent.Condition, null, ref chars));
+
+            // The main thread finds a shared instance again by reference, with the same id.
+            var texts = new TextTable();
+            int id = texts.Intern(first);
+            Assert.AreEqual(id, texts.Intern(again));
+            Assert.AreEqual(id, texts.Intern(string.Copy(first)));
+        }
+
+        [Test]
         public void StoreGroupsAndCounts()
         {
             var store = new LogStore();

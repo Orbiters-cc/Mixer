@@ -456,7 +456,8 @@ namespace Orbiters.Logger.Editor
                     return null;
                 }
 
-                var table = TextTable.Restore(texts, textCount, hashes, offsets, file);
+                // Each text is its length (4 bytes) and two bytes per UTF-16 unit.
+                var table = TextTable.Restore(texts, textCount, (bytes - 4L * (textCount - 1)) / 2, hashes, offsets, file);
                 store.Restore(table, rows, times, owners, flags, count, messages, messageCount, groups, groupCount, grouping, contexts, events);
 
                 textFile = file;

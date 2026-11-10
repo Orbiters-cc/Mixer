@@ -31,6 +31,8 @@ namespace Orbiters.Logger.Editor
         private readonly Dictionary<(LogVariant variant, string text), int> signatures = new Dictionary<(LogVariant variant, string text), int>();
         private int next;
         private bool verified;
+        // The store whose message ids this import remembers (pinned until it ends).
+        private LogStore pinned;
         private int lastSeconds = -1;
         private long lastTicks;
         private int dayOffset;
@@ -121,6 +123,12 @@ namespace Orbiters.Logger.Editor
             if (!UnityConsole.Available || to <= from)
             {
                 return Finish(store, failed: !UnityConsole.Available);
+            }
+
+            if (pinned == null)
+            {
+                pinned = store;
+                store.Pin();
             }
 
             var clock = Stopwatch.StartNew();
@@ -283,6 +291,13 @@ namespace Orbiters.Logger.Editor
             Finished = true;
             Failed = failed;
             UnityConsole.ShowAll.Release();
+            if (pinned != null)
+            {
+                // The ids go into the store's own columns now: a compaction after this remaps them with the rest.
+                pinned.Unpin();
+                pinned = null;
+            }
+
             if (!failed && placement == Placement.Before && count > 0)
             {
                 store.Prepend(times, owners, flags, count, contexts);

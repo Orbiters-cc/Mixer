@@ -28,6 +28,11 @@ namespace Orbiters.Logger.Editor
         private readonly SessionTextFile file;
         private readonly long[] offsets;
         private readonly int fileCount;
+        private long totalChars;
+        // The last few strings interned, by reference: a flood of one log hands the same instances again (see LogCapture).
+        private readonly string[] recentTexts = new string[4];
+        private readonly int[] recentIds = new int[4];
+        private int recentNext;
 
         public TextTable(int capacity = 1024) : this(NewGeneration(), Math.Max(capacity, 16), null, null, 0)
         {
@@ -51,7 +56,7 @@ namespace Orbiters.Logger.Editor
         /// A table whose first <paramref name="textCount"/> texts are in a session file: <paramref name="textHashes"/>
         /// and <paramref name="textOffsets"/> by id (index 0 unused).
         /// </summary>
-        internal static TextTable Restore(long generation, int textCount, int[] textHashes, long[] textOffsets, SessionTextFile source)
+        internal static TextTable Restore(long generation, int textCount, long textChars, int[] textHashes, long[] textOffsets, SessionTextFile source)
         {
             var table = new TextTable(generation, Math.Max(16, textCount + textCount / 4), source, textOffsets, textCount);
             table.raw[0] = string.Empty;
@@ -62,6 +67,7 @@ namespace Orbiters.Logger.Editor
             }
 
             table.count = textCount;
+            table.totalChars = textChars;
             return table;
         }
 
@@ -69,6 +75,9 @@ namespace Orbiters.Logger.Editor
         public long Generation { get; }
 
         public int Count => count;
+
+        /// <summary>The length of every text together: what the table keeps alive.</summary>
+        public long TotalChars => totalChars;
 
         public string this[int id] => id > 0 && id < count ? Raw(id) : string.Empty;
 
@@ -97,10 +106,19 @@ namespace Orbiters.Logger.Editor
                 return 0;
             }
 
+            for (int i = 0; i < recentTexts.Length; i++)
+            {
+                if (ReferenceEquals(recentTexts[i], text))
+                {
+                    return recentIds[i];
+                }
+            }
+
             int hash = Hash(text);
             int id = Find(text, hash);
             if (id > 0)
             {
+                Remember(text, id);
                 return id;
             }
 
@@ -130,8 +148,17 @@ namespace Orbiters.Logger.Editor
             }
 
             Insert(id, hash);
+            totalChars += text.Length;
             Volatile.Write(ref count, id + 1);
+            Remember(text, id);
             return id;
+        }
+
+        private void Remember(string text, int id)
+        {
+            recentTexts[recentNext] = text;
+            recentIds[recentNext] = id;
+            recentNext = (recentNext + 1) & (recentTexts.Length - 1);
         }
 
         public bool TryFind(string text, out int id)
