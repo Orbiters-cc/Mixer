@@ -416,8 +416,8 @@ namespace Orbiters.Mixer.Editor.Performance
             }
 
             // Arms.
-            Limb(rig.LeftUpperArm, rig.LeftLowerArm, rig.LeftHand, targets, BodyTarget.LeftHand, BodyTarget.LeftElbow, tracking.LeftHand, animLeftElbow, true);
-            Limb(rig.RightUpperArm, rig.RightLowerArm, rig.RightHand, targets, BodyTarget.RightHand, BodyTarget.RightElbow, tracking.RightHand, animRightElbow, true);
+            Limb(rig.LeftUpperArm, rig.LeftLowerArm, rig.LeftHand, targets, BodyTarget.LeftHand, BodyTarget.LeftElbow, tracking.LeftHand, animLeftElbow);
+            Limb(rig.RightUpperArm, rig.RightLowerArm, rig.RightHand, targets, BodyTarget.RightHand, BodyTarget.RightElbow, tracking.RightHand, animRightElbow);
 
             // Legs: to the foot trackers, or back to where the animation planted the feet.
             Leg(rig.LeftUpperLeg, rig.LeftLowerLeg, rig.LeftFoot, targets, BodyTarget.LeftFoot, BodyTarget.LeftKnee, tracking.LeftFoot, animLeftFoot, animLeftKnee);
@@ -430,7 +430,7 @@ namespace Orbiters.Mixer.Editor.Performance
             return f.sqrMagnitude > 1e-6f ? Mathf.Atan2(f.x, f.z) * Mathf.Rad2Deg : 0f;
         }
 
-        void Limb(Transform upper, Transform lower, Transform end, Dictionary<BodyTarget, Pose> targets, BodyTarget handTarget, BodyTarget elbowTarget, bool tracked, Vector3 animElbow, bool arm)
+        void Limb(Transform upper, Transform lower, Transform end, Dictionary<BodyTarget, Pose> targets, BodyTarget handTarget, BodyTarget elbowTarget, bool tracked, Vector3 animElbow)
         {
             if (!tracked || upper == null || lower == null || end == null || !targets.TryGetValue(handTarget, out var hand) || !hand.Valid) return;
             // Elbows bend toward an elbow tracker, else where the animation had them, pushed down and back a little.
