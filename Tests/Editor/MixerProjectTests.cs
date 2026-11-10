@@ -110,6 +110,28 @@ namespace Orbiters.Mixer.Editor.Tests
 
         // ---- The model ------------------------------------------------------------------------------------------------------
 
+        // Folder listings are kept between rebuilds and forgotten for the folders the asset database names: after creating,
+        // moving and deleting assets and folders, every kept listing equals one read from the disk again.
+        [Test]
+        public void KeptFolderListingsEqualListingsReadAgainAfterAssetChanges()
+        {
+            string[] folders = { Root, Root + "/Sub", Root + "/Sub/Deep" };
+            string Describe(string folder) => string.Join(", ", ProjectFiles.Children(folder, ProjectSort.Name, ProjectKinds.None)
+                .Select(i => i.Name + i.Extension + (i.IsFolder ? "/" : "") + (i.HasChildren ? "+" : "") + (i.HasSubAssets ? "*" : "") + ":" + i.Size));
+            foreach (string folder in folders) Describe(folder);
+            AssetDatabase.CreateAsset(new AnimationClip(), Root + "/Sub/Kick.anim");
+            Assert.That(AssetDatabase.MoveAsset(Root + "/Walk.anim", Root + "/Sub/Deep/Walk.anim"), Is.Empty);
+            AssetDatabase.DeleteAsset(Root + "/Sub/Deep/Jump.anim");
+            AssetDatabase.CreateFolder(Root, "Made");
+            AssetDatabase.CreateAsset(new Material(Shader.Find("Standard")), Root + "/Made/Look.mat");
+            var kept = folders.Concat(new[] { Root + "/Made" }).Select(Describe).ToList();
+            ProjectFiles.ForgetAll();
+            var fresh = folders.Concat(new[] { Root + "/Made" }).Select(Describe).ToList();
+            Assert.That(kept, Is.EqualTo(fresh));
+            Assert.That(kept[2], Does.Contain("Walk.anim"), "the moved clip is listed where it went");
+            Assert.That(kept[0], Does.Not.Contain("Walk.anim").And.Contain("Made/+"));
+        }
+
         [Test]
         public void FoldersComeFirstAndDatesSortAndMarkNewAssets()
         {

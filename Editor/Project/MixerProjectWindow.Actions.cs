@@ -279,7 +279,7 @@ namespace Orbiters.Mixer.Editor
                     }
                 }
             }
-            MarkAllDirty();
+            ProjectFiles.ForgetAll(); MarkAllDirty();
             RebuildNow();
             root.Focus();
         }
@@ -370,7 +370,7 @@ namespace Orbiters.Mixer.Editor
             string parent = ParentOf(path);
             if (Searching || showRecent || (parent != folder && (GridMode || !parent.StartsWith(folder + "/", StringComparison.Ordinal)))) Navigate(parent);
             for (string p = parent; p != null && p != folder; p = ParentOf(p)) contentOpenSet.Add(p);
-            MarkAllDirty();
+            ProjectFiles.ForgetAll(); MarkAllDirty();
             RebuildNow();
             picked.Clear();
             picked.Add(path);
@@ -517,7 +517,7 @@ namespace Orbiters.Mixer.Editor
             foreach (string path in paths) picked.Remove(path);
             if (failed.Count > 0) toasts.Show(failed.Count + " could not be deleted: " + string.Join(", ", failed.Select(System.IO.Path.GetFileName)), true);
             else toasts.Show("Deleted " + what);
-            MarkAllDirty();
+            ProjectFiles.ForgetAll(); MarkAllDirty();
             RebuildNow();
         }
 
@@ -530,7 +530,7 @@ namespace Orbiters.Mixer.Editor
                 if (AssetDatabase.CopyAsset(path, copy)) copies.Add(copy);
             }
             if (copies.Count == 0) return;
-            MarkAllDirty();
+            ProjectFiles.ForgetAll(); MarkAllDirty();
             RebuildNow();
             picked.Clear();
             picked.UnionWith(copies);
@@ -829,7 +829,7 @@ namespace Orbiters.Mixer.Editor
         private void AfterDrop(string target, List<string> made)
         {
             if (target != folder && target.StartsWith(folder + "/", StringComparison.Ordinal)) contentOpenSet.Add(target);
-            MarkAllDirty();
+            ProjectFiles.ForgetAll(); MarkAllDirty();
             RebuildNow();
             if (made.Count == 0) return;
             picked.Clear();

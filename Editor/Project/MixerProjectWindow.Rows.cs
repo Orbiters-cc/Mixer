@@ -472,14 +472,34 @@ namespace Orbiters.Mixer.Editor
         {
             if (item.IsFolder || IsPending(item)) return IconOf(item);
             if (previewCache.TryGetValue(item.Path, out var cached) && cached != null) return cached;
+            // Known to have no picture (Unity made none): its icon, without loading it again.
+            if (noPreview.Contains(item.Path)) return IconOf(item);
             var asset = item.IsSubAsset ? item.SubAsset : AssetDatabase.LoadMainAssetAtPath(item.Path);
             if (asset == null) return IconOf(item);
             var preview = AssetPreview.GetAssetPreview(asset);
-            if (preview != null) { previewCache[item.Path] = preview; return preview; }
-            if (AssetPreview.IsLoadingAssetPreview(asset.GetInstanceID())) previewsWaiting = true;
+            if (preview != null) { Keep(item.Path, preview); return preview; }
+            if (AssetPreview.IsLoadingAssetPreview(asset.GetInstanceID()))
+            {
+                previewsWaiting = true;
+                waitingPreviews[item.Path] = asset.GetInstanceID();
+            }
+            else noPreview.Add(item.Path);
             return IconOf(item);
         }
 
+        // At most this many previews are remembered by path (Unity's own cache holds the textures).
+        private const int PreviewsKept = 4096;
+        private readonly Dictionary<string, int> waitingPreviews = new Dictionary<string, int>(StringComparer.Ordinal);
+        private readonly HashSet<string> noPreview = new HashSet<string>(StringComparer.Ordinal);
+
+        private void Keep(string path, Texture preview)
+        {
+            if (previewCache.Count >= PreviewsKept) previewCache.Clear();
+            previewCache[path] = preview;
+        }
+
+        // Only the tiles whose preview came are given it (the grid is not bound again); a preview Unity stopped making
+        // leaves the icon, and is not asked again until the asset changes.
         private void PollPreviews()
         {
             if (!GridMode || !previewsWaiting) return;
@@ -487,8 +507,31 @@ namespace Orbiters.Mixer.Editor
             if (now - lastPreviewPoll < 0.25) return;
             lastPreviewPoll = now;
             previewsWaiting = false;
-            grid.RefreshRows();
+            foreach (var tile in grid.Rows)
+            {
+                if (tile.resolvedStyle.display == DisplayStyle.None || !(tile.userData is int index)) continue;
+                var item = Row(index);
+                if (item == null || !waitingPreviews.TryGetValue(item.Path, out int id)) continue;
+                var asset = EditorUtility.InstanceIDToObject(id);
+                var preview = asset != null ? AssetPreview.GetAssetPreview(asset) : null;
+                if (preview != null)
+                {
+                    Keep(item.Path, preview);
+                    waitingPreviews.Remove(item.Path);
+                    var image = tile.Q<Image>(className: "mxp-tile__image");
+                    if (image != null) image.image = preview;
+                }
+                else if (asset == null || !AssetPreview.IsLoadingAssetPreview(id))
+                {
+                    waitingPreviews.Remove(item.Path);
+                    noPreview.Add(item.Path);
+                }
+                else previewsWaiting = true;
+            }
+            // Previews asked for tiles scrolled away are asked again when shown.
+            if (!previewsWaiting) waitingPreviews.Clear();
         }
+
 
         // ---- Folding in place -----------------------------------------------------------------------------------------
 
