@@ -29,6 +29,8 @@ namespace Orbiters.UnitGit.Editor
             public byte[] RawMessage;
             public byte[] RawAuthor;
             public byte[] RawEncoding;
+            // The whole stored commit, to compare its rewritten copy with.
+            public byte[] RawCommit;
             // The first header a rebuild would lose (a signature, a merged tag, anything but tree, parent, author,
             // committer and encoding); null when there is none.
             public string LostHeader;
@@ -195,36 +197,23 @@ namespace Orbiters.UnitGit.Editor
 
             // All new commits through one git fast-import (a constant number of processes), else one commit-tree each.
             var stream = new CommitStream();
-            GitCommandResult streamable = CanStreamRewrite(infos.Values, stream);
+            GitCommandResult streamable = CanStreamRewrite(stream);
             if (!streamable.Success)
             {
                 return streamable;
             }
 
-            // A re-parented commit (replaced, not selected: neither renamed nor folded into the squash) is copied as stored.
-            // fast-import takes its bytes as they are; commit-tree cannot write some of them, and then nothing is written.
-            if (!stream.Enabled)
-            {
-                foreach (string hash in replaced.Where(hash => !selected.Contains(hash)))
-                {
-                    string why = CommitTreeCannotCopy(infos[hash]);
-                    if (why != null)
-                    {
-                        return Failure("Commit " + ShortHash(hash) + " " + why + ", which its rewritten copy could not keep here (" +
-                                       "this repository's commits are written by commit-tree: signed, or with names fast-import cannot take): " +
-                                       (squash ? "squashing" : "renaming") + " would change it. Mixer Git left the history as it is.");
-                    }
-                }
-            }
-
+            // What every new commit will be, decided before anything is written. A parent is an object id, or "@n": the
+            // n-th new commit of this plan (a mark for fast-import, its new id for commit-tree).
+            var plan = new List<PlannedCommit>();
             var rewritten = new Dictionary<string, string>(StringComparer.Ordinal);
-            string squashedHash = string.Empty;
+            string squashedRef = string.Empty;
             for (int i = startIndex; i < history.Count; i++)
             {
                 string originalHash = history[i];
                 if (squash && i > startIndex && i <= endIndex)
                 {
-                    rewritten[originalHash] = squashedHash;
+                    rewritten[originalHash] = squashedRef;
                     continue;
                 }
 
@@ -238,60 +227,82 @@ namespace Orbiters.UnitGit.Editor
                     continue;
                 }
 
-                string treeHash = squash && i == startIndex
-                    ? infos[history[endIndex]].TreeHash
-                    : source.TreeHash;
-                // An edited commit (the renamed one, the squashed one) gets the new message the user typed, in UTF-8 and with
-                // no encoding header: Git's default, whatever encoding the commit it replaces named; its author is the one Git
-                // reads, re-encoded to UTF-8. A commit that is only re-parented keeps its message, author line and encoding
-                // header byte for byte.
-                bool edited = squash ? i == startIndex : selected.Contains(originalHash);
-                CommitRewriteInfo copied = edited ? null : source;
-
-                string newHash;
-                if (stream.Enabled)
+                // A commit that is only re-parented is copied as stored: author line, encoding header and message bytes,
+                // nothing decoded. The edited one (renamed, or the squash) keeps its author line and encoding header too, and
+                // gets the user's message encoded in that encoding (UTF-8 when it names none). Every new commit gets a new
+                // committer, the identity and time of whoever rewrites, now, on purpose and as before: it is a new commit.
+                var commit = new PlannedCommit
                 {
-                    newHash = stream.Add(source, treeHash, parents, message, copied);
+                    Source = source,
+                    Tree = squash && i == startIndex ? infos[history[endIndex]].TreeHash : source.TreeHash,
+                    Parents = parents,
+                    Edited = squash ? i == startIndex : selected.Contains(originalHash)
+                };
+                if (source.RawAuthor == null)
+                {
+                    return Failure("Commit " + ShortHash(originalHash) + " has no author line. Mixer Git left the history as it is.");
+                }
+
+                if (commit.Edited)
+                {
+                    string why = EncodeEditedMessage(source, message, out commit.Message);
+                    if (why != null)
+                    {
+                        return Failure("Commit " + ShortHash(originalHash) + " " + why + ". Mixer Git left the history as it is.");
+                    }
                 }
                 else
                 {
-                    GitCommandResult createResult = CreateCommitFromTree(source, treeHash, parents, message, copied);
-                    if (!createResult.Success)
-                    {
-                        return createResult;
-                    }
-
-                    newHash = FirstNonEmptyLine(createResult.StandardOutput);
+                    commit.Message = source.RawMessage;
                 }
 
-                if (string.IsNullOrWhiteSpace(newHash))
-                {
-                    return Failure("Git did not return a rewritten commit hash.");
-                }
-
-                rewritten[originalHash] = newHash;
+                rewritten[originalHash] = "@" + plan.Count.ToString(CultureInfo.InvariantCulture);
                 if (squash && i == startIndex)
                 {
-                    squashedHash = newHash;
+                    squashedRef = rewritten[originalHash];
                 }
+                plan.Add(commit);
             }
 
-            if (!rewritten.TryGetValue(oldHead, out string newHead) || string.IsNullOrWhiteSpace(newHead))
+            if (!rewritten.TryGetValue(oldHead, out string headRef) || string.IsNullOrWhiteSpace(headRef))
             {
                 return Failure("Could not resolve the rewritten HEAD.");
             }
 
-            // HEAD is the last commit of the history, so when it was rewritten it is the stream's last commit.
-            string streamRef = null;
-            if (stream.Enabled && newHead.StartsWith(":", StringComparison.Ordinal))
+            // commit-tree writes some parts of a commit its own way: each new commit is compared, before anything is
+            // written, with what commit-tree will make of it, and a difference refuses the rewrite.
+            if (!stream.Enabled)
             {
-                GitCommandResult imported = WriteCommitStream(stream, out streamRef, out newHead);
-                if (!imported.Success)
+                foreach (PlannedCommit commit in plan)
                 {
-                    RunGit(DefaultTimeoutMilliseconds, "update-ref", "--no-deref", "-d", streamRef);
-                    return imported;
+                    string differs = CommitTreeWouldChange(commit);
+                    if (differs != null)
+                    {
+                        return Failure("Commit " + ShortHash(commit.Source.Hash) + " cannot be copied as stored by commit-tree, which writes this " +
+                                       "repository's commits (it signs them, or stdin cannot be clean): its " + differs + " would change. " +
+                                       "Mixer Git left the history as it is.");
+                    }
                 }
             }
+
+            string streamRef = stream.Enabled ? stream.Reference : null;
+            GitCommandResult written = stream.Enabled ? WriteThroughFastImport(stream, plan) : WriteThroughCommitTree(plan);
+            if (written.Success)
+            {
+                written = CheckWrittenCopies(plan);
+            }
+
+            if (!written.Success)
+            {
+                if (streamRef != null)
+                {
+                    RunGit(DefaultTimeoutMilliseconds, "update-ref", "--no-deref", "-d", streamRef);
+                }
+
+                return written;
+            }
+
+            string newHead = headRef.StartsWith("@", StringComparison.Ordinal) ? plan[int.Parse(headRef.Substring(1), CultureInfo.InvariantCulture)].NewId : headRef;
 
             // Commit trees are unchanged. Move only the captured branch, and only if nobody advanced it.
             // Do not reset the index or whichever branch another process has since checked out.
@@ -399,86 +410,240 @@ namespace Orbiters.UnitGit.Editor
             return missing == null ? new GitCommandResult() : Failure("Could not read commit " + ShortHash(missing) + ".");
         }
 
-        // One "git commit-tree" per rewritten commit (each needs its parent's new id); the message goes through stdin.
-        private GitCommandResult CreateCommitFromTree(CommitRewriteInfo source, string treeHash, IList<string> parents, string message,
-            CommitRewriteInfo copied)
+        /// <summary>One new commit of a rewrite, decided before anything is written.</summary>
+        private sealed class PlannedCommit
         {
-            byte[] rawMessage = copied?.RawMessage;
-            var args = new List<string>();
-            // A copied commit's encoding header (checked by CommitTreeCannotCopy: a name commit-tree writes as it is) comes
-            // from i18n.commitEncoding, given after the runner's UTF-8 setting so it wins. commit-tree does not transcode:
-            // the message bytes stay as they are.
-            if (copied?.RawEncoding != null)
+            public CommitRewriteInfo Source;
+            public string Tree;
+            public List<string> Parents;
+            public bool Edited;
+            public byte[] Message;
+            public string NewId;
+        }
+
+        /// <summary>For tests: changes the message bytes a rewrite writes for a commit (by its old id), not the ones it
+        /// expects, so the check of the written copies has a difference to find.</summary>
+        internal static Func<string, byte[], byte[]> WrittenMessageSeamForTests;
+
+        private static byte[] WrittenMessage(PlannedCommit commit) =>
+            WrittenMessageSeamForTests?.Invoke(commit.Source.Hash, commit.Message) ?? commit.Message;
+
+        private static bool NamesUtf8(byte[] encoding)
+        {
+            if (encoding == null) return true;
+            string name = Encoding.ASCII.GetString(encoding).ToLowerInvariant();
+            return name == "utf-8" || name == "utf8";
+        }
+
+        // The user's new message in the encoding the commit names (UTF-8 when none); null, or why it cannot be.
+        private static string EncodeEditedMessage(CommitRewriteInfo source, string message, out byte[] bytes)
+        {
+            string text = NormalizeCommitMessage(message) + "\n";
+            bytes = null;
+            if (NamesUtf8(source.RawEncoding))
             {
-                args.Add("-c");
-                args.Add("i18n.commitEncoding=" + Encoding.ASCII.GetString(copied.RawEncoding));
-            }
-            args.Add("commit-tree");
-            args.Add(treeHash);
-            foreach (string parent in parents)
-            {
-                args.Add("-p");
-                args.Add(parent);
+                bytes = UnitGitRunner.Utf8.GetBytes(text);
+                return null;
             }
 
-            var environment = new Dictionary<string, string>(StringComparer.Ordinal)
+            string name = Encoding.ASCII.GetString(source.RawEncoding);
+            try
+            {
+                bytes = Encoding.GetEncoding(name, EncoderFallback.ExceptionFallback, DecoderFallback.ExceptionFallback).GetBytes(text);
+                return null;
+            }
+            catch (Exception ex) when (ex is ArgumentException || ex is NotSupportedException)
+            {
+                return "is stored in the encoding \"" + name + "\", in which the new message cannot be written";
+            }
+        }
+
+        private string Resolve(string parent, IList<PlannedCommit> plan, bool marks) =>
+            !parent.StartsWith("@", StringComparison.Ordinal) ? parent
+            : marks ? ":" + (int.Parse(parent.Substring(1), CultureInfo.InvariantCulture) + 1).ToString(CultureInfo.InvariantCulture)
+            : plan[int.Parse(parent.Substring(1), CultureInfo.InvariantCulture)].NewId;
+
+        /// <summary>
+        /// The first part of this commit that commit-tree would write otherwise than planned, or null. commit-tree takes the
+        /// author from environment variables and runs it through Git's own ident rules: what it will write is asked of Git
+        /// itself (git var GIT_AUTHOR_IDENT with the same variables goes through the same formatting), and compared byte for
+        /// byte with the stored author line. It writes the encoding header from i18n.commitEncoding, and none for a name
+        /// meaning UTF-8; and with UTF-8 as the commit encoding it replaces bytes of the message that are not UTF-8.
+        /// </summary>
+        private string CommitTreeWouldChange(PlannedCommit commit)
+        {
+            CommitRewriteInfo source = commit.Source;
+            if (source.RawEncoding != null && (NamesUtf8(source.RawEncoding) || source.RawEncoding.Any(b => b <= 32 || b >= 127)))
+                return "encoding header";
+            if (source.RawEncoding == null)
+            {
+                try { new UTF8Encoding(false, true).GetString(commit.Message); }
+                catch (DecoderFallbackException) { return "message (it is not UTF-8)"; }
+            }
+
+            GitCommandResult ident = RunGitWithEnvironment(AuthorEnvironment(source), DefaultTimeoutMilliseconds, "var", "GIT_AUTHOR_IDENT");
+            if (!ident.Success) return "author line (Git could not form it: " + ident.Message.Trim() + ")";
+            string predicted = ident.StandardOutput.TrimEnd('\n', '\r');
+            return UnitGitRunner.Utf8.GetBytes(predicted).SequenceEqual(source.RawAuthor) ? null : "author line (commit-tree would write \"" + predicted + "\")";
+        }
+
+        private static Dictionary<string, string> AuthorEnvironment(CommitRewriteInfo source) =>
+            new Dictionary<string, string>(StringComparer.Ordinal)
             {
                 { "GIT_AUTHOR_NAME", source.AuthorName },
                 { "GIT_AUTHOR_EMAIL", source.AuthorEmail },
                 { "GIT_AUTHOR_DATE", source.AuthorDate }
             };
-            // commit-tree reads the message from stdin when no -m or -F is given; with stdin unusable, from a file.
-            if (rawMessage == null)
+
+        // One "git commit-tree" per new commit (each needs its parents' new ids); the message bytes go through stdin.
+        private GitCommandResult WriteThroughCommitTree(IList<PlannedCommit> plan)
+        {
+            foreach (PlannedCommit commit in plan)
             {
-                return RunCommitWithMessageFile(args, message, environment);
+                var args = new List<string>();
+                // The encoding header (CommitTreeWouldChange let only a plain name other than UTF-8 through) comes from
+                // i18n.commitEncoding, given after the runner's UTF-8 setting so it wins. commit-tree does not transcode.
+                if (commit.Source.RawEncoding != null)
+                {
+                    args.Add("-c");
+                    args.Add("i18n.commitEncoding=" + Encoding.ASCII.GetString(commit.Source.RawEncoding));
+                }
+                args.Add("commit-tree");
+                args.Add(commit.Tree);
+                foreach (string parent in commit.Parents)
+                {
+                    args.Add("-p");
+                    args.Add(Resolve(parent, plan, false));
+                }
+
+                byte[] message = WrittenMessage(commit);
+                GitCommandResult created;
+                if (UnitGitRunner.CleanInput)
+                {
+                    args.Add("-F");
+                    args.Add("-");
+                    created = RunGitWithInput(AuthorEnvironment(commit.Source), LongTimeoutMilliseconds, message, args.ToArray());
+                }
+                else
+                {
+                    string file = Path.Combine(Path.GetTempPath(), "mixer-git-message-" + Guid.NewGuid().ToString("N") + ".txt");
+                    try
+                    {
+                        File.WriteAllBytes(file, message);
+                        args.Add("-F");
+                        args.Add(file);
+                        created = RunGitWithEnvironment(AuthorEnvironment(commit.Source), LongTimeoutMilliseconds, args.ToArray());
+                    }
+                    finally
+                    {
+                        DeleteTempFile(file);
+                    }
+                }
+
+                if (!created.Success)
+                {
+                    return created;
+                }
+
+                commit.NewId = FirstNonEmptyLine(created.StandardOutput);
+                if (string.IsNullOrWhiteSpace(commit.NewId))
+                {
+                    return Failure("Git did not return a rewritten commit hash.");
+                }
             }
 
-            // The stored message as it is: commit-tree keeps what it is given.
-            if (UnitGitRunner.CleanInput)
-            {
-                args.Add("-F");
-                args.Add("-");
-                return RunGitWithInput(environment, LongTimeoutMilliseconds, rawMessage, args.ToArray());
-            }
-
-            string file = Path.Combine(Path.GetTempPath(), "mixer-git-message-" + Guid.NewGuid().ToString("N") + ".txt");
-            try
-            {
-                File.WriteAllBytes(file, rawMessage);
-                args.Add("-F");
-                args.Add(file);
-                return RunGitWithEnvironment(environment, LongTimeoutMilliseconds, args.ToArray());
-            }
-            finally
-            {
-                DeleteTempFile(file);
-            }
+            return new GitCommandResult();
         }
 
         /// <summary>
-        /// Why commit-tree cannot write this re-parented commit as stored, or null. It writes no encoding header for a name
-        /// meaning UTF-8 (it is Git's default), reads the author from environment variables (which carry only UTF-8 text:
-        /// an author line in another encoding cannot pass), and replaces bytes that are not UTF-8 in a message without an
-        /// encoding header (Git's verify_utf8).
+        /// The invariant a rewrite keeps whatever wrote the commits: before any ref moves, every new commit is read back and
+        /// compared byte for byte with the one it replaces. Only its parent lines (the new parents, checked), its committer
+        /// line, the edited commit's message (checked against the one planned) and the squash's tree (checked against the
+        /// newest selected one) may differ. Any other difference stops the rewrite: no ref moves, the unreferenced objects
+        /// are left to Git's garbage collection, and the commit and the part are named.
         /// </summary>
-        private static string CommitTreeCannotCopy(CommitRewriteInfo info)
+        private GitCommandResult CheckWrittenCopies(IList<PlannedCommit> plan)
         {
-            if (info.RawEncoding != null)
+            UnitGitObjects objects = UnitGitObjects.For(ProjectRoot);
+            var bytes = new MemoryStream();
+            foreach (PlannedCommit commit in plan)
             {
-                string name = Encoding.ASCII.GetString(info.RawEncoding);
-                if (info.RawEncoding.Any(b => b <= 32 || b >= 127)) return "names an encoding \"" + name + "\"";
-                string lower = name.ToLowerInvariant();
-                if (lower == "utf-8" || lower == "utf8") return "names its encoding (" + name + ")";
-                if (info.RawAuthor != null && info.RawAuthor.Any(b => b >= 128)) return "has an author in " + name;
-                return null;
+                bytes.SetLength(0);
+                if (objects.Read(commit.NewId, bytes, out string type, out _) != UnitGitObjects.Answer.Found || type != "commit")
+                {
+                    bytes.SetLength(0);
+                    GitCommandResult read = ReadGitStream(DefaultTimeoutMilliseconds, (chunk, offset, count) =>
+                    {
+                        bytes.Write(chunk, offset, count);
+                        return true;
+                    }, "cat-file", "commit", commit.NewId);
+                    if (!read.Success)
+                    {
+                        return Failure("Could not read back the rewritten copy of " + ShortHash(commit.Source.Hash) + ". Mixer Git moved nothing.");
+                    }
+                }
+
+                var parents = commit.Parents.Select(parent => Resolve(parent, plan, false)).ToList();
+                string differs = CopyDifference(commit.Source.RawCommit, bytes.ToArray(), parents, commit.Tree, commit.Edited ? commit.Message : null);
+                if (differs != null)
+                {
+                    return Failure("The rewritten copy of commit " + ShortHash(commit.Source.Hash) + " came out with a different " + differs +
+                                   ". Mixer Git moved nothing and left the history as it is.");
+                }
             }
 
-            var strict = new UTF8Encoding(false, true);
-            try { strict.GetString(info.RawMessage ?? Array.Empty<byte>()); }
-            catch (DecoderFallbackException) { return "has a message that is not UTF-8 and names no encoding"; }
-            try { strict.GetString(info.RawAuthor ?? Array.Empty<byte>()); }
-            catch (DecoderFallbackException) { return "has an author that is not UTF-8 and names no encoding"; }
-            return null;
+            return new GitCommandResult();
+        }
+
+        // Header lines (key, whole line) and the message of a stored commit.
+        private static List<KeyValuePair<string, byte[]>> SplitCommit(byte[] commit, out byte[] message)
+        {
+            int end = 0;
+            while (end < commit.Length && !(commit[end] == (byte)'\n' && (end + 1 >= commit.Length || commit[end + 1] == (byte)'\n'))) end++;
+            var lines = new List<KeyValuePair<string, byte[]>>();
+            int line = 0;
+            while (line < end)
+            {
+                int next = Array.IndexOf(commit, (byte)'\n', line, end - line);
+                if (next < 0) next = end;
+                byte[] whole = commit.Skip(line).Take(next - line).ToArray();
+                if (whole.Length > 0 && whole[0] == (byte)' ' && lines.Count > 0)
+                {
+                    // A continued header belongs to the line above.
+                    var previous = lines[lines.Count - 1];
+                    lines[lines.Count - 1] = new KeyValuePair<string, byte[]>(previous.Key, previous.Value.Concat(new[] { (byte)'\n' }).Concat(whole).ToArray());
+                }
+                else
+                {
+                    int space = Array.IndexOf(whole, (byte)' ');
+                    lines.Add(new KeyValuePair<string, byte[]>(Encoding.ASCII.GetString(whole, 0, space < 0 ? whole.Length : space), whole));
+                }
+                line = next + 1;
+            }
+
+            message = commit.Skip(Math.Min(commit.Length, end + 2)).ToArray();
+            return lines;
+        }
+
+        /// <summary>The first part in which <paramref name="written"/> is not the copy of <paramref name="original"/> it
+        /// should be, or null (see CheckWrittenCopies).</summary>
+        internal static string CopyDifference(byte[] original, byte[] written, IList<string> parents, string tree, byte[] editedMessage)
+        {
+            List<KeyValuePair<string, byte[]>> was = SplitCommit(original, out byte[] wasMessage);
+            List<KeyValuePair<string, byte[]>> now = SplitCommit(written, out byte[] nowMessage);
+            string Value(KeyValuePair<string, byte[]> header) => Encoding.ASCII.GetString(header.Value, header.Key.Length + 1, Math.Max(0, header.Value.Length - header.Key.Length - 1));
+            if (!now.Where(header => header.Key == "tree").Select(Value).SequenceEqual(new[] { tree })) return "tree";
+            if (!now.Where(header => header.Key == "parent").Select(Value).SequenceEqual(parents)) return "parents";
+            var wasRest = was.Where(header => header.Key != "tree" && header.Key != "parent" && header.Key != "committer").ToList();
+            var nowRest = now.Where(header => header.Key != "tree" && header.Key != "parent" && header.Key != "committer").ToList();
+            if (now.Count(header => header.Key == "committer") != 1) return "committer line";
+            for (int i = 0; i < Math.Max(wasRest.Count, nowRest.Count); i++)
+            {
+                if (i >= wasRest.Count || i >= nowRest.Count || wasRest[i].Key != nowRest[i].Key || !wasRest[i].Value.SequenceEqual(nowRest[i].Value))
+                    return (i < wasRest.Count ? wasRest[i].Key : nowRest[i].Key) + " line";
+            }
+
+            return nowMessage.SequenceEqual(editedMessage ?? wasMessage) ? null : "message";
         }
 
         private static readonly HashSet<string> RebuiltHeaders = new HashSet<string>(StringComparer.Ordinal)
@@ -530,6 +695,7 @@ namespace Orbiters.UnitGit.Editor
             int end = 0;
             while (end < commit.Length && !(commit[end] == (byte)'\n' && (end + 1 >= commit.Length || commit[end + 1] == (byte)'\n'))) end++;
             int headerLength = Math.Min(end, commit.Length);
+            info.RawCommit = commit;
             info.LostHeader = null;
             info.RawAuthor = null;
             info.RawEncoding = null;
@@ -577,40 +743,30 @@ namespace Orbiters.UnitGit.Editor
                 }
             }
 
-            internal string Add(CommitRewriteInfo source, string treeHash, IList<string> parents, string message, CommitRewriteInfo copied)
+            internal void Add(PlannedCommit commit, IList<string> parents)
             {
                 string mark = ":" + (++marks).ToString(CultureInfo.InvariantCulture);
                 // A commit with no parent on a ref that already has one in this stream would continue from it: reset first.
                 if (parents.Count == 0) Text("reset " + Reference + "\n");
                 Text("commit " + Reference + "\nmark " + mark + "\n");
-                if (copied?.RawAuthor != null)
-                {
-                    Text("author ");
-                    Bytes.Write(copied.RawAuthor, 0, copied.RawAuthor.Length);
-                    Text("\n");
-                }
-                else
-                {
-                    Text("author " + (source.AuthorName.Length > 0 ? source.AuthorName + " " : string.Empty) + "<" + source.AuthorEmail + "> " +
-                         source.AuthorDate + "\n");
-                }
-                Text("committer " + Committer + "\n");
-                if (copied?.RawEncoding != null)
+                // The author line and the encoding header as stored: fast-import writes them as they are.
+                Text("author ");
+                Bytes.Write(commit.Source.RawAuthor, 0, commit.Source.RawAuthor.Length);
+                Text("\ncommitter " + Committer + "\n");
+                if (commit.Source.RawEncoding != null)
                 {
                     Text("encoding ");
-                    Bytes.Write(copied.RawEncoding, 0, copied.RawEncoding.Length);
+                    Bytes.Write(commit.Source.RawEncoding, 0, commit.Source.RawEncoding.Length);
                     Text("\n");
                 }
-                // Exactly the bytes commit-tree is given on stdin.
-                byte[] body = copied?.RawMessage ?? UnitGitRunner.Utf8.GetBytes(NormalizeCommitMessage(message) + "\n");
+                byte[] body = WrittenMessage(commit);
                 Text("data " + body.Length.ToString(CultureInfo.InvariantCulture) + "\n");
                 Bytes.Write(body, 0, body.Length);
                 Text("\n");
                 for (int i = 0; i < parents.Count; i++) Text((i == 0 ? "from " : "merge ") + parents[i] + "\n");
                 Text("deleteall\n");
-                if (treeHash != EmptyTreeSha1 && treeHash != EmptyTreeSha256) Text("M 040000 " + treeHash + " \"\"\n");
+                if (commit.Tree != EmptyTreeSha1 && commit.Tree != EmptyTreeSha256) Text("M 040000 " + commit.Tree + " \"\"\n");
                 Text("\n");
-                return mark;
             }
 
             internal void Text(string text)
@@ -627,16 +783,15 @@ namespace Orbiters.UnitGit.Editor
         internal static bool ForceCommitTreeRewrite;
 
         /// <summary>
-        /// Whether this rewrite can go through fast-import, which writes what commit-tree would except a signature: a
-        /// repository that signs its commits (commit.gpgSign) keeps commit-tree, which signs; so does a system whose stdin
-        /// cannot be clean, and an author whose name or e-mail fast-import cannot carry. Fails only when Git cannot name a
+        /// Whether this rewrite can go through fast-import, which writes every part as given: a repository that signs its
+        /// commits (commit.gpgSign) keeps commit-tree, which signs; so does a system whose stdin cannot be clean. Reads the
+        /// committer once: Git's GIT_COMMITTER_IDENT, what commit-tree would write. Fails only when Git cannot name a
         /// committer (commit-tree would fail as well).
         /// </summary>
-        private GitCommandResult CanStreamRewrite(IEnumerable<CommitRewriteInfo> sources, CommitStream stream)
+        private GitCommandResult CanStreamRewrite(CommitStream stream)
         {
             stream.Enabled = false;
-            if (ForceCommitTreeRewrite || !UnitGitRunner.CleanInput ||
-                sources.Any(source => !FitsIdent(source.AuthorName) || !FitsIdent(source.AuthorEmail) || !FitsIdent(source.AuthorDate)))
+            if (ForceCommitTreeRewrite || !UnitGitRunner.CleanInput)
             {
                 return new GitCommandResult();
             }
@@ -658,39 +813,49 @@ namespace Orbiters.UnitGit.Editor
             return new GitCommandResult();
         }
 
-        // What fast-import keeps as it is and commit-tree would write the same: nothing Git's ident sanitising changes (it
-        // drops "crud", control characters, spaces and . , : ; < > " \ ', from both ends of a name and an e-mail, and an
-        // empty name fails). Anything else goes through commit-tree, whose result is then Git's own.
-        private static bool FitsIdent(string value)
+        // Runs the stream into a scratch ref this call named, and reads each new commit's id from fast-import's marks
+        // (exported to a file this call creates and deletes).
+        private GitCommandResult WriteThroughFastImport(CommitStream stream, IList<PlannedCommit> plan)
         {
-            if (string.IsNullOrEmpty(value) || value.IndexOf('<') >= 0 || value.IndexOf('>') >= 0 || value.IndexOf('\n') >= 0 || value.IndexOf('\0') >= 0)
-                return false;
-            return !IsCrud(value[0]) && !IsCrud(value[value.Length - 1]);
-        }
-
-        private static bool IsCrud(char c) =>
-            c <= ' ' || c == '.' || c == ',' || c == ':' || c == ';' || c == '<' || c == '>' || c == '"' || c == '\\' || c == '\'';
-
-        // Runs the stream into a scratch ref this call named, and reads the id of its last commit (the new HEAD).
-        private GitCommandResult WriteCommitStream(CommitStream stream, out string streamRef, out string newHead)
-        {
-            streamRef = stream.Reference;
-            newHead = string.Empty;
+            foreach (PlannedCommit commit in plan) stream.Add(commit, commit.Parents.Select(parent => Resolve(parent, plan, true)).ToList());
             stream.Text("done\n");
-            GitCommandResult imported = RunGitWithInput(LongTimeoutMilliseconds, stream.Bytes.ToArray(), "fast-import", "--quiet", "--done");
-            if (!imported.Success)
+            string marks = Path.Combine(Path.GetTempPath(), "mixer-git-marks-" + Guid.NewGuid().ToString("N") + ".txt");
+            try
             {
-                return imported;
-            }
+                GitCommandResult imported = RunGitWithInput(LongTimeoutMilliseconds, stream.Bytes.ToArray(), "fast-import", "--quiet", "--done",
+                    "--export-marks=" + marks);
+                if (!imported.Success)
+                {
+                    return imported;
+                }
 
-            GitCommandResult head = RunGit(DefaultTimeoutMilliseconds, "rev-parse", "--verify", streamRef + "^{commit}");
-            if (!head.Success)
+                var ids = new Dictionary<int, string>();
+                foreach (string line in File.ReadAllLines(marks))
+                {
+                    string[] parts = line.Split(' ');
+                    if (parts.Length == 2 && parts[0].StartsWith(":", StringComparison.Ordinal) &&
+                        int.TryParse(parts[0].Substring(1), NumberStyles.None, CultureInfo.InvariantCulture, out int mark))
+                        ids[mark] = parts[1];
+                }
+
+                for (int i = 0; i < plan.Count; i++)
+                {
+                    if (!ids.TryGetValue(i + 1, out plan[i].NewId))
+                    {
+                        return Failure("fast-import did not report the rewritten copy of " + ShortHash(plan[i].Source.Hash) + ". Mixer Git moved nothing.");
+                    }
+                }
+
+                return new GitCommandResult();
+            }
+            catch (IOException ex)
             {
-                return head;
+                return Failure("Could not read fast-import's marks: " + ex.Message + ". Mixer Git moved nothing.");
             }
-
-            newHead = FirstNonEmptyLine(head.StandardOutput);
-            return string.IsNullOrWhiteSpace(newHead) ? Failure("Git did not return a rewritten commit hash.") : new GitCommandResult();
+            finally
+            {
+                DeleteTempFile(marks);
+            }
         }
 
         private static List<string> RewriteParents(IEnumerable<string> parents, IDictionary<string, string> rewritten)

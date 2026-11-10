@@ -82,28 +82,46 @@ namespace Orbiters.UnitGit.Editor.Tests
         }
 
         [Test]
-        public void ReparentedCommitsKeepTheirMessageBytesAndOddAuthorsGoThroughCommitTree()
+        public void ReparentedCommitsKeepTheirMessageBytesAndASpacedAuthor()
         {
-            foreach (bool streamed in new[] { true, false })
+            // A name with spaces in front: fast-import copies the author line as stored; commit-tree would apply Git's ident
+            // rules and drop them, so through commit-tree the rewrite is refused (it used to change the author silently).
+            foreach (bool commitTree in new[] { false, true })
             {
                 using (var repo = History(out string first, out _))
                 {
                     const string stored = "  spaced subject  \n\n body with trailing spaces   \n\n\n";
-                    // A name with a space in front: Git's ident rules drop it, which only commit-tree reproduces.
-                    Raw(repo, streamed ? "Top <top@example.test>" : " Spaced <top@example.test>", string.Empty, stored);
+                    string top = Raw(repo, "  Spaced <top@example.test>", string.Empty, stored);
                     var commands = new List<string>();
                     repo.Git.ProcessLogReceived = line => { if (line.StartsWith("> ", StringComparison.Ordinal)) commands.Add(line); };
-                    repo.Git.ReadHeadState(out UnitGitHeadState head);
-                    GitCommandResult result = repo.Git.RenameCommit(first, "renamed", head);
-                    repo.Git.ProcessLogReceived = null;
-                    Assert.That(result.Success, Is.True, result.Message);
-                    Assert.That(commands.Count(line => line.Contains(" fast-import ")), Is.EqualTo(streamed ? 1 : 0));
-                    Assert.That(commands.Count(line => line.Contains(" commit-tree ")), Is.EqualTo(streamed ? 0 : 3));
+                    UnitGitService.ForceCommitTreeRewrite = commitTree;
+                    GitCommandResult result;
+                    try
+                    {
+                        repo.Git.ReadHeadState(out UnitGitHeadState head);
+                        result = repo.Git.RenameCommit(first, "renamed", head);
+                    }
+                    finally
+                    {
+                        UnitGitService.ForceCommitTreeRewrite = false;
+                        repo.Git.ProcessLogReceived = null;
+                    }
 
+                    if (commitTree)
+                    {
+                        Assert.That(result.Success, Is.False);
+                        Assert.That(result.Message, Does.Contain("author line"));
+                        Assert.That(commands.Count(line => line.Contains(" commit-tree ")), Is.Zero, "Refused before anything is written.");
+                        Assert.That(repo.Run("rev-parse", "HEAD").Trim(), Is.EqualTo(top));
+                        continue;
+                    }
+
+                    Assert.That(result.Success, Is.True, result.Message);
+                    Assert.That(commands.Count(line => line.Contains(" fast-import ")), Is.EqualTo(1));
                     string raw = repo.Run("cat-file", "commit", "HEAD");
                     Assert.That(raw.Substring(raw.IndexOf("\n\n", StringComparison.Ordinal) + 2), Is.EqualTo(stored), "The re-parented message, byte for byte.");
+                    Assert.That(raw, Does.Contain("\nauthor   Spaced <top@example.test> 1600000000 +0200\n"), "The author line as stored.");
                     Assert.That(repo.Run("log", "-1", "--format=%B", "HEAD~2"), Does.StartWith("renamed"));
-                    if (!streamed) Assert.That(repo.Run("log", "-1", "--format=%an", "HEAD").Trim(), Is.EqualTo("Spaced"), "Git's own ident rules.");
                 }
             }
         }
