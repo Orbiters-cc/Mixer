@@ -256,6 +256,12 @@ namespace Orbiters.Logger.Editor
             message.Group = GroupFor(text, message.Level);
             messages[id] = message;
             messageCount = id + 1;
+            if (pendingProfile != null)
+            {
+                profiles[id] = pendingProfile;
+                pendingProfile = null;
+            }
+
             messageIndex[key] = id;
             groups[message.Group].Variants++;
             return id;
@@ -264,6 +270,7 @@ namespace Orbiters.Logger.Editor
         // Callsite, file to open and source, read once per distinct message.
         private void Describe(ref LogMessage message, string condition, string stack, string file, int line, int column)
         {
+            pendingProfile = null;
             if (LogVariants.IsCompile(message.Variant))
             {
                 if (string.IsNullOrEmpty(file))
@@ -286,6 +293,7 @@ namespace Orbiters.Logger.Editor
                 message.Flags |= MessageFlags.Timing;
                 message.Source = Sources.Get(TimingSource);
                 var profile = TimingProfile.Parse(stack);
+                pendingProfile = profile;
                 message.Callsite = Texts.Intern(profile != null ? profile.Summary(4) : string.Empty);
                 return;
             }
@@ -334,6 +342,27 @@ namespace Orbiters.Logger.Editor
         }
 
         private readonly Dictionary<int, StackInfo> stackInfos = new Dictionary<int, StackInfo>();
+
+        // Timing logs' profiles by message id, parsed once for every window (a restored store parses them on first use).
+        private readonly Dictionary<int, TimingProfile> profiles = new Dictionary<int, TimingProfile>();
+        private TimingProfile pendingProfile;
+
+        /// <summary>The profile of a timing log (<see cref="MessageFlags.Timing"/>), or null.</summary>
+        public TimingProfile TimingOf(int message)
+        {
+            if (message < 0 || message >= messageCount || (messages[message].Flags & MessageFlags.Timing) == 0)
+            {
+                return null;
+            }
+
+            if (!profiles.TryGetValue(message, out var profile))
+            {
+                profile = TimingProfile.Parse(Texts[messages[message].Stack]);
+                profiles[message] = profile;
+            }
+
+            return profile;
+        }
         private TextTable stackInfoTexts;
 
         private StackInfo StackInfoOf(int stackId, string stack)
@@ -540,6 +569,7 @@ namespace Orbiters.Logger.Editor
             groupIndex.Clear();
             contexts.Clear();
             events.Clear();
+            profiles.Clear();
             pins = 0;
             Texts = new TextTable();
             textCharsLimit = maxTextChars;
@@ -808,6 +838,8 @@ namespace Orbiters.Logger.Editor
             Texts = texts;
             messages = kept;
             messageCount = live;
+            // Message ids changed: profiles are parsed again on first use.
+            profiles.Clear();
             messageIndex.Clear();
             groups = new LogGroup[Math.Max(256, Math.Min(groupCount, live))];
             groupCount = 0;
@@ -1026,6 +1058,7 @@ namespace Orbiters.Logger.Editor
         {
             Texts = texts;
             RowsGeneration = rowsGeneration;
+            profiles.Clear();
             times = restoredTimes;
             owners = restoredOwners;
             flags = restoredFlags;

@@ -260,7 +260,7 @@ namespace Orbiters.Logger.Editor
                     location.Add(FrameRow(new StackFrame(store.Texts[message.File], string.Empty, store.Texts[message.File], message.Line, StackFrameKind.User), message.Column));
                 }
             }
-            else if (message.Stack > 0 && StackTraces.IsOutput(store.Texts[message.Stack]))
+            else if (message.Stack > 0 && (message.Flags & MessageFlags.Output) != 0)
             {
                 string output = store.Texts[message.Stack].Substring(StackTraces.OutputPrefix.Length).TrimEnd();
                 Card(main, "Output").Add(LongText.Build(output, "lg-details__output", MonoFont));

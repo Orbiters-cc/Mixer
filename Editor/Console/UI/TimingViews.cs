@@ -650,13 +650,7 @@ namespace Orbiters.Logger.Editor
                     continue;
                 }
 
-                string stack = source.Texts[message.Stack];
-                if (!TimingProfile.IsTimings(stack))
-                {
-                    continue;
-                }
-
-                var profile = TimingProfile.Parse(stack);
+                var profile = source.TimingOf(i);
                 if (profile == null)
                 {
                     continue;

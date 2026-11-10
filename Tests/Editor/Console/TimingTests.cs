@@ -177,6 +177,15 @@ namespace Orbiters.Logger.Editor.Tests
             int id = store.Intern(profile.Message(), profile.Format(), LogVariant.Log);
             Assert.AreEqual(LogStore.TimingSource, store.SourceOf(id).Name);
             Assert.AreEqual("VRCFury 800 ms", store.Texts[store.Message(id).Callsite]);
+
+            // Kept by the store, parsed once for every window that shows it.
+            Assert.IsTrue((store.Message(id).Flags & MessageFlags.Timing) != 0);
+            var kept = store.TimingOf(id);
+            Assert.IsNotNull(kept);
+            Assert.AreSame(kept, store.TimingOf(id));
+            Assert.AreEqual(2000, kept.TotalMilliseconds, 0.01);
+            int plain = store.Intern("Not a timing", "Timings: is only a prefix in a stack", LogVariant.Log);
+            Assert.IsNull(store.TimingOf(plain), "only messages filed as timings have a profile");
         }
 
         [Test]
