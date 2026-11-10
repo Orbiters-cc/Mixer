@@ -249,7 +249,11 @@ namespace Orbiters.UnitGit.Editor
             if (access == GitAccess.Change)
                 return UnitGitLease.WaitUntilChangesMayStart(Math.Max(1000, timeoutMilliseconds))
                     ? run()
-                    : new GitCommandResult { ExitCode = 1, TimedOut = true, StandardError = Busy };
+                    : new GitCommandResult
+                    {
+                        ExitCode = 1, TimedOut = true,
+                        StandardError = "Git is busy with local changes in this project, so the " + Verb(arguments) + " did not start. Try it again in a moment."
+                    };
             if (UnitGitLease.Current == null)
             {
                 UnitGitLease.NoteUnleased(arguments);
@@ -309,9 +313,29 @@ namespace Orbiters.UnitGit.Editor
             }
         }
 
+        /// <summary>
+        /// Records an exclusive command run with no operation around it when the code that called the runner is Mixer
+        /// Git's own (a public operation that forgot its lease); a test or tool calling the runner itself is its own caller.
+        /// </summary>
         internal static void NoteUnleased(IList<string> arguments)
         {
-            if (RecordUnleased) Unleased.Enqueue(string.Join(" ", arguments));
+            if (!RecordUnleased) return;
+            var assembly = typeof(UnitGitService).Assembly;
+            var frames = new System.Diagnostics.StackTrace(false).GetFrames() ?? new System.Diagnostics.StackFrame[0];
+            string[] entries = { "RunGit", "RunGitWithEnvironment", "RunGitWithInput", "ReadGitStream" };
+            for (int i = 0; i < frames.Length - 1; i++)
+            {
+                var method = frames[i].GetMethod();
+                if (method == null || method.DeclaringType != typeof(UnitGitService) || Array.IndexOf(entries, method.Name) < 0) continue;
+                // The outermost runner entry: who called it?
+                int caller = i + 1;
+                while (caller < frames.Length && frames[caller].GetMethod() is System.Reflection.MethodBase next &&
+                       next.DeclaringType == typeof(UnitGitService) && Array.IndexOf(entries, next.Name) >= 0) caller++;
+                var by = caller < frames.Length ? frames[caller].GetMethod() : null;
+                if (by != null && by.DeclaringType != null && by.DeclaringType.Assembly == assembly && by.DeclaringType.Namespace == typeof(UnitGitService).Namespace)
+                    Unleased.Enqueue(string.Join(" ", arguments) + " (from " + by.DeclaringType.Name + "." + by.Name + ")");
+                return;
+            }
         }
 
         /// <summary>For tests: the exclusive commands recorded as run outside any operation since the last call.</summary>

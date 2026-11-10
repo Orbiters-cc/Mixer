@@ -498,6 +498,13 @@ namespace Orbiters.UnitGit.Editor
 
         internal static UnitGitReleaseResult CommitAll(string commitTitle, string trailingParagraph, UnitGitService service, bool notifyChangedExternally)
         {
+            // One operation, its checks included, under the repository's lease (see UnitGitLease). Its callers: the VRChat
+            // upload hook (on a worker), the public CommitAll above, tests; on the editor thread it never waits for the lease.
+            return UnitGitLease.Hold(() => CommitAllHeld(commitTitle, trailingParagraph, service, notifyChangedExternally), () => Fail(LeaseBusyMessage));
+        }
+
+        private static UnitGitReleaseResult CommitAllHeld(string commitTitle, string trailingParagraph, UnitGitService service, bool notifyChangedExternally)
+        {
             if (string.IsNullOrWhiteSpace(commitTitle))
             {
                 return Fail("Commit title is required.");

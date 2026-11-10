@@ -762,6 +762,16 @@ namespace Orbiters.UnitGit.Editor
         /// </summary>
         internal void SweepScratchRefs()
         {
+            // An operation of its own when called alone (inside a rewrite or a backup it shares their lease).
+            UnitGitLease.Hold(() =>
+            {
+                SweepScratchRefsHeld();
+                return new GitCommandResult();
+            });
+        }
+
+        private void SweepScratchRefsHeld()
+        {
             GitCommandResult refs = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "for-each-ref", "--format=%(objectname) %(refname)", ScratchRefs);
             if (!refs.Success) return;
             foreach (string line in SplitLines(refs.StandardOutput))
