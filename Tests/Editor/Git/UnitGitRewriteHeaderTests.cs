@@ -44,15 +44,17 @@ namespace Orbiters.UnitGit.Editor.Tests
         {
             var commit = Encoding.UTF8.GetBytes("tree t\nparent p\nauthor A <a@b> 1 +0000\ncommitter C <c@d> 1 +0000\n" + Signature +
                                                 "\n  spaced  \n\n tail   ");
-            UnitGitService.ParseRawCommitForTests(commit, out string lost, out byte[] message);
+            UnitGitService.ParseRawCommitForTests(commit, out string lost, out byte[] message, out string encoding);
             Assert.That(lost, Is.EqualTo("gpgsig"));
             Assert.That(Encoding.UTF8.GetString(message), Is.EqualTo("  spaced  \n\n tail   "));
+            Assert.That(encoding, Is.Null);
 
-            UnitGitService.ParseRawCommitForTests(Encoding.UTF8.GetBytes("tree t\nauthor A <a@b> 1 +0000\nencoding ISO-8859-1\n\nx"), out lost, out message);
-            Assert.That(lost, Is.Null, "An encoding is rebuilt (the message is re-encoded as UTF-8).");
-            Assert.That(message, Is.Null, "A message in another encoding is not passed through as bytes.");
+            UnitGitService.ParseRawCommitForTests(Encoding.UTF8.GetBytes("tree t\nauthor A <a@b> 1 +0000\nencoding ISO-8859-1\n\nx"), out lost, out message, out encoding);
+            Assert.That(lost, Is.Null, "An encoding header is copied with the commit.");
+            Assert.That(Encoding.UTF8.GetString(message), Is.EqualTo("x"), "A message in another encoding is copied as its bytes.");
+            Assert.That(encoding, Is.EqualTo("ISO-8859-1"));
 
-            UnitGitService.ParseRawCommitForTests(Encoding.UTF8.GetBytes("tree t\nmergetag object x\n type commit\n\n"), out lost, out message);
+            UnitGitService.ParseRawCommitForTests(Encoding.UTF8.GetBytes("tree t\nmergetag object x\n type commit\n\n"), out lost, out message, out encoding);
             Assert.That(lost, Is.EqualTo("mergetag"));
             Assert.That(message, Is.Empty);
         }

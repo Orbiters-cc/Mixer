@@ -24,9 +24,11 @@ namespace Orbiters.UnitGit.Editor
             public string AuthorEmail = string.Empty;
             public string AuthorDate = string.Empty;
             public string Message = string.Empty;
-            // The message's bytes as stored, for a commit that is only re-parented; null when the commit names another
-            // encoding (its message is then re-encoded to UTF-8 as read).
+            // What a commit that is only re-parented keeps exactly as stored (nothing decoded): its message, its author
+            // line (in a commit of another encoding it is in that encoding too) and its encoding header's value (null: none).
             public byte[] RawMessage;
+            public byte[] RawAuthor;
+            public byte[] RawEncoding;
             // The first header a rebuild would lose (a signature, a merged tag, anything but tree, parent, author,
             // committer and encoding); null when there is none.
             public string LostHeader;
@@ -199,6 +201,22 @@ namespace Orbiters.UnitGit.Editor
                 return streamable;
             }
 
+            // A re-parented commit (replaced, not selected: neither renamed nor folded into the squash) is copied as stored.
+            // fast-import takes its bytes as they are; commit-tree cannot write some of them, and then nothing is written.
+            if (!stream.Enabled)
+            {
+                foreach (string hash in replaced.Where(hash => !selected.Contains(hash)))
+                {
+                    string why = CommitTreeCannotCopy(infos[hash]);
+                    if (why != null)
+                    {
+                        return Failure("Commit " + ShortHash(hash) + " " + why + ", which its rewritten copy could not keep here (" +
+                                       "this repository's commits are written by commit-tree: signed, or with names fast-import cannot take): " +
+                                       (squash ? "squashing" : "renaming") + " would change it. Mixer Git left the history as it is.");
+                    }
+                }
+            }
+
             var rewritten = new Dictionary<string, string>(StringComparer.Ordinal);
             string squashedHash = string.Empty;
             for (int i = startIndex; i < history.Count; i++)
@@ -223,19 +241,21 @@ namespace Orbiters.UnitGit.Editor
                 string treeHash = squash && i == startIndex
                     ? infos[history[endIndex]].TreeHash
                     : source.TreeHash;
+                // An edited commit (the renamed one, the squashed one) gets the new message the user typed, in UTF-8 and with
+                // no encoding header: Git's default, whatever encoding the commit it replaces named; its author is the one Git
+                // reads, re-encoded to UTF-8. A commit that is only re-parented keeps its message, author line and encoding
+                // header byte for byte.
                 bool edited = squash ? i == startIndex : selected.Contains(originalHash);
-                string commitMessage = edited ? message : source.Message;
-                // A commit that is only re-parented keeps its message byte for byte.
-                byte[] rawMessage = edited ? null : source.RawMessage;
+                CommitRewriteInfo copied = edited ? null : source;
 
                 string newHash;
                 if (stream.Enabled)
                 {
-                    newHash = stream.Add(source, treeHash, parents, commitMessage, rawMessage);
+                    newHash = stream.Add(source, treeHash, parents, message, copied);
                 }
                 else
                 {
-                    GitCommandResult createResult = CreateCommitFromTree(source, treeHash, parents, commitMessage, rawMessage);
+                    GitCommandResult createResult = CreateCommitFromTree(source, treeHash, parents, message, copied);
                     if (!createResult.Success)
                     {
                         return createResult;
@@ -381,9 +401,20 @@ namespace Orbiters.UnitGit.Editor
 
         // One "git commit-tree" per rewritten commit (each needs its parent's new id); the message goes through stdin.
         private GitCommandResult CreateCommitFromTree(CommitRewriteInfo source, string treeHash, IList<string> parents, string message,
-            byte[] rawMessage)
+            CommitRewriteInfo copied)
         {
-            var args = new List<string> { "commit-tree", treeHash };
+            byte[] rawMessage = copied?.RawMessage;
+            var args = new List<string>();
+            // A copied commit's encoding header (checked by CommitTreeCannotCopy: a name commit-tree writes as it is) comes
+            // from i18n.commitEncoding, given after the runner's UTF-8 setting so it wins. commit-tree does not transcode:
+            // the message bytes stay as they are.
+            if (copied?.RawEncoding != null)
+            {
+                args.Add("-c");
+                args.Add("i18n.commitEncoding=" + Encoding.ASCII.GetString(copied.RawEncoding));
+            }
+            args.Add("commit-tree");
+            args.Add(treeHash);
             foreach (string parent in parents)
             {
                 args.Add("-p");
@@ -424,6 +455,32 @@ namespace Orbiters.UnitGit.Editor
             }
         }
 
+        /// <summary>
+        /// Why commit-tree cannot write this re-parented commit as stored, or null. It writes no encoding header for a name
+        /// meaning UTF-8 (it is Git's default), reads the author from environment variables (which carry only UTF-8 text:
+        /// an author line in another encoding cannot pass), and replaces bytes that are not UTF-8 in a message without an
+        /// encoding header (Git's verify_utf8).
+        /// </summary>
+        private static string CommitTreeCannotCopy(CommitRewriteInfo info)
+        {
+            if (info.RawEncoding != null)
+            {
+                string name = Encoding.ASCII.GetString(info.RawEncoding);
+                if (info.RawEncoding.Any(b => b <= 32 || b >= 127)) return "names an encoding \"" + name + "\"";
+                string lower = name.ToLowerInvariant();
+                if (lower == "utf-8" || lower == "utf8") return "names its encoding (" + name + ")";
+                if (info.RawAuthor != null && info.RawAuthor.Any(b => b >= 128)) return "has an author in " + name;
+                return null;
+            }
+
+            var strict = new UTF8Encoding(false, true);
+            try { strict.GetString(info.RawMessage ?? Array.Empty<byte>()); }
+            catch (DecoderFallbackException) { return "has a message that is not UTF-8 and names no encoding"; }
+            try { strict.GetString(info.RawAuthor ?? Array.Empty<byte>()); }
+            catch (DecoderFallbackException) { return "has an author that is not UTF-8 and names no encoding"; }
+            return null;
+        }
+
         private static readonly HashSet<string> RebuiltHeaders = new HashSet<string>(StringComparer.Ordinal)
         {
             "tree", "parent", "author", "committer", "encoding"
@@ -459,12 +516,13 @@ namespace Orbiters.UnitGit.Editor
         }
 
         // Headers end at the first empty line; a line starting with a space continues the header above (a signature).
-        internal static void ParseRawCommitForTests(byte[] commit, out string lostHeader, out byte[] rawMessage)
+        internal static void ParseRawCommitForTests(byte[] commit, out string lostHeader, out byte[] rawMessage, out string encoding)
         {
             var info = new CommitRewriteInfo();
             ParseRawCommit(commit, info);
             lostHeader = info.LostHeader;
             rawMessage = info.RawMessage;
+            encoding = info.RawEncoding == null ? null : Encoding.ASCII.GetString(info.RawEncoding);
         }
 
         private static void ParseRawCommit(byte[] commit, CommitRewriteInfo info)
@@ -472,8 +530,9 @@ namespace Orbiters.UnitGit.Editor
             int end = 0;
             while (end < commit.Length && !(commit[end] == (byte)'\n' && (end + 1 >= commit.Length || commit[end + 1] == (byte)'\n'))) end++;
             int headerLength = Math.Min(end, commit.Length);
-            bool encoded = false;
             info.LostHeader = null;
+            info.RawAuthor = null;
+            info.RawEncoding = null;
             int line = 0;
             while (line < headerLength)
             {
@@ -483,14 +542,16 @@ namespace Orbiters.UnitGit.Editor
                 {
                     int space = Array.IndexOf(commit, (byte)' ', line, next - line);
                     string key = Encoding.ASCII.GetString(commit, line, (space < 0 ? next : space) - line);
-                    if (key == "encoding") encoded = true;
+                    int value = space < 0 ? next : space + 1;
+                    if (key == "encoding") info.RawEncoding = commit.Skip(value).Take(next - value).ToArray();
+                    if (key == "author") info.RawAuthor = commit.Skip(value).Take(next - value).ToArray();
                     if (!RebuiltHeaders.Contains(key) && info.LostHeader == null) info.LostHeader = key;
                 }
                 line = next + 1;
             }
 
             int messageStart = Math.Min(commit.Length, end + 2);
-            info.RawMessage = encoded ? null : commit.Skip(messageStart).ToArray();
+            info.RawMessage = commit.Skip(messageStart).ToArray();
         }
 
         /// <summary>
@@ -516,17 +577,32 @@ namespace Orbiters.UnitGit.Editor
                 }
             }
 
-            internal string Add(CommitRewriteInfo source, string treeHash, IList<string> parents, string message, byte[] rawMessage)
+            internal string Add(CommitRewriteInfo source, string treeHash, IList<string> parents, string message, CommitRewriteInfo copied)
             {
                 string mark = ":" + (++marks).ToString(CultureInfo.InvariantCulture);
                 // A commit with no parent on a ref that already has one in this stream would continue from it: reset first.
                 if (parents.Count == 0) Text("reset " + Reference + "\n");
                 Text("commit " + Reference + "\nmark " + mark + "\n");
-                Text("author " + (source.AuthorName.Length > 0 ? source.AuthorName + " " : string.Empty) + "<" + source.AuthorEmail + "> " +
-                     source.AuthorDate + "\n");
+                if (copied?.RawAuthor != null)
+                {
+                    Text("author ");
+                    Bytes.Write(copied.RawAuthor, 0, copied.RawAuthor.Length);
+                    Text("\n");
+                }
+                else
+                {
+                    Text("author " + (source.AuthorName.Length > 0 ? source.AuthorName + " " : string.Empty) + "<" + source.AuthorEmail + "> " +
+                         source.AuthorDate + "\n");
+                }
                 Text("committer " + Committer + "\n");
+                if (copied?.RawEncoding != null)
+                {
+                    Text("encoding ");
+                    Bytes.Write(copied.RawEncoding, 0, copied.RawEncoding.Length);
+                    Text("\n");
+                }
                 // Exactly the bytes commit-tree is given on stdin.
-                byte[] body = rawMessage ?? UnitGitRunner.Utf8.GetBytes(NormalizeCommitMessage(message) + "\n");
+                byte[] body = copied?.RawMessage ?? UnitGitRunner.Utf8.GetBytes(NormalizeCommitMessage(message) + "\n");
                 Text("data " + body.Length.ToString(CultureInfo.InvariantCulture) + "\n");
                 Bytes.Write(body, 0, body.Length);
                 Text("\n");
