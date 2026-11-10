@@ -388,6 +388,23 @@ namespace Orbiters.Logger.Editor.Tests
         }
 
         [Test]
+        public void UnityConsoleIsReachable()
+        {
+            // Every LogEntries member is bound (directly or by expression): a failure would turn history import off.
+            Assert.IsTrue(UnityConsole.Available);
+            Assert.GreaterOrEqual(UnityConsole.Total(), 0);
+            using (var reader = UnityConsole.Reader.Open())
+            {
+                Assert.IsNotNull(reader);
+                if (reader.Count > 0)
+                {
+                    Assert.IsNotNull(reader.Lines(0, 1, out _));
+                    Assert.IsTrue(reader.TryRead(0, out _));
+                }
+            }
+        }
+
+        [Test]
         public void BorrowedConsoleSettingsComeBackOnce()
         {
             Assume.That(UnityConsole.Available, "this Unity's console can't be read");

@@ -332,6 +332,25 @@ namespace Orbiters.Logger.Editor.Tests
             CollectionAssert.AreEqual(serial.KnownTextMatches, parallel.KnownTextMatches);
         }
 
+        [Test]
+        public void GroupRowsAreFoundWithoutAScan()
+        {
+            var store = Sample();
+            foreach (var sort in new[] { GroupSort.FirstSeen, GroupSort.LastSeen, GroupSort.Count, GroupSort.Level })
+            {
+                var state = Run(store, new FilterSpec { Grouped = true, Sort = sort });
+                store.Add(TimeSpan.TicksPerSecond * 9, "A group that came later", Stack, LogVariant.Warning);
+                Assert.IsTrue(state.Extend(store, store.Sources.All));
+                state.SortGroups(store.View());
+                for (int row = 0; row < state.GroupRowCount; row++)
+                {
+                    Assert.AreEqual(row, state.GroupRowOf(state.GroupRows[row]), sort.ToString());
+                }
+
+                Assert.AreEqual(-1, state.GroupRowOf(store.GroupCount + 5));
+            }
+        }
+
         private static int Sum(int[] values)
         {
             int total = 0;

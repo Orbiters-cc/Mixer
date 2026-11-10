@@ -149,6 +149,8 @@ namespace Orbiters.Logger.Editor
         public int[] GroupLast = new int[64];
         public int[] GroupRows = new int[64];
         public int GroupRowCount;
+        // GroupRows inverted: a group's row plus one (0: no row), so finding a group's row is an array read.
+        private int[] groupRowPlusOne = new int[64];
         public bool GroupOrderDirty;
 
         public readonly int[] LevelCounts = new int[3];
@@ -342,6 +344,7 @@ namespace Orbiters.Logger.Editor
                 Array.Resize(ref GroupFirst, size);
                 Array.Resize(ref GroupLast, size);
                 Array.Resize(ref groupMuted, size);
+                Array.Resize(ref groupRowPlusOne, size);
             }
 
             if (groupMuted.Length < GroupCount.Length)
@@ -533,6 +536,7 @@ namespace Orbiters.Logger.Editor
                     }
 
                     GroupRows[GroupRowCount++] = group;
+                    groupRowPlusOne[group] = GroupRowCount;
                 }
                 else if (Spec.Sort != GroupSort.FirstSeen)
                 {
@@ -590,6 +594,10 @@ namespace Orbiters.Logger.Editor
             }
 
             Array.Sort(GroupRows, 0, GroupRowCount, Comparer<int>.Create(comparison));
+            for (int i = 0; i < GroupRowCount; i++)
+            {
+                groupRowPlusOne[GroupRows[i]] = i + 1;
+            }
         }
 
         /// <summary>
@@ -734,18 +742,7 @@ namespace Orbiters.Logger.Editor
             return index >= 0 ? index : ~index;
         }
 
-        public int GroupRowOf(int group)
-        {
-            for (int i = 0; i < GroupRowCount; i++)
-            {
-                if (GroupRows[i] == group)
-                {
-                    return i;
-                }
-            }
-
-            return -1;
-        }
+        public int GroupRowOf(int group) => group >= 0 && group < groupRowPlusOne.Length ? groupRowPlusOne[group] - 1 : -1;
     }
 
     /// <summary>A <see cref="FilterState"/>'s chart for a moved time axis (<see cref="FilterState.ComputeChart"/>).</summary>

@@ -58,6 +58,8 @@ namespace Orbiters.Logger.Editor.VRChat
 
         private static void OnPanelEnable(object sender, EventArgs args)
         {
+            // Its console buttons open the Mixer console (hooked on the next update, once the panel's UI exists).
+            ConsoleLinks.Request();
             EditorApplication.delayCall -= TryAttach;
             EditorApplication.delayCall += TryAttach;
         }

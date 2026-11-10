@@ -190,8 +190,9 @@ namespace Orbiters.Logger.Editor
             spinner.Add(arc);
             spinner.schedule.Execute(() =>
             {
-                if (spinner.resolvedStyle.display == DisplayStyle.None || spinner.panel == null)
+                if (spinner.panel == null || !Shown(spinner))
                 {
+                    // Hidden: no style change, so the panel isn't repainted every frame for nothing.
                     return;
                 }
 
@@ -199,6 +200,21 @@ namespace Orbiters.Logger.Editor
                 arc.style.rotate = new Rotate(new Angle(angle, AngleUnit.Degree));
             }).Every(16);
             return spinner;
+        }
+
+        // Hidden by display or faded out (the idle status area only turns transparent), on it or any parent.
+        private static bool Shown(VisualElement element)
+        {
+            for (var current = element; current != null; current = current.parent)
+            {
+                var style = current.resolvedStyle;
+                if (style.display == DisplayStyle.None || style.opacity <= 0f)
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         /// <summary>Plays a class-driven entrance: the element starts with <paramref name="from"/>, removed a frame later.</summary>

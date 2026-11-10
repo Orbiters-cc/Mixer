@@ -109,8 +109,11 @@ namespace Orbiters.Logger.Editor
                 }
 
                 const BindingFlags Static = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;
-                startGettingEntries = Static0<int>(entries.GetMethod("StartGettingEntries", Static));
-                endGettingEntries = Expression.Lambda<Action>(Expression.Call(entries.GetMethod("EndGettingEntries", Static))).Compile();
+                // Static methods are bound directly (no expression to compile at every domain load); one whose signature
+                // no longer matches gets an expression, which converts what it can.
+                startGettingEntries = Bind(entries.GetMethod("StartGettingEntries", Static), () => Static0<int>(entries.GetMethod("StartGettingEntries", Static)));
+                endGettingEntries = Bind(entries.GetMethod("EndGettingEntries", Static),
+                    () => Expression.Lambda<Action>(Expression.Call(entries.GetMethod("EndGettingEntries", Static))).Compile());
 
                 var row = Expression.Parameter(typeof(int), "row");
                 var boxed = Expression.Parameter(typeof(object), "entry");
@@ -120,24 +123,26 @@ namespace Orbiters.Logger.Editor
                 var lines = Expression.Parameter(typeof(int), "lines");
                 var mode = Expression.Parameter(typeof(int).MakeByRefType(), "mode");
                 var text = Expression.Parameter(typeof(string).MakeByRefType(), "text");
-                getLines = Expression.Lambda<LinesDelegate>(
-                    Expression.Call(entries.GetMethod("GetLinesAndModeFromEntryInternal", Static), row, lines, mode, text), row, lines, mode, text).Compile();
+                getLines = Bind(entries.GetMethod("GetLinesAndModeFromEntryInternal", Static), () => Expression.Lambda<LinesDelegate>(
+                    Expression.Call(entries.GetMethod("GetLinesAndModeFromEntryInternal", Static), row, lines, mode, text), row, lines, mode, text).Compile());
 
                 var errors = Expression.Parameter(typeof(int).MakeByRefType(), "errors");
                 var warnings = Expression.Parameter(typeof(int).MakeByRefType(), "warnings");
                 var logs = Expression.Parameter(typeof(int).MakeByRefType(), "logs");
-                getCounts = Expression.Lambda<CountsDelegate>(
-                    Expression.Call(entries.GetMethod("GetCountsByType", Static), errors, warnings, logs), errors, warnings, logs).Compile();
+                getCounts = Bind(entries.GetMethod("GetCountsByType", Static), () => Expression.Lambda<CountsDelegate>(
+                    Expression.Call(entries.GetMethod("GetCountsByType", Static), errors, warnings, logs), errors, warnings, logs).Compile());
 
                 var flagsProperty = entries.GetProperty("consoleFlags", Static);
-                getFlags = Expression.Lambda<Func<int>>(Expression.Property(null, flagsProperty)).Compile();
+                getFlags = Bind(flagsProperty?.GetGetMethod(true), () => Expression.Lambda<Func<int>>(Expression.Property(null, flagsProperty)).Compile());
                 var bit = Expression.Parameter(typeof(int), "bit");
                 var value = Expression.Parameter(typeof(bool), "value");
-                setFlag = Expression.Lambda<Action<int, bool>>(Expression.Call(entries.GetMethod("SetConsoleFlag", Static), bit, value), bit, value).Compile();
-                getFilteringText = Static0<string>(entries.GetMethod("GetFilteringText", Static));
+                setFlag = Bind(entries.GetMethod("SetConsoleFlag", Static),
+                    () => Expression.Lambda<Action<int, bool>>(Expression.Call(entries.GetMethod("SetConsoleFlag", Static), bit, value), bit, value).Compile());
+                getFilteringText = Bind(entries.GetMethod("GetFilteringText", Static), () => Static0<string>(entries.GetMethod("GetFilteringText", Static)));
                 var filter = Expression.Parameter(typeof(string), "filter");
-                setFilteringText = Expression.Lambda<Action<string>>(Expression.Call(entries.GetMethod("SetFilteringText", Static), filter), filter).Compile();
-                clear = Expression.Lambda<Action>(Expression.Call(entries.GetMethod("Clear", Static))).Compile();
+                setFilteringText = Bind(entries.GetMethod("SetFilteringText", Static),
+                    () => Expression.Lambda<Action<string>>(Expression.Call(entries.GetMethod("SetFilteringText", Static), filter), filter).Compile());
+                clear = Bind(entries.GetMethod("Clear", Static), () => Expression.Lambda<Action>(Expression.Call(entries.GetMethod("Clear", Static))).Compile());
 
                 newEntry = Expression.Lambda<Func<object>>(Expression.Convert(Expression.New(entryType), typeof(object))).Compile();
                 entryMessage = Field<string>(entryType, "message");
@@ -163,6 +168,23 @@ namespace Orbiters.Logger.Editor
         public static bool Available { get; }
 
         private static Func<T> Static0<T>(MethodInfo method) => Expression.Lambda<Func<T>>(Expression.Call(method)).Compile();
+
+        private static T Bind<T>(MethodInfo method, Func<T> expression) where T : class
+        {
+            if (method != null)
+            {
+                try
+                {
+                    return (T)(object)Delegate.CreateDelegate(typeof(T), method);
+                }
+                catch (ArgumentException)
+                {
+                    // The signature changed: the expression below converts or fails like before.
+                }
+            }
+
+            return expression();
+        }
 
         private static Func<object, T> Field<T>(Type type, string name)
         {
