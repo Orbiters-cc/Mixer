@@ -139,7 +139,7 @@ namespace Orbiters.Mixer.Editor
                 {
                     // Nothing newer any more: the pill goes now, the row with the next rebuild.
                     if (update == null) MixerUi.Show(pill, false);
-                    model.ToolsChanged(); MarkDirty();
+                    model.ToolsChanged(); MarkChanged();
                     return;
                 }
                 MixerUi.SetPillText(pill, "Updating…");
