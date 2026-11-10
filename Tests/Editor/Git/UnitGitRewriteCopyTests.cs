@@ -57,18 +57,10 @@ namespace Orbiters.UnitGit.Editor.Tests
         private static string Line(byte[] commit, string key) =>
             Latin1.GetString(commit).Split('\n').First(line => line.StartsWith(key + " ", StringComparison.Ordinal));
 
-        private static GitCommandResult Rename(UnitGitTestRepo repo, string commit, bool commitTree)
+        private static GitCommandResult Rename(UnitGitTestRepo repo, string commit)
         {
-            UnitGitService.ForceCommitTreeRewrite = commitTree;
-            try
-            {
-                repo.Git.ReadHeadState(out UnitGitHeadState head);
-                return repo.Git.RenameCommit(commit, "renamed", head);
-            }
-            finally
-            {
-                UnitGitService.ForceCommitTreeRewrite = false;
-            }
+            repo.Git.ReadHeadState(out UnitGitHeadState head);
+            return repo.Git.RenameCommit(commit, "renamed", head);
         }
 
         private static readonly (string what, byte[] author)[] Authors =
@@ -88,32 +80,29 @@ namespace Orbiters.UnitGit.Editor.Tests
         {
             foreach (var author in Authors)
             {
-                foreach (bool commitTree in new[] { false, true })
+                using (var repo = History(out string first))
                 {
-                    using (var repo = History(out string first))
+                    string top = Make(repo, author.author, Encoding.UTF8.GetBytes("top\n"));
+                    byte[] before = Stored(repo, top);
+                    GitCommandResult result = Rename(repo, first);
+                    string at = author.what;
+                    if (author.what == "an empty name")
                     {
-                        string top = Make(repo, author.author, Encoding.UTF8.GetBytes("top\n"));
-                        byte[] before = Stored(repo, top);
-                        GitCommandResult result = Rename(repo, first, commitTree);
-                        string at = author.what + (commitTree ? " through commit-tree" : " through fast-import");
-                        if (result.Success)
-                        {
-                            byte[] after = Stored(repo, "HEAD");
-                            Assert.That(Latin1.GetBytes(Line(after, "author")), Is.EqualTo(Latin1.GetBytes(Line(before, "author"))), at);
-                            Assert.That(UnitGitService.CopyDifference(before, after, new[] { repo.Run("rev-parse", "HEAD~1").Trim() },
-                                repo.Run("rev-parse", "HEAD^{tree}").Trim(), null), Is.Null, at);
-                        }
-                        else
-                        {
-                            Assert.That(result.Message, Does.Contain("left the history as it is"), at);
-                            Assert.That(repo.Run("rev-parse", "HEAD").Trim(), Is.EqualTo(top), at + ": nothing moved");
-                        }
-                        // fast-import writes every one of them as stored but the empty name: it writes "author  <e-mail>", with
-                        // the space a name would be followed by, and the check of the written copies refuses the rewrite.
-                        if (!commitTree && author.what != "an empty name") Assert.That(result.Success, Is.True, at + ": " + result.Message);
-                        if (!commitTree && author.what == "an empty name") Assert.That(result.Message, Does.Contain("different author line"), at);
-                        Assert.That(repo.Run("for-each-ref", "refs/mixer-git/").Trim(), Is.Empty, at);
+                        // fast-import writes it "author  <e-mail>", with the space a name would be followed by: the check of
+                        // the written copies refuses the rewrite, and nothing moves.
+                        Assert.That(result.Success, Is.False, at);
+                        Assert.That(result.Message, Does.Contain("different author line").And.Contain("left the history as it is"), at);
+                        Assert.That(repo.Run("rev-parse", "HEAD").Trim(), Is.EqualTo(top), at + ": nothing moved");
                     }
+                    else
+                    {
+                        Assert.That(result.Success, Is.True, at + ": " + result.Message);
+                        byte[] after = Stored(repo, "HEAD");
+                        Assert.That(Latin1.GetBytes(Line(after, "author")), Is.EqualTo(Latin1.GetBytes(Line(before, "author"))), at);
+                        Assert.That(UnitGitService.CopyDifference(before, after, new[] { repo.Run("rev-parse", "HEAD~1").Trim() },
+                            repo.Run("rev-parse", "HEAD^{tree}").Trim(), null), Is.Null, at);
+                    }
+                    Assert.That(repo.Run("for-each-ref", "refs/mixer-git/").Trim(), Is.Empty, at);
                 }
             }
         }
@@ -121,47 +110,61 @@ namespace Orbiters.UnitGit.Editor.Tests
         [Test]
         public void ACopyWrittenDifferentlyStopsTheRewriteBeforeAnyRefMoves()
         {
-            foreach (bool commitTree in new[] { false, true })
+            using (var repo = History(out string first))
             {
-                using (var repo = History(out string first))
-                {
-                    string top = Make(repo, Ascii("Plain <p@example.test>"), Encoding.UTF8.GetBytes("top\n"));
-                    UnitGitService.WrittenMessageSeamForTests = (hash, message) => hash == top ? Encoding.UTF8.GetBytes("tampered\n") : message;
-                    GitCommandResult result;
-                    try { result = Rename(repo, first, commitTree); }
-                    finally { UnitGitService.WrittenMessageSeamForTests = null; }
-                    Assert.That(result.Success, Is.False);
-                    Assert.That(result.Message, Does.Contain(top.Substring(0, 7)).And.Contain("different message").And.Contain("moved nothing"));
-                    Assert.That(repo.Run("rev-parse", "HEAD").Trim(), Is.EqualTo(top), "No ref moved.");
-                    Assert.That(repo.Run("for-each-ref", "refs/mixer-git/").Trim(), Is.Empty);
-                }
+                string top = Make(repo, Ascii("Plain <p@example.test>"), Encoding.UTF8.GetBytes("top\n"));
+                UnitGitService.WrittenMessageSeamForTests = (hash, message) => hash == top ? Encoding.UTF8.GetBytes("tampered\n") : message;
+                GitCommandResult result;
+                try { result = Rename(repo, first); }
+                finally { UnitGitService.WrittenMessageSeamForTests = null; }
+                Assert.That(result.Success, Is.False);
+                Assert.That(result.Message, Does.Contain(top.Substring(0, 7)).And.Contain("different message").And.Contain("moved nothing"));
+                Assert.That(repo.Run("rev-parse", "HEAD").Trim(), Is.EqualTo(top), "No ref moved.");
+                Assert.That(repo.Run("for-each-ref", "refs/mixer-git/").Trim(), Is.Empty);
             }
         }
 
         [Test]
-        public void TheCommitterIsRegeneratedOnPurpose()
+        public void TheCommitterIsRegeneratedOnPurposeAndNothingIsSigned()
         {
             var saved = new[] { "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL" }.Select(Environment.GetEnvironmentVariable).ToArray();
             Environment.SetEnvironmentVariable("GIT_COMMITTER_NAME", "Rewriter");
             Environment.SetEnvironmentVariable("GIT_COMMITTER_EMAIL", "rewriter@example.test");
             try
             {
-                foreach (bool commitTree in new[] { false, true })
+                using (var repo = History(out string first))
                 {
-                    using (var repo = History(out string first))
-                    {
-                        string top = Make(repo, Ascii("Plain <p@example.test>"), Encoding.UTF8.GetBytes("top\n"));
-                        Assert.That(Rename(repo, first, commitTree).Success, Is.True);
-                        // A rewritten commit is a new commit: whoever rewrote it, now (as on master). Its author stays.
-                        Assert.That(Line(Stored(repo, "HEAD"), "committer"), Does.StartWith("committer Rewriter <rewriter@example.test> "));
-                        Assert.That(Line(Stored(repo, "HEAD"), "author"), Is.EqualTo(Line(Stored(repo, top), "author")));
-                    }
+                    // A repository configured to sign: the commits a rewrite writes are not signed, as on the original code.
+                    repo.Run("config", "commit.gpgsign", "true");
+                    string top = Make(repo, Ascii("Plain <p@example.test>"), Encoding.UTF8.GetBytes("top\n"));
+                    Assert.That(Rename(repo, first).Success, Is.True);
+                    // A rewritten commit is a new commit: whoever rewrote it, now (as on master). Its author stays.
+                    Assert.That(Line(Stored(repo, "HEAD"), "committer"), Does.StartWith("committer Rewriter <rewriter@example.test> "));
+                    Assert.That(Line(Stored(repo, "HEAD"), "author"), Is.EqualTo(Line(Stored(repo, top), "author")));
+                    Assert.That(Latin1.GetString(Stored(repo, "HEAD")), Does.Not.Contain("gpgsig"));
                 }
             }
             finally
             {
                 Environment.SetEnvironmentVariable("GIT_COMMITTER_NAME", saved[0]);
                 Environment.SetEnvironmentVariable("GIT_COMMITTER_EMAIL", saved[1]);
+            }
+        }
+
+        [Test]
+        public void ScratchRefsLeftBehindAreSweptAndAMovedOneIsKept()
+        {
+            using (var repo = History(out string first))
+            {
+                string head = repo.Run("rev-parse", "HEAD").Trim();
+                repo.Run("update-ref", "refs/mixer-git/rewrite/leftover", head);
+                repo.Run("update-ref", "refs/mixer-git/rewrite/other", first);
+                repo.Git.SweepScratchRefs();
+                Assert.That(repo.Run("for-each-ref", "refs/mixer-git/").Trim(), Is.Empty);
+                // A rewrite sweeps first too.
+                repo.Run("update-ref", "refs/mixer-git/rewrite/leftover", head);
+                Assert.That(Rename(repo, first).Success, Is.True);
+                Assert.That(repo.Run("for-each-ref", "refs/mixer-git/").Trim(), Is.Empty);
             }
         }
     }

@@ -129,6 +129,8 @@ namespace Orbiters.UnitGit.Editor
             string final = System.IO.Path.Combine(folder, name + Extension);
             for (int n = 2; File.Exists(final); n++) final = System.IO.Path.Combine(folder, name + "_" + n + Extension);
             string temporary = final + ".partial";
+            // A rename's scratch ref a reload left behind would go into the backup with --all.
+            git.SweepScratchRefs();
             var result = Bundle(git, temporary);
             if (!result.Success)
             {

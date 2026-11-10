@@ -5,15 +5,15 @@ using NUnit.Framework;
 
 namespace Orbiters.UnitGit.Editor.Tests
 {
-    // Rename and squash write their new commits through one git fast-import; the commits must be byte for byte the ones
-    // one commit-tree per commit writes (the path a repository that signs its commits keeps). With the committer fixed,
-    // both give the same commit ids.
+    // Rename and squash write their new commits through one git fast-import, on histories with merges, a second root, an
+    // empty tree and odd messages: each succeeds, uses one fast-import, leaves no scratch ref, and with the committer fixed
+    // the same rewrite gives the same commit ids again (nothing depends on time or order but what Git records).
     public sealed class UnitGitRewriteStreamTests
     {
         private static readonly string[] Committer = { "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE" };
 
         [Test]
-        public void FastImportWritesExactlyTheCommitsCommitTreeWrites()
+        public void RewritesOfAnyHistorySucceedAndAreDeterministic()
         {
             var saved = Committer.Select(Environment.GetEnvironmentVariable).ToArray();
             Environment.SetEnvironmentVariable("GIT_COMMITTER_NAME", "Rewriter Ü");
@@ -82,20 +82,11 @@ namespace Orbiters.UnitGit.Editor.Tests
             Assert.That(repo.Run("for-each-ref", "refs/mixer-git/").Trim(), Is.Empty, "The scratch ref is gone.");
 
             repo.Run("update-ref", "refs/heads/main", before, fast);
-            UnitGitService.ForceCommitTreeRewrite = true;
-            try
-            {
-                repo.Git.ReadHeadState(out head);
-                GitCommandResult each = rewrite(head);
-                Assert.That(each.Success, Is.True, each.Message);
-            }
-            finally
-            {
-                UnitGitService.ForceCommitTreeRewrite = false;
-            }
-
+            repo.Git.ReadHeadState(out head);
+            GitCommandResult again = rewrite(head);
+            Assert.That(again.Success, Is.True, again.Message);
             string slow = repo.Run("rev-parse", "HEAD").Trim();
-            Assert.That(fast, Is.EqualTo(slow), "fast-import and commit-tree wrote different commits:\n" +
+            Assert.That(fast, Is.EqualTo(slow), "The same rewrite wrote different commits:\n" +
                                                repo.Run("cat-file", "-p", fast) + "\n---\n" + repo.Run("cat-file", "-p", slow));
             repo.Run("update-ref", "refs/heads/main", before, slow);
         }

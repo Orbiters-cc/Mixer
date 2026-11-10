@@ -74,18 +74,10 @@ namespace Orbiters.UnitGit.Editor.Tests
             return repo;
         }
 
-        private static GitCommandResult Rename(UnitGitTestRepo repo, string commit, bool commitTree)
+        private static GitCommandResult Rename(UnitGitTestRepo repo, string commit)
         {
-            UnitGitService.ForceCommitTreeRewrite = commitTree;
-            try
-            {
-                repo.Git.ReadHeadState(out UnitGitHeadState head);
-                return repo.Git.RenameCommit(commit, "renamed", head);
-            }
-            finally
-            {
-                UnitGitService.ForceCommitTreeRewrite = false;
-            }
+            repo.Git.ReadHeadState(out UnitGitHeadState head);
+            return repo.Git.RenameCommit(commit, "renamed", head);
         }
 
         private static readonly byte[] Utf8Message = Encoding.UTF8.GetBytes("\n\nleading blank lines, Zoé\r\nCRLF line\r\nno final line break");
@@ -101,7 +93,7 @@ namespace Orbiters.UnitGit.Editor.Tests
                 string plain = Make(repo, Ascii("Plain <p@example.test>"), null, Encoding.UTF8.GetBytes("\r\n\r\nplain, CRLF"));
                 var before = new[] { named, latin, plain }.Select(hash => Kept(Stored(repo, hash))).ToList();
 
-                GitCommandResult result = Rename(repo, first, false);
+                GitCommandResult result = Rename(repo, first);
                 Assert.That(result.Success, Is.True, result.Message);
                 var after = new[] { "HEAD~2", "HEAD~1", "HEAD" }.Select(revision => Kept(Stored(repo, revision))).ToList();
                 for (int i = 0; i < before.Count; i++)
@@ -111,41 +103,24 @@ namespace Orbiters.UnitGit.Editor.Tests
         }
 
         [Test]
-        public void CommitTreeCopiesWhatItCanAndRefusesTheRest()
+        public void CommitsOnlyACommitTreeRewriteCouldNotCopyAreCopiedAsStored()
         {
-            // Another encoding with an ASCII author: commit-tree writes the header from i18n.commitEncoding, the bytes as they are.
-            using (var repo = History(out string first))
+            // The cases the removed commit-tree path had to refuse: fast-import copies them as stored.
+            var commits = new List<(byte[] author, string encoding, byte[] message)>
             {
-                string latin = Make(repo, Ascii("Rene <r@example.test>"), "ISO-8859-1", Latin1Message);
-                string plain = Make(repo, Ascii("Plain <p@example.test>"), null, Encoding.UTF8.GetBytes("\r\n\r\nplain, CRLF"));
-                var before = new[] { latin, plain }.Select(hash => Kept(Stored(repo, hash))).ToList();
-                GitCommandResult result = Rename(repo, first, true);
-                Assert.That(result.Success, Is.True, result.Message);
-                Assert.That(Kept(Stored(repo, "HEAD~1")), Is.EqualTo(before[0]));
-                Assert.That(Kept(Stored(repo, "HEAD")), Is.EqualTo(before[1]));
-            }
-
-            // What commit-tree cannot write as stored: refused, nothing moves.
-            var cannot = new List<(byte[] author, string encoding, byte[] message)>
-            {
-                (Ascii("Named <n@example.test>"), "UTF-8", Utf8Message),                       // no header for a UTF-8 name
-                (Latin1.GetBytes("René <r@example.test>"), "ISO-8859-1", Latin1Message),  // an author in Latin-1
+                (Ascii("Named <n@example.test>"), "UTF-8", Utf8Message),                       // a header naming UTF-8
+                (Latin1.GetBytes("Ren\u00e9 <r@example.test>"), "ISO-8859-1", Latin1Message), // an author in Latin-1
                 (Ascii("Bare <b@example.test>"), null, Latin1Message),                         // not UTF-8, no encoding named
+                (Ascii("Rene <r@example.test>"), "ISO-8859-1", Latin1Message),
             };
-            foreach (var commit in cannot)
+            foreach (var commit in commits)
             {
                 using (var repo = History(out string first))
                 {
                     string top = Make(repo, commit.author, commit.encoding, commit.message);
-                    GitCommandResult result = Rename(repo, first, true);
-                    Assert.That(result.Success, Is.False, commit.encoding ?? "none");
-                    Assert.That(result.Message, Does.Contain("left the history as it is"));
-                    Assert.That(repo.Run("rev-parse", "HEAD").Trim(), Is.EqualTo(top));
-
-                    // fast-import copies the same commit as stored.
                     byte[] before = Kept(Stored(repo, top));
-                    GitCommandResult streamed = Rename(repo, first, false);
-                    Assert.That(streamed.Success, Is.True, streamed.Message);
+                    GitCommandResult result = Rename(repo, first);
+                    Assert.That(result.Success, Is.True, (commit.encoding ?? "none") + ": " + result.Message);
                     Assert.That(Kept(Stored(repo, "HEAD")), Is.EqualTo(before));
                 }
             }

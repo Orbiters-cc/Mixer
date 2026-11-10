@@ -150,6 +150,8 @@ namespace Orbiters.UnitGit.Editor.Tests
             ("UnitGitService.Rewrite.cs", "rev-parse --verify", "rev-parse --verify refs/heads/main"),
             ("UnitGitService.Rewrite.cs", "rev-list --topo-order --reverse", "rev-list --topo-order --reverse abc"),
             ("UnitGitService.Rewrite.cs", "cat-file commit", "cat-file commit abc"),
+            ("UnitGitService.Rewrite.cs", "rev-parse --verify --quiet", "rev-parse --verify --quiet refs/mixer-git/rewrite/abc"),
+            ("UnitGitService.Rewrite.cs", "for-each-ref --format=%(objectname) %(refname)", "for-each-ref --format=%(objectname) %(refname) refs/mixer-git/rewrite/"),
             ("UnitGitReleases.cs", "", "diff --cached --name-only --no-renames -z"),
             ("ShelfView.cs", "stash show --name-status -z", "stash show --name-status -z stash@{0}"),
             ("ShelfView.cs", "show --name-status -z --format=", "show --name-status -z --format= stash@{0}^3"),

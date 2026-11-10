@@ -77,6 +77,7 @@ namespace Orbiters.UnitGit.Editor
         private GitCommandResult RewriteHeadHistory(IList<string> commitHashes, string message, bool squash, UnitGitHeadState expected,
             UnitGitObjects objects)
         {
+            SweepScratchRefs();
             GitCommandResult branchResult = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "symbolic-ref", "--quiet", "HEAD");
             if (!branchResult.Success)
                 return Failure("Check out a branch before rewriting history.");
@@ -204,12 +205,16 @@ namespace Orbiters.UnitGit.Editor
                                " would drop it. Mixer Git left the history as it is.");
             }
 
-            // All new commits through one git fast-import (a constant number of processes), else one commit-tree each.
+            // Every new commit through one git fast-import (a constant number of processes), which writes each part as it
+            // is given; the check of the written copies below proves it did. Signing: a commit carrying a signature is
+            // refused above (its copy could not keep it), and the commits a rewrite writes are not signed, as the original
+            // Mixer Git never signed them, in a repository configured to sign as well (commit-tree, which it used, signs
+            // only when told to with -S).
             var stream = new CommitStream();
-            GitCommandResult streamable = CanStreamRewrite(stream);
-            if (!streamable.Success)
+            GitCommandResult committer = ReadCommitter(stream);
+            if (!committer.Success)
             {
-                return streamable;
+                return committer;
             }
 
             // What every new commit will be, decided before anything is written. A parent is an object id, or "@n": the
@@ -278,59 +283,45 @@ namespace Orbiters.UnitGit.Editor
                 return Failure("Could not resolve the rewritten HEAD.");
             }
 
-            // commit-tree writes some parts of a commit its own way: each new commit is compared, before anything is
-            // written, with what commit-tree will make of it, and a difference refuses the rewrite.
-            if (!stream.Enabled)
+            string streamRef = stream.Reference;
+            GitCommandResult written;
+            lock (RunningRewrites) RunningRewrites.Add(streamRef);
+            try
             {
-                foreach (PlannedCommit commit in plan)
+                written = WriteThroughFastImport(stream, plan);
+                if (written.Success)
                 {
-                    string differs = CommitTreeWouldChange(commit);
-                    if (differs != null)
-                    {
-                        return Failure("Commit " + ShortHash(commit.Source.Hash) + " cannot be copied as stored by commit-tree, which writes this " +
-                                       "repository's commits (it signs them, or stdin cannot be clean): its " + differs + " would change. " +
-                                       "Mixer Git left the history as it is.");
-                    }
-                }
-            }
-
-            string streamRef = stream.Enabled ? stream.Reference : null;
-            GitCommandResult written = stream.Enabled ? WriteThroughFastImport(stream, plan) : WriteThroughCommitTree(plan);
-            if (written.Success)
-            {
-                written = CheckWrittenCopies(plan, objects);
-            }
-
-            if (!written.Success)
-            {
-                if (streamRef != null)
-                {
-                    RunGit(GitAccess.Exclusive, DefaultTimeoutMilliseconds, "update-ref", "--no-deref", "-d", streamRef);
+                    written = CheckWrittenCopies(plan, objects);
                 }
 
-                return written;
-            }
+                if (!written.Success)
+                {
+                    DeleteScratchRef(streamRef);
+                    return written;
+                }
 
-            string newHead = headRef.StartsWith("@", StringComparison.Ordinal) ? plan[int.Parse(headRef.Substring(1), CultureInfo.InvariantCulture)].NewId : headRef;
+                string newHead = headRef.StartsWith("@", StringComparison.Ordinal) ? plan[int.Parse(headRef.Substring(1), CultureInfo.InvariantCulture)].NewId : headRef;
 
-            // Commit trees are unchanged. Move only the captured branch, and only if nobody advanced it.
-            // Do not reset the index or whichever branch another process has since checked out.
-            GitCommandResult updateResult = RunGit(GitAccess.Exclusive, DefaultTimeoutMilliseconds, "update-ref", "--no-deref",
-                "-m", "Mixer Git: rewrite history", branchRef, newHead, oldHead);
-            // The scratch ref fast-import wrote (this call named it): gone whether the branch moved or not; the new commits
-            // are reachable from the branch, or left to Git's garbage collection.
-            if (streamRef != null)
-            {
-                RunGit(GitAccess.Exclusive, DefaultTimeoutMilliseconds, "update-ref", "--no-deref", "-d", streamRef);
-            }
+                // Commit trees are unchanged. Move only the captured branch, and only if nobody advanced it.
+                // Do not reset the index or whichever branch another process has since checked out.
+                GitCommandResult updateResult = RunGit(GitAccess.Exclusive, DefaultTimeoutMilliseconds, "update-ref", "--no-deref",
+                    "-m", "Mixer Git: rewrite history", branchRef, newHead, oldHead);
+                // The scratch ref fast-import wrote (this call named it): gone whether the branch moved or not; the new
+                // commits are reachable from the branch, or left to Git's garbage collection. One a reload left behind is
+                // swept by the next rewrite or backup (SweepScratchRefs).
+                DeleteScratchRef(streamRef);
+                if (!updateResult.Success)
+                {
+                    return updateResult;
+                }
 
-            if (!updateResult.Success)
-            {
+                updateResult.StandardOutput = "Rewrote " + branchRef + " " + ShortHash(oldHead) + " -> " + ShortHash(newHead) + ".";
                 return updateResult;
             }
-
-            updateResult.StandardOutput = "Rewrote " + branchRef + " " + ShortHash(oldHead) + " -> " + ShortHash(newHead) + ".";
-            return updateResult;
+            finally
+            {
+                lock (RunningRewrites) RunningRewrites.Remove(streamRef);
+            }
         }
 
         /// <summary>
@@ -473,99 +464,7 @@ namespace Orbiters.UnitGit.Editor
             : plan[int.Parse(parent.Substring(1), CultureInfo.InvariantCulture)].NewId;
 
         /// <summary>
-        /// The first part of this commit that commit-tree would write otherwise than planned, or null. commit-tree takes the
-        /// author from environment variables and runs it through Git's own ident rules: what it will write is asked of Git
-        /// itself (git var GIT_AUTHOR_IDENT with the same variables goes through the same formatting), and compared byte for
-        /// byte with the stored author line. It writes the encoding header from i18n.commitEncoding, and none for a name
-        /// meaning UTF-8; and with UTF-8 as the commit encoding it replaces bytes of the message that are not UTF-8.
-        /// </summary>
-        private string CommitTreeWouldChange(PlannedCommit commit)
-        {
-            CommitRewriteInfo source = commit.Source;
-            if (source.RawEncoding != null && (NamesUtf8(source.RawEncoding) || source.RawEncoding.Any(b => b <= 32 || b >= 127)))
-                return "encoding header";
-            if (source.RawEncoding == null)
-            {
-                try { new UTF8Encoding(false, true).GetString(commit.Message); }
-                catch (DecoderFallbackException) { return "message (it is not UTF-8)"; }
-            }
-
-            GitCommandResult ident = RunGitWithEnvironment(GitAccess.Read, AuthorEnvironment(source), DefaultTimeoutMilliseconds, "var", "GIT_AUTHOR_IDENT");
-            if (!ident.Success) return "author line (Git could not form it: " + ident.Message.Trim() + ")";
-            string predicted = ident.StandardOutput.TrimEnd('\n', '\r');
-            return UnitGitRunner.Utf8.GetBytes(predicted).SequenceEqual(source.RawAuthor) ? null : "author line (commit-tree would write \"" + predicted + "\")";
-        }
-
-        private static Dictionary<string, string> AuthorEnvironment(CommitRewriteInfo source) =>
-            new Dictionary<string, string>(StringComparer.Ordinal)
-            {
-                { "GIT_AUTHOR_NAME", source.AuthorName },
-                { "GIT_AUTHOR_EMAIL", source.AuthorEmail },
-                { "GIT_AUTHOR_DATE", source.AuthorDate }
-            };
-
-        // One "git commit-tree" per new commit (each needs its parents' new ids); the message bytes go through stdin.
-        private GitCommandResult WriteThroughCommitTree(IList<PlannedCommit> plan)
-        {
-            foreach (PlannedCommit commit in plan)
-            {
-                var args = new List<string>();
-                // The encoding header (CommitTreeWouldChange let only a plain name other than UTF-8 through) comes from
-                // i18n.commitEncoding, given after the runner's UTF-8 setting so it wins. commit-tree does not transcode.
-                if (commit.Source.RawEncoding != null)
-                {
-                    args.Add("-c");
-                    args.Add("i18n.commitEncoding=" + Encoding.ASCII.GetString(commit.Source.RawEncoding));
-                }
-                args.Add("commit-tree");
-                args.Add(commit.Tree);
-                foreach (string parent in commit.Parents)
-                {
-                    args.Add("-p");
-                    args.Add(Resolve(parent, plan, false));
-                }
-
-                byte[] message = WrittenMessage(commit);
-                GitCommandResult created;
-                if (UnitGitRunner.CleanInput)
-                {
-                    args.Add("-F");
-                    args.Add("-");
-                    created = RunGitWithInput(GitAccess.Exclusive, AuthorEnvironment(commit.Source), LongTimeoutMilliseconds, message, args.ToArray());
-                }
-                else
-                {
-                    string file = Path.Combine(Path.GetTempPath(), "mixer-git-message-" + Guid.NewGuid().ToString("N") + ".txt");
-                    try
-                    {
-                        File.WriteAllBytes(file, message);
-                        args.Add("-F");
-                        args.Add(file);
-                        created = RunGitWithEnvironment(GitAccess.Exclusive, AuthorEnvironment(commit.Source), LongTimeoutMilliseconds, args.ToArray());
-                    }
-                    finally
-                    {
-                        DeleteTempFile(file);
-                    }
-                }
-
-                if (!created.Success)
-                {
-                    return created;
-                }
-
-                commit.NewId = FirstNonEmptyLine(created.StandardOutput);
-                if (string.IsNullOrWhiteSpace(commit.NewId))
-                {
-                    return Failure("Git did not return a rewritten commit hash.");
-                }
-            }
-
-            return new GitCommandResult();
-        }
-
-        /// <summary>
-        /// The invariant a rewrite keeps whatever wrote the commits: before any ref moves, every new commit is read back and
+        /// The invariant a rewrite keeps: before any ref moves, every new commit is read back and
         /// compared byte for byte with the one it replaces. Only its parent lines (the new parents, checked), its committer
         /// line, the edited commit's message (checked against the one planned) and the squash's tree (checked against the
         /// newest selected one) may differ. Any other difference stops the rewrite: no ref moves, the unreferenced objects
@@ -735,7 +634,6 @@ namespace Orbiters.UnitGit.Editor
         /// </summary>
         private sealed class CommitStream
         {
-            internal bool Enabled;
             internal string Committer = string.Empty;
             internal readonly MemoryStream Bytes = new MemoryStream();
             private int marks;
@@ -745,7 +643,7 @@ namespace Orbiters.UnitGit.Editor
             {
                 get
                 {
-                    if (reference.Length == 0) reference = "refs/mixer-git/rewrite/" + Guid.NewGuid().ToString("N");
+                    if (reference.Length == 0) reference = ScratchRefs + Guid.NewGuid().ToString("N");
                     return reference;
                 }
             }
@@ -786,27 +684,13 @@ namespace Orbiters.UnitGit.Editor
         private const string EmptyTreeSha1 = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
         private const string EmptyTreeSha256 = "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321";
 
-        /// <summary>For tests: rewrite with one commit-tree per commit, as a repository that signs its commits does.</summary>
-        internal static bool ForceCommitTreeRewrite;
-
-        /// <summary>
-        /// Whether this rewrite can go through fast-import, which writes every part as given: a repository that signs its
-        /// commits (commit.gpgSign) keeps commit-tree, which signs; so does a system whose stdin cannot be clean. Reads the
-        /// committer once: Git's GIT_COMMITTER_IDENT, what commit-tree would write. Fails only when Git cannot name a
-        /// committer (commit-tree would fail as well).
-        /// </summary>
-        private GitCommandResult CanStreamRewrite(CommitStream stream)
+        // The committer every new commit gets: Git's own GIT_COMMITTER_IDENT (what any Git command would write), read once.
+        // fast-import reads the stream on stdin: without a clean stdin (a byte order mark first) no rewrite is possible.
+        private GitCommandResult ReadCommitter(CommitStream stream)
         {
-            stream.Enabled = false;
-            if (ForceCommitTreeRewrite || !UnitGitRunner.CleanInput)
+            if (!UnitGitRunner.CleanInput)
             {
-                return new GitCommandResult();
-            }
-
-            GitCommandResult signing = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "config", "--bool", "--get", "commit.gpgSign");
-            if (signing.Success && FirstNonEmptyLine(signing.StandardOutput) == "true")
-            {
-                return new GitCommandResult();
+                return Failure("On this system Git's input would start with a byte order mark, so Mixer Git cannot rename or squash commits here.");
             }
 
             GitCommandResult ident = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "var", "GIT_COMMITTER_IDENT");
@@ -816,8 +700,39 @@ namespace Orbiters.UnitGit.Editor
             }
 
             stream.Committer = FirstNonEmptyLine(ident.StandardOutput);
-            stream.Enabled = stream.Committer.Length > 0;
-            return new GitCommandResult();
+            return stream.Committer.Length > 0 ? new GitCommandResult() : Failure("Git could not name the committer.");
+        }
+
+        private const string ScratchRefs = "refs/mixer-git/rewrite/";
+        // The scratch refs of the rewrites running in this editor: never swept.
+        private static readonly HashSet<string> RunningRewrites = new HashSet<string>(StringComparer.Ordinal);
+
+        private void DeleteScratchRef(string reference)
+        {
+            GitCommandResult at = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "rev-parse", "--verify", "--quiet", reference);
+            if (at.Success && FirstNonEmptyLine(at.StandardOutput).Length > 0)
+                RunGit(GitAccess.Exclusive, DefaultTimeoutMilliseconds, "update-ref", "--no-deref", "-d", reference, FirstNonEmptyLine(at.StandardOutput));
+        }
+
+        /// <summary>
+        /// Deletes the scratch refs a rewrite left behind (a reload stopped it before it could), each with the value it was
+        /// read at, so a ref that moved meanwhile stays. A running rewrite's own is never touched. Called at the start of a
+        /// rewrite and before a backup (whose --all would carry them).
+        /// </summary>
+        internal void SweepScratchRefs()
+        {
+            GitCommandResult refs = RunGit(GitAccess.Read, DefaultTimeoutMilliseconds, "for-each-ref", "--format=%(objectname) %(refname)", ScratchRefs);
+            if (!refs.Success) return;
+            foreach (string line in SplitLines(refs.StandardOutput))
+            {
+                int space = line.IndexOf(' ');
+                if (space <= 0) continue;
+                string id = line.Substring(0, space), reference = line.Substring(space + 1).Trim();
+                if (!reference.StartsWith(ScratchRefs, StringComparison.Ordinal)) continue;
+                lock (RunningRewrites)
+                    if (RunningRewrites.Contains(reference)) continue;
+                RunGit(GitAccess.Exclusive, DefaultTimeoutMilliseconds, "update-ref", "--no-deref", "-d", reference, id);
+            }
         }
 
         // Runs the stream into a scratch ref this call named, and reads each new commit's id from fast-import's marks

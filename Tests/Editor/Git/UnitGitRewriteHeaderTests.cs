@@ -84,45 +84,32 @@ namespace Orbiters.UnitGit.Editor.Tests
         [Test]
         public void ReparentedCommitsKeepTheirMessageBytesAndASpacedAuthor()
         {
-            // A name with spaces in front: fast-import copies the author line as stored; commit-tree would apply Git's ident
-            // rules and drop them, so through commit-tree the rewrite is refused (it used to change the author silently).
-            foreach (bool commitTree in new[] { false, true })
+            // A name with spaces in front: fast-import copies the author line as stored (Git's own ident rules would drop
+            // them, which used to happen through commit-tree).
+            using (var repo = History(out string first, out _))
             {
-                using (var repo = History(out string first, out _))
+                const string stored = "  spaced subject  \n\n body with trailing spaces   \n\n\n";
+                Raw(repo, "  Spaced <top@example.test>", string.Empty, stored);
+                var commands = new List<string>();
+                repo.Git.ProcessLogReceived = line => { if (line.StartsWith("> ", StringComparison.Ordinal)) commands.Add(line); };
+                GitCommandResult result;
+                try
                 {
-                    const string stored = "  spaced subject  \n\n body with trailing spaces   \n\n\n";
-                    string top = Raw(repo, "  Spaced <top@example.test>", string.Empty, stored);
-                    var commands = new List<string>();
-                    repo.Git.ProcessLogReceived = line => { if (line.StartsWith("> ", StringComparison.Ordinal)) commands.Add(line); };
-                    UnitGitService.ForceCommitTreeRewrite = commitTree;
-                    GitCommandResult result;
-                    try
-                    {
-                        repo.Git.ReadHeadState(out UnitGitHeadState head);
-                        result = repo.Git.RenameCommit(first, "renamed", head);
-                    }
-                    finally
-                    {
-                        UnitGitService.ForceCommitTreeRewrite = false;
-                        repo.Git.ProcessLogReceived = null;
-                    }
-
-                    if (commitTree)
-                    {
-                        Assert.That(result.Success, Is.False);
-                        Assert.That(result.Message, Does.Contain("author line"));
-                        Assert.That(commands.Count(line => line.Contains(" commit-tree ")), Is.Zero, "Refused before anything is written.");
-                        Assert.That(repo.Run("rev-parse", "HEAD").Trim(), Is.EqualTo(top));
-                        continue;
-                    }
-
-                    Assert.That(result.Success, Is.True, result.Message);
-                    Assert.That(commands.Count(line => line.Contains(" fast-import ")), Is.EqualTo(1));
-                    string raw = repo.Run("cat-file", "commit", "HEAD");
-                    Assert.That(raw.Substring(raw.IndexOf("\n\n", StringComparison.Ordinal) + 2), Is.EqualTo(stored), "The re-parented message, byte for byte.");
-                    Assert.That(raw, Does.Contain("\nauthor   Spaced <top@example.test> 1600000000 +0200\n"), "The author line as stored.");
-                    Assert.That(repo.Run("log", "-1", "--format=%B", "HEAD~2"), Does.StartWith("renamed"));
+                    repo.Git.ReadHeadState(out UnitGitHeadState head);
+                    result = repo.Git.RenameCommit(first, "renamed", head);
                 }
+                finally
+                {
+                    repo.Git.ProcessLogReceived = null;
+                }
+
+                Assert.That(result.Success, Is.True, result.Message);
+                Assert.That(commands.Count(line => line.Contains(" fast-import ")), Is.EqualTo(1));
+                Assert.That(commands.Count(line => line.Contains(" commit-tree ")), Is.Zero, "One mechanism: fast-import.");
+                string raw = repo.Run("cat-file", "commit", "HEAD");
+                Assert.That(raw.Substring(raw.IndexOf("\n\n", StringComparison.Ordinal) + 2), Is.EqualTo(stored), "The re-parented message, byte for byte.");
+                Assert.That(raw, Does.Contain("\nauthor   Spaced <top@example.test> 1600000000 +0200\n"), "The author line as stored.");
+                Assert.That(repo.Run("log", "-1", "--format=%B", "HEAD~2"), Does.StartWith("renamed"));
             }
         }
     }

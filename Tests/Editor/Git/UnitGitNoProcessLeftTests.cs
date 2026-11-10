@@ -22,7 +22,6 @@ namespace Orbiters.UnitGit.Editor.Tests
         [Test]
         public void TheRepositoryCanBeDeletedTheMomentARenameOrASquashReturns()
         {
-            foreach (bool commitTree in new[] { false, true })
             {
                 foreach (bool squash in new[] { false, true })
                 {
@@ -36,21 +35,11 @@ namespace Orbiters.UnitGit.Editor.Tests
                         }
 
                         int before = EditorProcessRunner.ActiveCount;
-                        UnitGitService.ForceCommitTreeRewrite = commitTree;
-                        GitCommandResult result;
-                        try
-                        {
-                            repo.Git.ReadHeadState(out UnitGitHeadState head);
-                            result = squash
-                                ? repo.Git.SquashCommits(new[] { hashes[1], hashes[2] }, "squashed", head)
-                                : repo.Git.RenameCommit(hashes[1], "renamed", head);
-                        }
-                        finally
-                        {
-                            UnitGitService.ForceCommitTreeRewrite = false;
-                        }
-
-                        string what = (squash ? "squash" : "rename") + (commitTree ? " through commit-tree" : " through fast-import");
+                        repo.Git.ReadHeadState(out UnitGitHeadState head);
+                        GitCommandResult result = squash
+                            ? repo.Git.SquashCommits(new[] { hashes[1], hashes[2] }, "squashed", head)
+                            : repo.Git.RenameCommit(hashes[1], "renamed", head);
+                        string what = squash ? "squash" : "rename";
                         Assert.That(result.Success, Is.True, what + ": " + result.Message);
                         Assert.That(EditorProcessRunner.ActiveCount, Is.EqualTo(before), what + ": a Git process outlived it.");
                         Assert.DoesNotThrow(() => DeleteNow(repo.Root), what + ": the repository is still in use.");

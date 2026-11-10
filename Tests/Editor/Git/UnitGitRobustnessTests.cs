@@ -147,6 +147,16 @@ namespace Orbiters.UnitGit.Editor.Tests
 
                         repo.Git.ReadHeadState(out UnitGitHeadState head);
                         GitCommandResult renamed = repo.Git.RenameCommit(first, "first renamed", head);
+                        if (!clean)
+                        {
+                            // A rewrite writes through fast-import, which reads its stream on stdin: without clean stdin it is
+                            // refused, and nothing moves (the commit-tree path that took a message file is gone).
+                            Assert.That(renamed.Success, Is.False);
+                            Assert.That(renamed.Message, Does.Contain("byte order mark"));
+                            Assert.That(repo.Run("log", "--format=%s").Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries),
+                                Is.EqualTo(new[] { "third é", "second", "first" }));
+                            continue;
+                        }
                         Assert.That(renamed.Success, Is.True, renamed.Message);
                         Assert.That(repo.Run("log", "--format=%s").Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries),
                             Is.EqualTo(new[] { "third é", "second", "first renamed" }));
