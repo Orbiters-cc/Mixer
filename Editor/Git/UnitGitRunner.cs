@@ -33,6 +33,8 @@ namespace Orbiters.UnitGit.Editor
         public bool TimedOut, Cancelled, Stopped;
         /// <summary>Writing stdin failed while Git still ran: Git was stopped before it could read an end of input.</summary>
         public bool InputFailed;
+        /// <summary>Git exited, but a program it started kept its output open: what was read may be incomplete.</summary>
+        public bool OutputHeldOpen;
         public string StandardOutput = string.Empty, StandardError = string.Empty;
         public bool Success => ExitCode == 0 && !TimedOut && !Cancelled && !Stopped && !InputFailed;
     }
@@ -170,7 +172,7 @@ namespace Orbiters.UnitGit.Editor
                             break;
                         }
                         // A descendant may still hold a pipe: never wait for its end without limit.
-                        if (elapsed.ElapsedMilliseconds - exitedAt >= DrainTimeoutMilliseconds) { result.TimedOut = true; break; }
+                        if (elapsed.ElapsedMilliseconds - exitedAt >= DrainTimeoutMilliseconds) { result.TimedOut = result.OutputHeldOpen = true; break; }
                     }
 
                     if (read) idle.Reset();

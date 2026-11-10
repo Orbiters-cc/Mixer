@@ -124,8 +124,8 @@ namespace Orbiters.UnitGit.Editor.Tests
             const string separator = "\x1f";
             string output = string.Join("\n", new[]
             {
-                string.Join(separator, "a1b2c3d", "full-1", "Add graph", "Ada", "ada@example.test", "2 days ago", "HEAD -> main"),
-                string.Join(separator, "d4e5f6g", "full-2", "Fix window", "Grace", "grace@example.test", "1 day ago", "tag: v1")
+                string.Join(separator, "a1b2c3d", "full-1", "Add graph", "Ada", "ada@example.test", "HEAD -> main"),
+                string.Join(separator, "d4e5f6g", "full-2", "Fix window", "Grace", "grace@example.test", "tag: v1")
             });
 
             var subjectMatches = UnitGitService.ParseCommits(output, "graph");

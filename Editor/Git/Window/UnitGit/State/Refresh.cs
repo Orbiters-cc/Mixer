@@ -18,7 +18,7 @@ namespace Orbiters.UnitGit.Editor
         {
             if (focused)
             {
-                QueueRefreshFromEditorEvent();
+                QueueRefreshFromEditorEvent(true);
             }
         }
 
@@ -27,8 +27,37 @@ namespace Orbiters.UnitGit.Editor
             QueueRefreshFromEditorEvent();
         }
 
-        private void QueueRefreshFromEditorEvent()
+        private void OnProjectChanged()
         {
+            QueueRefreshFromEditorEvent();
+        }
+
+        private void OnBecameVisible()
+        {
+            visible = true;
+            if (!staleWhileHidden) return;
+            staleWhileHidden = false;
+            QueueRefreshFromEditorEvent();
+        }
+
+        private void OnBecameInvisible()
+        {
+            visible = false;
+        }
+
+        // Editor events come in bursts (a save, an import, the focus): one read after the last of them. A focus gain alone
+        // reads nothing when Git's files did not move and the editor reported no change (see RunQueuedRefresh).
+        private void QueueRefreshFromEditorEvent(bool focusGain = false)
+        {
+            if (!focusGain) workTreeDirty = true;
+            if (!visible)
+            {
+                staleWhileHidden = true;
+                return;
+            }
+
+            if (!refreshQueued) queuedForFocusOnly = true;
+            queuedForFocusOnly &= focusGain;
             double now = EditorApplication.timeSinceStartup;
             double nextAllowedRefresh = lastEditorEventRefreshTime + EditorEventRefreshCooldownSeconds;
             queuedRefreshTime = Math.Max(now + EditorEventRefreshDelaySeconds, nextAllowedRefresh);
@@ -57,6 +86,17 @@ namespace Orbiters.UnitGit.Editor
 
             EditorApplication.update -= RunQueuedRefresh;
             refreshQueued = false;
+            if (!visible)
+            {
+                staleWhileHidden = true;
+                return;
+            }
+
+            if (queuedForFocusOnly && NothingChangedSinceLastRead())
+            {
+                return;
+            }
+
             if (busy)
             {
                 refreshAgainRequested = true;
@@ -65,6 +105,16 @@ namespace Orbiters.UnitGit.Editor
 
             lastEditorEventRefreshTime = EditorApplication.timeSinceStartup;
             RefreshSnapshot();
+        }
+
+        // Git's own files as they were when the last read began, no change reported by the editor since, and a recent read.
+        private bool NothingChangedSinceLastRead()
+        {
+            if (workTreeDirty || snapshot == null || !snapshot.HasRepository || !string.IsNullOrEmpty(snapshot.LastError) ||
+                string.IsNullOrEmpty(snapshot.GitDirStamp) || gitService == null)
+                return false;
+            if (EditorApplication.timeSinceStartup - lastRefreshStartTime > FocusRefreshMaxAgeSeconds) return false;
+            return UnitGitRepositoryStamp.TryRead(gitService.ProjectRoot, out string stamp) && stamp == snapshot.GitDirStamp;
         }
 
         private void QueueLogSearchRefresh()
@@ -106,6 +156,9 @@ namespace Orbiters.UnitGit.Editor
 
         private void RefreshSnapshot()
         {
+            // "Load more" asks for older commits only; a refresh that cannot start now runs later as a whole one.
+            bool historyOnly = historyOnlyRequested;
+            historyOnlyRequested = false;
             if (gitService == null)
             {
                 return;
@@ -142,6 +195,12 @@ namespace Orbiters.UnitGit.Editor
             string projectRoot = gitService.ProjectRoot;
             string search = logSearch;
             int requestedHistoryLimit = historyLimit;
+            historyOnly &= snapshot != null;
+            bool readHeadMessage = commitAmend;
+            if (!historyOnly) workTreeDirty = false; // a change reported from now on is newer than this read
+            lastRefreshStartTime = EditorApplication.timeSinceStartup;
+            if (history == null) history = new UnitGitHistory();
+            UnitGitHistory reader = history;
             // Read before the worker starts (EditorPrefs is main-thread only); what was read before a visit began is older than it.
             string visitBranch = UnitGitSettings.Visit?.branch;
             long readStarted = DateTime.UtcNow.Ticks;
@@ -150,18 +209,21 @@ namespace Orbiters.UnitGit.Editor
             try
             {
                 EnsureEditorUpdatePump();
+                var request = new UnitGitSnapshotRequest
+                {
+                    LogSearch = search, HistoryLimit = requestedHistoryLimit, Filter = filter, VisitBranch = visitBranch,
+                    Previous = previousSnapshot, History = reader, ReadHeadMessage = readHeadMessage, HistoryOnly = historyOnly
+                };
                 Task.Run(() => BuildSnapshotRefreshResult(
                         projectRoot,
-                        search,
-                        filter,
-                        previousSnapshot,
+                        request,
                         line =>
                         {
                             if (ShouldLogRefreshProcessLine(line))
                             {
                                 QueueConsoleLine("refresh", line);
                             }
-                        }, requestedHistoryLimit, () => requestId != refreshRequestId || logSearchDraft != search, visitBranch))
+                        }, () => requestId != refreshRequestId || logSearchDraft != search))
                     .ContinueWith(task => QueueMainThreadAction(() => ApplySnapshotRefresh(requestId, task, readStarted)));
             }
             catch (Exception ex)
@@ -174,16 +236,15 @@ namespace Orbiters.UnitGit.Editor
 
         private static SnapshotRefreshResult BuildSnapshotRefreshResult(
             string projectRoot,
-            string search,
-            UnitGitLogFilter filter,
-            UnitGitSnapshot previousSnapshot,
-            UnitGitProcessLogHandler logHandler, int historyLimit = 300, Func<bool> superseded = null, string visitBranch = null)
+            UnitGitSnapshotRequest request,
+            UnitGitProcessLogHandler logHandler, Func<bool> superseded = null)
         {
+            UnitGitSnapshot previousSnapshot = request.Previous;
             var service = new UnitGitService(projectRoot);
             service.ProcessLogReceived = logHandler;
             bool wasSuperseded = false;
             service.ReadSuperseded = () => wasSuperseded = wasSuperseded || (superseded?.Invoke() ?? false);
-            UnitGitSnapshot nextSnapshot = service.BuildSnapshot(search, historyLimit, filter, visitBranch);
+            UnitGitSnapshot nextSnapshot = service.BuildSnapshot(request);
             var result = new SnapshotRefreshResult
             {
                 Snapshot = nextSnapshot,

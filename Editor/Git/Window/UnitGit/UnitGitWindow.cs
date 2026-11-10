@@ -25,6 +25,9 @@ namespace Orbiters.UnitGit.Editor
         private const string BranchRemoteFoldPref = FoldPrefPrefix + "Branch.Remote";
         private const double EditorEventRefreshDelaySeconds = 0.35d;
         private const double EditorEventRefreshCooldownSeconds = 1.25d;
+        // Coming back to Unity reads Git again when Git's files moved, the editor saw a change, or this long went by (a file
+        // changed by another program while Unity's auto refresh is off).
+        private const double FocusRefreshMaxAgeSeconds = 120d;
         private const double LogSearchRefreshDelaySeconds = 0.25d;
         private const int CommitPageSize = 100;
 
@@ -83,6 +86,16 @@ namespace Orbiters.UnitGit.Editor
         private double queuedLogSearchRefreshTime;
         private double lastEditorEventRefreshTime = -1000d;
         private int refreshRequestId;
+        // The history as it streams: "load more" and searches read on from where it stopped.
+        private UnitGitHistory history;
+        // Hidden (another tab of the dock in front): editor events only mark the view stale; it reads Git when shown again.
+        private bool visible = true;
+        private bool staleWhileHidden;
+        // The editor reported a change (assets, a saved scene) since the last read began.
+        private bool workTreeDirty = true;
+        // Every queued trigger so far was a focus gain: the cheap test may skip the read.
+        private bool queuedForFocusOnly = true;
+        private double lastRefreshStartTime = -1000d;
 
         [MenuItem("Tools/Orbiters/Mixer Git", priority = 2003)]
         internal static void OpenWindow()
@@ -105,7 +118,7 @@ namespace Orbiters.UnitGit.Editor
             ResetTransientAsyncState();
             gitService = new UnitGitService();
             initializer = new UnitGitProjectInitializer();
-            EditorApplication.projectChanged += QueueRefreshFromEditorEvent;
+            EditorApplication.projectChanged += OnProjectChanged;
             EditorApplication.focusChanged += OnEditorFocusChanged;
             EditorSceneManager.sceneSaved += OnSceneSaved;
             UnitGitReleases.ChangedExternally += OnReleasesChangedExternally;
@@ -118,10 +131,12 @@ namespace Orbiters.UnitGit.Editor
             diffRead.Dispose();
             detailsRead.Dispose();
             promptRead.Dispose();
+            history?.Dispose();
+            history = null;
             if (diffFont != null)
                 DestroyImmediate(diffFont);
             ReleaseThumbnailCacheClear();
-            EditorApplication.projectChanged -= QueueRefreshFromEditorEvent;
+            EditorApplication.projectChanged -= OnProjectChanged;
             EditorApplication.focusChanged -= OnEditorFocusChanged;
             EditorSceneManager.sceneSaved -= OnSceneSaved;
             UnitGitReleases.ChangedExternally -= OnReleasesChangedExternally;

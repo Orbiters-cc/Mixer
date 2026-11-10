@@ -46,7 +46,8 @@ namespace Orbiters.UnitGit.Editor.Tests
                 Assert.That(StatusOf(repo).ContainsKey("Assets/-/-x.txt"), Is.False);
 
                 AssertOk(repo.Git.StopTracking(new[] { "Assets/it's #1.txt" }));
-                Assert.That(StatusOf(repo)["Assets/it's #1.txt"], Is.EqualTo("D "));
+                // Staged as removed, and untracked again on disk.
+                Assert.That(repo.Run("diff", "--cached", "--name-status", "--", "Assets/it's #1.txt").Trim(), Is.EqualTo("D	Assets/it's #1.txt"));
                 Assert.That(File.Exists(repo.Full("Assets/it's #1.txt")), Is.True, "Stop tracking keeps the file on disk.");
             }
         }

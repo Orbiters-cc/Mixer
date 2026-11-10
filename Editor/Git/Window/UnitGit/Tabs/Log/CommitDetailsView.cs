@@ -401,7 +401,6 @@ namespace Orbiters.UnitGit.Editor
                     {
                         details.Commit.Parents = commit.Parents;
                         details.Commit.Timestamp = commit.Timestamp;
-                        details.Commit.RelativeDate = commit.RelativeDate;
                     }
                     result.Details.Add(details);
                     foreach (string file in details.ChangedFiles)

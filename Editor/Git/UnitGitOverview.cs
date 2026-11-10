@@ -149,12 +149,24 @@ namespace Orbiters.UnitGit.Editor
             if (!summary.GitAvailable) { summary.Error = "Git is not installed."; return summary; }
             if (!summary.HasRepository) return summary;
 
-            summary.HasCommits = service.HasCommits();
-            var branch = service.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "rev-parse", "--abbrev-ref", "HEAD");
-            if (branch.Success) summary.Branch = branch.StandardOutput.Trim();
-            var status = service.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "status", "--porcelain=v1");
-            if (status.Success) summary.Changes = status.StandardOutput.Split('\n').Count(line => !string.IsNullOrWhiteSpace(line));
-            else summary.Error = status.Message;
+            // One status answers the branch, whether there are commits, the changes (a folder of new files counted once) and
+            // how far the branch is ahead of and behind its upstream, as the window reads them.
+            var status = service.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "status", "--porcelain=v2", "--branch", "-z");
+            if (status.Success)
+            {
+                UnitGitSnapshot state = UnitGitService.ParseStatusV2Output(status.StandardOutput);
+                summary.HasCommits = state.HasCommits;
+                // As "rev-parse --abbrev-ref HEAD" named it: "HEAD" when detached, nothing before the first commit.
+                summary.Branch = !state.HasCommits ? string.Empty : state.IsDetached ? "HEAD" : state.CurrentBranch;
+                summary.Changes = state.Changes.Count;
+                summary.Ahead = state.Ahead;
+                summary.Behind = state.Behind;
+            }
+            else
+            {
+                summary.HasCommits = service.HasCommits();
+                summary.Error = status.Message;
+            }
             var remotes = service.GetRemoteNames();
             string remote = remotes.FirstOrDefault(r => string.Equals(r, "origin", StringComparison.OrdinalIgnoreCase)) ?? remotes.FirstOrDefault();
             if (remote != null)
@@ -162,9 +174,6 @@ namespace Orbiters.UnitGit.Editor
                 var url = service.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "remote", "get-url", remote);
                 if (url.Success) summary.RemoteUrl = url.StandardOutput.Trim();
             }
-            var counts = service.RunGit(UnitGitService.DefaultTimeoutMilliseconds, "rev-list", "--left-right", "--count", "HEAD...@{upstream}");
-            var parts = counts.Success ? counts.StandardOutput.Split(new[] { '\t', ' ' }, StringSplitOptions.RemoveEmptyEntries) : Array.Empty<string>();
-            if (parts.Length == 2 && int.TryParse(parts[0], out int ahead) && int.TryParse(parts[1], out int behind)) { summary.Ahead = ahead; summary.Behind = behind; }
 
             if (summary.HasCommits)
             {
