@@ -247,6 +247,36 @@ namespace Orbiters.Mixer.Editor
             bvh?.RefitVertices(moved, Document.Neighbors);
         }
 
+        // Vertices undo or redo moved, for the world picture to follow once (CatchUpWorld), each once.
+        private readonly List<int> worldMoved = new List<int>();
+        private int[] worldMovedMark;
+        private int worldMovedSerial = 1;
+
+        /// <summary>The document moved these vertices: the next <see cref="CatchUpWorld"/> brings them into the world picture.</summary>
+        public void NoteWorldMoved(IReadOnlyList<int> vertices)
+        {
+            if (worldMovedMark == null) worldMovedMark = new int[Document.VertexCount];
+            for (int i = 0; i < vertices.Count; i++)
+            {
+                int v = vertices[i];
+                if ((uint)v >= (uint)worldMovedMark.Length || worldMovedMark[v] == worldMovedSerial) continue;
+                worldMovedMark[v] = worldMovedSerial;
+                worldMoved.Add(v);
+            }
+        }
+
+        /// <summary>
+        /// The world picture after history steps: the vertices they moved, or all of it when the skin went stale (bind
+        /// poses, a pose) since.
+        /// </summary>
+        public void CatchUpWorld()
+        {
+            if (worldStale) AfterEdit(Array.Empty<int>(), fullRefresh: true);
+            else if (worldMoved.Count > 0) AfterEdit(worldMoved);
+            worldMoved.Clear();
+            if (++worldMovedSerial == int.MaxValue) { if (worldMovedMark != null) Array.Clear(worldMovedMark, 0, worldMovedMark.Length); worldMovedSerial = 1; }
+        }
+
         // ---- Strokes: moves go straight into the shown arrays, normals and the upload follow once a frame ----------
 
         private readonly List<int> pendingNormals = new List<int>();

@@ -732,8 +732,9 @@ namespace Orbiters.Mixer.Editor
             }
             if (mode == MixerMode.Weights && HoverWeight >= 0f)
             {
-                var style = new GUIStyle(EditorStyles.miniBoldLabel) { normal = { textColor = Color.white } };
-                Handles.Label(center + view.camera.transform.right * radius * 1.1f, HoverWeight.ToString("0.00"), style);
+                if (weightLabelStyle == null) weightLabelStyle = new GUIStyle(EditorStyles.miniBoldLabel) { normal = { textColor = Color.white } };
+                if (HoverWeight != weightLabelValue || weightLabel == null) { weightLabelValue = HoverWeight; weightLabel = HoverWeight.ToString("0.00"); }
+                Handles.Label(center + view.camera.transform.right * radius * 1.1f, weightLabel, weightLabelStyle);
             }
             if (mode == MixerMode.Sculpt) DrawMask(view, center, radius);
             Handles.zTest = UnityEngine.Rendering.CompareFunction.LessEqual;
@@ -749,7 +750,17 @@ namespace Orbiters.Mixer.Editor
             return Color.Lerp(Color.yellow, Color.red, (weight - 0.75f) / 0.25f);
         }
 
-        // Masked vertices around the brush as dark dots (the mask brush shows them everywhere within three radii).
+        // The weight under the brush as drawn, made again only when it changes (a repaint follows every pointer move).
+        private static GUIStyle weightLabelStyle;
+        private static string weightLabel;
+        private static float weightLabelValue = -1f;
+        // What the mask dots work in: the triangles near the brush and a mark per welded vertex.
+        private static readonly List<int> maskTriangles = new List<int>();
+        private static int[] maskMark;
+        private static int maskMarkValue;
+
+        // Masked vertices around the brush as dark dots (the mask brush shows them everywhere within three radii). Only
+        // the triangles near the brush are visited (through the BVH), not every welded vertex of the mesh at each repaint.
         private static void DrawMask(SceneView view, Vector3 center, float radius)
         {
             var target = hoverTarget;
@@ -757,21 +768,31 @@ namespace Orbiters.Mixer.Editor
             var mask = target.Document.Mask;
             var world = target.World;
             var n = target.Document.Neighbors;
+            var triangles = target.Document.Triangles;
             float reach = radius * (brush is MaskBrush ? 3f : 1.5f);
             float reach2 = reach * reach;
             Handles.zTest = UnityEngine.Rendering.CompareFunction.LessEqual;
             int drawn = 0;
             float size = HandleUtility.GetHandleSize(center) * 0.012f;
-            for (int w = 0; w < n.WeldedCount && drawn < 4000; w++)
+            if (maskMark == null || maskMark.Length != n.WeldedCount) { maskMark = new int[n.WeldedCount]; maskMarkValue = 0; }
+            if (++maskMarkValue == int.MaxValue) { Array.Clear(maskMark, 0, maskMark.Length); maskMarkValue = 1; }
+            target.Bvh.TrianglesNear(center, reach, maskTriangles);
+            foreach (int t in maskTriangles)
             {
-                int v = n.Representative[w];
-                float m = mask[v];
-                if (m <= 0.02f) continue;
-                var p = world[v];
-                if ((p - center).sqrMagnitude > reach2) continue;
-                Handles.color = new Color(0.08f, 0.09f, 0.11f, 0.35f + 0.6f * m);
-                Handles.DotHandleCap(0, p, Quaternion.identity, size, EventType.Repaint);
-                drawn++;
+                for (int k = t * 3, end = k + 3; k < end && drawn < 4000; k++)
+                {
+                    int w = n.Weld[triangles[k]];
+                    if (maskMark[w] == maskMarkValue) continue;
+                    maskMark[w] = maskMarkValue;
+                    int v = n.Representative[w];
+                    float m = mask[v];
+                    if (m <= 0.02f) continue;
+                    var p = world[v];
+                    if ((p - center).sqrMagnitude > reach2) continue;
+                    Handles.color = new Color(0.08f, 0.09f, 0.11f, 0.35f + 0.6f * m);
+                    Handles.DotHandleCap(0, p, Quaternion.identity, size, EventType.Repaint);
+                    drawn++;
+                }
             }
         }
     }

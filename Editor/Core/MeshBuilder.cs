@@ -16,7 +16,8 @@ namespace Orbiters.Mixer.Editor
     /// </summary>
     internal static class MeshBuilder
     {
-        private const string WorkingSuffix = " (Mixer working)";
+        /// <summary>What a working mesh's name ends with.</summary>
+        internal const string WorkingSuffix = " (Mixer working)";
 
         public static Mesh Build(EditTarget target)
         {

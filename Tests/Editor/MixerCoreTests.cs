@@ -238,6 +238,26 @@ namespace Orbiters.Mixer.Editor.Tests
             Assert.That(MaxDistance(before, target.Working.normals), Is.LessThan(1e-4f), "and the working mesh shows them");
         }
 
+        // Undo and redo bring only the vertices they moved into the world picture: it ends where a full rebuild puts it.
+        [Test]
+        public void UndoKeepsTheWorldPictureRightWithoutARebuild()
+        {
+            var target = MixerSession.Edit(renderer);
+            var worldBefore = (Vector3[])target.World.Clone();
+            MixerSceneTool.StrokeBetween(target, Brushes.Named("Grab"), new Vector3(0.3f, 1.5f, 0f), new Vector3(0.6f, 1.5f, 0f), 6, 0.25f, 1f, Vector3.forward);
+            var worldAfter = (Vector3[])target.World.Clone();
+            Assert.That(MaxDistance(worldBefore, worldAfter), Is.GreaterThan(0.1f));
+            Undo.PerformUndo();
+            Assert.That(MaxDistance(target.World, worldBefore), Is.LessThan(1e-5f), "undone in the world picture too");
+            Undo.PerformRedo();
+            Assert.That(MaxDistance(target.World, worldAfter), Is.LessThan(1e-5f), "redone");
+            var full = new Vector3[target.World.Length];
+            target.Skin.WorldOf(target.Display, null, full);
+            Assert.That(MaxDistance(target.World, full), Is.LessThan(1e-5f), "what a full rebuild gives (no shape shows)");
+            var hit = target.Bvh.Raycast(new Vector3(2f, 1.5f, 0f), Vector3.left, 5f);
+            Assert.That(hit.Found, Is.True, "the BVH follows the picture");
+        }
+
         // Listeners learn what changed: a session starting, a stroke's geometry, a layer, a group, the coarse event each time.
         [Test]
         public void SessionEventsSayWhatChanged()

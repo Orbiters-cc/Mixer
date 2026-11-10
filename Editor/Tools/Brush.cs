@@ -37,8 +37,6 @@ namespace Orbiters.Mixer.Editor
         public virtual string Description => "";
         /// <summary>True for brushes that keep the vertices they grabbed at the first step instead of what is under the cursor.</summary>
         public virtual bool Grabs => false;
-        /// <summary>True for brushes that apply once per mouse move without spacing.</summary>
-        public virtual bool Continuous => true;
         /// <summary>True for the brush that paints the mask instead of moving vertices.</summary>
         public virtual bool PaintsMask => false;
 

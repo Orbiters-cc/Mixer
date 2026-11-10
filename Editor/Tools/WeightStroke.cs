@@ -107,15 +107,30 @@ namespace Orbiters.Mixer.Editor
         {
             var animator = skinned.GetComponentInParent<Animator>(true);
             if (animator == null || animator.avatar == null || !animator.isHuman) return null;
+            foreach (var (human, pair) in HumanPairs)
+            {
+                if (animator.GetBoneTransform(human) != bone) continue;
+                return pair >= 0 ? animator.GetBoneTransform((HumanBodyBones)pair) : null;
+            }
+            return null;
+        }
+
+        // Every human bone with the one on the other side (-1 for a bone on the middle line), worked out once: the window
+        // asks for the mirror of the painted bone at each refresh.
+        private static readonly (HumanBodyBones human, int pair)[] HumanPairs = MakeHumanPairs();
+
+        private static (HumanBodyBones, int)[] MakeHumanPairs()
+        {
+            var pairs = new List<(HumanBodyBones, int)>();
             foreach (HumanBodyBones human in Enum.GetValues(typeof(HumanBodyBones)))
             {
-                if (human == HumanBodyBones.LastBone || animator.GetBoneTransform(human) != bone) continue;
+                if (human == HumanBodyBones.LastBone) continue;
                 string name = human.ToString();
                 string other = name.StartsWith("Left", StringComparison.Ordinal) ? "Right" + name.Substring(4)
                     : name.StartsWith("Right", StringComparison.Ordinal) ? "Left" + name.Substring(5) : null;
-                return other != null && Enum.TryParse(other, out HumanBodyBones pair) ? animator.GetBoneTransform(pair) : null;
+                pairs.Add((human, other != null && Enum.TryParse(other, out HumanBodyBones pair) ? (int)pair : -1));
             }
-            return null;
+            return pairs.ToArray();
         }
 
         /// <summary>Whether a bone sits on the mesh's middle line (X = 0 in mesh space at bind time), where both sides share it.</summary>

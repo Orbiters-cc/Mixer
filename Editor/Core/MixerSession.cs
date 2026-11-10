@@ -154,7 +154,7 @@ namespace Orbiters.Mixer.Editor
         private static Mesh NewWorking(Mesh from)
         {
             var working = Object.Instantiate(from);
-            working.name = from.name.Replace(" (Mixer working)", "") + " (Mixer working)";
+            working.name = from.name.Replace(MeshBuilder.WorkingSuffix, "") + MeshBuilder.WorkingSuffix;
             working.hideFlags = HideFlags.HideAndDontSave;
             return working;
         }
@@ -343,7 +343,7 @@ namespace Orbiters.Mixer.Editor
         private static Mesh CommitOne(EditTarget target, string owner)
         {
             var doc = target.Document;
-            string name = target.Original.name.Replace(" (Mixer working)", "");
+            string name = target.Original.name.Replace(MeshBuilder.WorkingSuffix, "");
             owner = owner ?? OwnerName(target.Renderer);
             if (!SameMeshAsStart(target))
                 Say(target.Name + "'s mesh changed on disk while it was edited (reimported?): the commit keeps the mesh as you edited it.", false);
@@ -653,7 +653,7 @@ namespace Orbiters.Mixer.Editor
                 var flipped = new Vector3(-sd.x, sd.y, sd.z);
                 foreach (int v in n.Members[w])
                 {
-                    if (layer.Deltas[v] == flipped) continue;
+                    if (!MeshDocument.Differs(layer.Deltas[v], flipped)) continue;
                     indices.Add(v);
                     before.Add(doc.Positions[v] + layer.Deltas[v]);
                     after.Add(doc.Positions[v] + flipped);

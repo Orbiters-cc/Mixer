@@ -23,13 +23,15 @@ namespace Orbiters.Mixer.Editor
         /// <summary>
         /// Brings a target's world picture, uploads and overlay up to date after entries changed its document. Entries
         /// undone or redone by <see cref="MixerHistory"/> leave this to it (once per target, however many steps a jump
-        /// took); an entry undone directly (a cancelled stroke) refreshes at once.
+        /// took); an entry undone directly (a cancelled stroke) refreshes at once. The world picture follows the vertices
+        /// the entries moved (<see cref="EditTarget.NoteWorldMoved"/>), all of it only when the pose, the bind poses or
+        /// the weights changed: undoing a stroke costs what the stroke touched.
         /// </summary>
         public static void Refresh(EditTarget target)
         {
             target.FlushBindposes();
             target.FlushWeights(force: true);
-            target.AfterEdit(Array.Empty<int>(), fullRefresh: true);
+            target.CatchUpWorld();
             target.GroupsChanged();
         }
 
@@ -78,7 +80,7 @@ namespace Orbiters.Mixer.Editor
             doc.MarkEdited(Indices);
             // The step was made on another layer: show that one, with the renderer's weights to match.
             if (switched) Target.AfterLayerChange();
-            else RefreshUnlessBatched();
+            else { Target.NoteWorldMoved(Indices); RefreshUnlessBatched(); }
         }
     }
 

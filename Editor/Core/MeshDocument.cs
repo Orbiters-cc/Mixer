@@ -614,7 +614,7 @@ namespace Orbiters.Mixer.Editor
             var was = before[w];
             foreach (int m in weld.Members[w])
             {
-                if (now == was) { Normals[m] = OriginalNormals[m]; continue; }
+                if (!Differs(now, was)) { Normals[m] = OriginalNormals[m]; continue; }
                 var n = OriginalNormals[m] + (now - was);
                 float length = (float)Math.Sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
                 Normals[m] = length > 1e-6f ? n / length : now;
