@@ -180,8 +180,6 @@ namespace Orbiters.Logger.Editor
             public string[] Sources;
             public int[] SourceOf;
             public string EditorLog;
-            /// <summary>The latest run's output of each command's message (what its "stack trace" shows in messages.txt).</summary>
-            public Dictionary<int, string> Outputs = new Dictionary<int, string>();
         }
 
         internal static Snapshot Take(LogStore store)
@@ -197,13 +195,7 @@ namespace Orbiters.Logger.Editor
             snapshot.SourceOf = new int[snapshot.View.MessageCount];
             for (int i = 0; i < snapshot.View.MessageCount; i++)
             {
-                ref var message = ref snapshot.View.Messages[i];
-                snapshot.SourceOf[i] = message.Source;
-                string output = (message.Flags & MessageFlags.Output) != 0 && message.Count > 0 ? store.OutputOf(message.Last) : null;
-                if (output != null)
-                {
-                    snapshot.Outputs[i] = output;
-                }
+                snapshot.SourceOf[i] = snapshot.View.Messages[i].Source;
             }
 
             return snapshot;
@@ -285,7 +277,7 @@ namespace Orbiters.Logger.Editor
                     writer.Line("first " + Stamp(first[id]) + " · last " + Stamp(last[id]));
                     writer.Line();
                     writer.Line(view.Texts.Plain(message.Text));
-                    string stack = snapshot.Outputs.TryGetValue(id, out string output) ? output : view.Texts.Plain(message.Stack);
+                    string stack = view.Texts.Plain(message.Stack);
                     if (!string.IsNullOrWhiteSpace(stack))
                     {
                         writer.Line();

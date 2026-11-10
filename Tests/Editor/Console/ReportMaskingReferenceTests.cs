@@ -74,6 +74,129 @@ namespace Orbiters.Logger.Editor.Tests
             }
         }
 
+        // Mixer Git's commands travel as on master: each run's output is its log's stack trace ("Output:\n…"), kept as long
+        // as its log, and masked in occurrence order with the rest. A prints a key header, B the key's body, A runs again
+        // with a harmless output: B's body stays masked.
+        [Test]
+        public void GitCommandOutputsAreMaskedAsOnMaster()
+        {
+            const string bodyLine = "MIIEowIBAAKCAQEAsecretbodyfromB";
+            var outputs = new List<(string condition, string output)>
+            {
+                ("[Mixer Git] git show a  →  ok", "12 ms in C:/P\n-----BEGIN RSA PRIVATE KEY-----\n"),
+                ("[Mixer Git] git show b  →  ok", "9 ms in C:/P\n" + bodyLine + "\n"),
+                ("[Mixer Git] git show a  →  ok", "11 ms in C:/P\nnothing to see\n"),
+            };
+            string messages = CompareWithOutputs(0, outputs, new Random(3));
+            StringAssert.DoesNotContain(bodyLine, messages, "the key's body stays masked");
+
+            for (int seed = 1; seed <= 30; seed++)
+            {
+                var random = new Random(seed);
+                var runs = new List<(string, string)>();
+                for (int i = 0; i < 120; i++)
+                {
+                    var secret = Secrets[random.Next(Secrets.Length)];
+                    string output = random.Next(3) == 0
+                        ? secret[random.Next(secret.Length)]
+                        : Ordinary[random.Next(Ordinary.Length)];
+                    string command = "[Mixer Git] git " + (random.Next(4) == 0 ? "status" : "show " + random.Next(3)) + "  →  " + (random.Next(5) == 0 ? "exit 1" : "ok");
+                    runs.Add(random.Next(4) == 0 ? (Ordinary[random.Next(Ordinary.Length)], null) : (command, random.Next(1, 90) + " ms in C:/P\n" + output + "\n"));
+                }
+
+                CompareWithOutputs(seed, runs, random);
+            }
+        }
+
+        // logs.txt and messages.txt for a sequence of plain logs (output null) and Git commands, against master's writers
+        // and master's masker; returns messages.txt.
+        private static string CompareWithOutputs(int seed, List<(string condition, string output)> runs, Random random)
+        {
+            var store = new LogStore();
+            long time = new DateTime(2026, 11, 10, 12, 0, 0, DateTimeKind.Utc).Ticks;
+            foreach (var (condition, output) in runs)
+            {
+                time += random.Next(1, 5000) * TimeSpan.TicksPerMillisecond;
+                store.Add(time, condition, output == null ? string.Empty : StackTraces.OutputPrefix + output, LogVariant.Log);
+            }
+
+            var snapshot = LogReport.Take(store);
+            snapshot.EditorLog = null;
+            string staging = Path.Combine(Path.GetTempPath(), "LoggerReportReference-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                LogReport.Write(new ReportContext(staging, new ReportPrivacy(Home, Secret), null, new[] { ReportPart.Logs }), snapshot, null);
+                Assert.AreEqual(Reference(store, snapshot), File.ReadAllText(Path.Combine(staging, "logs", "logs.txt")), "logs.txt, seed " + seed);
+                string messages = File.ReadAllText(Path.Combine(staging, "logs", "messages.txt"));
+                Assert.AreEqual(ReferenceMessages(snapshot), messages, "messages.txt, seed " + seed);
+                return messages;
+            }
+            finally
+            {
+                if (Directory.Exists(staging))
+                {
+                    Directory.Delete(staging, true);
+                }
+            }
+        }
+
+        // master's LogReport.WriteMessages, every line through master's masker in order.
+        private static string ReferenceMessages(LogReport.Snapshot snapshot)
+        {
+            var view = snapshot.View;
+            var masker = new ReferencePrivacy(Home, Secret).Lines();
+            var text = new StringBuilder();
+            void Line(string line) => text.Append(masker.Mask(line)).Append('\n');
+            var counts = new int[view.MessageCount];
+            var first = new long[view.MessageCount];
+            var last = new long[view.MessageCount];
+            for (int i = view.First; i < view.End; i++)
+            {
+                int id = view.OwnerAt(i);
+                if (counts[id]++ == 0)
+                {
+                    first[id] = view.TimeAt(i);
+                }
+
+                last[id] = view.TimeAt(i);
+            }
+
+            var order = new List<int>();
+            for (int i = 0; i < view.MessageCount; i++)
+            {
+                if (counts[i] > 0)
+                {
+                    order.Add(i);
+                }
+            }
+
+            order = System.Linq.Enumerable.ToList(System.Linq.Enumerable.ThenByDescending(
+                System.Linq.Enumerable.OrderByDescending(order, i => (int)view.Messages[i].Level), i => counts[i]));
+            Line("# " + LoggerUi.Plural(order.Count, "distinct message") + ", errors first, then by how often they happened.");
+            foreach (int id in order)
+            {
+                var message = view.Messages[id];
+                int source = snapshot.SourceOf[id];
+                Line(string.Empty);
+                Line(new string('─', 100));
+                Line(LogReport.LevelTag(message.Variant).Trim() + " · " + LogVariants.Label(message.Variant) + " · ×" +
+                     counts[id].ToString("N0", System.Globalization.CultureInfo.InvariantCulture) + " · " +
+                     (source >= 0 && source < snapshot.Sources.Length ? snapshot.Sources[source] : "Unity") +
+                     (message.Resolved ? " · fixed by a later compilation" : string.Empty));
+                Line("first " + LogReport.Stamp(first[id]) + " · last " + LogReport.Stamp(last[id]));
+                Line(string.Empty);
+                Line(view.Texts.Plain(message.Text));
+                string stack = view.Texts.Plain(message.Stack);
+                if (!string.IsNullOrWhiteSpace(stack))
+                {
+                    Line(string.Empty);
+                    Line(stack.TrimEnd());
+                }
+            }
+
+            return text.ToString();
+        }
+
         private static void Compare(int seed, List<string> entries, Random random)
         {
             var store = new LogStore();

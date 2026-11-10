@@ -47,23 +47,17 @@ namespace Orbiters.Logger.Editor
         public readonly int Text;
         public readonly int Stack;
         public readonly LogVariant Variant;
-        /// <summary>A timing or a command's log is never the same message as a plain log with that text.</summary>
-        public readonly MessageFlags Kind;
 
-        public MessageKey(int text, int stack, LogVariant variant, MessageFlags kind = MessageFlags.None)
+        public MessageKey(int text, int stack, LogVariant variant)
         {
             Text = text;
             Stack = stack;
             Variant = variant;
-            Kind = kind & LogStore.KindFlags;
         }
 
-        /// <summary>The key a filed message is found by.</summary>
-        public static MessageKey Of(in LogMessage message) => new MessageKey(message.Text, message.Stack, message.Variant, message.Flags);
-
-        public bool Equals(MessageKey other) => Text == other.Text && Stack == other.Stack && Variant == other.Variant && Kind == other.Kind;
+        public bool Equals(MessageKey other) => Text == other.Text && Stack == other.Stack && Variant == other.Variant;
         public override bool Equals(object obj) => obj is MessageKey other && Equals(other);
-        public override int GetHashCode() => unchecked((Text * 397) ^ (Stack * 7919) ^ (int)Variant ^ ((int)Kind << 24));
+        public override int GetHashCode() => unchecked((Text * 397) ^ (Stack * 7919) ^ (int)Variant);
     }
 
     /// <summary>
@@ -320,51 +314,6 @@ namespace Orbiters.Logger.Editor
             return instanceId != 0;
         }
 
-        /// <summary>The message flags that make a kind of message (part of its key).</summary>
-        public const MessageFlags KindFlags = MessageFlags.Timing | MessageFlags.Output;
-
-        /// <summary>Commands' outputs kept, by occurrence (the oldest goes first): a tool that polls stays bounded.</summary>
-        internal const int MaxPayloads = 2000;
-
-        // Texts of one occurrence each (a command's output), by occurrence id, and the ids in the order they came.
-        private Dictionary<int, int> payloads = new Dictionary<int, int>();
-        // Outputs let go since the last compaction: their texts belong to no message, only a compaction reclaims them.
-        private int droppedPayloads;
-        private Queue<int> payloadOrder = new Queue<int>();
-
-        /// <summary>What the command of this occurrence printed (<see cref="AddOutput"/>), or null when it isn't kept.</summary>
-        public string OutputOf(int occurrence) => Contains(occurrence) && payloads.TryGetValue(occurrence, out int text) ? Texts[text] : null;
-
-        private void SetPayload(int occurrence, int text)
-        {
-            if (!payloads.ContainsKey(occurrence))
-            {
-                payloadOrder.Enqueue(occurrence);
-            }
-
-            payloads[occurrence] = text;
-            while (payloadOrder.Count > MaxPayloads)
-            {
-                payloads.Remove(payloadOrder.Dequeue());
-                droppedPayloads++;
-            }
-
-            if (droppedPayloads >= MaxPayloads)
-            {
-                // A tool that runs commands all the time keeps one message: its old outputs' texts go with a compaction.
-                MaybeCompact();
-            }
-        }
-
-        private void DropPayloadsBelow(int id)
-        {
-            while (payloadOrder.Count > 0 && payloadOrder.Peek() < id)
-            {
-                payloads.Remove(payloadOrder.Dequeue());
-                droppedPayloads++;
-            }
-        }
-
         public void SetContext(int occurrence, int instanceId)
         {
             if (!Contains(occurrence) || instanceId == 0)
@@ -426,41 +375,12 @@ namespace Orbiters.Logger.Editor
             return Append(time, Intern(condition, stack, variant), occurrenceFlags);
         }
 
-        /// <summary>
-        /// A timing log (a script reload, Play Mode, an avatar build or upload): the profile as it was measured, kept by
-        /// the store for every window; its text form is the message's "stack trace", for copies, searches, the report and
-        /// the session file (read back once after a reload, see <see cref="TimingOf"/>).
-        /// </summary>
-        public int AddTiming(long time, TimingProfile profile, LogVariant variant)
-        {
-            pendingProfile = profile;
-            int id = Intern(profile.Message(), profile.Format(), variant, kind: MessageFlags.Timing);
-            pendingProfile = null;
-            return Append(time, id);
-        }
-
-        /// <summary>
-        /// A command another tool ran (Mixer Git's): one message per command line and result, what it printed (its
-        /// duration first) kept with this occurrence only, so runs that differ only by their output or time stay one message.
-        /// </summary>
-        public int AddOutput(long time, string condition, string output, LogVariant variant)
-        {
-            int id = Append(time, Intern(condition, string.Empty, variant, kind: MessageFlags.Output));
-            if (Contains(id) && !string.IsNullOrEmpty(output))
-            {
-                SetPayload(id, Texts.Intern(Capped(output)));
-            }
-
-            return id;
-        }
-
         /// <summary>The id of the message with this text, stack trace and type, created when new.</summary>
-        public int Intern(string condition, string stack, LogVariant variant, int assembly = 0, string file = null, int line = 0, int column = 0,
-            MessageFlags kind = MessageFlags.None)
+        public int Intern(string condition, string stack, LogVariant variant, int assembly = 0, string file = null, int line = 0, int column = 0)
         {
             int text = Texts.Intern(Capped(condition) ?? string.Empty);
             int stackId = Texts.Intern(Capped(stack) ?? string.Empty);
-            var key = new MessageKey(text, stackId, variant, kind);
+            var key = new MessageKey(text, stackId, variant);
             if (messageIndex.TryGetValue(key, out int id))
             {
                 return id;
@@ -482,7 +402,7 @@ namespace Orbiters.Logger.Editor
                 Assembly = assembly,
                 First = -1,
                 Last = -1,
-                Flags = (LogVariants.IsCompile(variant) ? MessageFlags.Compile : MessageFlags.None) | (kind & KindFlags)
+                Flags = LogVariants.IsCompile(variant) ? MessageFlags.Compile : MessageFlags.None
             };
             Describe(ref message, condition, stack, file, line, column);
             message.Group = GroupFor(text, message.Level);
@@ -490,9 +410,10 @@ namespace Orbiters.Logger.Editor
             // Published after the message is whole: a compaction worker reads the messages before this count.
             Volatile.Write(ref messageCount, id + 1);
             zeroCount++;
-            if ((message.Flags & MessageFlags.Timing) != 0 && pendingProfile != null)
+            if (pendingProfile != null)
             {
                 profiles[id] = pendingProfile;
+                pendingProfile = null;
             }
 
             messageIndex[key] = id;
@@ -503,6 +424,10 @@ namespace Orbiters.Logger.Editor
         // Callsite, file to open and source, read once per distinct message.
         private void Describe(ref LogMessage message, string condition, string stack, string file, int line, int column)
         {
+            // A profile handed by AddTiming is used as it is; any other timing log is parsed from its text, as on master.
+            var given = filedProfile;
+            filedProfile = null;
+            pendingProfile = null;
             if (LogVariants.IsCompile(message.Variant))
             {
                 if (string.IsNullOrEmpty(file))
@@ -519,18 +444,23 @@ namespace Orbiters.Logger.Editor
                 return;
             }
 
-            if ((message.Flags & MessageFlags.Timing) != 0)
+            if (TimingProfile.IsTimings(stack))
             {
-                // A timing log (filed by AddTiming, never told by its text): its largest shares under the message.
+                // A timing log: its largest shares under the message.
+                message.Flags |= MessageFlags.Timing;
                 message.Source = Sources.Get(TimingSource);
-                message.Callsite = Texts.Intern(pendingProfile != null ? pendingProfile.Summary(4) : string.Empty);
+                var profile = given ?? TimingProfile.Parse(stack);
+                pendingProfile = profile;
+                message.Callsite = Texts.Intern(profile != null ? profile.Summary(4) : string.Empty);
                 return;
             }
 
-            if ((message.Flags & MessageFlags.Output) != 0)
+            if (StackTraces.IsOutput(stack))
             {
-                // A command's log (AddOutput): each run's timing line comes from its own output (OutputOf).
+                // A command's log: its timing line under the message.
+                message.Flags |= MessageFlags.Output;
                 message.Source = Sources.Resolve(message.Variant, condition, -1);
+                message.Callsite = Texts.Intern(RichText.FirstLine(stack.Substring(StackTraces.OutputPrefix.Length), 160));
                 return;
             }
 
@@ -573,6 +503,29 @@ namespace Orbiters.Logger.Editor
         // Timing logs' profiles by message id, parsed once for every window (a restored store parses them on first use).
         private readonly Dictionary<int, TimingProfile> profiles = new Dictionary<int, TimingProfile>();
         private TimingProfile pendingProfile;
+        // The measured profile of the timing AddTiming is filing (never parsed back from its text).
+        private TimingProfile filedProfile;
+
+        /// <summary>
+        /// A timing log (a script reload, Play Mode, an avatar build or upload) with its measured profile: filed exactly as
+        /// the log of its text form would be (same message, stack and source, so every export is as on master), the
+        /// profile kept as it is instead of being parsed back from that text.
+        /// </summary>
+        public int AddTiming(long time, TimingProfile profile, LogVariant variant, OccurrenceFlags occurrenceFlags = OccurrenceFlags.None)
+        {
+            filedProfile = profile;
+            int id;
+            try
+            {
+                id = Intern(profile.Message(), profile.Format(), variant);
+            }
+            finally
+            {
+                filedProfile = null;
+            }
+
+            return Append(time, id, occurrenceFlags);
+        }
 
         /// <summary>The profile of a timing log (<see cref="MessageFlags.Timing"/>), or null.</summary>
         public TimingProfile TimingOf(int message)
@@ -903,9 +856,6 @@ namespace Orbiters.Logger.Editor
             groupIndex.Clear();
             events.Clear();
             profiles.Clear();
-            payloads.Clear();
-            payloadOrder.Clear();
-            droppedPayloads = 0;
             pins = 0;
             Texts = new TextTable();
             RowsGeneration = NewRowsGeneration();
@@ -1126,7 +1076,6 @@ namespace Orbiters.Logger.Editor
 
             first = newFirst;
             DropChunksBelow(first);
-            DropPayloadsBelow(first);
             long firstTime = FirstTime;
             events.RemoveAll(e => e.Time < firstTime);
             Version++;
@@ -1372,14 +1321,6 @@ namespace Orbiters.Logger.Editor
                 }
             }
 
-            var kept = PayloadPairs();
-            payloads.Clear();
-            payloadOrder.Clear();
-            foreach (var pair in kept)
-            {
-                SetPayload(pair.Key + delta, pair.Value);
-            }
-
             lowestIssued = first;
             RowsGeneration = NewRowsGeneration();
             Epoch++;
@@ -1480,18 +1421,6 @@ namespace Orbiters.Logger.Editor
         internal LogGroup[] GroupsArray => groups;
 
         /// <summary>Every occurrence's context, by id, oldest first.</summary>
-        /// <summary>Every kept output, by occurrence id (and its text id), oldest first.</summary>
-        internal List<KeyValuePair<int, int>> PayloadPairs()
-        {
-            var pairs = new List<KeyValuePair<int, int>>(payloadOrder.Count);
-            foreach (int id in payloadOrder)
-            {
-                pairs.Add(new KeyValuePair<int, int>(id, payloads[id]));
-            }
-
-            return pairs;
-        }
-
         internal List<KeyValuePair<int, int>> ContextPairs()
         {
             var pairs = new List<KeyValuePair<int, int>>();
@@ -1537,7 +1466,7 @@ namespace Orbiters.Logger.Editor
         /// </summary>
         internal void Restore(TextTable texts, long rowsGeneration, int firstId, int lowestId, long[][] restoredTimes, int[][] restoredOwners, byte[][] restoredFlags,
             int restoredCount, LogMessage[] restoredMessages, int restoredMessageCount, LogGroup[] restoredGroups, int restoredGroupCount, GroupingMode grouping,
-            List<KeyValuePair<int, int>> restoredContexts, List<KeyValuePair<int, int>> restoredPayloads, List<SessionEvent> restoredEvents)
+            List<KeyValuePair<int, int>> restoredContexts, List<SessionEvent> restoredEvents)
         {
             CancelCompaction();
             Texts = texts;
@@ -1562,7 +1491,7 @@ namespace Orbiters.Logger.Editor
             for (int i = 0; i < messageCount; i++)
             {
                 ref var message = ref messages[i];
-                messageIndex[MessageKey.Of(message)] = i;
+                messageIndex[new MessageKey(message.Text, message.Stack, message.Variant)] = i;
                 if (message.Count == 0)
                 {
                     zeroCount++;
@@ -1580,19 +1509,6 @@ namespace Orbiters.Logger.Editor
                 foreach (var pair in restoredContexts)
                 {
                     SetContext(pair.Key, pair.Value);
-                }
-            }
-
-            payloads.Clear();
-            payloadOrder.Clear();
-            if (restoredPayloads != null)
-            {
-                foreach (var pair in restoredPayloads)
-                {
-                    if (Contains(pair.Key))
-                    {
-                        SetPayload(pair.Key, pair.Value);
-                    }
                 }
             }
 

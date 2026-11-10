@@ -211,8 +211,7 @@ namespace Orbiters.Logger.Editor
             parts.Source.Set(source);
 
             parts.Message.text = DisplayLine(store, ref message);
-            string sub = (message.Flags & MessageFlags.Output) != 0 ? RichText.FirstLine(store.OutputOf(occurrence) ?? string.Empty, 160)
-                : message.Callsite > 0 ? store.Texts[message.Callsite] : RichText.SecondLine(store.Texts.Plain(message.Text), 200);
+            string sub = message.Callsite > 0 ? store.Texts[message.Callsite] : RichText.SecondLine(store.Texts.Plain(message.Text), 200);
             if ((flags & OccurrenceFlags.BackgroundThread) != 0)
             {
                 sub = string.IsNullOrEmpty(sub) ? "background thread" : sub + "   ·   background thread";
@@ -752,12 +751,7 @@ namespace Orbiters.Logger.Editor
                 }
 
                 builder.Append(store.Texts.Plain(message.Text));
-                string output = withStack && (message.Flags & MessageFlags.Output) != 0 ? store.OutputOf(grouped ? state.GroupLast[key] : key) : null;
-                if (output != null)
-                {
-                    builder.Append('\n').Append(output.TrimEnd('\n', '\r'));
-                }
-                else if (withStack && message.Stack > 0)
+                if (withStack && message.Stack > 0)
                 {
                     builder.Append('\n').Append(store.Texts[message.Stack].TrimEnd('\n', '\r'));
                 }

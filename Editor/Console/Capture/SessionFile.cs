@@ -319,15 +319,6 @@ namespace Orbiters.Logger.Editor
                 writer.Write(pair.Value);
             }
 
-            // Commands' outputs: an occurrence and a text id each (the texts are in the texts file).
-            var outputs = store.PayloadPairs();
-            writer.Write(outputs.Count);
-            foreach (var pair in outputs)
-            {
-                writer.Write(pair.Key);
-                writer.Write(pair.Value);
-            }
-
             var events = store.Events;
             writer.Write(events.Count);
             foreach (var sessionEvent in events)
@@ -598,27 +589,6 @@ namespace Orbiters.Logger.Editor
                     contexts.Add(new KeyValuePair<int, int>(key, reader.ReadInt32()));
                 }
 
-                int outputCount = reader.ReadInt32();
-                if (!Fits(reader, outputCount, 8))
-                {
-                    problem = "bad output count";
-                    return null;
-                }
-
-                var outputs = new List<KeyValuePair<int, int>>(Math.Max(0, outputCount));
-                for (int i = 0; i < outputCount; i++)
-                {
-                    int key = reader.ReadInt32();
-                    int text = reader.ReadInt32();
-                    if (key < firstId || key >= firstId + count || !IsText(text, textCount))
-                    {
-                        problem = "an output doesn't match";
-                        return null;
-                    }
-
-                    outputs.Add(new KeyValuePair<int, int>(key, text));
-                }
-
                 int eventCount = reader.ReadInt32();
                 if (!Fits(reader, eventCount, 9))
                 {
@@ -683,7 +653,7 @@ namespace Orbiters.Logger.Editor
                 var table = TextTable.Restore(texts, textCount, (bytes - 4L * (textCount - 1)) / 2, hashes, offsets, lengths, file);
                 store.Restore(table, storeGeneration, firstId, lowestId, times,
  owners, flags, count, messages, messageCount, groups, groupCount, grouping, contexts,
-                    outputs, events);
+                    events);
 
                 textFile = file;
                 textGeneration = texts;

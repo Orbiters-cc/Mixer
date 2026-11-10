@@ -260,14 +260,10 @@ namespace Orbiters.Logger.Editor
                     location.Add(FrameRow(new StackFrame(store.Texts[message.File], string.Empty, store.Texts[message.File], message.Line, StackFrameKind.User), message.Column));
                 }
             }
-            else if ((message.Flags & MessageFlags.Output) != 0)
+            else if (message.Stack > 0 && (message.Flags & MessageFlags.Output) != 0)
             {
-                // This run's output (kept for the latest commands only).
-                string output = store.OutputOf(occurrence);
-                if (output != null)
-                {
-                    Card(main, "Output").Add(LongText.Build(output.TrimEnd(), "lg-details__output", MonoFont));
-                }
+                string output = store.Texts[message.Stack].Substring(StackTraces.OutputPrefix.Length).TrimEnd();
+                Card(main, "Output").Add(LongText.Build(output, "lg-details__output", MonoFont));
             }
             else if (message.Stack > 0)
             {

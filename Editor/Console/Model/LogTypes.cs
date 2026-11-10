@@ -43,9 +43,9 @@ namespace Orbiters.Logger.Editor
         Compile = 1,
         /// <summary>A compile error fixed by a later compilation: hidden, as in Unity's console.</summary>
         Resolved = 2,
-        /// <summary>A timing log (<see cref="LogStore.AddTiming"/>): its stack is its profile's text form, the profile kept by the store.</summary>
+        /// <summary>A timing log: its stack is a <see cref="TimingProfile"/> (<see cref="TimingProfile.IsTimings"/>).</summary>
         Timing = 4,
-        /// <summary>A command's log (<see cref="LogStore.AddOutput"/>): each run's output is kept with its occurrence (<see cref="LogStore.OutputOf"/>).</summary>
+        /// <summary>A command's log: its stack is the command's output (<see cref="StackTraces.IsOutput"/>).</summary>
         Output = 8
     }
 
