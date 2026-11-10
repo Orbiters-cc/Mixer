@@ -75,7 +75,7 @@ namespace Orbiters.UnitGit.Editor
                     break;
             }
 
-            if (!busy && !includeRunning && includeQueue.Count == 0 && commitWhenIncluded == null && !refreshingSnapshot && !diffRead.IsBusy && !detailsRead.IsBusy && !promptRead.IsBusy && !gitStorageMeasuring && pendingConsoleLines.IsEmpty && pendingMainThreadActions.IsEmpty)
+            if (!busy && !includeRunning && includeQueue.Count == 0 && commitWhenIncluded == null && !refreshingSnapshot && !diffRead.IsBusy && !logTab.detailsRead.IsBusy && !promptRead.IsBusy && !gitStorageMeasuring && pendingConsoleLines.IsEmpty && pendingMainThreadActions.IsEmpty)
             {
                 editorUpdatePumpActive = false;
                 EditorApplication.update -= DrainEditorQueues;

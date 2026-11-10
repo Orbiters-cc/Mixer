@@ -103,14 +103,14 @@ namespace Orbiters.UnitGit.Editor
 
         private void QueueLogSearchRefresh()
         {
-            historyLimit = CommitPageSize * 3;
-            queuedLogSearchRefreshTime = EditorApplication.timeSinceStartup + LogSearchRefreshDelaySeconds;
-            if (logSearchRefreshQueued)
+            logTab.historyLimit = CommitPageSize * 3;
+            logTab.queuedLogSearchRefreshTime = EditorApplication.timeSinceStartup + LogSearchRefreshDelaySeconds;
+            if (logTab.logSearchRefreshQueued)
             {
                 return;
             }
 
-            logSearchRefreshQueued = true;
+            logTab.logSearchRefreshQueued = true;
             EditorApplication.update += RunQueuedLogSearchRefresh;
         }
 
@@ -122,27 +122,27 @@ namespace Orbiters.UnitGit.Editor
                 return;
             }
 
-            if (EditorApplication.timeSinceStartup < queuedLogSearchRefreshTime)
+            if (EditorApplication.timeSinceStartup < logTab.queuedLogSearchRefreshTime)
             {
                 return;
             }
 
             EditorApplication.update -= RunQueuedLogSearchRefresh;
-            logSearchRefreshQueued = false;
-            if (string.Equals(logSearch, logSearchDraft, StringComparison.Ordinal))
+            logTab.logSearchRefreshQueued = false;
+            if (string.Equals(logTab.logSearch, logTab.logSearchDraft, StringComparison.Ordinal))
             {
                 return;
             }
 
-            logSearch = logSearchDraft;
+            logTab.logSearch = logTab.logSearchDraft;
             RefreshSnapshot();
         }
 
         private void RefreshSnapshot()
         {
             // "Load more" asks for older commits only; a refresh that cannot start now runs later as a whole one.
-            bool historyOnly = historyOnlyRequested;
-            historyOnlyRequested = false;
+            bool historyOnly = logTab.historyOnlyRequested;
+            logTab.historyOnlyRequested = false;
             if (gitService == null)
             {
                 return;
@@ -177,17 +177,17 @@ namespace Orbiters.UnitGit.Editor
             refreshingSnapshot = true;
             int requestId = ++refreshRequestId;
             string projectRoot = gitService.ProjectRoot;
-            string search = logSearch;
-            int requestedHistoryLimit = historyLimit;
+            string search = logTab.logSearch;
+            int requestedHistoryLimit = logTab.historyLimit;
             historyOnly &= snapshot != null;
             bool readHeadMessage = commitAmend;
-            if (history == null) history = new UnitGitHistory();
-            UnitGitHistory reader = history;
+            if (logTab.history == null) logTab.history = new UnitGitHistory();
+            UnitGitHistory reader = logTab.history;
             // Read before the worker starts (EditorPrefs is main-thread only); what was read before a visit began is older than it.
             string visitBranch = UnitGitSettings.Visit?.branch;
             long readStarted = DateTime.UtcNow.Ticks;
             UnitGitSnapshot previousSnapshot = snapshot;
-            var filter = new UnitGitLogFilter { Branch = logFilter.Branch, Author = logFilter.Author, Since = logFilter.Since, Path = logFilter.Path };
+            var filter = new UnitGitLogFilter { Branch = logTab.logFilter.Branch, Author = logTab.logFilter.Author, Since = logTab.logFilter.Since, Path = logTab.logFilter.Path };
             try
             {
                 EnsureEditorUpdatePump();
@@ -205,7 +205,7 @@ namespace Orbiters.UnitGit.Editor
                             {
                                 QueueConsoleLine("refresh", line);
                             }
-                        }, () => requestId != refreshRequestId || logSearchDraft != search))
+                        }, () => requestId != refreshRequestId || logTab.logSearchDraft != search))
                     .ContinueWith(task => QueueMainThreadAction(() => ApplySnapshotRefresh(requestId, task, readStarted)));
             }
             catch (Exception ex)
@@ -254,18 +254,18 @@ namespace Orbiters.UnitGit.Editor
             }
 
             refreshingSnapshot = false;
-            loadingMoreHistory = false;
+            logTab.loadingMoreHistory = false;
             if (task.Status == TaskStatus.RanToCompletion && task.Result.Superseded)
             {
                 // Keep the current view while the search debounce or the replacement refresh runs.
                 refreshAgainRequested = false;
-                if (logSearch == logSearchDraft) RefreshSnapshot();
+                if (logTab.logSearch == logTab.logSearchDraft) RefreshSnapshot();
                 return;
             }
-            if (task.Status != TaskStatus.RanToCompletion && !string.IsNullOrEmpty(logFilter.Branch))
+            if (task.Status != TaskStatus.RanToCompletion && !string.IsNullOrEmpty(logTab.logFilter.Branch))
             {
                 // The branch the log was filtered to is gone (deleted, renamed): back to every branch.
-                logFilter.Branch = string.Empty;
+                logTab.logFilter.Branch = string.Empty;
                 ShowToast("That branch no longer exists: showing every branch.");
                 RefreshSnapshot();
                 return;
@@ -304,7 +304,7 @@ namespace Orbiters.UnitGit.Editor
                     RebuildLocalDiffPane();
                 RefreshTopBar();
             }
-            else if (activeTab == UnitGitTab.Log && logList != null && logList.panel != null && task.Status == TaskStatus.RanToCompletion &&
+            else if (activeTab == UnitGitTab.Log && logTab.logList != null && logTab.logList.panel != null && task.Status == TaskStatus.RanToCompletion &&
                      snapshot.HasRepository && snapshot.HasCommits && string.IsNullOrWhiteSpace(snapshot.LastError) && snapshot.Commits.Count > 0)
             {
                 UpdateTopBar();
@@ -327,8 +327,8 @@ namespace Orbiters.UnitGit.Editor
 
         private void ReconcileSnapshotSelection()
         {
-            string selectedRef = selectedBranch?.FullRef;
-            selectedBranch = snapshot.Branches.FirstOrDefault(branch => branch.FullRef == selectedRef)
+            string selectedRef = logTab.selectedBranch?.FullRef;
+            logTab.selectedBranch = snapshot.Branches.FirstOrDefault(branch => branch.FullRef == selectedRef)
                 ?? snapshot.Branches.FirstOrDefault(branch => branch.IsCurrent)
                 ?? snapshot.Branches.FirstOrDefault();
 
@@ -350,42 +350,42 @@ namespace Orbiters.UnitGit.Editor
             if (snapshot.HasRepository && snapshot.Commits.Count > 0)
             {
                 var availableHashes = new HashSet<string>(snapshot.Commits.Select(commit => commit.FullHash), StringComparer.Ordinal);
-                selectedCommitHashes.RemoveWhere(hash => !availableHashes.Contains(hash));
-                if (!string.IsNullOrWhiteSpace(selectionAnchorHash) &&
-                    snapshot.Commits.All(commit => commit.FullHash != selectionAnchorHash))
+                logTab.selectedCommitHashes.RemoveWhere(hash => !availableHashes.Contains(hash));
+                if (!string.IsNullOrWhiteSpace(logTab.selectionAnchorHash) &&
+                    snapshot.Commits.All(commit => commit.FullHash != logTab.selectionAnchorHash))
                 {
-                    selectionAnchorHash = string.Empty;
+                    logTab.selectionAnchorHash = string.Empty;
                 }
 
-                if (selectedCommit == null || snapshot.Commits.All(commit => commit.FullHash != selectedCommit.FullHash))
+                if (logTab.selectedCommit == null || snapshot.Commits.All(commit => commit.FullHash != logTab.selectedCommit.FullHash))
                 {
-                    selectedCommit = selectedCommitHashes.Count > 0
-                        ? snapshot.Commits.FirstOrDefault(commit => selectedCommitHashes.Contains(commit.FullHash)) ?? snapshot.Commits[0]
+                    logTab.selectedCommit = logTab.selectedCommitHashes.Count > 0
+                        ? snapshot.Commits.FirstOrDefault(commit => logTab.selectedCommitHashes.Contains(commit.FullHash)) ?? snapshot.Commits[0]
                         : snapshot.Commits[0];
-                    selectedReleaseId = string.Empty;
+                    logTab.selectedReleaseId = string.Empty;
                 }
 
-                if (selectedCommitHashes.Count == 0 && selectedCommit != null && string.IsNullOrEmpty(selectedReleaseId))
+                if (logTab.selectedCommitHashes.Count == 0 && logTab.selectedCommit != null && string.IsNullOrEmpty(logTab.selectedReleaseId))
                 {
-                    selectedCommitHashes.Add(selectedCommit.FullHash);
-                    selectionAnchorHash = selectedCommit.FullHash;
+                    logTab.selectedCommitHashes.Add(logTab.selectedCommit.FullHash);
+                    logTab.selectionAnchorHash = logTab.selectedCommit.FullHash;
                 }
 
-                if (selectedDetails == null ||
-                         selectedDetails.Commit == null ||
-                         selectedCommit == null ||
-                         selectedDetails.Commit.FullHash != selectedCommit.FullHash)
+                if (logTab.selectedDetails == null ||
+                         logTab.selectedDetails.Commit == null ||
+                         logTab.selectedCommit == null ||
+                         logTab.selectedDetails.Commit.FullHash != logTab.selectedCommit.FullHash)
                 {
-                    selectedDetails = null;
+                    logTab.selectedDetails = null;
                 }
             }
             else
             {
-                selectedCommit = null;
-                selectedCommitHashes.Clear();
-                selectionAnchorHash = string.Empty;
-                selectedReleaseId = string.Empty;
-                selectedDetails = null;
+                logTab.selectedCommit = null;
+                logTab.selectedCommitHashes.Clear();
+                logTab.selectionAnchorHash = string.Empty;
+                logTab.selectedReleaseId = string.Empty;
+                logTab.selectedDetails = null;
             }
         }
 

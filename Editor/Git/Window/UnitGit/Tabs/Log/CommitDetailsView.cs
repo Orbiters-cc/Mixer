@@ -15,7 +15,6 @@ namespace Orbiters.UnitGit.Editor
     internal sealed partial class UnitGitWindow
     {
         private const string DetailsMessageSplitPref = SplitPrefPrefix + "DetailsMessage";
-        private string selectedCommitFile = string.Empty;
 
         private VisualElement BuildDetailsPane()
         {
@@ -39,19 +38,19 @@ namespace Orbiters.UnitGit.Editor
 
         private UnitGitReleaseEntry GetSelectedRelease()
         {
-            if (selectedCommit == null ||
-                string.IsNullOrEmpty(selectedReleaseId) ||
-                !string.Equals(selectedCommit.ReleaseId, selectedReleaseId, StringComparison.Ordinal))
+            if (logTab.selectedCommit == null ||
+                string.IsNullOrEmpty(logTab.selectedReleaseId) ||
+                !string.Equals(logTab.selectedCommit.ReleaseId, logTab.selectedReleaseId, StringComparison.Ordinal))
             {
                 return null;
             }
 
-            return GetReleaseForCommit(selectedCommit);
+            return GetReleaseForCommit(logTab.selectedCommit);
         }
 
         private VisualElement BuildChangedFilesTree()
         {
-            List<string> changedFiles = loadedSelection != null ? loadedSelection.Files : new List<string>();
+            List<string> changedFiles = logTab.loadedSelection != null ? logTab.loadedSelection.Files : new List<string>();
             int selectedCount = GetSelectedCommitsInLogOrder().Count;
             var panel = new VisualElement();
             panel.AddToClassList("unitgit-files-panel");
@@ -74,18 +73,18 @@ namespace Orbiters.UnitGit.Editor
             body.AddToClassList("unitgit-files-scroll");
             if (changedFiles.Count == 0)
             {
-                if (detailsRead.IsBusy)
+                if (logTab.detailsRead.IsBusy)
                 {
                     var loading = new VisualElement();
                     loading.AddToClassList("ug-diff-placeholder");
                     loading.Add(UnitGitUi.Spinner());
                     body.Add(loading);
                 }
-                else body.Add(BuildEmptyState(selectedCommit == null ? "Select a commit." : "No changed files."));
+                else body.Add(BuildEmptyState(logTab.selectedCommit == null ? "Select a commit." : "No changed files."));
             }
             else
             {
-                var rows = loadedSelection.FileList.GetVisibleRows(row =>
+                var rows = logTab.loadedSelection.FileList.GetVisibleRows(row =>
                     GetFoldoutExpanded(GetFoldoutPrefKey("ChangedFilesFolder", row.Path), true));
                 body.Add(BuildVirtualList(rows, 26f, BuildCommitFileRow, "unitgit-changed-files-scroll"));
             }
@@ -96,8 +95,8 @@ namespace Orbiters.UnitGit.Editor
 
         private void SetCommitFoldersExpanded(bool expanded)
         {
-            if (loadedSelection == null) return;
-            foreach (var folder in loadedSelection.FileList.Folders)
+            if (logTab.loadedSelection == null) return;
+            foreach (var folder in logTab.loadedSelection.FileList.Folders)
                 EditorPrefs.SetBool(GetFoldoutPrefKey("ChangedFilesFolder", folder.Path), expanded);
             RefreshDetailsPane();
         }
@@ -149,8 +148,8 @@ namespace Orbiters.UnitGit.Editor
 
         private char CommitFileStatus(string file)
         {
-            if (loadedSelection == null) return 'M';
-            foreach (var details in loadedSelection.Details)
+            if (logTab.loadedSelection == null) return 'M';
+            foreach (var details in logTab.loadedSelection.Details)
                 if (details.FileStatus != null && details.FileStatus.TryGetValue(file, out char status))
                     return status;
             return 'M';
@@ -173,7 +172,7 @@ namespace Orbiters.UnitGit.Editor
             row.AddToClassList("ug-row");
             row.AddToClassList("unitgit-file-row");
             row.style.paddingLeft = 6 + depth * 16 + 18;
-            row.EnableInClassList("ug-row--selected", string.Equals(selectedCommitFile, file, StringComparison.Ordinal));
+            row.EnableInClassList("ug-row--selected", string.Equals(logTab.selectedCommitFile, file, StringComparison.Ordinal));
             char status = CommitFileStatus(file);
             row.tooltip = file + "\nDouble click: see what changed";
 
@@ -184,7 +183,7 @@ namespace Orbiters.UnitGit.Editor
             row.Add(UnitGitUi.Spacer());
 
             // Scenes and prefabs: what this commit changed in them, object by object.
-            var details = selectedDetails;
+            var details = logTab.selectedDetails;
             if (details != null && details.Commit != null && (IsUnityYamlPath(file) || Semantic.ModelVersions.IsPreviewable(file)))
             {
                 var sheet = AssetDatabase.LoadAssetAtPath<StyleSheet>("Packages/orbiters.mixer/Editor/Git/Styles/unitgit-semantic.uss");
@@ -212,9 +211,9 @@ namespace Orbiters.UnitGit.Editor
                     return;
                 }
                 if (evt.button != 0 && evt.button != 1) return;
-                selectedCommitFile = file;
+                logTab.selectedCommitFile = file;
                 row.parent?.parent?.Query<Button>(className: "unitgit-file-row").ForEach(other => other.EnableInClassList("ug-row--selected", other == row));
-                commitDetailsRoot?.Query<Button>(className: "unitgit-file-row").ForEach(other => other.EnableInClassList("ug-row--selected", other == row));
+                logTab.commitDetailsRoot?.Query<Button>(className: "unitgit-file-row").ForEach(other => other.EnableInClassList("ug-row--selected", other == row));
                 if (evt.button == 1) ShowCommitFileMenu(file, status);
             });
             return row;
@@ -237,8 +236,8 @@ namespace Orbiters.UnitGit.Editor
         // The commit that last changed the file among the selected ones (the first in log order).
         private void OpenCommitFileDiff(string file)
         {
-            var owner = loadedSelection?.Details.FirstOrDefault(details => details.ChangedFiles.Contains(file));
-            var commit = owner?.Commit ?? selectedCommit;
+            var owner = logTab.loadedSelection?.Details.FirstOrDefault(details => details.ChangedFiles.Contains(file));
+            var commit = owner?.Commit ?? logTab.selectedCommit;
             if (commit == null) return;
             // The details know the commit's parents and where a renamed file came from: the diff needs nothing else.
             UnitGitCommitFileHint hint = owner?.Commit != null && owner.Commit.Parents != null && !string.IsNullOrEmpty(commit.ShortHash)
@@ -263,16 +262,16 @@ namespace Orbiters.UnitGit.Editor
                 return BuildMultiCommitDetailsCard(scroll, selectedCommits);
             }
 
-            if (selectedDetails == null || selectedDetails.Commit == null)
+            if (logTab.selectedDetails == null || logTab.selectedDetails.Commit == null)
             {
-                scroll.Add(BuildEmptyState(detailsRead.IsBusy ? string.Empty : "Select a commit to see its details."));
+                scroll.Add(BuildEmptyState(logTab.detailsRead.IsBusy ? string.Empty : "Select a commit to see its details."));
                 return scroll;
             }
 
-            var commit = selectedDetails.Commit;
+            var commit = logTab.selectedDetails.Commit;
             scroll.Add(UnitGitUi.Text(commit.Subject, "unitgit-details-title"));
-            if (!string.IsNullOrWhiteSpace(selectedDetails.Body))
-                scroll.Add(UnitGitUi.Text(selectedDetails.Body.Trim(), "ug-details-body"));
+            if (!string.IsNullOrWhiteSpace(logTab.selectedDetails.Body))
+                scroll.Add(UnitGitUi.Text(logTab.selectedDetails.Body.Trim(), "ug-details-body"));
 
             var author = new VisualElement();
             author.AddToClassList("ug-details-meta");
@@ -283,12 +282,12 @@ namespace Orbiters.UnitGit.Editor
             var who = new VisualElement();
             who.AddToClassList("ug-details-meta__texts");
             who.Add(UnitGitUi.Text(commit.AuthorName, "ug-details-author"));
-            who.Add(UnitGitUi.Text(selectedDetails.AuthorDate + (string.IsNullOrWhiteSpace(commit.RelativeDate) ? string.Empty : "  •  " + commit.RelativeDate),
+            who.Add(UnitGitUi.Text(logTab.selectedDetails.AuthorDate + (string.IsNullOrWhiteSpace(commit.RelativeDate) ? string.Empty : "  •  " + commit.RelativeDate),
                 "ug-details-date"));
             author.Add(who);
             author.tooltip = commit.AuthorName + " <" + commit.AuthorEmail + ">" +
-                             (!string.IsNullOrWhiteSpace(selectedDetails.CommitterName) && selectedDetails.CommitterName != commit.AuthorName
-                                 ? "\ncommitted by " + selectedDetails.CommitterName + " on " + selectedDetails.CommitterDate : string.Empty);
+                             (!string.IsNullOrWhiteSpace(logTab.selectedDetails.CommitterName) && logTab.selectedDetails.CommitterName != commit.AuthorName
+                                 ? "\ncommitted by " + logTab.selectedDetails.CommitterName + " on " + logTab.selectedDetails.CommitterDate : string.Empty);
             scroll.Add(author);
 
             var ids = new VisualElement();
@@ -335,8 +334,8 @@ namespace Orbiters.UnitGit.Editor
                 return;
             }
             SelectCommitFromRow(commit, false);
-            int row = logItems.FindIndex(item => item.Release == null && item.Commit == commit);
-            if (row >= 0) logList?.ScrollToItem(row);
+            int row = logTab.logItems.FindIndex(item => item.Release == null && item.Commit == commit);
+            if (row >= 0) logTab.logList?.ScrollToItem(row);
         }
 
         private VisualElement BuildMultiCommitDetailsCard(VisualElement card, IList<UnitGitCommit> commits)
@@ -354,13 +353,9 @@ namespace Orbiters.UnitGit.Editor
             return card;
         }
 
-        private readonly UnitGitLatestRequest<SelectionDetails> detailsRead = new UnitGitLatestRequest<SelectionDetails>();
-        private readonly Dictionary<string, UnitGitCommitDetails> detailsCache = new Dictionary<string, UnitGitCommitDetails>();
         private int detailsCacheFiles; // the files of every cached commit, kept as they are added (read on the details worker)
-        private SelectionDetails loadedSelection;
-        private string requestedSelection;
 
-        private sealed class SelectionDetails
+        internal sealed class SelectionDetails
         {
             public readonly List<UnitGitCommitDetails> Details = new List<UnitGitCommitDetails>();
             public List<string> Files;
@@ -370,26 +365,26 @@ namespace Orbiters.UnitGit.Editor
         private void EnsureCommitDetailsLoaded()
         {
             var commits = GetSelectedCommitsInLogOrder();
-            if (commits.Count == 0 && selectedCommit != null)
-                commits.Add(selectedCommit);
+            if (commits.Count == 0 && logTab.selectedCommit != null)
+                commits.Add(logTab.selectedCommit);
             string key = string.Join(";", commits.Select(commit => commit.FullHash));
-            if (key == requestedSelection)
+            if (key == logTab.requestedSelection)
             {
-                selectedDetails = loadedSelection?.Details.FirstOrDefault(item => item.Commit.FullHash == selectedCommit?.FullHash);
+                logTab.selectedDetails = logTab.loadedSelection?.Details.FirstOrDefault(item => item.Commit.FullHash == logTab.selectedCommit?.FullHash);
                 return;
             }
-            requestedSelection = key;
-            loadedSelection = null;
-            selectedDetails = null;
-            selectedCommitFile = string.Empty;
+            logTab.requestedSelection = key;
+            logTab.loadedSelection = null;
+            logTab.selectedDetails = null;
+            logTab.selectedCommitFile = string.Empty;
             string root = gitService.ProjectRoot;
-            detailsRead.Request(stale =>
+            logTab.detailsRead.Request(stale =>
             {
                 var result = new SelectionDetails();
                 var files = new HashSet<string>(StringComparer.Ordinal);
                 var service = new UnitGitService(root) { ReadSuperseded = stale };
                 // Every commit not cached yet in one read, whatever the selection's size.
-                List<string> missing = commits.Select(commit => commit.FullHash).Where(hash => !detailsCache.ContainsKey(hash)).ToList();
+                List<string> missing = commits.Select(commit => commit.FullHash).Where(hash => !logTab.detailsCache.ContainsKey(hash)).ToList();
                 Dictionary<string, UnitGitCommitDetails> read = missing.Count == 0
                     ? new Dictionary<string, UnitGitCommitDetails>()
                     : missing.Count == 1
@@ -399,17 +394,17 @@ namespace Orbiters.UnitGit.Editor
                     return null;
                 foreach (var commit in commits)
                 {
-                    if (!detailsCache.TryGetValue(commit.FullHash, out var details))
+                    if (!logTab.detailsCache.TryGetValue(commit.FullHash, out var details))
                     {
                         read.TryGetValue(commit.FullHash, out details);
                         if (details != null && details.ChangedFiles.Count <= 10000)
                         {
-                            if (detailsCache.Count >= 64 || detailsCacheFiles + details.ChangedFiles.Count > 50000)
+                            if (logTab.detailsCache.Count >= 64 || detailsCacheFiles + details.ChangedFiles.Count > 50000)
                             {
-                                detailsCache.Clear();
+                                logTab.detailsCache.Clear();
                                 detailsCacheFiles = 0;
                             }
-                            detailsCache[commit.FullHash] = details;
+                            logTab.detailsCache[commit.FullHash] = details;
                             detailsCacheFiles += details.ChangedFiles.Count;
                         }
                     }
@@ -437,16 +432,16 @@ namespace Orbiters.UnitGit.Editor
 
         private void PollCommitDetails()
         {
-            if (!detailsRead.Poll(out SelectionDetails result, out Exception error))
+            if (!logTab.detailsRead.Poll(out SelectionDetails result, out Exception error))
                 return;
-            loadedSelection = result;
+            logTab.loadedSelection = result;
             if (error != null)
                 AppendConsole("commit details", error.Message);
-            selectedDetails = result?.Details.FirstOrDefault(item => item.Commit.FullHash == selectedCommit?.FullHash);
-            if (activeTab == UnitGitTab.Log && commitDetailsRoot != null)
+            logTab.selectedDetails = result?.Details.FirstOrDefault(item => item.Commit.FullHash == logTab.selectedCommit?.FullHash);
+            if (activeTab == UnitGitTab.Log && logTab.commitDetailsRoot != null)
             {
                 RefreshDetailsPane();
-                UnitGitUi.Enter(commitDetailsRoot.Q(className: "unitgit-details-pane"), "ug-fade-enter");
+                UnitGitUi.Enter(logTab.commitDetailsRoot.Q(className: "unitgit-details-pane"), "ug-fade-enter");
             }
         }
     }

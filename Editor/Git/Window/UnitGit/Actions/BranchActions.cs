@@ -25,14 +25,14 @@ namespace Orbiters.UnitGit.Editor
 
         private void WithBranch(UnitGitBranch branch, System.Action action)
         {
-            selectedBranch = snapshot?.Branches.FirstOrDefault(b => b.FullRef == branch.FullRef) ?? branch;
+            logTab.selectedBranch = snapshot?.Branches.FirstOrDefault(b => b.FullRef == branch.FullRef) ?? branch;
             action();
         }
 
         // A new branch from a branch or, without one, from the commit selected in the Log (else the current commit).
         private void PromptCreateBranchFrom(string startPoint)
         {
-            string from = startPoint ?? (selectedCommit != null && !string.IsNullOrWhiteSpace(selectedCommit.FullHash) ? selectedCommit.FullHash : null);
+            string from = startPoint ?? (logTab.selectedCommit != null && !string.IsNullOrWhiteSpace(logTab.selectedCommit.FullHash) ? logTab.selectedCommit.FullHash : null);
             UnitGitBranchPromptWindow.Open("feature/new-branch", branchName =>
                 RunAction("create branch " + branchName, () => gitService.CreateBranch(branchName, from),
                     working: "Creating ‘" + branchName + "’…", success: "Created ‘" + branchName + "’"));

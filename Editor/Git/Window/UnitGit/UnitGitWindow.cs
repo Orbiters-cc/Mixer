@@ -26,7 +26,7 @@ namespace Orbiters.UnitGit.Editor
         private const double EditorEventRefreshDelaySeconds = 0.35d;
         private const double EditorEventRefreshCooldownSeconds = 1.25d;
         private const double LogSearchRefreshDelaySeconds = 0.25d;
-        private const int CommitPageSize = 100;
+        internal const int CommitPageSize = 100;
 
         private static readonly Color[] BranchGraphPalette =
         {
@@ -47,23 +47,12 @@ namespace Orbiters.UnitGit.Editor
         private UnitGitService gitService;
         private UnitGitProjectInitializer initializer;
         private UnitGitSnapshot snapshot;
-        private UnitGitCommit selectedCommit;
-        private readonly HashSet<string> selectedCommitHashes = new HashSet<string>(StringComparer.Ordinal);
-        private string selectionAnchorHash = string.Empty;
-        private string selectedReleaseId = string.Empty;
-        private UnitGitCommitDetails selectedDetails;
-        private UnitGitBranch selectedBranch;
         private string selectedChangePath = string.Empty;
         private string selectedShelf = string.Empty;
         private VisualElement contentRoot;
         private VisualElement localChangesListRoot;
         private VisualElement localDiffPaneRoot;
-        private VisualElement commitDetailsRoot;
         private UnitGitTab activeTab = UnitGitTab.Log;
-        private string branchSearch = string.Empty;
-        private string logSearch = string.Empty;
-        private string logSearchDraft = string.Empty;
-        private int historyLimit = CommitPageSize * 3;
         private string diffSearch = string.Empty;
         private int diffSearchMatchIndex;
         private TextField diffSearchField;
@@ -78,16 +67,15 @@ namespace Orbiters.UnitGit.Editor
         private bool refreshingSnapshot;
         private bool refreshAgainRequested;
         private bool editorUpdatePumpActive;
-        private bool logSearchRefreshQueued;
         private double queuedRefreshTime;
-        private double queuedLogSearchRefreshTime;
         private double lastEditorEventRefreshTime = -1000d;
         private int refreshRequestId;
-        // The history as it streams: "load more" and searches read on from where it stopped.
-        private UnitGitHistory history;
         // Hidden (another tab of the dock in front): editor events only mark the view stale; it reads Git when shown again.
         private bool visible = true;
         private bool staleWhileHidden;
+
+        // The Log tab: its selection, search, history and the reads it waits for.
+        private readonly UnitGitLogState logTab = new UnitGitLogState();
 
         [MenuItem("Tools/Orbiters/Mixer Git", priority = 2003)]
         internal static void OpenWindow()
@@ -121,10 +109,10 @@ namespace Orbiters.UnitGit.Editor
             includeGeneration++;
             refreshRequestId++;
             diffRead.Dispose();
-            detailsRead.Dispose();
+            logTab.detailsRead.Dispose();
             promptRead.Dispose();
-            history?.Dispose();
-            history = null;
+            logTab.history?.Dispose();
+            logTab.history = null;
             if (diffFont != null)
                 DestroyImmediate(diffFont);
             ReleaseThumbnailCacheClear();
@@ -148,7 +136,7 @@ namespace Orbiters.UnitGit.Editor
             commitWhenIncluded = null;
             refreshRequestId++;
             requestedDiffPath = null;
-            requestedSelection = null;
+            logTab.requestedSelection = null;
             busy = false;
             busyLabel = null;
             busySuccess = null;
@@ -162,7 +150,7 @@ namespace Orbiters.UnitGit.Editor
             refreshingSnapshot = false;
             refreshAgainRequested = false;
             editorUpdatePumpActive = false;
-            logSearchRefreshQueued = false;
+            logTab.logSearchRefreshQueued = false;
             gitStorageMeasuring = false;
             while (pendingConsoleLines.TryDequeue(out _))
             {

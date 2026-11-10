@@ -205,7 +205,7 @@ namespace Orbiters.UnitGit.Editor
             localChangesListRoot = null;
             localDiffPaneRoot = null;
             changesNoticesRoot = null;
-            commitDetailsRoot = null;
+            logTab.commitDetailsRoot = null;
             contentRoot.Clear();
 
             if (snapshot == null)

@@ -12,7 +12,6 @@ namespace Orbiters.UnitGit.Editor
     // branch's history (again: every branch), a double click checks it out, a right click has everything else.
     internal sealed partial class UnitGitWindow
     {
-        private VisualElement branchesListRoot;
 
         private VisualElement BuildBranchesPane()
         {
@@ -21,9 +20,9 @@ namespace Orbiters.UnitGit.Editor
 
             var toolbar = new VisualElement();
             toolbar.AddToClassList("ug-toolbar");
-            toolbar.Add(UnitGitUi.Search(branchSearch, "Branches", value =>
+            toolbar.Add(UnitGitUi.Search(logTab.branchSearch, "Branches", value =>
             {
-                branchSearch = value ?? string.Empty;
+                logTab.branchSearch = value ?? string.Empty;
                 RefreshBranchesPane();
             }, "ug-branches-search"));
             toolbar.Add(UnitGitUi.Icon(UnitGitIconKind.CreateBranch, "New branch from the selected commit", () => PromptCreateBranchFrom(null)));
@@ -33,7 +32,7 @@ namespace Orbiters.UnitGit.Editor
             var scroll = new ScrollView();
             scroll.name = "unitgit-branch-scroll";
             scroll.AddToClassList("unitgit-branch-scroll");
-            branchesListRoot = scroll.contentContainer;
+            logTab.branchesListRoot = scroll.contentContainer;
             FillBranches();
             pane.Add(scroll);
             return pane;
@@ -41,8 +40,8 @@ namespace Orbiters.UnitGit.Editor
 
         private void RefreshBranchesPane()
         {
-            if (branchesListRoot == null || branchesListRoot.panel == null) return;
-            branchesListRoot.Clear();
+            if (logTab.branchesListRoot == null || logTab.branchesListRoot.panel == null) return;
+            logTab.branchesListRoot.Clear();
             FillBranches();
         }
 
@@ -55,7 +54,7 @@ namespace Orbiters.UnitGit.Editor
             string headRef = detached ? "HEAD" : snapshot.CurrentBranch;
             string headText = visiting ? "visiting " + snapshot.DetachedCommit.ShortHash : detached ? (gitWork.Length > 0 ? gitWork : "detached HEAD") : snapshot.CurrentBranch;
             var head = BranchTreeRow(UnitGitIconKind.Star, "HEAD", headText, 0,
-                !string.IsNullOrEmpty(logFilter.Branch) && logFilter.Branch == headRef, "ug-branch-row--head");
+                !string.IsNullOrEmpty(logTab.logFilter.Branch) && logTab.logFilter.Branch == headRef, "ug-branch-row--head");
             head.tooltip = visiting
                 ? "No branch is checked out: you are visiting " + snapshot.DetachedCommit.ShortHash + ". Click to show only its history."
                 : detached ? "No branch is checked out" + (gitWork.Length > 0 ? ": Git is " + gitWork + "." : ".") + " Click to show only its history."
@@ -63,9 +62,9 @@ namespace Orbiters.UnitGit.Editor
             head.RegisterCallback<MouseDownEvent>(evt =>
             {
                 if (evt.button != 0 || string.IsNullOrEmpty(headRef)) return;
-                SetLogFilter(branch: logFilter.Branch == headRef ? string.Empty : headRef);
+                SetLogFilter(branch: logTab.logFilter.Branch == headRef ? string.Empty : headRef);
             });
-            branchesListRoot.Add(head);
+            logTab.branchesListRoot.Add(head);
             AddBranchSection("Local", snapshot.Branches.Where(branch => !branch.IsRemote), BranchLocalFoldPref);
             AddBranchSection("Remote", snapshot.Branches.Where(branch => branch.IsRemote), BranchRemoteFoldPref);
         }
@@ -73,7 +72,7 @@ namespace Orbiters.UnitGit.Editor
         private void AddBranchSection(string title, IEnumerable<UnitGitBranch> branches, string prefKey)
         {
             var filtered = branches.Where(MatchesBranchSearch).ToList();
-            bool expanded = GetFoldoutExpanded(prefKey, true) || !string.IsNullOrWhiteSpace(branchSearch);
+            bool expanded = GetFoldoutExpanded(prefKey, true) || !string.IsNullOrWhiteSpace(logTab.branchSearch);
             var header = BranchTreeRow(expanded ? UnitGitIconKind.ChevronExpanded : UnitGitIconKind.ChevronCollapsed, title,
                 filtered.Count.ToString(), 0, false, "ug-branch-row--section");
             header.RegisterCallback<MouseDownEvent>(evt =>
@@ -82,11 +81,11 @@ namespace Orbiters.UnitGit.Editor
                 EditorPrefs.SetBool(prefKey, !GetFoldoutExpanded(prefKey, true));
                 RefreshBranchesPane();
             });
-            branchesListRoot.Add(header);
+            logTab.branchesListRoot.Add(header);
             if (!expanded) return;
             if (filtered.Count == 0)
             {
-                branchesListRoot.Add(UnitGitUi.Text(string.IsNullOrWhiteSpace(branchSearch) ? "No " + title.ToLowerInvariant() + " branches" : "No match",
+                logTab.branchesListRoot.Add(UnitGitUi.Text(string.IsNullOrWhiteSpace(logTab.branchSearch) ? "No " + title.ToLowerInvariant() + " branches" : "No match",
                     "unitgit-branch-empty"));
                 return;
             }
@@ -97,7 +96,7 @@ namespace Orbiters.UnitGit.Editor
                 if (!string.IsNullOrEmpty(group.Key))
                 {
                     string folderPrefKey = GetFoldoutPrefKey("BranchFolder." + title, group.Key);
-                    bool folderExpanded = GetFoldoutExpanded(folderPrefKey, true) || !string.IsNullOrWhiteSpace(branchSearch);
+                    bool folderExpanded = GetFoldoutExpanded(folderPrefKey, true) || !string.IsNullOrWhiteSpace(logTab.branchSearch);
                     var folder = BranchTreeRow(UnitGitIconKind.Folder, group.Key, group.Count().ToString(), 1, false, "ug-branch-row--folder");
                     folder.RegisterCallback<MouseDownEvent>(evt =>
                     {
@@ -105,13 +104,13 @@ namespace Orbiters.UnitGit.Editor
                         EditorPrefs.SetBool(folderPrefKey, !GetFoldoutExpanded(folderPrefKey, true));
                         RefreshBranchesPane();
                     });
-                    branchesListRoot.Add(folder);
+                    logTab.branchesListRoot.Add(folder);
                     if (!folderExpanded) continue;
                     depth = 2;
                 }
 
                 foreach (UnitGitBranch branch in group.OrderBy(branch => branch.Name, StringComparer.OrdinalIgnoreCase))
-                    branchesListRoot.Add(BuildBranchRow(branch, depth));
+                    logTab.branchesListRoot.Add(BuildBranchRow(branch, depth));
             }
         }
 
@@ -134,8 +133,8 @@ namespace Orbiters.UnitGit.Editor
         private bool MatchesBranchSearch(UnitGitBranch branch)
         {
             return branch != null &&
-                   (string.IsNullOrWhiteSpace(branchSearch) ||
-                    branch.Name.IndexOf(branchSearch.Trim(), StringComparison.OrdinalIgnoreCase) >= 0);
+                   (string.IsNullOrWhiteSpace(logTab.branchSearch) ||
+                    branch.Name.IndexOf(logTab.branchSearch.Trim(), StringComparison.OrdinalIgnoreCase) >= 0);
         }
 
         private static string GetBranchFolder(UnitGitBranch branch)
@@ -163,7 +162,7 @@ namespace Orbiters.UnitGit.Editor
 
         private VisualElement BuildBranchRow(UnitGitBranch branch, int depth)
         {
-            bool filtered = logFilter.Branch == branch.Name;
+            bool filtered = logTab.logFilter.Branch == branch.Name;
             var row = BranchTreeRow(branch.IsCurrent ? UnitGitIconKind.Star : UnitGitIconKind.Branch, GetBranchLeafName(branch),
                 branch.IsRemote ? branch.ShortHash : (string.IsNullOrWhiteSpace(branch.Upstream) ? branch.ShortHash : branch.Upstream), depth, filtered,
                 branch.IsCurrent ? "unitgit-branch-row--current" : null);
@@ -175,13 +174,13 @@ namespace Orbiters.UnitGit.Editor
             {
                 if (evt.button == 1)
                 {
-                    selectedBranch = branch;
+                    logTab.selectedBranch = branch;
                     ShowBranchContextMenu(branch);
                     evt.StopPropagation();
                     return;
                 }
                 if (evt.button != 0) return;
-                selectedBranch = branch;
+                logTab.selectedBranch = branch;
                 if (evt.clickCount == 2 && !branch.IsCurrent)
                 {
                     CheckoutSelectedBranch();

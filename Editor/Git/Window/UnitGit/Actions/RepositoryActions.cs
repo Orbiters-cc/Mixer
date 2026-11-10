@@ -41,8 +41,8 @@ namespace Orbiters.UnitGit.Editor
         {
             string defaultName = "feature/new-branch";
             // The prompt is modeless: branch from the commit selected when it opened, not whatever is selected on submit.
-            string startPoint = selectedCommit != null && !string.IsNullOrWhiteSpace(selectedCommit.FullHash)
-                ? selectedCommit.FullHash
+            string startPoint = logTab.selectedCommit != null && !string.IsNullOrWhiteSpace(logTab.selectedCommit.FullHash)
+                ? logTab.selectedCommit.FullHash
                 : null;
             UnitGitBranchPromptWindow.Open(defaultName, branchName =>
                 RunAction("create branch " + branchName, () => gitService.CreateBranch(branchName, startPoint)));
@@ -50,7 +50,7 @@ namespace Orbiters.UnitGit.Editor
 
         private void UpdateSelectedBranch()
         {
-            UnitGitBranch branch = selectedBranch;
+            UnitGitBranch branch = logTab.selectedBranch;
             if (branch == null)
             {
                 AppendConsole("update branch", "Select a branch first.");
@@ -63,7 +63,7 @@ namespace Orbiters.UnitGit.Editor
 
         private void DeleteSelectedBranch()
         {
-            UnitGitBranch branch = selectedBranch;
+            UnitGitBranch branch = logTab.selectedBranch;
             if (branch == null)
             {
                 AppendConsole("delete branch", "Select a branch first.");

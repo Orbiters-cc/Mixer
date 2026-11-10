@@ -30,7 +30,7 @@ namespace Orbiters.UnitGit.Editor
         // Actions run on a worker thread: pass the confirmed selection, never read the live field there.
         private void MergeSelectedBranch()
         {
-            UnitGitBranch branch = selectedBranch;
+            UnitGitBranch branch = logTab.selectedBranch;
             if (branch == null || branch.IsCurrent)
             {
                 ShowToast(branch == null ? "Select a branch first." : "Choose a branch other than the current one.", error: true);
@@ -49,7 +49,7 @@ namespace Orbiters.UnitGit.Editor
         // Git refuses to check out over local changes it would lose: nothing to confirm.
         private void CheckoutSelectedBranch()
         {
-            UnitGitBranch branch = selectedBranch;
+            UnitGitBranch branch = logTab.selectedBranch;
             if (branch == null)
             {
                 ShowToast("Select a branch first.", error: true);

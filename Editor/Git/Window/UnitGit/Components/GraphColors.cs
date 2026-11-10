@@ -49,9 +49,9 @@ namespace Orbiters.UnitGit.Editor
                 return decorationBranch;
             }
 
-            if (selectedBranch != null && !string.IsNullOrWhiteSpace(selectedBranch.Name))
+            if (logTab.selectedBranch != null && !string.IsNullOrWhiteSpace(logTab.selectedBranch.Name))
             {
-                return selectedBranch.Name;
+                return logTab.selectedBranch.Name;
             }
 
             return snapshot != null ? snapshot.CurrentBranch : "HEAD";
