@@ -444,9 +444,9 @@ namespace Orbiters.Logger.Editor.Tests
             long room = store.MaxTextChars - store.MaxTextChars / 8 - store.Texts.TotalChars;
             long used = 0;
             int expected = rows.Count;
-            while (expected > 0 && used + store.InternCost(rows[expected - 1].Condition, string.Empty, null) <= room)
+            while (expected > 0 && used + store.InternCost(rows[expected - 1].Condition, string.Empty, LogVariant.Log) <= room)
             {
-                used += store.InternCost(rows[expected - 1].Condition, string.Empty, null);
+                used += store.InternCost(rows[expected - 1].Condition, string.Empty, LogVariant.Log);
                 expected--;
             }
 
@@ -480,25 +480,40 @@ namespace Orbiters.Logger.Editor.Tests
         }
 
         // Old long messages followed by newer short ones sharing their first two lines: the import keeps the oldest row
-        // of each (the long one), so the measure must count that one, not the newest it meets first.
+        // of each (the long one), so the measure must count that one. On this console the previous rule (the cost of the
+        // newest row of each signature, the first one met going back) accepts every row, long ones included, and the
+        // import would then go past the budget; the rule in use starts after some of them.
         [Test]
         public void TheMeasureCountsTheRowTheImportKeeps()
         {
             var rows = new List<Row>();
             int seconds = 36000;
-            for (int k = 0; k < 30; k++)
+            const int signatures = 10;
+            for (int k = 0; k < signatures; k++)
             {
                 rows.Add(new Row { Condition = "Sig " + k + " first\nSig " + k + " second\n" + new string('x', 8000), Seconds = seconds++ });
             }
 
-            for (int i = 0; i < 600; i++)
+            for (int i = 0; i < 430; i++)
             {
-                rows.Add(i % 2 == 0
-                    ? new Row { Condition = "Sig " + (i / 2 % 30) + " first\nSig " + (i / 2 % 30) + " second\nshort " + i, Seconds = seconds++ }
-                    : new Row { Condition = "Filler " + i + " " + new string('f', 400), Seconds = seconds++ });
+                rows.Add(new Row { Condition = "Filler " + i + " " + new string('f', 400), Seconds = seconds++ });
+            }
+
+            for (int k = 0; k < signatures; k++)
+            {
+                rows.Add(new Row { Condition = "Sig " + k + " first\nSig " + k + " second\nshort", Seconds = seconds++ });
             }
 
             var store = new LogStore(LogStore.HistoryRoom) { MaxTextChars = 1 << 18, CompactInBackground = true };
+            int previous = MeasureStart(store, rows, newestOnly: true);
+            int current = MeasureStart(store, rows, newestOnly: false);
+            Assert.AreEqual(0, previous, "the previous rule accepts every row, the long ones included");
+            Assert.Greater(current, 0, "the rule in use leaves some long rows out");
+            Assert.Less(current, signatures, "and keeps others: a signature crosses the boundary");
+            // Signature `current`: its long row is inside the kept range, its newer short row was measured first.
+            int shortRow = rows.FindIndex(r => r.Condition == "Sig " + current + " first\nSig " + current + " second\nshort");
+            Assert.Greater(shortRow, current);
+
             var import = NewImport(rows, 0, rows.Count);
             import.Now = EditorStart.Date.AddDays(1).AddHours(12);
             int compactions = store.CompactionsStarted;
@@ -510,9 +525,116 @@ namespace Orbiters.Logger.Editor.Tests
             }
 
             Assert.IsFalse(import.Failed);
+            Assert.AreEqual(current, import.From, "the import starts where the rule in use says");
             Assert.AreEqual(compactions, store.CompactionsStarted, "no compaction started");
             Assert.LessOrEqual(store.Texts.TotalChars, store.MaxTextChars, "within the budget: nothing to trim");
             Assert.AreEqual(rows.Count - import.From, store.Count, "every row read is in the store");
+        }
+
+        // The measure over these rows by the rule in use (largest cost per signature) or the previous one (the cost of a
+        // signature's newest row only), with the store's own InternCost: the first row the import would read.
+        private static int MeasureStart(LogStore store, List<Row> rows, bool newestOnly)
+        {
+            long room = store.MaxTextChars - store.MaxTextChars / 8 - store.Texts.TotalChars;
+            long rowRoom = store.MaxOccurrences - store.MaxOccurrences / 8 - (long)store.Total;
+            var counted = new Dictionary<string, long>();
+            long used = 0;
+            long kept = 0;
+            for (int r = rows.Count - 1; r >= 0; r--)
+            {
+                var row = rows[r];
+                string signature = TextOf(row);
+                long cost = store.InternCost(row.Condition, row.Stack, UnityConsole.VariantOf(row.Mode), row.File, row.Line);
+                counted.TryGetValue(signature, out long before);
+                long extra = newestOnly ? counted.ContainsKey(signature) ? 0 : cost : Math.Max(0, cost - before);
+                if (used + extra > room || kept + 1 > rowRoom)
+                {
+                    return r + 1;
+                }
+
+                used += extra;
+                counted[signature] = before + extra;
+                kept++;
+            }
+
+            return 0;
+        }
+
+        // InternCost is never less than what Intern really adds to the texts, on random inputs: long paths, compiler
+        // messages (location in the text or given), timing and command logs, stacks with many frames, rich text, empty
+        // fields, both groupings, small and default budgets.
+        [Test]
+        public void InternCostIsNeverLessThanWhatInternAdds()
+        {
+            var random = new Random(3);
+            string Path(int length) => "Assets/" + new string('p', Math.Max(1, length)) + ".cs";
+            for (int i = 0; i < 2000; i++)
+            {
+                var store = new LogStore { MaxTextChars = random.Next(2) == 0 ? 1 << 16 : 1 << 24 };
+                if (random.Next(2) == 0)
+                {
+                    store.SetGrouping(GroupingMode.SimilarText);
+                }
+
+                string condition = random.Next(10) == 0 ? string.Empty : (random.Next(3) == 0 ? "<b>rich</b> " : string.Empty) + "Message " + random.Next(100) +
+                                   " at 0x7ff6a2b4c010 " + new string('m', random.Next(0, 5000));
+                string stack = string.Empty;
+                string file = null;
+                int line = random.Next(0, 300);
+                var variant = LogVariant.Log;
+                switch (random.Next(6))
+                {
+                    case 0:
+                        variant = LogVariant.CompileError;
+                        condition = Path(random.Next(1, 12000)) + "(" + line + ",4): error CS0103: " + condition;
+                        file = random.Next(2) == 0 ? Path(random.Next(1, 12000)) : null;
+                        break;
+                    case 1:
+                        var profile = new TimingProfile { Kind = TimingKind.ScriptReload, TotalMilliseconds = random.Next(1, 9000) };
+                        for (int p = 0; p < random.Next(0, 30); p++)
+                        {
+                            profile.Parts.Add(new TimingPart("Source " + p + new string('s', random.Next(0, 400)), "Phase", "Label " + p, random.Next(1, 500)));
+                        }
+
+                        condition = profile.Message();
+                        stack = profile.Format();
+                        break;
+                    case 2:
+                        stack = StackTraces.OutputPrefix + random.Next(1, 90) + " ms in " + Path(random.Next(1, 3000)) + "\n" + new string('o', random.Next(0, 3000));
+                        break;
+                    case 3:
+                        var frames = new StringBuilder();
+                        for (int f = 0; f < random.Next(1, 200); f++)
+                        {
+                            frames.Append("Ns.Type" + f + ":Method" + f + " () (at " + Path(random.Next(1, 4000)) + ":" + f + ")\n");
+                        }
+
+                        stack = frames.ToString();
+                        break;
+                    case 4:
+                        file = Path(random.Next(1, 12000));
+                        variant = LogVariant.Error;
+                        break;
+                    default:
+                        stack = random.Next(2) == 0 ? string.Empty : "UnityEngine.Debug:Log (object)\n";
+                        break;
+                }
+
+                long before = store.Texts.TotalChars;
+                long cost = store.InternCost(condition, stack, variant, file, line, 4);
+                store.Intern(condition, stack, variant, 0, file, line, 4);
+                long growth = store.Texts.TotalChars - before;
+                Assert.GreaterOrEqual(cost, growth, "input " + i + " (" + variant + ")");
+            }
+
+            // The reviewer's case: a one-character compiler message with a 10,000-character path, on a 65,536 budget.
+            var small = new LogStore { MaxTextChars = 1 << 16 };
+            string path = Path(10_000);
+            long start = small.Texts.TotalChars;
+            long counted = small.InternCost("x", string.Empty, LogVariant.CompileError, path, 1, 1);
+            small.Intern("x", string.Empty, LogVariant.CompileError, 0, path, 1, 1);
+            Assert.GreaterOrEqual(counted, small.Texts.TotalChars - start);
+            Assert.LessOrEqual(small.Texts.TotalChars - start, small.MaxTextChars / 4, "one log's derived texts are cut too");
         }
 
         // A console cleared and refilled to the same count, ending with the same row, between two slices of a fresh import

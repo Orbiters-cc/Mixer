@@ -414,12 +414,12 @@ namespace Orbiters.Logger.Editor
                 if (reader.TryRead(row, out var entry))
                 {
                     string stack = LogVariants.IsCompile(variant) ? string.Empty : entry.Stack;
-                    cost = store.InternCost(entry.Condition, stack, entry.File);
+                    cost = store.InternCost(entry.Condition, stack, variant, entry.File, entry.Line, entry.Column);
                     chars += (entry.Condition?.Length ?? 0) + (long)stack.Length;
                 }
                 else
                 {
-                    cost = store.InternCost(text, string.Empty, null);
+                    cost = store.InternCost(text, string.Empty, variant);
                     chars += text.Length;
                 }
 
