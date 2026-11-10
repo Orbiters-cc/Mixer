@@ -1042,6 +1042,59 @@ namespace Orbiters.Mixer.Editor.Tests
             }
         }
 
+        // One undo step holding a base stroke and the shape stroke after it: the base goes first, then the shape whole, so
+        // Blender's moving of the shapes with the base cannot move the shape's final positions again. Then the redo.
+        [Test]
+        public void AnUndoOfABaseAndAShapeStrokeSendsTheBaseFirst()
+        {
+            using (var host = MixerLinkHost.OpenPrivate(scene))
+            using (var blender = new FakeBlender(host))
+            {
+                blender.Hello();
+                blender.Pump(5, MixerLinkProtocol.FrameType.MeshData);
+                var target = MixerSession.Edit(renderer);
+                blender.Pump(0.3);
+                var doc = target.Document;
+                int v = doc.LinkWeld.Representative[0];
+                doc.Shape("Wide", create: true);
+                // Unity knows what Blender has of both layers.
+                foreach (string shown in new[] { "Wide", null, "Wide" })
+                {
+                    doc.Layer = shown;
+                    host.NotePositions(target);
+                    blender.Pump(1.0, MixerLinkProtocol.FrameType.Positions);
+                }
+                var b0 = doc.Positions[v];
+                var b1 = b0 + Vector3.forward;
+                doc.SetLayerPosition(null, v, b1);
+                var s0 = doc.GetLayerPosition("Wide", v);
+                var s1 = s0 + Vector3.up;
+                doc.SetLayerPosition("Wide", v, s1);
+                Undo.IncrementCurrentGroup();
+                Undo.SetCurrentGroupName("Mixer: base and shape");
+                MixerHistory.Push(new PositionEdit { Target = target, Label = "Test base", Layer = null, Indices = new[] { v }, Before = new[] { b0 }, After = new[] { b1 } }, joinCurrentGroup: true);
+                MixerHistory.Push(new PositionEdit { Target = target, Label = "Test shape", Layer = "Wide", Indices = new[] { v }, Before = new[] { s0 }, After = new[] { s1 } }, joinCurrentGroup: true);
+                Undo.IncrementCurrentGroup();
+                foreach (string shown in new[] { (string)null, "Wide" })
+                {
+                    doc.Layer = shown;
+                    host.NotePositions(target);
+                    blender.Pump(1.0, MixerLinkProtocol.FrameType.Positions);
+                }
+                foreach (bool undo in new[] { true, false })
+                {
+                    if (undo) Undo.PerformUndo(); else Undo.PerformRedo();
+                    var frames = PositionsOf(blender.Pump(1.0)).ToList();
+                    int baseAt = frames.FindIndex(f => f.Shape == null), shapeAt = frames.FindIndex(f => f.Shape == "Wide");
+                    Assert.That(baseAt, Is.GreaterThanOrEqualTo(0), undo ? "the undo sends the base" : "the redo sends the base");
+                    Assert.That(shapeAt, Is.GreaterThan(baseAt), "and the shape after it");
+                    Assert.That(frames[shapeAt].Indices, Is.Null, "whole");
+                    Assert.That(frames[shapeAt].Positions[0], Is.EqualTo(doc.GetLayerPosition("Wide", v)));
+                    Assert.That(doc.GetLayerPosition("Wide", v), Is.EqualTo(undo ? s0 : s1).Using<Vector3>((a, b) => (a - b).sqrMagnitude < 1e-10f ? 0 : 1));
+                }
+            }
+        }
+
         // A bone a normalised stroke takes out of a vertex entirely (to 0, or under the thousandth Unity keeps) goes to
         // Blender as 0, so Blender's copy does not keep it beside the painted bone.
         [Test]

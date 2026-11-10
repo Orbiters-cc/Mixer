@@ -807,9 +807,13 @@ namespace Orbiters.Mixer.Editor
                     }
                 }
             }
+            // The base first: Blender moves every shape with a base frame, so a shape sent before it would be moved again.
+            // A base frame makes the shapes' next frames whole (ForgetShapeLayers).
             foreach (var pair in layers)
-                foreach (string layer in pair.Value)
-                    SendLayer(pair.Key, layer.Length == 0 ? null : layer);
+            {
+                if (pair.Value.Contains("")) SendLayer(pair.Key, null);
+                foreach (string layer in pair.Value) if (layer.Length > 0) SendLayer(pair.Key, layer);
+            }
         }
 
         private static HashSet<string> LayersOf(Dictionary<EditTarget, HashSet<string>> layers, EditTarget target)
@@ -1346,6 +1350,8 @@ namespace Orbiters.Mixer.Editor
             if (leavingKeys.Count == 0) return;
             var leaving = leavingKeys.ToArray();
             leavingKeys.Clear();
+            // Bases before shapes, as in HistoryApplied.
+            Array.Sort(leaving, (a, b) => (a.Item2.Length == 0 ? 0 : 1).CompareTo(b.Item2.Length == 0 ? 0 : 1));
             foreach (var (targetId, layer) in leaving)
             {
                 positionsDue.Remove((targetId, layer));
