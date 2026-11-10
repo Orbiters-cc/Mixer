@@ -237,9 +237,18 @@ namespace Orbiters.UnitGit.Editor
         // The commit that last changed the file among the selected ones (the first in log order).
         private void OpenCommitFileDiff(string file)
         {
-            var commit = loadedSelection?.Details.FirstOrDefault(details => details.ChangedFiles.Contains(file))?.Commit ?? selectedCommit;
+            var owner = loadedSelection?.Details.FirstOrDefault(details => details.ChangedFiles.Contains(file));
+            var commit = owner?.Commit ?? selectedCommit;
             if (commit == null) return;
-            UnitGitCommitDiffWindow.Show(gitService.ProjectRoot, commit.FullHash, commit.ShortHash, commit.Subject, file);
+            // The details know the commit's parents and where a renamed file came from: the diff needs nothing else.
+            UnitGitCommitFileHint hint = owner?.Commit != null && owner.Commit.Parents != null && !string.IsNullOrEmpty(commit.ShortHash)
+                ? new UnitGitCommitFileHint
+                {
+                    ShortHash = commit.ShortHash, Parents = owner.Commit.Parents,
+                    PreviousPath = owner.OriginalPaths.TryGetValue(file, out string previous) ? previous : string.Empty
+                }
+                : null;
+            UnitGitCommitDiffWindow.Show(gitService.ProjectRoot, commit.FullHash, commit.ShortHash, commit.Subject, file, hint);
         }
 
         private VisualElement BuildCommitDetailsCard()
@@ -347,6 +356,7 @@ namespace Orbiters.UnitGit.Editor
 
         private readonly UnitGitLatestRequest<SelectionDetails> detailsRead = new UnitGitLatestRequest<SelectionDetails>();
         private readonly Dictionary<string, UnitGitCommitDetails> detailsCache = new Dictionary<string, UnitGitCommitDetails>();
+        private int detailsCacheFiles; // the files of every cached commit, kept as they are added (read on the details worker)
         private SelectionDetails loadedSelection;
         private string requestedSelection;
 
@@ -378,20 +388,29 @@ namespace Orbiters.UnitGit.Editor
                 var result = new SelectionDetails();
                 var files = new HashSet<string>(StringComparer.Ordinal);
                 var service = new UnitGitService(root) { ReadSuperseded = stale };
+                // Every commit not cached yet in one read, whatever the selection's size.
+                List<string> missing = commits.Select(commit => commit.FullHash).Where(hash => !detailsCache.ContainsKey(hash)).ToList();
+                Dictionary<string, UnitGitCommitDetails> read = missing.Count == 0
+                    ? new Dictionary<string, UnitGitCommitDetails>()
+                    : missing.Count == 1
+                        ? new Dictionary<string, UnitGitCommitDetails> { { missing[0], service.GetCommitDetails(missing[0]) } }
+                        : service.GetCommitDetails(missing);
+                if (stale())
+                    return null;
                 foreach (var commit in commits)
                 {
-                    if (stale())
-                        return null;
                     if (!detailsCache.TryGetValue(commit.FullHash, out var details))
                     {
-                        details = service.GetCommitDetails(commit.FullHash);
-                        if (stale())
-                            return null;
+                        read.TryGetValue(commit.FullHash, out details);
                         if (details != null && details.ChangedFiles.Count <= 10000)
                         {
-                            if (detailsCache.Count >= 64 || detailsCache.Values.Sum(item => item.ChangedFiles.Count) > 50000)
+                            if (detailsCache.Count >= 64 || detailsCacheFiles + details.ChangedFiles.Count > 50000)
+                            {
                                 detailsCache.Clear();
+                                detailsCacheFiles = 0;
+                            }
                             detailsCache[commit.FullHash] = details;
+                            detailsCacheFiles += details.ChangedFiles.Count;
                         }
                     }
                     if (details == null)

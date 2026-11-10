@@ -57,7 +57,7 @@ namespace Orbiters.UnitGit.Editor
                 {
                     var view = new SemanticDiffView();
                     content.Add(view);
-                    view.Load("commit|" + repo + "|" + hash + "|" + file, () => Show(repo, hash + "^:" + file), () => Show(repo, hash + ":" + file), "Before this commit", "After", file);
+                    view.Load("commit|" + repo + "|" + hash + "|" + file, () => Show(repo, hash + "^", file), () => Show(repo, hash, file), "Before this commit", "After", file);
                     return;
                 }
                 var model = new ModelCompareView("Before this commit", "After");
@@ -88,10 +88,9 @@ namespace Orbiters.UnitGit.Editor
         }
 
         // A file as it was at a revision; empty when it did not exist there (added, deleted, first commit).
-        private static string Show(string repo, string revisionPath)
+        private static string Show(string repo, string revision, string file)
         {
-            var result = new UnitGitService(repo).RunGit(UnitGitService.DefaultTimeoutMilliseconds, "--literal-pathspecs", "show", revisionPath);
-            return result.Success ? result.StandardOutput : string.Empty;
+            return new UnitGitService(repo).ReadFileAt(revision, file) ?? string.Empty;
         }
     }
 }

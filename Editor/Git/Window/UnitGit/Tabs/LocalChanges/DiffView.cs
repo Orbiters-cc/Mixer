@@ -108,8 +108,9 @@ namespace Orbiters.UnitGit.Editor
             string root = gitService.ProjectRoot;
             string path = change.Path;
             string full = Path.Combine(root, path);
+            string head = HeadRevision();
             view.Load(LocalKey("model", change), root, path,
-                destination => !change.IsUntracked && new UnitGitService(root).WriteBlob("HEAD:" + path, destination),
+                destination => !change.IsUntracked && new UnitGitService(root).WriteBlob(head + ":" + path, destination),
                 destination =>
                 {
                     if (!File.Exists(full)) return false;
@@ -122,6 +123,9 @@ namespace Orbiters.UnitGit.Editor
             scroll.Add(view);
             return scroll;
         }
+
+        // The commit the Changes list was read against, by id (a kept-alive reader answers it), else "HEAD".
+        private string HeadRevision() => snapshot != null && !string.IsNullOrEmpty(snapshot.Head) ? snapshot.Head : "HEAD";
 
         // These exact versions: the file on disk and the commit HEAD points to.
         private string LocalKey(string kind, UnitGitStatusEntry change)
@@ -140,13 +144,9 @@ namespace Orbiters.UnitGit.Editor
             string root = gitService.ProjectRoot;
             string path = change.Path;
             string full = Path.Combine(root, path);
+            string head = HeadRevision();
             view.Load(LocalKey("scene", change),
-                () =>
-                {
-                    if (change.IsUntracked) return string.Empty;
-                    var result = new UnitGitService(root).RunGit(UnitGitService.DefaultTimeoutMilliseconds, "--literal-pathspecs", "show", "HEAD:" + path);
-                    return result.Success ? result.StandardOutput : string.Empty;
-                },
+                () => change.IsUntracked ? string.Empty : new UnitGitService(root).ReadFileAt(head, path) ?? string.Empty,
                 () => File.Exists(full) ? File.ReadAllText(full) : string.Empty,
                 "Repository", "Current version", path);
             return view;

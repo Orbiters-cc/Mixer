@@ -754,6 +754,97 @@ namespace Orbiters.UnitGit.Editor
             return ParseCommitDetails(result.StandardOutput);
         }
 
+        /// <summary>
+        /// The details of several commits (a multi-selection in the Log) from one "git log --no-walk=unsorted --stdin": the
+        /// same fields and file lists as <see cref="GetCommitDetails(string)"/> gives one by one (merges as their combined
+        /// change, as git show lists it). Commits Git could not read are left out.
+        /// </summary>
+        internal Dictionary<string, UnitGitCommitDetails> GetCommitDetails(IList<string> fullHashes)
+        {
+            var found = new Dictionary<string, UnitGitCommitDetails>(StringComparer.Ordinal);
+            List<string> hashes = (fullHashes ?? Array.Empty<string>())
+                .Where(hash => !string.IsNullOrWhiteSpace(hash) && !hash.Trim().StartsWith("-", StringComparison.Ordinal))
+                .Select(hash => hash.Trim()).Distinct(StringComparer.Ordinal).ToList();
+            if (hashes.Count == 0) return found;
+            GitCommandResult result = null;
+            foreach (bool withTrailers in TrailersSupported == false ? new[] { false } : new[] { true, false })
+            {
+                bool trailers = withTrailers;
+                result = RunGitWithInput(DefaultTimeoutMilliseconds, stream =>
+                    {
+                        byte[] bytes = Utf8.GetBytes(string.Join("\n", hashes) + "\n");
+                        stream.Write(bytes, 0, bytes.Length);
+                    }, "log", "--no-walk=unsorted", "--stdin", "-z", "--no-ext-diff", "--name-status", "-M", "--cc",
+                    "--date=format-local:%m/%d/%Y %I:%M %p", "--pretty=format:" + CommitDetailsFormat(trailers));
+                if (result.Success || TrailersSupported == true || (ReadSuperseded?.Invoke() ?? false)) break;
+            }
+
+            if (result == null || !result.Success) return found;
+            foreach (UnitGitCommitDetails details in ParseCommitDetailsList(result.StandardOutput, hashes))
+                found[details.Commit.FullHash] = details;
+            return found;
+        }
+
+        /// <summary>
+        /// "git log -z --name-status" of several commits: each commit's header (<see cref="CommitDetailsFormat"/>, which
+        /// contains its full id as second field), then "status NUL path NUL" per file ("R100 NUL old NUL new NUL" for a
+        /// rename). A header is told from a path by the id of the commit expected next.
+        /// </summary>
+        internal static List<UnitGitCommitDetails> ParseCommitDetailsList(string output, IList<string> hashes)
+        {
+            var list = new List<UnitGitCommitDetails>();
+            string[] tokens = (output ?? string.Empty).Split('\0');
+            UnitGitCommitDetails current = null;
+            int next = 0;
+            for (int i = 0; i < tokens.Length; i++)
+            {
+                string token = tokens[i];
+                if (next < hashes.Count && IsDetailsHeader(token, hashes, ref next))
+                {
+                    current = ParseCommitDetails(token);
+                    if (current?.Commit != null) list.Add(current);
+                    else current = null;
+                    continue;
+                }
+
+                string status = token.TrimStart('\n');
+                if (current == null || status.Length == 0) continue;
+                bool twoPaths = status[0] == 'R' || status[0] == 'C';
+                if (i + 1 >= tokens.Length) break;
+                string path = tokens[++i];
+                if (twoPaths && i + 1 < tokens.Length)
+                {
+                    string previous = path;
+                    path = tokens[++i];
+                    if (!current.FileStatus.ContainsKey(path)) current.OriginalPaths[path] = previous;
+                }
+
+                if (path.Length == 0 || current.FileStatus.ContainsKey(path)) continue;
+                current.ChangedFiles.Add(path);
+                current.FileStatus[path] = status[0];
+            }
+
+            return list;
+        }
+
+        // The header of one of the commits asked for (Git keeps their order; a commit it skipped is passed over).
+        private static bool IsDetailsHeader(string token, IList<string> hashes, ref int next)
+        {
+            int first = token.IndexOf(FieldSeparator);
+            if (first < 0) return false;
+            int second = token.IndexOf(FieldSeparator, first + 1);
+            if (second < 0) return false;
+            string hash = token.Substring(first + 1, second - first - 1);
+            for (int i = next; i < hashes.Count; i++)
+            {
+                if (!string.Equals(hashes[i], hash, StringComparison.Ordinal)) continue;
+                next = i + 1;
+                return true;
+            }
+
+            return false;
+        }
+
         // Header fields, then the body, then a NUL: the body may span lines, and the file list follows it.
         private static string CommitDetailsFormat(bool withTrailers)
         {
@@ -812,6 +903,7 @@ namespace Orbiters.UnitGit.Editor
 
                 details.ChangedFiles.Add(path);
                 details.FileStatus[path] = status;
+                if ((status == 'R' || status == 'C') && parts.Length >= 3) details.OriginalPaths[path] = UnquotePath(parts[1]);
             }
 
             return details;
@@ -1541,7 +1633,9 @@ namespace Orbiters.UnitGit.Editor
         /// </summary>
         public UnitGitDiff GetCommitFileDiff(string fullHash, string path) => GetCommitFileDiff(fullHash, path, UnitGitWhitespace.None);
 
-        public UnitGitDiff GetCommitFileDiff(string fullHash, string path, UnitGitWhitespace whitespace)
+        /// <param name="hint">What the Log knows of the commit and the file (its details): with it, the diff is one read.
+        /// Without it, the commit's parents and a rename source are read first.</param>
+        public UnitGitDiff GetCommitFileDiff(string fullHash, string path, UnitGitWhitespace whitespace, UnitGitCommitFileHint hint = null)
         {
             var diff = new UnitGitDiff { Path = path ?? string.Empty, LeftTitle = "Before", RightTitle = ShortHash(fullHash) };
             if (string.IsNullOrWhiteSpace(fullHash) || fullHash.Trim().StartsWith("-", StringComparison.Ordinal) || string.IsNullOrWhiteSpace(path))
@@ -1551,28 +1645,44 @@ namespace Orbiters.UnitGit.Editor
             }
 
             string hash = fullHash.Trim();
-            GitCommandResult commit = RunGit(DefaultTimeoutMilliseconds, "show", "-s", "--format=%h%x1f%p%x1f%P", hash);
-            string[] fields = (SplitLines(commit.StandardOutput).FirstOrDefault(line => line.IndexOf(FieldSeparator) >= 0) ?? string.Empty)
-                .Split(FieldSeparator);
-            if (!commit.Success || fields.Length < 3)
+            string[] parents;
+            if (hint != null && hint.Parents != null && !string.IsNullOrEmpty(hint.ShortHash))
             {
-                AddDiffMessage(diff, commit.Success ? "Could not read commit " + ShortHash(hash) + "." : commit.Message);
-                return diff;
+                parents = hint.Parents;
+                diff.RightTitle = hint.ShortHash;
+                // Git abbreviates every id of a repository to the same length (longer only to tell two apart).
+                if (parents.Length > 0)
+                    diff.LeftTitle = parents[0].Substring(0, Math.Min(parents[0].Length, Math.Max(hint.ShortHash.Length, 4)));
+            }
+            else
+            {
+                GitCommandResult commit = RunGit(DefaultTimeoutMilliseconds, "show", "-s", "--format=%h%x1f%p%x1f%P", hash);
+                string[] fields = (SplitLines(commit.StandardOutput).FirstOrDefault(line => line.IndexOf(FieldSeparator) >= 0) ?? string.Empty)
+                    .Split(FieldSeparator);
+                if (!commit.Success || fields.Length < 3)
+                {
+                    AddDiffMessage(diff, commit.Success ? "Could not read commit " + ShortHash(hash) + "." : commit.Message);
+                    return diff;
+                }
+
+                parents = ParseParents(fields[2]);
+                string[] shortParents = ParseParents(fields[1]);
+                diff.RightTitle = fields[0];
+                if (parents.Length > 0)
+                {
+                    diff.LeftTitle = shortParents.Length > 0 ? shortParents[0] : ShortHash(parents[0]);
+                }
             }
 
-            string[] parents = ParseParents(fields[2]);
-            string[] shortParents = ParseParents(fields[1]);
-            diff.RightTitle = fields[0];
-            if (parents.Length > 0)
-            {
-                diff.LeftTitle = shortParents.Length > 0 ? shortParents[0] : ShortHash(parents[0]);
-            }
-
-            GitCommandResult size = RunGit(DefaultTimeoutMilliseconds, "--literal-pathspecs", "cat-file", "-s", hash + ":" + path);
-            string context = ContextArgument(size.Success && long.TryParse(size.StandardOutput.Trim(), out long bytes) ? bytes : 0);
-            GitCommandResult result = ReadCommitFileDiff(hash, parents, whitespace, context, path);
-            string previousPath = string.Empty;
-            if (result.Success && parents.Length > 0 && AddsFile(result.StandardOutput) && !(ReadSuperseded?.Invoke() ?? false))
+            string context = ContextArgument(CommittedSize(hash + ":" + path));
+            string previousPath = hint?.PreviousPath ?? string.Empty;
+            GitCommandResult result = previousPath.Length > 0
+                ? ReadCommitFileDiff(hash, parents, whitespace, context, previousPath, path)
+                : ReadCommitFileDiff(hash, parents, whitespace, context, path);
+            // The details found renames already (the same detection, against the first parent), except on a merge, whose
+            // details list the combined change.
+            bool renameKnown = hint != null && parents.Length < 2;
+            if (!renameKnown && result.Success && parents.Length > 0 && AddsFile(result.StandardOutput) && !(ReadSuperseded?.Invoke() ?? false))
             {
                 // A path limit hides renames from Git: look up where an added file came from and compare the two paths.
                 previousPath = FindRenameSource(parents[0], hash, path);
@@ -1595,6 +1705,16 @@ namespace Orbiters.UnitGit.Editor
             }
 
             return diff;
+        }
+
+        // A committed file's size, from the kept-alive object reader when it can answer (0 when unknown).
+        private long CommittedSize(string name)
+        {
+            UnitGitObjects.Answer answer = UnitGitObjects.For(ProjectRoot).Describe(name, out _, out long size);
+            if (answer == UnitGitObjects.Answer.Found) return size;
+            if (answer == UnitGitObjects.Answer.Missing) return 0;
+            GitCommandResult read = RunGit(DefaultTimeoutMilliseconds, "--literal-pathspecs", "cat-file", "-s", name);
+            return read.Success && long.TryParse(read.StandardOutput.Trim(), out long bytes) ? bytes : 0;
         }
 
         private GitCommandResult ReadCommitFileDiff(string hash, string[] parents, UnitGitWhitespace whitespace, string context, params string[] paths)

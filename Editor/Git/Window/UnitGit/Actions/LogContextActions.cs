@@ -313,6 +313,9 @@ namespace Orbiters.UnitGit.Editor
         private static int GetChangedFileCountForCommits(UnitGitService service, IEnumerable<UnitGitCommit> commits)
         {
             var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            // All selected commits in one read.
+            Dictionary<string, UnitGitCommitDetails> read = service.GetCommitDetails(
+                commits.Where(commit => commit != null && !string.IsNullOrWhiteSpace(commit.FullHash)).Select(commit => commit.FullHash).ToList());
 
             foreach (UnitGitCommit commit in commits)
             {
@@ -321,7 +324,7 @@ namespace Orbiters.UnitGit.Editor
                     continue;
                 }
 
-                UnitGitCommitDetails details = service.GetCommitDetails(commit.FullHash);
+                read.TryGetValue(commit.FullHash, out UnitGitCommitDetails details);
                 if (details == null || details.ChangedFiles == null)
                 {
                     continue;

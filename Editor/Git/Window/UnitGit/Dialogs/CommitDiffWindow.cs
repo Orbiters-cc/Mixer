@@ -10,13 +10,20 @@ namespace Orbiters.UnitGit.Editor
     internal sealed class UnitGitCommitDiffWindow : EditorWindow
     {
         [SerializeField] private string root, hash, shortHash, subject, path;
+        // What the Log knew of the commit and the file, so the diff is one read (see UnitGitCommitFileHint).
+        [SerializeField] private bool hinted;
+        [SerializeField] private string[] parents;
+        [SerializeField] private string previousPath;
         private UnitGitDiffViewer viewer;
         private Label count;
         private string search = string.Empty;
 
-        internal static void Show(string projectRoot, string fullHash, string shortHash, string subject, string file)
+        internal static void Show(string projectRoot, string fullHash, string shortHash, string subject, string file, UnitGitCommitFileHint hint = null)
         {
             var window = GetWindow<UnitGitCommitDiffWindow>();
+            window.hinted = hint != null;
+            window.parents = hint?.Parents;
+            window.previousPath = hint?.PreviousPath ?? string.Empty;
             window.root = projectRoot;
             window.hash = fullHash;
             window.shortHash = shortHash;
@@ -90,11 +97,14 @@ namespace Orbiters.UnitGit.Editor
         private void Load()
         {
             string projectRoot = root, commit = hash, file = path;
+            UnitGitCommitFileHint hint = hinted && parents != null
+                ? new UnitGitCommitFileHint { ShortHash = shortHash ?? string.Empty, Parents = parents, PreviousPath = previousPath ?? string.Empty }
+                : null;
             var target = viewer;
             var whitespace = UnitGitDiffViewer.Whitespace;
             Task.Run(() =>
                 {
-                    var diff = new UnitGitService(projectRoot).GetCommitFileDiff(commit, file, whitespace);
+                    var diff = new UnitGitService(projectRoot).GetCommitFileDiff(commit, file, whitespace, hint);
                     UnitGitWindow.PrepareDiff(diff);
                     return diff;
                 })

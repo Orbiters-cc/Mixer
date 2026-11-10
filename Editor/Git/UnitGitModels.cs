@@ -233,6 +233,19 @@ namespace Orbiters.UnitGit.Editor
         public List<string> ChangedFiles = new List<string>(); // renamed and copied files by their new path
         // Status letter of each changed path: A, M, D, R, C or T (for merges, the change against the first parent).
         public Dictionary<string, char> FileStatus = new Dictionary<string, char>(StringComparer.Ordinal);
+        // The previous path of each renamed or copied file (by its new path).
+        public Dictionary<string, string> OriginalPaths = new Dictionary<string, string>(StringComparer.Ordinal);
+    }
+
+    /// <summary>
+    /// What the Log already knows about one file of a commit, so its diff needs no read to find it again: the commit's
+    /// parents and short id, and where the file was before (empty: not renamed).
+    /// </summary>
+    internal sealed class UnitGitCommitFileHint
+    {
+        public string ShortHash = string.Empty;
+        public string[] Parents = Array.Empty<string>();
+        public string PreviousPath = string.Empty;
     }
 
     /// <summary>Narrows the history: one branch instead of all refs, commits by one author, commits since a date.</summary>
