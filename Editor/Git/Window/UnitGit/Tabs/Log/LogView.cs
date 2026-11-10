@@ -157,7 +157,7 @@ namespace Orbiters.UnitGit.Editor
         {
             logTab.logItems.Clear();
             if (snapshot == null) return;
-            var graph = UnitGitCommitGraph.Layout(snapshot.Commits, out int lanes);
+            List<UnitGitCommitGraph.Row> graph = LayOutGraph(snapshot.Commits, out int lanes);
             logTab.graphWidth = UnitGitGraphCell.Inset * 2 + (Math.Min(lanes, 10) - 1) * UnitGitGraphCell.LaneWidth + 6f;
             UnitGitCommitGraph.Row previous = null;
             for (int i = 0; i < snapshot.Commits.Count; i++)
@@ -169,6 +169,30 @@ namespace Orbiters.UnitGit.Editor
                 logTab.logItems.Add(new LogItem { Commit = commit, Graph = graph[i] });
                 previous = graph[i];
             }
+        }
+
+        // The graph rows for these commits, continuing the last layout when the history only grew at its end ("load more",
+        // a refresh that read the same history). The rows depend on the commit ids in order and nothing else, since an
+        // id fixes its parents; whether a row is HEAD comes from its commit's decorations, read again on every build.
+        private List<UnitGitCommitGraph.Row> LayOutGraph(IList<UnitGitCommit> commits, out int lanes)
+        {
+            List<string> laidOut = logTab.graphHashes;
+            bool continues = logTab.graphBuilder != null && laidOut.Count <= commits.Count;
+            for (int i = 0; continues && i < laidOut.Count; i++) continues = commits[i].FullHash == laidOut[i];
+            if (!continues)
+            {
+                logTab.graphBuilder = new UnitGitCommitGraph.Builder();
+                logTab.graphRows.Clear();
+                laidOut.Clear();
+            }
+            for (int i = 0; i < laidOut.Count; i++) logTab.graphRows[i].Head = UnitGitCommitGraph.IsHead(commits[i].Decorations);
+            for (int i = laidOut.Count; i < commits.Count; i++)
+            {
+                logTab.graphRows.Add(logTab.graphBuilder.Add(commits[i]));
+                laidOut.Add(commits[i].FullHash);
+            }
+            lanes = logTab.graphBuilder.Lanes;
+            return logTab.graphRows;
         }
 
         // ---- Rows ----------------------------------------------------------------------------------------------------

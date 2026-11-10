@@ -31,20 +31,43 @@ namespace Orbiters.UnitGit.Editor
         /// <summary>One row per commit, in the given (newest first) order, and the widest row's lane count.</summary>
         internal static List<Row> Layout(IList<UnitGitCommit> commits, out int lanes)
         {
+            var builder = new Builder();
             var rows = new List<Row>(commits.Count);
-            var expected = new List<string>();
-            var colors = new List<int>();
-            int nextColor = 0;
-            lanes = 1;
-            foreach (var commit in commits)
+            foreach (var commit in commits) rows.Add(builder.Add(commit));
+            lanes = builder.Lanes;
+            return rows;
+        }
+
+        /// <summary>
+        /// The layout one commit after the other (newest first), so rows read later continue it instead of starting over.
+        /// Each row costs its parents plus the lanes it draws: the lowest lane waiting for a commit comes from a per-commit
+        /// index and the lowest free lane from a sorted set, instead of searching the lanes for each commit and parent.
+        /// </summary>
+        internal sealed class Builder
+        {
+            // expected[i]: the commit lane i waits for (null: free); colors[i]: its line colour.
+            private readonly List<string> expected = new List<string>();
+            private readonly List<int> colors = new List<int>();
+            private readonly Dictionary<string, List<int>> lanesWaitingFor = new Dictionary<string, List<int>>(StringComparer.Ordinal);
+            private readonly SortedSet<int> free = new SortedSet<int>();
+            private readonly List<bool> mergedInto = new List<bool>();
+            private int nextColor;
+
+            /// <summary>The widest row's lane count so far (at least 1).</summary>
+            internal int Lanes { get; private set; } = 1;
+
+            /// <summary>How many commits were added.</summary>
+            internal int Count { get; private set; }
+
+            internal Row Add(UnitGitCommit commit)
             {
+                Count++;
+                string hash = commit.FullHash;
                 var row = new Row();
-                int lane = expected.IndexOf(commit.FullHash);
-                bool continued = lane >= 0;
-                if (!continued)
+                int lane = LowestWaitingFor(hash);
+                if (lane < 0)
                 {
-                    lane = expected.IndexOf(null);
-                    if (lane < 0) { lane = expected.Count; expected.Add(null); colors.Add(0); }
+                    lane = TakeFreeLane();
                     colors[lane] = nextColor++;
                 }
                 row.Lane = lane;
@@ -55,43 +78,86 @@ namespace Orbiters.UnitGit.Editor
                 for (int i = 0; i < expected.Count; i++)
                 {
                     if (expected[i] == null) continue;
-                    if (expected[i] == commit.FullHash) row.Top.Add(new Edge(i, lane, colors[i]));
+                    if (expected[i] == hash) row.Top.Add(new Edge(i, lane, colors[i]));
                     else row.Top.Add(new Edge(i, i, colors[i]));
                 }
-                for (int i = 0; i < expected.Count; i++)
-                    if (i != lane && expected[i] == commit.FullHash) expected[i] = null;
+                if (lanesWaitingFor.TryGetValue(hash, out List<int> waiting))
+                    foreach (int i in waiting.ToArray())
+                        if (i != lane) Set(i, null);
 
                 // Below the dot: the first parent keeps the lane; others join a lane already waiting for them, or open one.
                 var parents = commit.Parents ?? Array.Empty<string>();
-                expected[lane] = parents.Length > 0 ? parents[0] : null;
+                Set(lane, parents.Length > 0 ? parents[0] : null);
+                while (mergedInto.Count < expected.Count) mergedInto.Add(false);
                 for (int p = 1; p < parents.Length; p++)
                 {
-                    int target = expected.IndexOf(parents[p]);
+                    int target = LowestWaitingFor(parents[p]);
                     if (target < 0)
                     {
-                        target = expected.IndexOf(null);
-                        if (target < 0) { target = expected.Count; expected.Add(null); colors.Add(0); }
-                        expected[target] = parents[p];
+                        target = TakeFreeLane();
+                        Set(target, parents[p]);
                         colors[target] = nextColor++;
                     }
+                    while (mergedInto.Count < expected.Count) mergedInto.Add(false);
+                    mergedInto[target] = true;
                     row.Bottom.Add(new Edge(lane, target, colors[target]));
                 }
                 for (int i = 0; i < expected.Count; i++)
                 {
                     if (expected[i] == null) continue;
                     if (i == lane) row.Bottom.Add(new Edge(lane, lane, colors[lane]));
-                    else if (!row.Bottom.Exists(edge => edge.To == i && edge.From == lane)) row.Bottom.Add(new Edge(i, i, colors[i]));
+                    else if (!mergedInto[i]) row.Bottom.Add(new Edge(i, i, colors[i]));
                 }
-                while (expected.Count > 0 && expected[expected.Count - 1] == null) { expected.RemoveAt(expected.Count - 1); colors.RemoveAt(colors.Count - 1); }
+                foreach (var edge in row.Bottom)
+                    if (edge.From == lane && edge.To < mergedInto.Count) mergedInto[edge.To] = false;
+                while (expected.Count > 0 && expected[expected.Count - 1] == null)
+                {
+                    free.Remove(expected.Count - 1);
+                    expected.RemoveAt(expected.Count - 1);
+                    colors.RemoveAt(colors.Count - 1);
+                }
 
                 int width = lane + 1;
                 foreach (var edge in row.Top) width = Math.Max(width, Math.Max(edge.From, edge.To) + 1);
                 foreach (var edge in row.Bottom) width = Math.Max(width, Math.Max(edge.From, edge.To) + 1);
                 row.Width = width;
-                lanes = Math.Max(lanes, width);
-                rows.Add(row);
+                Lanes = Math.Max(Lanes, width);
+                return row;
             }
-            return rows;
+
+            private int LowestWaitingFor(string hash)
+            {
+                if (hash == null || !lanesWaitingFor.TryGetValue(hash, out List<int> lanes) || lanes.Count == 0) return -1;
+                int lowest = lanes[0];
+                for (int i = 1; i < lanes.Count; i++) lowest = Math.Min(lowest, lanes[i]);
+                return lowest;
+            }
+
+            // The lowest free lane, or a new one at the end (free, colour 0, as the old layout added it).
+            private int TakeFreeLane()
+            {
+                if (free.Count > 0) return free.Min;
+                expected.Add(null);
+                colors.Add(0);
+                free.Add(expected.Count - 1);
+                return expected.Count - 1;
+            }
+
+            private void Set(int lane, string hash)
+            {
+                string old = expected[lane];
+                if (old == hash) return;
+                if (old != null && lanesWaitingFor.TryGetValue(old, out List<int> was))
+                {
+                    was.Remove(lane);
+                    if (was.Count == 0) lanesWaitingFor.Remove(old);
+                }
+                expected[lane] = hash;
+                if (hash == null) { free.Add(lane); return; }
+                free.Remove(lane);
+                if (!lanesWaitingFor.TryGetValue(hash, out List<int> now)) lanesWaitingFor[hash] = now = new List<int>(1);
+                now.Add(lane);
+            }
         }
 
         /// <summary>

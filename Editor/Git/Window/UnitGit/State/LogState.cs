@@ -38,6 +38,10 @@ namespace Orbiters.UnitGit.Editor
         internal ListView logList;
         internal Label logCountLabel;
         internal float graphWidth = 40f;
+        // The commit graph laid out so far, and the commit ids it was laid out for (see LayOutGraph).
+        internal UnitGitCommitGraph.Builder graphBuilder;
+        internal readonly List<UnitGitCommitGraph.Row> graphRows = new List<UnitGitCommitGraph.Row>();
+        internal readonly List<string> graphHashes = new List<string>();
         internal bool loadingMoreHistory;
         internal bool historyOnlyRequested;
         // The release thumbnail, kept while the same file is shown: details are rebuilt on every refresh.
