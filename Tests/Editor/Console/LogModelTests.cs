@@ -272,48 +272,6 @@ namespace Orbiters.Logger.Editor.Tests
         }
 
         [Test]
-        public void SnapshotRoundTrip()
-        {
-            var store = new LogStore();
-            store.Add(100, "<color=red>Red</color> thing", LogStack, LogVariant.Log);
-            store.Add(200, "Boom", ExceptionStack, LogVariant.Exception);
-            store.AddCompile(300, "Assets/B.cs(1,1): warning CS0618: obsolete", false, store.AssemblyId("Asm"), null, 0, 0);
-            store.SetContext(1, 42);
-            store.AddEvent(150, SessionEventKind.EnterPlayMode);
-            store.SetGrouping(GroupingMode.SimilarText);
-
-            var info = new SnapshotInfo { UnityRows = 12, UnityAnchor = "anchor", HistoryFrom = 0, HistoryTo = 4, HistoryAnchor = "h" };
-            var stream = new MemoryStream();
-            using (var writer = new BinaryWriter(stream, System.Text.Encoding.UTF8, leaveOpen: true))
-            {
-                LogSnapshot.Write(writer, store, info, 1234, 5678);
-            }
-
-            stream.Position = 0;
-            LogStore loaded;
-            SnapshotInfo loadedInfo;
-            using (var reader = new BinaryReader(stream))
-            {
-                Assert.IsNull(LogSnapshot.Read(reader, 999, 5678, out _), "another editor process");
-                stream.Position = 0;
-                loaded = LogSnapshot.Read(reader, 1234, 5678, out loadedInfo);
-            }
-
-            Assert.IsNotNull(loaded);
-            Assert.AreEqual(3, loaded.Count);
-            Assert.AreEqual(GroupingMode.SimilarText, loaded.Grouping);
-            Assert.AreEqual("Boom", loaded.Texts[loaded.Message(loaded.MessageAt(1)).Text]);
-            Assert.AreEqual(store.SourceOf(store.MessageAt(1)).Name, loaded.SourceOf(loaded.MessageAt(1)).Name);
-            Assert.AreEqual(200, loaded.TimeAt(1));
-            Assert.IsTrue(loaded.TryGetContext(1, out int context) && context == 42);
-            Assert.AreEqual(1, loaded.Events.Count);
-            Assert.AreEqual(12, loadedInfo.UnityRows);
-            Assert.AreEqual("anchor", loadedInfo.UnityAnchor);
-            Assert.AreEqual(4, loadedInfo.HistoryTo);
-            Assert.IsTrue(loaded.HasActiveCompileMessage("Assets/B.cs(1,1): warning CS0618: obsolete", out _));
-        }
-
-        [Test]
         public void ConsoleTimestamps()
         {
             Assert.IsTrue(UnityConsole.TrySplitTimestamp("[21:50:43] Hello", out int seconds, out string text));

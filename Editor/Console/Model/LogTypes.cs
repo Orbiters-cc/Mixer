@@ -42,7 +42,11 @@ namespace Orbiters.Logger.Editor
         /// <summary>A compiler message (error or warning).</summary>
         Compile = 1,
         /// <summary>A compile error fixed by a later compilation: hidden, as in Unity's console.</summary>
-        Resolved = 2
+        Resolved = 2,
+        /// <summary>A timing log: its stack is a <see cref="TimingProfile"/> (<see cref="TimingProfile.IsTimings"/>).</summary>
+        Timing = 4,
+        /// <summary>A command's log: its stack is the command's output (<see cref="StackTraces.IsOutput"/>).</summary>
+        Output = 8
     }
 
     /// <summary>How messages are gathered into groups.</summary>

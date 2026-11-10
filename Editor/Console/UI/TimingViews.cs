@@ -645,7 +645,7 @@ namespace Orbiters.Logger.Editor
             for (int i = scanned; i < source.MessageCount; i++)
             {
                 ref var message = ref source.Message(i);
-                if (message.Stack <= 0 || message.Count == 0)
+                if (message.Stack <= 0 || message.Count == 0 || (message.Flags & MessageFlags.Timing) == 0)
                 {
                     continue;
                 }

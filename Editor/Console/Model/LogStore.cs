@@ -141,6 +141,11 @@ namespace Orbiters.Logger.Editor
         public int Epoch { get; private set; }
         /// <summary>Bumps when a message's flags change (compile errors resolved): filters must be recomputed.</summary>
         public int MessagesVersion { get; private set; }
+        /// <summary>
+        /// Changes whenever an occurrence's time or message changes (clear, trim, history merge, compaction): until then
+        /// occurrences are only appended, so the session file appends them too.
+        /// </summary>
+        public long RowsGeneration { get; private set; } = NewRowsGeneration();
         public long FirstTime => count > 0 ? times[0] : 0L;
         public long LastTime => count > 0 ? times[count - 1] : 0L;
         public IReadOnlyList<SessionEvent> Events => events;
@@ -262,6 +267,7 @@ namespace Orbiters.Logger.Editor
             if (TimingProfile.IsTimings(stack))
             {
                 // A timing log: its largest shares under the message.
+                message.Flags |= MessageFlags.Timing;
                 message.Source = Sources.Get(TimingSource);
                 var profile = TimingProfile.Parse(stack);
                 message.Callsite = Texts.Intern(profile != null ? profile.Summary(4) : string.Empty);
@@ -271,6 +277,7 @@ namespace Orbiters.Logger.Editor
             if (StackTraces.IsOutput(stack))
             {
                 // A command's log: its timing line under the message.
+                message.Flags |= MessageFlags.Output;
                 message.Source = Sources.Resolve(message.Variant, condition, new List<StackFrame>(), -1, null);
                 message.Callsite = Texts.Intern(RichText.FirstLine(stack.Substring(StackTraces.OutputPrefix.Length), 160));
                 return;
@@ -467,6 +474,7 @@ namespace Orbiters.Logger.Editor
             contexts.Clear();
             events.Clear();
             Texts = new TextTable();
+            RowsGeneration = NewRowsGeneration();
             Epoch++;
             Version++;
             MessagesVersion++;
@@ -646,6 +654,7 @@ namespace Orbiters.Logger.Editor
             owners = nextOwners;
             flags = nextFlags;
             count = keep;
+            RowsGeneration = NewRowsGeneration();
             ShiftContexts(-drop);
             long first = count > 0 ? times[0] : 0L;
             events.RemoveAll(e => e.Time < first);
@@ -709,6 +718,8 @@ namespace Orbiters.Logger.Editor
                 owners[i] = map[owners[i]];
             }
 
+            RowsGeneration = NewRowsGeneration();
+
             Texts = texts;
             messages = kept;
             messageCount = live;
@@ -770,6 +781,7 @@ namespace Orbiters.Logger.Editor
             owners = nextOwners;
             flags = nextFlags;
             count = total;
+            RowsGeneration = NewRowsGeneration();
             ShiftContexts(historyCount);
             if (historyContexts != null)
             {
@@ -904,7 +916,9 @@ namespace Orbiters.Logger.Editor
             return lo;
         }
 
-        // ---- Session snapshot ------------------------------------------------------------------------------------
+        private static long NewRowsGeneration() => BitConverter.ToInt64(Guid.NewGuid().ToByteArray(), 0) & long.MaxValue;
+
+        // ---- Session file ----------------------------------------------------------------------------------------
 
         internal void ExportColumns(out long[] exportTimes, out int[] exportOwners, out byte[] exportFlags)
         {
@@ -914,53 +928,60 @@ namespace Orbiters.Logger.Editor
         }
 
         internal LogMessage[] MessagesArray => messages;
+        internal LogGroup[] GroupsArray => groups;
         internal Dictionary<int, int> Contexts => contexts;
 
-        /// <summary>Rebuilds a store from saved columns (see <see cref="LogSnapshot"/>).</summary>
-        internal void Import(long[] importTimes, int[] importOwners, byte[] importFlags, int importCount, LogMessage[] importMessages, int importMessageCount,
-            GroupingMode grouping, Dictionary<int, int> importContexts, List<SessionEvent> importEvents)
+        /// <summary>
+        /// Puts back a store saved by <see cref="SessionFile"/>: every column, message and group as they were, counters
+        /// included, so nothing is recounted, regrouped or read from the texts.
+        /// </summary>
+        internal void Restore(TextTable texts, long rowsGeneration, long[] restoredTimes, int[] restoredOwners, byte[] restoredFlags, int restoredCount,
+            LogMessage[] restoredMessages, int restoredMessageCount, LogGroup[] restoredGroups, int restoredGroupCount, GroupingMode grouping,
+            Dictionary<int, int> restoredContexts, List<SessionEvent> restoredEvents)
         {
-            times = importTimes;
-            owners = importOwners;
-            flags = importFlags;
-            count = importCount;
+            Texts = texts;
+            RowsGeneration = rowsGeneration;
+            times = restoredTimes;
+            owners = restoredOwners;
+            flags = restoredFlags;
+            count = restoredCount;
             Grouping = grouping;
-            messages = importMessages;
-            messageCount = importMessageCount;
+            messages = restoredMessages;
+            messageCount = restoredMessageCount;
+            groups = restoredGroups;
+            groupCount = restoredGroupCount;
             messageIndex.Clear();
-            groups = new LogGroup[Math.Max(256, importMessageCount)];
-            groupCount = 0;
-            groupIndex.Clear();
             for (int i = 0; i < messageCount; i++)
             {
                 ref var message = ref messages[i];
                 messageIndex[new MessageKey(message.Text, message.Stack, message.Variant)] = i;
-                message.Group = GroupFor(message.Text, message.Level);
                 message.Explanation = -2;
-                groups[message.Group].Variants++;
+            }
+
+            groupIndex.Clear();
+            for (int i = 0; i < groupCount; i++)
+            {
+                groupIndex[((long)groups[i].Key << 2) | (long)groups[i].Level] = i;
             }
 
             contexts.Clear();
-            if (importContexts != null)
+            if (restoredContexts != null)
             {
-                foreach (var pair in importContexts)
+                foreach (var pair in restoredContexts)
                 {
                     contexts[pair.Key] = pair.Value;
                 }
             }
 
             events.Clear();
-            if (importEvents != null)
+            if (restoredEvents != null)
             {
-                events.AddRange(importEvents);
+                events.AddRange(restoredEvents);
             }
 
-            RecountAll();
             Epoch++;
             Version++;
             MessagesVersion++;
         }
-
-        internal void ReplaceTexts(TextTable texts) => Texts = texts;
     }
 }

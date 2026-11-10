@@ -189,7 +189,7 @@ namespace Orbiters.Logger.Editor
                 Buckets = Math.Max(0, buckets)
             };
 
-            int textCount = view.Texts.Snapshot(out string[] raw, out string[] plain);
+            int textCount = view.Texts.Count;
             state.textMatch = new byte[Math.Max(textCount, 16)];
             if (knownMatches != null)
             {
@@ -207,7 +207,7 @@ namespace Orbiters.Logger.Editor
                     return null;
                 }
 
-                state.messagePass[m] = state.Pass(ref view.Messages[m], raw, plain, textCount);
+                state.messagePass[m] = state.Pass(ref view.Messages[m], textCount);
             }
 
             if (state.Buckets > 0)
@@ -257,7 +257,7 @@ namespace Orbiters.Logger.Editor
                 return true;
             }
 
-            int textCount = view.Texts.Snapshot(out string[] raw, out string[] plain);
+            int textCount = view.Texts.Count;
             if (textCount > textMatch.Length)
             {
                 Array.Resize(ref textMatch, Math.Max(textCount, textMatch.Length * 2));
@@ -270,7 +270,7 @@ namespace Orbiters.Logger.Editor
             {
                 if ((messagePass[m] & KnownBit) == 0)
                 {
-                    messagePass[m] = Pass(ref view.Messages[m], raw, plain, textCount);
+                    messagePass[m] = Pass(ref view.Messages[m], textCount);
                 }
             }
 
@@ -347,7 +347,7 @@ namespace Orbiters.Logger.Editor
             groupsKnown = view.GroupCount;
         }
 
-        private byte Pass(ref LogMessage message, string[] raw, string[] plain, int textCount)
+        private byte Pass(ref LogMessage message, int textCount)
         {
             if (message.Resolved || message.Group < groupMuted.Length && groupMuted[message.Group])
             {
@@ -357,10 +357,10 @@ namespace Orbiters.Logger.Editor
             var query = Spec.Query;
             if (!query.IsEmpty)
             {
-                bool found = TextMatches(message.Text, query, raw, plain, textCount);
+                bool found = TextMatches(message.Text, query, textCount);
                 if (!found && query.IncludeStack && message.Stack > 0)
                 {
-                    found = TextMatches(message.Stack, query, raw, plain, textCount);
+                    found = TextMatches(message.Stack, query, textCount);
                 }
 
                 if (!found)
@@ -383,7 +383,7 @@ namespace Orbiters.Logger.Editor
             return bits;
         }
 
-        private bool TextMatches(int text, LogQuery query, string[] raw, string[] plain, int textCount)
+        private bool TextMatches(int text, LogQuery query, int textCount)
         {
             if (text <= 0 || text >= textCount)
             {
@@ -393,7 +393,7 @@ namespace Orbiters.Logger.Editor
             byte known = textMatch[text];
             if (known == 0)
             {
-                known = query.Matches(plain[text] ?? raw[text]) ? (byte)2 : (byte)1;
+                known = query.Matches(Texts.Plain(text)) ? (byte)2 : (byte)1;
                 textMatch[text] = known;
             }
 

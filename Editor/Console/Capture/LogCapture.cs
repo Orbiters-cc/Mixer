@@ -116,10 +116,19 @@ namespace Orbiters.Logger.Editor
             UnityConsole.ShowAll.Recover();
             int unityRows = UnityConsole.Total();
             string anchor = unityRows > 0 ? ConsoleHistory.Anchor(unityRows - 1) : string.Empty;
-            var restored = LogSnapshot.TryLoad(out var info);
+            var restored = LogSnapshot.TryLoad(out var info, out string problem);
+            if (problem != null)
+            {
+                // Queued like any log (the callback is in place): the one line that says logs before the reload are lost.
+                Debug.LogWarning("[Mixer console] The logs from before the script reload could not be read back (" + problem +
+                    "): the Mixer console starts again from Unity's console.");
+            }
+
             if (restored != null)
             {
                 Attach(restored);
+                // Every restored message was noted just before the reload.
+                LogLedger.Restored(restored);
                 // Scripts only reload once every assembly compiles: earlier compile errors are fixed.
                 Store.ResolveCompile(-1, errorsOnly: true);
                 Store.AddEvent(now, SessionEventKind.DomainReload);
