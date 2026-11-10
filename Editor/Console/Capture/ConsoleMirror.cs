@@ -139,7 +139,8 @@ namespace Orbiters.Logger.Editor
                 return;
             }
 
-            string condition = row.Condition;
+            // As the live log was filed (a huge one is cut the same way).
+            string condition = LogStore.Capped(row.Condition);
             var level = LogVariants.Level(variant);
             int limit = Math.Min(pending.Count, pendingStart + 16);
             for (int i = pendingStart; i < limit; i++)

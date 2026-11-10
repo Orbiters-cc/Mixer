@@ -175,6 +175,55 @@ namespace Orbiters.Logger.Editor.Tests
         }
 
         [Test]
+        public void TheTextBudgetHoldsForFewLargeLogsHistoryAndStrippedCopies()
+        {
+            // Few logs (far under any count limit), each large.
+            var store = new LogStore { MaxTextChars = 1 << 20 };
+            string large = new string('a', 200_000);
+            for (int i = 0; i < 40; i++)
+            {
+                store.Add(1000 + i, i + " " + large, string.Empty, LogVariant.Log);
+                Assert.LessOrEqual(store.Texts.TotalChars, (1 << 20) + 300_000, "after log " + i);
+            }
+
+            Assert.AreEqual("39 " + large, store.Texts[store.Message(store.MessageAt(store.Count - 1)).Text], "the newest log stays");
+
+            // One log larger than the whole budget is cut, and says so.
+            var huge = new LogStore();
+            int id = huge.Intern(new string('h', LogStore.MaxTextLength + 5000), string.Empty, LogVariant.Log);
+            string kept = huge.Texts[huge.Message(id).Text];
+            Assert.Less(kept.Length, LogStore.MaxTextLength + 200);
+            StringAssert.Contains("5,000 more characters left out", kept);
+
+            // Rich text keeps a stripped copy: it counts.
+            var tags = new TextTable();
+            tags.Intern("<b>bold</b>");
+            Assert.AreEqual("<b>bold</b>".Length + "bold".Length, tags.TotalChars);
+
+            // History put in front counts against the same budget.
+            var history = new LogStore { MaxTextChars = 1 << 20 };
+            history.Add(5_000, "live", string.Empty, LogVariant.Log);
+            history.Pin();
+            var owners = new int[30];
+            for (int i = 0; i < owners.Length; i++)
+            {
+                owners[i] = history.Intern("old " + i + " " + large, string.Empty, LogVariant.Log);
+            }
+
+            var times = new long[owners.Length];
+            for (int i = 0; i < times.Length; i++)
+            {
+                times[i] = 100 + i;
+            }
+
+            history.Unpin();
+            history.Prepend(times, owners, new byte[owners.Length], owners.Length, null);
+            Assert.LessOrEqual(history.Texts.TotalChars, (1 << 20) + 300_000);
+            Assert.AreEqual("live", history.Texts[history.Message(history.MessageAt(history.Count - 1)).Text]);
+            Assert.AreEqual(history.Count, CountAll(history));
+        }
+
+        [Test]
         public void PinnedMessagesSurviveATrim()
         {
             var store = new LogStore();
@@ -211,23 +260,96 @@ namespace Orbiters.Logger.Editor.Tests
         [Test]
         public void RepeatedLogsShareTheirTexts()
         {
-            var recent = new LogCapture.Recent();
-            int chars = 0;
-            string first = LogCapture.Recent.Share(ref recent.Stack, "at Thing.Do ()" + 1, ref chars);
-            Assert.AreEqual(15, chars);
-            string again = LogCapture.Recent.Share(ref recent.Stack, "at Thing.Do ()" + 1, ref chars);
-            Assert.AreSame(first, again, "an equal text keeps the earlier instance");
-            Assert.AreEqual(15, chars, "and adds nothing to the queue");
-            string other = LogCapture.Recent.Share(ref recent.Stack, "at Thing.Do ()" + 2, ref chars);
-            Assert.AreNotSame(first, other);
-            Assert.AreEqual(30, chars);
-            Assert.IsNull(LogCapture.Recent.Share(ref recent.Condition, null, ref chars));
+            var texts = new QueueTexts(1000);
+            var recent = new QueueTexts.Recent();
+            Assert.IsTrue(texts.Admit(recent, "Boom", "at Thing.Do ()" + 1, out var condition, out var stack));
+            Assert.AreEqual(4 + 15, texts.Chars);
+            Assert.IsTrue(texts.Admit(recent, "Bo" + "om", "at Thing.Do ()" + 1, out var condition2, out var stack2));
+            Assert.AreSame(condition, condition2, "an equal text keeps the earlier instance");
+            Assert.AreSame(stack, stack2);
+            Assert.AreEqual(19, texts.Chars, "and adds nothing to the queue");
+
+            // The charge stays until the last queued log holding the text is filed.
+            texts.Release(condition);
+            texts.Release(stack);
+            Assert.AreEqual(19, texts.Chars);
+            texts.Release(condition2);
+            texts.Release(stack2);
+            Assert.AreEqual(0, texts.Chars);
+
+            // Filed in between, then logged again: charged again.
+            Assert.IsTrue(texts.Admit(recent, "Boom", null, out var again, out var none));
+            Assert.AreSame(condition, again);
+            Assert.IsNull(none);
+            Assert.AreEqual(4, texts.Chars);
+            texts.Release(again);
+
+            // Over the budget: refused with nothing charged; one log alone always fits into an empty queue.
+            Assert.IsTrue(texts.Admit(recent, new string('x', 990), null, out var big, out _));
+            Assert.IsFalse(texts.Admit(recent, new string('y', 20), null, out _, out _));
+            Assert.AreEqual(990, texts.Chars);
+            texts.Release(big);
+            Assert.IsTrue(texts.Admit(new QueueTexts.Recent(), new string('z', 5000), null, out var huge, out _));
+            texts.Release(huge);
+            Assert.AreEqual(0, texts.Chars);
 
             // The main thread finds a shared instance again by reference, with the same id.
-            var texts = new TextTable();
-            int id = texts.Intern(first);
-            Assert.AreEqual(id, texts.Intern(again));
-            Assert.AreEqual(id, texts.Intern(string.Copy(first)));
+            var table = new TextTable();
+            int id = table.Intern(condition.Text);
+            Assert.AreEqual(id, table.Intern(again.Text));
+            Assert.AreEqual(id, table.Intern(string.Copy(condition.Text)));
+        }
+
+        [Test]
+        public void QueueChargesAddUpUnderConcurrentAdmission()
+        {
+            var texts = new QueueTexts(long.MaxValue / 4);
+            var queue = new System.Collections.Concurrent.ConcurrentQueue<SharedText>();
+            int producers = 6;
+            int done = 0;
+            var threads = new System.Threading.Thread[producers];
+            for (int p = 0; p < producers; p++)
+            {
+                int seed = p;
+                threads[p] = new System.Threading.Thread(() =>
+                {
+                    var recent = new QueueTexts.Recent();
+                    for (int i = 0; i < 20_000; i++)
+                    {
+                        // Runs of equal texts (shared) and new ones, per thread.
+                        string text = "log " + seed + " " + i / 7;
+                        if (texts.Admit(recent, text, "stack " + seed, out var c, out var s))
+                        {
+                            queue.Enqueue(c);
+                            queue.Enqueue(s);
+                        }
+                    }
+
+                    System.Threading.Interlocked.Increment(ref done);
+                });
+                threads[p].Start();
+            }
+
+            // The main thread files while they log.
+            while (System.Threading.Volatile.Read(ref done) < producers || !queue.IsEmpty)
+            {
+                if (queue.TryDequeue(out var text))
+                {
+                    texts.Release(text);
+                }
+            }
+
+            foreach (var thread in threads)
+            {
+                thread.Join();
+            }
+
+            while (queue.TryDequeue(out var text))
+            {
+                texts.Release(text);
+            }
+
+            Assert.AreEqual(0, texts.Chars, "every charge went with the last log holding its text");
         }
 
         [Test]

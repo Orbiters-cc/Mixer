@@ -104,7 +104,11 @@ namespace Orbiters.Logger.Editor
         public const int DefaultMaxOccurrences = 3_000_000;
         /// <summary>The texts kept alive at most (256 MB of UTF-16), whatever the number of logs: see <see cref="Append"/>.</summary>
         public const long DefaultMaxTextChars = 128L * 1024 * 1024;
-        private const int MinTrimmedForText = 10_000;
+        /// <summary>
+        /// The longest text kept (2 MB of UTF-16): a longer message or stack trace keeps its start and says how much was
+        /// left out, so one log can never take the whole <see cref="MaxTextChars"/> budget.
+        /// </summary>
+        public const int MaxTextLength = 1 << 20;
         /// <summary>The source of timing logs (script reloads, Play Mode, avatar builds and uploads).</summary>
         public const string TimingSource = "Timings";
         public const OccurrenceFlags Superseded = (OccurrenceFlags)8;
@@ -123,7 +127,6 @@ namespace Orbiters.Logger.Editor
         private readonly List<SessionEvent> events = new List<SessionEvent>();
         private int maxOccurrences = DefaultMaxOccurrences;
         private long maxTextChars = DefaultMaxTextChars;
-        private long textCharsLimit = DefaultMaxTextChars;
 
         public LogStore(int capacity = 4096)
         {
@@ -177,7 +180,6 @@ namespace Orbiters.Logger.Editor
             set
             {
                 maxTextChars = Math.Max(1L << 16, value);
-                textCharsLimit = maxTextChars;
             }
         }
 
@@ -225,8 +227,8 @@ namespace Orbiters.Logger.Editor
         /// <summary>The id of the message with this text, stack trace and type, created when new.</summary>
         public int Intern(string condition, string stack, LogVariant variant, int assembly = 0, string file = null, int line = 0, int column = 0)
         {
-            int text = Texts.Intern(condition ?? string.Empty);
-            int stackId = Texts.Intern(stack ?? string.Empty);
+            int text = Texts.Intern(Capped(condition) ?? string.Empty);
+            int stackId = Texts.Intern(Capped(stack) ?? string.Empty);
             var key = new MessageKey(text, stackId, variant);
             if (messageIndex.TryGetValue(key, out int id))
             {
@@ -446,17 +448,37 @@ namespace Orbiters.Logger.Editor
                 return count - 1;
             }
 
-            if (Texts.TotalChars > textCharsLimit && count >= MinTrimmedForText)
+            if (Texts.TotalChars > maxTextChars && pins == 0)
             {
                 // Logs that never repeat (an id, a time in the text) keep a new text each: memory is bounded by their
-                // size, not only their number. The oldest fifth goes, and their texts with it once they are many dead
-                // (a compaction). Texts still in use may keep the table big: then wait for a quarter more.
-                Trim(count * 4 / 5);
-                textCharsLimit = Math.Max(maxTextChars, Texts.TotalChars + Texts.TotalChars / 4);
+                // size, not only their number.
+                KeepTextBudget();
                 return count - 1;
             }
 
             return index;
+        }
+
+        /// <summary>The text as stored: itself, or its first <see cref="MaxTextLength"/> characters and how many were left out.</summary>
+        public static string Capped(string text)
+        {
+            if (text == null || text.Length <= MaxTextLength)
+            {
+                return text;
+            }
+
+            return text.Substring(0, MaxTextLength) + "\n[… " + (text.Length - MaxTextLength).ToString("N0", System.Globalization.CultureInfo.InvariantCulture) +
+                   " more characters left out by the Mixer console]";
+        }
+
+        // One fixed budget for every text kept (live logs and history alike, stripped copies included): the oldest
+        // fifth of the logs goes until the texts fit, each trim compacting what it made dead. The newest log stays.
+        private void KeepTextBudget()
+        {
+            while (Texts.TotalChars > maxTextChars && count > 1 && pins == 0 && !Texts.Faulted)
+            {
+                Trim(count * 4 / 5);
+            }
         }
 
         /// <summary>A compiler message: a later compilation that reports it again replaces the earlier occurrence.</summary>
@@ -572,7 +594,6 @@ namespace Orbiters.Logger.Editor
             profiles.Clear();
             pins = 0;
             Texts = new TextTable();
-            textCharsLimit = maxTextChars;
             RowsGeneration = NewRowsGeneration();
             Epoch++;
             Version++;
@@ -740,6 +761,8 @@ namespace Orbiters.Logger.Editor
         /// </summary>
         public void Pin() => pins++;
 
+        // No budget check here: an import unpins just before it puts its occurrences in (Prepend), and a compaction in
+        // between would drop the messages it is about to use. Prepend and the next append check the budget.
         public void Unpin() => pins = Math.Max(0, pins - 1);
 
         /// <summary>Keeps the newest <paramref name="keep"/> occurrences.</summary>
@@ -802,7 +825,8 @@ namespace Orbiters.Logger.Editor
                 }
             }
 
-            if (dead < 1024 || dead * 4 < messageCount)
+            // Many dead, or texts over budget: then any dead message's texts are worth reclaiming.
+            if (dead == 0 || Texts.TotalChars <= maxTextChars && (dead < 1024 || dead * 4 < messageCount))
             {
                 return false;
             }
@@ -916,6 +940,12 @@ namespace Orbiters.Logger.Editor
             if (count > maxOccurrences)
             {
                 Trim(maxOccurrences * 4 / 5);
+            }
+
+            if (Texts.TotalChars > maxTextChars && pins == 0)
+            {
+                // A large history counts against the same budget as live logs.
+                KeepTextBudget();
             }
         }
 

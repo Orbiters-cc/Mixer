@@ -91,7 +91,7 @@ namespace Orbiters.Logger.Editor
         internal const string Unreadable = "[This log's text could not be read back after the script reload]";
 
         /// <summary>The length of every text together: what the table keeps alive.</summary>
-        public long TotalChars => totalChars;
+        public long TotalChars => Interlocked.Read(ref totalChars);
 
         public string this[int id] => id > 0 && id < count ? Raw(id) : string.Empty;
 
@@ -162,7 +162,7 @@ namespace Orbiters.Logger.Editor
             }
 
             Insert(id, hash);
-            totalChars += text.Length;
+            Interlocked.Add(ref totalChars, text.Length + (plain[id]?.Length ?? 0));
             Volatile.Write(ref count, id + 1);
             Remember(text, id);
             return id;
@@ -296,7 +296,14 @@ namespace Orbiters.Logger.Editor
 
                 // The plain text first: a reader that sees the raw text sees its plain text too.
                 var plainItems = Volatile.Read(ref plain);
-                Volatile.Write(ref plainItems[id], RichText.StripOrNull(text));
+                string stripped = RichText.StripOrNull(text);
+                if (stripped != null)
+                {
+                    // The stripped copy read back is kept too (the file's size only counts the raw texts).
+                    Interlocked.Add(ref totalChars, stripped.Length);
+                }
+
+                Volatile.Write(ref plainItems[id], stripped);
                 Volatile.Write(ref items[id], text);
                 return text;
             }

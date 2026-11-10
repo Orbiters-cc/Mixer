@@ -38,63 +38,31 @@ namespace Orbiters.Logger.Editor
         private readonly struct RawLog
         {
             public readonly long Time;
-            public readonly string Condition;
-            public readonly string Stack;
+            public readonly SharedText Condition;
+            public readonly SharedText Stack;
             public readonly LogType Type;
             public readonly bool Background;
             public readonly bool Injected;
-            /// <summary>Characters this log added to the queue (0 for texts it shares with the log before it).</summary>
-            public readonly int Chars;
 
-            public RawLog(long time, string condition, string stack, LogType type, bool background, int chars, bool injected = false)
+            public RawLog(long time, SharedText condition, SharedText stack, LogType type, bool background, bool injected)
             {
                 Time = time;
                 Condition = condition;
                 Stack = stack;
                 Type = type;
                 Background = background;
-                Chars = chars;
                 Injected = injected;
             }
         }
 
-        /// <summary>
-        /// The previous log's texts on one thread. Unity hands new strings for every log: a log equal to the one before
-        /// keeps the earlier instances instead, so a loop that logs one warning a million times queues one message and
-        /// one stack trace (the copies are garbage at once), and the main thread finds them by reference.
-        /// </summary>
-        internal sealed class Recent
-        {
-            public string Condition;
-            public string Stack;
-
-            // The earlier instance when equal (a block compare, which stops at the first difference), else this one.
-            public static string Share(ref string previous, string text, ref int chars)
-            {
-                if (text == null)
-                {
-                    return null;
-                }
-
-                if (previous != null && previous.Length == text.Length && string.Equals(previous, text))
-                {
-                    return previous;
-                }
-
-                previous = text;
-                chars += text.Length;
-                return text;
-            }
-        }
-
-        [ThreadStatic] private static Recent recent;
+        [ThreadStatic] private static QueueTexts.Recent recent;
+        private static readonly QueueTexts queueTexts = new QueueTexts(MaxQueuedChars);
 
         private static readonly ConcurrentQueue<RawLog> queue = new ConcurrentQueue<RawLog>();
         private static readonly ConsoleMirror mirror = new ConsoleMirror();
         private static readonly HashSet<string> compileCycle = new HashSet<string>(StringComparer.Ordinal);
         private static readonly int mainThread;
         private static int queued;
-        private static long queuedChars;
         private static int dropped;
         private static ConsoleHistory history;
         // Logs Unity received while scripts reloaded: filed before any live log, so live logs wait in the queue for it.
@@ -221,23 +189,23 @@ namespace Orbiters.Logger.Editor
         private static void Enqueue(string condition, string stack, LogType type, bool injected)
         {
             long time = DateTime.UtcNow.Ticks;
-            if (Interlocked.Increment(ref queued) > MaxQueued || Volatile.Read(ref queuedChars) > MaxQueuedChars)
+            if (Interlocked.Increment(ref queued) > MaxQueued)
             {
                 Interlocked.Decrement(ref queued);
                 Interlocked.Increment(ref dropped);
                 return;
             }
 
-            var shared = recent ?? (recent = new Recent());
-            int chars = 0;
-            condition = Recent.Share(ref shared.Condition, condition, ref chars);
-            stack = Recent.Share(ref shared.Stack, stack, ref chars);
-            if (chars > 0)
+            // Cut as the store would file them, so one huge log can't fill the queue's budget.
+            if (!queueTexts.Admit(recent ?? (recent = new QueueTexts.Recent()), LogStore.Capped(condition), LogStore.Capped(stack),
+                    out var sharedCondition, out var sharedStack))
             {
-                Interlocked.Add(ref queuedChars, chars);
+                Interlocked.Decrement(ref queued);
+                Interlocked.Increment(ref dropped);
+                return;
             }
 
-            queue.Enqueue(new RawLog(time, condition, stack, type, Thread.CurrentThread.ManagedThreadId != mainThread, chars, injected));
+            queue.Enqueue(new RawLog(time, sharedCondition, sharedStack, type, Thread.CurrentThread.ManagedThreadId != mainThread, injected));
         }
 
         /// <summary>
@@ -332,11 +300,9 @@ namespace Orbiters.Logger.Editor
             while (queue.TryDequeue(out var raw))
             {
                 Interlocked.Decrement(ref queued);
-                if (raw.Chars > 0)
-                {
-                    Interlocked.Add(ref queuedChars, -raw.Chars);
-                }
-
+                // Released first: a log that fails to file must not keep its charge for ever.
+                queueTexts.Release(raw.Condition);
+                queueTexts.Release(raw.Stack);
                 Ingest(raw);
                 filed++;
                 if (budgetMs > 0 && (filed & 63) == 0 && clock.Elapsed.TotalMilliseconds >= budgetMs)
@@ -377,8 +343,8 @@ namespace Orbiters.Logger.Editor
         private static void Ingest(RawLog raw)
         {
             var variant = LogVariants.From(raw.Type);
-            string condition = raw.Condition ?? string.Empty;
-            string stack = raw.Stack ?? string.Empty;
+            string condition = raw.Condition?.Text ?? string.Empty;
+            string stack = raw.Stack?.Text ?? string.Empty;
             if (ReloadTimings.IsOwnNotice(condition))
             {
                 // Unity's notice that the Mixer console's reload measuring is on, at every reload: not a problem to report.
