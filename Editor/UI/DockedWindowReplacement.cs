@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Reflection;
+using Orbiters.Toolkit.Editor;
 using UnityEditor;
 using UnityEngine;
 using Object = UnityEngine.Object;
@@ -63,7 +64,7 @@ namespace Orbiters.Mixer.Editor
         private bool enabled;
         private bool pending;
         private int readyTicks;
-        private double nextScan;
+        private IDisposable task;
 
         /// <param name="unityTypeName">Unity's window type, e.g. <c>UnityEditor.SceneHierarchyWindow</c>.</param>
         /// <param name="mixerType">The Mixer window put in its place.</param>
@@ -97,7 +98,9 @@ namespace Orbiters.Mixer.Editor
                 SessionState.SetBool(pendingKey, true);
             }
             pending = SessionState.GetBool(pendingKey, false);
-            EditorApplication.update += Update;
+            // Every frame only while the editor's layout loads; then a scan twice a second (on the editor host, timed).
+            task = pending ? OrbitersEditorHost.EveryFrame("Mixer." + mixerName + " replacement", Update)
+                : OrbitersEditorHost.Every("Mixer." + mixerName + " replacement", 0.5, Scan, HostWhen.Always);
         }
 
         public bool Enabled => enabled;
@@ -168,11 +171,17 @@ namespace Orbiters.Mixer.Editor
                     foreach (var window in OpenUnityWindows()) Replace(window, window == focused);
                     OpenIfLost();
                 }
+                task?.Dispose();
+                task = OrbitersEditorHost.Every("Mixer." + mixerName + " replacement", 0.5, Scan, HostWhen.Always);
                 return;
             }
-            // One opened during the session: swapped once it exists. One that could not be docked (Fallback) stays.
-            if (!enabled || EditorApplication.timeSinceStartup < nextScan) return;
-            nextScan = EditorApplication.timeSinceStartup + 0.5;
+            Scan();
+        }
+
+        // One opened during the session: swapped once it exists. One that could not be docked (Fallback) stays.
+        private void Scan()
+        {
+            if (pending || !enabled) return;
             foreach (var window in OpenUnityWindows())
             {
                 if (IsKnown(window) || IsKept(window)) continue;
