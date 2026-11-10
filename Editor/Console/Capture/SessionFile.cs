@@ -32,7 +32,8 @@ namespace Orbiters.Logger.Editor
         private const int Magic = 0x53474F4C; // "LOGS"
         // 4: occurrence ids kept (first id, the rows files' first id). A session of another version is never converted: an
         // earlier one of this editor goes through LogCapture's one recovery (Unity's console read again).
-        private const int FormatVersion = 4;
+        // 5: the history import's time state and first anchor are saved with its range.
+        private const int FormatVersion = 5;
         // A text's offset, hash and length.
         private const int IndexRecord = sizeof(long) + sizeof(int) + sizeof(int);
         private const int ChunkBytes = 1 << 20;
@@ -246,6 +247,11 @@ namespace Orbiters.Logger.Editor
             writer.Write(info.HistoryFrom);
             writer.Write(info.HistoryTo);
             writer.Write(info.HistoryAnchor ?? string.Empty);
+            writer.Write(info.HistoryFirstAnchor ?? string.Empty);
+            writer.Write(info.HistoryMeasured);
+            writer.Write(info.HistoryAnchorTicks);
+            writer.Write(info.HistoryAnchorIsRowDay);
+            writer.Write(info.HistoryFallback);
             writer.Write((byte)store.Grouping);
             writer.Write(store.MaxOccurrences);
             writer.Write(store.InitialFirstId);
@@ -468,7 +474,12 @@ namespace Orbiters.Logger.Editor
                     UnityAnchor = ReadText(reader),
                     HistoryFrom = reader.ReadInt32(),
                     HistoryTo = reader.ReadInt32(),
-                    HistoryAnchor = ReadText(reader)
+                    HistoryAnchor = ReadText(reader),
+                    HistoryFirstAnchor = ReadText(reader),
+                    HistoryMeasured = reader.ReadBoolean(),
+                    HistoryAnchorTicks = reader.ReadInt64(),
+                    HistoryAnchorIsRowDay = reader.ReadBoolean(),
+                    HistoryFallback = reader.ReadInt64()
                 };
                 var grouping = (GroupingMode)reader.ReadByte();
                 int maxOccurrences = reader.ReadInt32();

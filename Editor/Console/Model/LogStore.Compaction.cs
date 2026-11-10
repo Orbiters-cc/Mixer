@@ -29,6 +29,9 @@ namespace Orbiters.Logger.Editor
         /// <summary>Tests: compactions cancelled before they landed, and times the ceiling compacted synchronously.</summary>
         internal int CompactionsCancelled { get; private set; }
 
+        /// <summary>Tests: compactions started (in the background or synchronously).</summary>
+        internal int CompactionsStarted { get; private set; }
+
         /// <summary>Tests: characters of texts the last bounded landing attempt copied on the editor's thread.</summary>
         internal long LastLandingChars { get; private set; }
         internal int CeilingCompactions { get; private set; }
@@ -59,6 +62,7 @@ namespace Orbiters.Logger.Editor
             }
 
             compaction = new StoreCompaction(this);
+            CompactionsStarted++;
             // While history waits to be put in front, compactions are synchronous: the import changes what it references.
             if (CompactInBackground && !compactNow && StagedCount == 0)
             {

@@ -1,6 +1,16 @@
-// Round 1's import (master's Editor/Console/Capture/ConsoleHistory.cs), verbatim but for what a test needs: rows from
-// an IConsoleSource instead of Unity's console, a given editor start, and no pins (the store has none; with no
-// compaction under the limits they changed nothing). The reference the new import is compared with.
+// Round 1's import, the reference the new import is compared with: master's Editor/Console/Capture/ConsoleHistory.cs,
+// which is `git show 4d4d35d:Editor/Console/Capture/ConsoleHistory.cs` plus round 1's review that ends a failing import
+// (the catch giving Error). Against 4d4d35d, exactly these differ, none of which can change what a successful import
+// files:
+// - namespace and class name (a test type beside the real one);
+// - rows come from an IConsoleSource (Available, Open, TakeAll, ReleaseAll, WindowMayShow) instead of UnityConsole's
+//   Available, Reader.Open, ShowAll.Take/Release and ConsoleWindowMayShow: the same calls on the rows a test gives;
+//   the reader type of ReadRow follows (IConsoleRows, which UnityConsole.Reader implements);
+// - the editor's start comes from EditorStartForTests instead of DateTime.Now - timeSinceStartup: the same value the
+//   test gives the new import, so both anchor times on one instant;
+// - no Pin/Unpin (the store has no pins any more): a pin only kept compactions from running before the final Prepend,
+//   and under the limits no trim, so no compaction, ever runs;
+// - the exception catch of master (from round 1's review): only on a failing read, which these tests never have.
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;

@@ -216,12 +216,16 @@ namespace Orbiters.Logger.Editor.Tests
                 }
 
                 var reference = ConsoleHistoryTests.Reference(rows);
-                Assert.AreEqual(Files(reference), Files(store), "seed " + seed);
+                var expected = Files(reference);
+                var actual = Files(store);
+                // Raw bytes, not decoded text.
+                CollectionAssert.AreEqual(expected[0], actual[0], "logs.txt, seed " + seed);
+                CollectionAssert.AreEqual(expected[1], actual[1], "messages.txt, seed " + seed);
             }
         }
 
-        // logs.txt then messages.txt of a store's report.
-        private static string Files(LogStore store)
+        // The bytes of logs.txt and messages.txt of a store's report.
+        private static byte[][] Files(LogStore store)
         {
             var snapshot = LogReport.Take(store);
             snapshot.EditorLog = null;
@@ -229,7 +233,11 @@ namespace Orbiters.Logger.Editor.Tests
             try
             {
                 LogReport.Write(new ReportContext(staging, new ReportPrivacy(Home, Secret), null, new[] { ReportPart.Logs }), snapshot, null);
-                return File.ReadAllText(Path.Combine(staging, "logs", "logs.txt")) + "\n=====\n" + File.ReadAllText(Path.Combine(staging, "logs", "messages.txt"));
+                return new[]
+                {
+                    File.ReadAllBytes(Path.Combine(staging, "logs", "logs.txt")),
+                    File.ReadAllBytes(Path.Combine(staging, "logs", "messages.txt"))
+                };
             }
             finally
             {

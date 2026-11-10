@@ -201,6 +201,67 @@ namespace Orbiters.Logger.Editor.Tests
         private static ConsoleHistory NewImport(List<Row> rows, int from, int to) =>
             new ConsoleHistory(from, to, ConsoleHistory.Placement.Before, 1000) { Source = new Source(rows), EditorStart = EditorStart };
 
+        // The messages with occurrences, in id order, keeping only those `keep` selects (history or live ones).
+        private static string MessageOrder(LogStore store, Func<string, bool> keep)
+        {
+            var text = new StringBuilder();
+            for (int m = 0; m < store.MessageCount; m++)
+            {
+                string condition = store.Texts[store.Message(m).Text];
+                if (store.Message(m).Count > 0 && keep(condition))
+                {
+                    text.Append(condition).Append('|').Append(store.Texts[store.Message(m).Stack]).Append('\n');
+                }
+            }
+
+            return text.ToString();
+        }
+
+        private static bool IsLive(string condition) => condition.StartsWith("Live ", StringComparison.Ordinal);
+
+        // A script reload through the real paths: the store through the session file (staged messages saved without
+        // occurrences), the import through SnapshotInfo and the head, then ConsoleHistory.Resume.
+        private static ConsoleHistory Reload(ref LogStore store, ConsoleHistory import, Source source, string folder)
+        {
+            var info = new SnapshotInfo();
+            import.SaveTo(info, source.RowList.Count > 0 && import.To > 0 ? TextOf(source.RowList[import.To - 1]) : string.Empty);
+            var saving = new SessionFile(folder);
+            saving.Save(store, info, 1, 2);
+            saving.Close();
+            var loading = new SessionFile(folder);
+            store = loading.Load(1, 2, out var restoredInfo, out string problem);
+            Assert.IsNull(problem, problem);
+            store.CompactInBackground = true;
+            var resumed = ConsoleHistory.Resume(restoredInfo, source);
+            return resumed;
+        }
+
+        // A row's anchor as Unity's console would give it (first two lines, no time).
+        private static string TextOf(Row row)
+        {
+            string message = row.Stack.Length > 0 ? row.Condition + "\n" + row.Stack : row.Condition;
+            int first = message.IndexOf('\n');
+            int second = first >= 0 ? message.IndexOf('\n', first + 1) : -1;
+            return second >= 0 ? message.Substring(0, second) : message;
+        }
+
+        private static string NewFolder() => System.IO.Path.Combine(System.IO.Path.GetTempPath(), "mixer-session-" + Guid.NewGuid().ToString("N"));
+
+        private static void DeleteFolder(string folder)
+        {
+            try
+            {
+                if (System.IO.Directory.Exists(folder) && System.IO.Path.GetFileName(folder).StartsWith("mixer-session-", StringComparison.Ordinal))
+                {
+                    System.IO.Directory.Delete(folder, true);
+                }
+            }
+            catch (System.IO.IOException)
+            {
+                // A text read after its session closed reopened the file: the temporary folder stays.
+            }
+        }
+
         [Test]
         public void UnderTheLimitsTheImportGivesRound1sStore([Values(0, 1, 2, 3)] int mode)
         {
@@ -208,44 +269,72 @@ namespace Orbiters.Logger.Editor.Tests
             {
                 var rows = RandomConsole(seed);
                 var random = new Random(seed * 7);
+                // Mode 2: a reload while rows are read (one row per update, after one update per row of measure);
+                // mode 3: while the console is measured.
+                int readAt = random.Next(2, rows.Count);
+                int reloadAt = mode == 2 ? rows.Count + readAt : mode == 3 ? random.Next(2, rows.Count) : -1;
+                if (mode == 2)
+                {
+                    // A row without a time right after the reload point: its time must not move.
+                    rows[readAt].Seconds = -1;
+                }
+
+                var source = new Source(rows);
                 var liveTexts = new List<string>();
                 var store = new LogStore(LogStore.HistoryRoom) { CompactInBackground = true };
-                var import = NewImport(rows, 0, rows.Count);
+                var import = new ConsoleHistory(0, rows.Count, ConsoleHistory.Placement.Before, 1000) { Source = source, EditorStart = EditorStart };
                 int updates = 0;
-                int reloadAt = mode == 2 ? random.Next(1, rows.Count) : mode == 3 ? rows.Count : -1;
-                while (!import.Step(store, mode == 0 ? 1e9 : 0d))
+                string folder = NewFolder();
+                try
                 {
-                    updates++;
-                    if (mode >= 1 && random.Next(4) == 0)
+                    while (!import.Step(store, mode == 0 ? 1e9 : 0d))
                     {
-                        // Live logs between updates (never the history's texts: a message's file comes from whoever filed it first).
-                        string live = "Live " + liveTexts.Count;
-                        liveTexts.Add(live);
-                        store.Add(TimeSpan.TicksPerDay * 800_000 + liveTexts.Count, live, string.Empty, LogVariant.Log);
-                    }
+                        updates++;
+                        if (mode >= 1 && random.Next(4) == 0)
+                        {
+                            // Live logs between updates (never the history's texts: a message's file comes from whoever filed it first).
+                            string live = "Live " + liveTexts.Count;
+                            liveTexts.Add(live);
+                            store.Add(TimeSpan.TicksPerDay * 800_000 + liveTexts.Count, live, string.Empty, LogVariant.Log);
+                        }
 
-                    if (updates == reloadAt)
-                    {
-                        // A script reload: what was staged is not saved; the next domain resumes the range left.
-                        store.DiscardStaged();
-                        import = NewImport(rows, import.From, import.To);
-                    }
+                        if (updates == reloadAt)
+                        {
+                            import = Reload(ref store, import, source, folder);
+                        }
 
-                    store.StepMaintenance();
-                    Assert.Less(updates, 100_000);
+                        store.StepMaintenance();
+                        Assert.Less(updates, 100_000);
+                    }
+                }
+                finally
+                {
+                    DeleteFolder(folder);
                 }
 
                 var reference = Reference(rows, s =>
                 {
-                    foreach (string live in liveTexts)
+                    for (int i = 0; i < liveTexts.Count; i++)
                     {
-                        s.Add(TimeSpan.TicksPerDay * 800_000 + 1 + liveTexts.IndexOf(live), live, string.Empty, LogVariant.Log);
+                        s.Add(TimeSpan.TicksPerDay * 800_000 + 1 + i, liveTexts[i], string.Empty, LogVariant.Log);
                     }
                 });
-                Assert.IsTrue(import.Finished && !import.Failed, "seed " + seed);
+                string label = "seed " + seed + ", mode " + mode;
+                Assert.IsTrue(import.Finished && !import.Failed, label);
                 Assert.AreEqual(0, store.StagedCount);
-                // Live logs interleave with the import's interning: message ids then differ, the logs don't.
-                Assert.AreEqual(Content(reference, messageOrder: liveTexts.Count == 0), Content(store, messageOrder: liveTexts.Count == 0), "seed " + seed + ", mode " + mode);
+                Assert.AreEqual(Content(reference, messageOrder: false), Content(store, messageOrder: false), label);
+                if (liveTexts.Count == 0 && reloadAt < 0)
+                {
+                    Assert.AreEqual(Content(reference), Content(store), label);
+                }
+                else
+                {
+                    // Live logs interleave with the import's interning (and a reload re-interns): the history's messages keep
+                    // their order among themselves, the live ones theirs.
+                    Assert.AreEqual(MessageOrder(reference, c => !IsLive(c)), MessageOrder(store, c => !IsLive(c)), label);
+                    Assert.AreEqual(MessageOrder(reference, IsLive), MessageOrder(store, IsLive), label);
+                }
+
                 if (mode >= 1)
                 {
                     Assert.Greater(updates, 1, "split into many updates");
@@ -260,11 +349,12 @@ namespace Orbiters.Logger.Editor.Tests
             var rows = new List<Row>();
             for (int i = 0; i < 3 * ConsoleHistory.MaxPublishedPerUpdate + 100; i++)
             {
-                rows.Add(new Row { Condition = "Row " + (i % 50), Seconds = 23 * 3600 + 41 * 60 + i / 100 });
+                rows.Add(new Row { Condition = "Row " + (i % 50), Seconds = i == 2 * ConsoleHistory.MaxPublishedPerUpdate ? -1 : 23 * 3600 + 41 * 60 + i / 100 });
             }
 
+            var source = new Source(rows);
             var store = new LogStore(LogStore.HistoryRoom);
-            var import = NewImport(rows, 0, rows.Count);
+            var import = new ConsoleHistory(0, rows.Count, ConsoleHistory.Placement.Before, 1000) { Source = source, EditorStart = EditorStart };
             // Read everything, then put one batch in front, then reload.
             while (store.StagedCount < rows.Count)
             {
@@ -274,18 +364,26 @@ namespace Orbiters.Logger.Editor.Tests
             import.Step(store, 0d);
             Assert.AreEqual(ConsoleHistory.MaxPublishedPerUpdate, store.Count, "one batch in front");
             Assert.AreEqual(rows.Count - ConsoleHistory.MaxPublishedPerUpdate, import.To);
-            store.DiscardStaged();
-            var resumed = NewImport(rows, import.From, import.To);
-            while (!resumed.Step(store, 1e9))
+            string folder = NewFolder();
+            try
             {
+                var resumed = Reload(ref store, import, source, folder);
+                while (!resumed.Step(store, 1e9))
+                {
+                }
+            }
+            finally
+            {
+                DeleteFolder(folder);
             }
 
             Assert.AreEqual(Content(Reference(rows), messageOrder: false), Content(store, messageOrder: false));
         }
 
-        // The rows Unity adds during the import are live logs, past the range; a console cleared meanwhile ends it.
+        // The rows Unity adds during the import are live logs, past the range; a console cleared (and refilled to as
+        // many rows) between two updates fails the import cleanly.
         [Test]
-        public void RowsAddedOrAConsoleClearedMeanwhile()
+        public void RowsAddedOrAConsoleClearedMeanwhile([Values(false, true)] bool refilled)
         {
             var rows = RandomConsole(5);
             int count = rows.Count;
@@ -299,18 +397,90 @@ namespace Orbiters.Logger.Editor.Tests
 
             Assert.AreEqual(Content(Reference(rows.GetRange(0, count)), false), Content(store, false), "the added row is not history");
 
-            var cleared = new List<Row>(RandomConsole(6));
-            var source = new Source(cleared);
+            var console = RandomConsole(6);
+            var source = new Source(console);
             var other = new LogStore(LogStore.HistoryRoom);
-            var failing = new ConsoleHistory(0, cleared.Count, ConsoleHistory.Placement.Before, 1000) { Source = source, EditorStart = EditorStart };
-            failing.Step(other, 0d);
-            source.RowList = new List<Row>();
+            var failing = new ConsoleHistory(0, console.Count, ConsoleHistory.Placement.Before, 1000) { Source = source, EditorStart = EditorStart };
+            // Measured whole, then some rows read and staged.
+            for (int update = 0; update < console.Count + 20; update++)
+            {
+                failing.Step(other, 0d);
+            }
+
+            Assert.Greater(other.StagedCount, 0);
+            var replacement = refilled ? RandomConsole(7) : new List<Row>();
+            while (refilled && replacement.Count < console.Count)
+            {
+                replacement.AddRange(RandomConsole(8 + replacement.Count));
+            }
+
+            source.RowList = replacement;
             Assert.IsTrue(failing.Step(other, 1e9));
-            Assert.IsTrue(failing.Failed, "Unity's console was cleared: its rows are gone");
+            Assert.IsTrue(failing.Failed, refilled ? "another console's rows are never combined with these" : "Unity's console was cleared");
             Assert.AreEqual(0, other.StagedCount, "staged rows let go");
             Assert.AreEqual(0, other.Count);
         }
 
+        // Over the budget, with no live log: the measure starts the import where the newest rows fit, so nothing is trimmed
+        // or compacted; times are those round 1's forward reading gives for the same rows; the ceiling holds throughout.
+        [Test]
+        public void AnOverBudgetConsoleStartsWhereItsNewestRowsFit()
+        {
+            var rows = new List<Row>();
+            string padding = new string('h', 400);
+            int seconds = 23 * 3600 + 41 * 60;
+            for (int i = 0; i < 3000; i++)
+            {
+                seconds = (seconds + 3) % 86400;
+                rows.Add(new Row { Condition = "History " + i + " " + padding, Seconds = seconds });
+            }
+
+            var store = new LogStore(LogStore.HistoryRoom) { MaxTextChars = 1 << 18, CompactInBackground = true };
+            var import = NewImport(rows, 0, rows.Count);
+            // Now: shortly after the last row (the console's rows crossed midnight).
+            import.Now = EditorStart.Date.AddDays(1).AddSeconds(seconds + 60);
+
+            // Where it should start: the newest rows whose texts (and stripped copies) fit the budget less an eighth.
+            long room = store.MaxTextChars - store.MaxTextChars / 8 - store.Texts.TotalChars;
+            long used = 0;
+            int expected = rows.Count;
+            while (expected > 0 && used + 2 * rows[expected - 1].Condition.Length + 64 <= room)
+            {
+                used += 2 * rows[expected - 1].Condition.Length + 64;
+                expected--;
+            }
+
+            int compactions = store.CompactionsStarted;
+            int updates = 0;
+            while (!import.Step(store, 0.05d))
+            {
+                Assert.LessOrEqual(store.Texts.TotalChars, store.TextCeiling, "after update " + updates);
+                Assert.Less(++updates, 100_000);
+            }
+
+            Assert.Greater(expected, 0, "the console is over the budget");
+            Assert.AreEqual(expected, import.From, "the first row read");
+            Assert.AreEqual(compactions, store.CompactionsStarted, "no compaction ran during the import");
+            Assert.AreEqual(rows.Count - expected, store.Count, "every row that fits, none trimmed");
+            Assert.LessOrEqual(store.Texts.TotalChars, store.MaxTextChars);
+
+            // The same times as reading the whole console forward from the editor's start.
+            var whole = new LogStore(LogStore.HistoryRoom) { MaxTextChars = 1 << 26 };
+            ReferenceConsoleHistory.EditorStartForTests = EditorStart;
+            var reference = new ReferenceConsoleHistory(0, rows.Count, ReferenceConsoleHistory.Placement.Before, 1000) { Source = new Source(rows) };
+            while (!reference.Step(whole, 1e9))
+            {
+            }
+
+            for (int k = 0; k < store.Count; k++)
+            {
+                Assert.AreEqual(whole.TimeAt(whole.FirstId + expected + k), store.TimeAt(store.FirstId + k), "row " + (expected + k));
+                Assert.AreEqual(rows[expected + k].Condition, store.Texts[store.Message(store.MessageAt(store.FirstId + k)).Text]);
+            }
+        }
+
+        // Live logs flooding during an over-budget import: the safety net (trim, synchronous compaction) keeps the ceiling,
+        // the newest history and the live logs.
         [Test]
         public void AnImportLargerThanTheBudgetKeepsTheCeilingAndTheNewestLogs()
         {
@@ -323,6 +493,7 @@ namespace Orbiters.Logger.Editor.Tests
 
             var store = new LogStore(LogStore.HistoryRoom) { MaxTextChars = 1 << 18, CompactInBackground = true };
             var import = NewImport(rows, 0, rows.Count);
+            import.Now = EditorStart.Date.AddDays(1).AddHours(12);
             var live = new List<int>();
             string livePadding = new string('l', 300);
             int steps = 0;
@@ -353,7 +524,6 @@ namespace Orbiters.Logger.Editor.Tests
             }
 
             // History: what is left is the newest, in order, before the live logs.
-            int lastHistory = -1;
             int previousRow = -1;
             for (int id = store.FirstId; id < store.EndId; id++)
             {
@@ -363,7 +533,6 @@ namespace Orbiters.Logger.Editor.Tests
                     int row = int.Parse(text.Substring(8, text.IndexOf(' ', 8) - 8));
                     Assert.Greater(row, previousRow, "history in order");
                     previousRow = row;
-                    lastHistory = id;
                 }
 
                 if (id > store.FirstId)
@@ -372,7 +541,6 @@ namespace Orbiters.Logger.Editor.Tests
                 }
             }
 
-            Assert.Greater(lastHistory, -1, "some history fits");
             Assert.AreEqual(rows.Count - 1, previousRow, "the newest history row is kept");
         }
     }

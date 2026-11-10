@@ -5,19 +5,6 @@ using UnityEditor;
 
 namespace Orbiters.Logger.Editor
 {
-    /// <summary>What the snapshot remembers besides the logs.</summary>
-    internal sealed class SnapshotInfo
-    {
-        /// <summary>Entries in Unity's console when the snapshot was saved: rows after it arrived during the reload.</summary>
-        public int UnityRows;
-        /// <summary>The last of those rows (first two lines), to check the console wasn't cleared since.</summary>
-        public string UnityAnchor = string.Empty;
-        /// <summary>Console history not imported yet when scripts reloaded (rows <see cref="HistoryFrom"/> to <see cref="HistoryTo"/>).</summary>
-        public int HistoryFrom = -1;
-        public int HistoryTo = -1;
-        public string HistoryAnchor = string.Empty;
-    }
-
     /// <summary>
     /// Keeps the session's logs across script reloads (which wipe managed memory): what arrived since the last save is
     /// written before a reload and the store is put back after it (<see cref="SessionFile"/>). The files belong to this
