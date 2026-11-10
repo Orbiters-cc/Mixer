@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using UnityEngine;
 using Orbiters.Toolkit.Editor.Processes;
 
@@ -19,7 +20,7 @@ namespace Orbiters.UnitGit.Editor
         private const int BinarySniffBytes = 4096;
         internal const int DefaultTimeoutMilliseconds = 30000;
         public const int LongTimeoutMilliseconds = 900000;
-        // Windows stops a command line at 32k characters: path lists go to Git in batches well below that.
+        // Windows stops a command line at 32k characters: longer path lists go to Git on stdin.
         private const int MaxPathsPerCommand = 200;
         private const int MaxPathCharactersPerCommand = 8000;
         private const string NoTextualDifferences = "No textual differences to display.";
@@ -70,10 +71,11 @@ namespace Orbiters.UnitGit.Editor
         /// the snapshot counts the commits it has after HEAD. Empty: the branch checked out before HEAD was detached.</param>
         public UnitGitSnapshot BuildSnapshot(string logSearch, int historyLimit, UnitGitLogFilter filter, string visitBranch = null)
         {
+            Version version = GetGitVersion(out string versionText);
             var snapshot = new UnitGitSnapshot
             {
                 ProjectRoot = ProjectRoot,
-                GitAvailable = IsGitAvailable(),
+                GitAvailable = version != null,
                 IsUnityProject = IsUnityProject(ProjectRoot),
                 HasRepository = HasRepository(ProjectRoot)
             };
@@ -81,6 +83,12 @@ namespace Orbiters.UnitGit.Editor
             if (!snapshot.GitAvailable)
             {
                 snapshot.LastError = "Git was not found on PATH. Install Git and reopen Unity.";
+                return snapshot;
+            }
+
+            if (version < MinimumGitVersion)
+            {
+                snapshot.LastError = "Mixer Git needs Git " + MinimumGitVersion.ToString(2) + " or newer, and this is " + versionText + ". Update Git and reopen Unity.";
                 return snapshot;
             }
 
@@ -261,6 +269,16 @@ namespace Orbiters.UnitGit.Editor
         /// <summary>A file as committed ("HEAD", a hash), its path relative to the project; null when that commit has none.</summary>
         internal string ReadFileAt(string revision, string path)
         {
+            string name = revision + ":" + path;
+            if (UnitGitObjects.IsStable(name))
+            {
+                var bytes = new MemoryStream();
+                UnitGitObjects.Answer answer = UnitGitObjects.For(ProjectRoot).Read(name, bytes, out string type, out _);
+                if (answer == UnitGitObjects.Answer.Found)
+                    return type == "blob" ? UnitGitRunner.Decode(bytes.GetBuffer(), (int)bytes.Length) : null;
+                if (answer == UnitGitObjects.Answer.Missing) return null;
+            }
+
             GitCommandResult blob = RunGit(DefaultTimeoutMilliseconds, "cat-file", "blob", revision + ":./" + path);
             return blob.Success ? blob.StandardOutput : null;
         }
@@ -473,6 +491,18 @@ namespace Orbiters.UnitGit.Editor
         /// </summary>
         public bool WriteBlob(string revisionPath, string destination)
         {
+            if (UnitGitObjects.IsStable(revisionPath))
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(destination)));
+                UnitGitObjects.Answer answer;
+                string type;
+                using (var file = File.Create(destination))
+                    answer = UnitGitObjects.For(ProjectRoot).Read(revisionPath, file, out type, out _);
+                if (answer == UnitGitObjects.Answer.Found && type == "blob") return true;
+                File.Delete(destination);
+                if (answer != UnitGitObjects.Answer.Failed) return false;
+            }
+
             var start = new ProcessStartInfo
             {
                 FileName = "git",
@@ -1007,6 +1037,14 @@ namespace Orbiters.UnitGit.Editor
         internal GitCommandResult RunCommitWithMessageFile(IEnumerable<string> baseArguments, string message,
             IDictionary<string, string> environment = null)
         {
+            if (UnitGitRunner.CleanInput)
+            {
+                // The message on stdin: no temporary file to write and delete per commit.
+                byte[] bytes = UnitGitRunner.Utf8.GetBytes(NormalizeCommitMessage(message) + "\n");
+                var stdinArgs = new List<string>(baseArguments) { "-F", "-" };
+                return RunGitWithInput(environment, LongTimeoutMilliseconds, stream => stream.Write(bytes, 0, bytes.Length), stdinArgs.ToArray());
+            }
+
             string messagePath = WriteTempCommitMessage(message);
             try
             {
@@ -1694,67 +1732,156 @@ namespace Orbiters.UnitGit.Editor
         }
 
         /// <summary>
-        /// Runs "git --literal-pathspecs &lt;arguments&gt; -- &lt;paths&gt;" once per batch of paths and combines the output.
-        /// Stops at the first failing batch and returns it. No paths run nothing: Git would read that as the whole tree.
+        /// Runs Git with <paramref name="input"/> written to its stdin while its output is read. A command that changes the
+        /// repository takes the write gate as <see cref="RunGit"/> does; a retry on another program's index lock writes the
+        /// input again.
         /// </summary>
-        private GitCommandResult RunGitForPaths(int timeoutMilliseconds, IList<string> paths, params string[] arguments)
+        internal GitCommandResult RunGitWithInput(int timeoutMilliseconds, Action<Stream> input, params string[] arguments)
         {
-            var output = new StringBuilder();
-            var error = new StringBuilder();
-            foreach (List<string> batch in BatchPaths(paths))
-            {
-                var args = new List<string> { "--literal-pathspecs" };
-                args.AddRange(arguments);
-                args.Add("--");
-                args.AddRange(batch);
-                GitCommandResult result = RunGit(timeoutMilliseconds, args.ToArray());
-                if (!result.Success)
-                {
-                    return result;
-                }
-
-                output.Append(result.StandardOutput);
-                error.Append(result.StandardError);
-            }
-
-            return new GitCommandResult { StandardOutput = output.ToString(), StandardError = error.ToString() };
+            return RunGitWithInput(null, timeoutMilliseconds, input, arguments);
         }
 
-        // The paths Git lists for these pathspecs, one per line. Forced quoting keeps them intact whatever the output encoding.
-        private GitCommandResult ListPaths(IList<string> paths, List<string> listed, params string[] arguments)
+        internal GitCommandResult RunGitWithInput(IDictionary<string, string> environment, int timeoutMilliseconds, Action<Stream> input, params string[] arguments)
         {
-            var args = new List<string> { "-c", "core.quotePath=true" };
-            args.AddRange(arguments);
-            GitCommandResult result = RunGitForPaths(DefaultTimeoutMilliseconds, paths, args.ToArray());
-            if (result.Success)
+            var log = ProcessLogReceived;
+            var superseded = ReadSuperseded;
+            return UnitGitWriteGate.Run(arguments, timeoutMilliseconds,
+                () => RunStreaming(ProjectRoot, timeoutMilliseconds, log, superseded, environment, input, null, arguments),
+                line => log?.Invoke(line));
+        }
+
+        /// <summary>
+        /// Reads a command's stdout as raw bytes while it runs; <paramref name="output"/> returns false to stop it early
+        /// (the result is then a success with <see cref="GitCommandResult.Stopped"/>). Reads only: never gated.
+        /// </summary>
+        internal GitCommandResult ReadGitStream(int timeoutMilliseconds, Func<byte[], int, int, bool> output, params string[] arguments)
+        {
+            return RunStreaming(ProjectRoot, timeoutMilliseconds, ProcessLogReceived, ReadSuperseded, null, null, output, arguments);
+        }
+
+        private static GitCommandResult RunStreaming(string workingDirectory, int timeoutMilliseconds, UnitGitProcessLogHandler logHandler,
+            Func<bool> superseded, IDictionary<string, string> environment, Action<Stream> input, Func<byte[], int, int, bool> output, string[] arguments)
+        {
+            if (superseded != null && superseded())
+                return Failure("Read superseded.");
+            var result = new GitCommandResult();
+            var started = DateTime.UtcNow;
+            UnitGitProcessLogHandler log = null;
+            if (logHandler != null) log = line => logHandler(UnitGitRedaction.Redact(line));
+            log?.Invoke("> " + FormatCommandLine("git", arguments));
+            log?.Invoke("cwd: " + workingDirectory);
+            try
             {
-                listed.AddRange(SplitLines(result.StandardOutput).Where(line => line.Length > 0).Select(UnquotePath));
+                UnitGitRunResult run = UnitGitRunner.Run(new UnitGitRunRequest
+                {
+                    WorkingDirectory = workingDirectory,
+                    Arguments = arguments,
+                    TimeoutMilliseconds = timeoutMilliseconds,
+                    Environment = environment,
+                    Cancelled = superseded,
+                    Input = input,
+                    Output = output,
+                    // A read's output only fills the log: its lines are not logged (the command, its exit and errors are).
+                    OutputLine = log == null || UnitGitWriteGate.IsRead(arguments) ? null : (Action<string>)(line => log("stdout: " + line)),
+                    ErrorLine = log == null ? null : (Action<string>)(line => log("stderr: " + line))
+                });
+                result.ExitCode = run.Success || run.Stopped ? 0 : run.ExitCode == 0 ? 1 : run.ExitCode;
+                result.TimedOut = run.TimedOut;
+                result.Stopped = run.Stopped;
+                result.StandardOutput = run.StandardOutput;
+                result.StandardError = run.TimedOut ? "Git command timed out." : run.StandardError;
+                if (run.InputFailed)
+                    result.StandardError = "Mixer Git could not hand the whole list to Git, so Git was stopped before doing anything with it. " + run.StandardError;
+                if (run.Cancelled)
+                    result.StandardError += (result.StandardError.Length > 0 ? "\n" : string.Empty) +
+                                            (superseded?.Invoke() == true ? "Read superseded." : "Command interrupted by editor reload or shutdown.");
+                if (run.TimedOut) log?.Invoke("command or output capture timed out");
+                else if (!run.Cancelled) log?.Invoke("exit: " + result.ExitCode);
+            }
+            catch (Exception ex) when (!(ex is ThreadAbortException))
+            {
+                result.ExitCode = 1;
+                result.StandardError = ex.Message;
+                log?.Invoke("error: " + ex.Message);
             }
 
+            RaiseCommandRecord(workingDirectory, arguments, result, started);
             return result;
         }
 
-        private static IEnumerable<List<string>> BatchPaths(IList<string> paths)
+        /// <summary>
+        /// Runs "git --literal-pathspecs &lt;arguments&gt;" once for all <paramref name="paths"/>, which Git reads from stdin
+        /// (NUL-separated: any name, spaces, quotes, line breaks and leading dashes included). No paths run nothing: Git
+        /// would read that as the whole tree. The command must take --pathspec-from-file (add, reset, restore, rm, checkout,
+        /// commit, stash push).
+        /// </summary>
+        private GitCommandResult RunGitForPaths(int timeoutMilliseconds, IList<string> paths, params string[] arguments)
         {
-            var batch = new List<string>();
-            int characters = 0;
-            foreach (string path in paths ?? Array.Empty<string>())
+            // An empty entry is no path: Git refuses it, and dropped it cannot become "everything".
+            paths = paths?.Where(path => !string.IsNullOrEmpty(path)).ToList();
+            if (paths == null || paths.Count == 0)
+                return new GitCommandResult();
+            var args = new List<string> { "--literal-pathspecs" };
+            args.AddRange(arguments);
+            args.Add("--pathspec-file-nul");
+            Action<Stream> writePaths = stream =>
             {
-                if (batch.Count > 0 && (batch.Count >= MaxPathsPerCommand || characters + path.Length > MaxPathCharactersPerCommand))
+                var bytes = new byte[0];
+                foreach (string path in paths)
                 {
-                    yield return batch;
-                    batch = new List<string>();
-                    characters = 0;
+                    int length = UnitGitRunner.Utf8.GetMaxByteCount(path.Length) + 1;
+                    if (bytes.Length < length) bytes = new byte[Math.Max(length, 4096)];
+                    int count = UnitGitRunner.Utf8.GetBytes(path, 0, path.Length, bytes, 0);
+                    bytes[count++] = 0;
+                    stream.Write(bytes, 0, count);
                 }
-
-                batch.Add(path);
-                characters += path.Length + 3; // a space and quotes
-            }
-
-            if (batch.Count > 0)
+            };
+            if (UnitGitRunner.CleanInput)
             {
-                yield return batch;
+                args.Add("--pathspec-from-file=-");
+                return RunGitWithInput(timeoutMilliseconds, writePaths, args.ToArray());
             }
+
+            // Stdin would start with a byte order mark (see UnitGitRunner.CleanInput): the same list from a file.
+            string file = Path.Combine(Path.GetTempPath(), "mixer-git-paths-" + Guid.NewGuid().ToString("N") + ".txt");
+            try
+            {
+                using (var stream = File.Create(file)) writePaths(stream);
+                args.Add("--pathspec-from-file=" + file);
+                return RunGit(timeoutMilliseconds, args.ToArray());
+            }
+            finally
+            {
+                DeleteTempFile(file);
+            }
+        }
+
+        // The paths of these files that Git has in HEAD (ls-tree) or in the index (ls-files): neither takes a path list on
+        // stdin, so a long selection is answered from the whole listing, a short one with the paths on the command line.
+        private GitCommandResult ListPaths(IList<string> paths, List<string> listed, params string[] arguments)
+        {
+            var args = new List<string>(arguments);
+            args.Insert(1, "-z"); // right after the verb: ls-tree reads what follows its tree as paths
+            bool whole = paths.Count > MaxPathsPerCommand || paths.Sum(path => path.Length + 3) > MaxPathCharactersPerCommand;
+            if (!whole)
+            {
+                args.Insert(0, "--literal-pathspecs");
+                args.Add("--");
+                args.AddRange(paths);
+            }
+
+            GitCommandResult result = RunGit(DefaultTimeoutMilliseconds, args.ToArray());
+            if (!result.Success)
+                return result;
+            List<string> found = SplitNul(result.StandardOutput);
+            if (whole)
+            {
+                var wanted = new HashSet<string>(paths, StringComparer.Ordinal);
+                found = found.Where(wanted.Contains).ToList();
+            }
+
+            listed.AddRange(found);
+            return result;
         }
 
         private static List<string> SelectedPaths(IList<string> paths)
@@ -1769,10 +1896,48 @@ namespace Orbiters.UnitGit.Editor
             return count.ToString(CultureInfo.InvariantCulture) + " " + noun + (count == 1 ? string.Empty : "s");
         }
 
+        /// <summary>
+        /// The oldest Git Mixer Git runs: path lists on stdin (--pathspec-from-file) for add, reset, restore and checkout came
+        /// in 2.25, for rm and stash push in 2.26. (git restore itself, used since the first version, is 2.23.)
+        /// </summary>
+        internal static readonly Version MinimumGitVersion = new Version(2, 26);
+        private static readonly object GitVersionSync = new object();
+        private static Version gitVersion; // read once per editor session (domain): "Install Git and reopen Unity"
+        private static string gitVersionText;
+
         public bool IsGitAvailable()
         {
-            var result = RunGit(10000, "--version");
-            return result.Success;
+            return GetGitVersion(out _) != null;
+        }
+
+        /// <summary>Git's version ("git version 2.45.1.windows.1" as 2.45.1), or null when Git cannot run.</summary>
+        internal Version GetGitVersion(out string text)
+        {
+            lock (GitVersionSync)
+            {
+                if (gitVersion == null)
+                {
+                    var result = RunGit(10000, "--version");
+                    if (!result.Success)
+                    {
+                        text = string.Empty;
+                        return null; // not kept: a failed start (a timeout while the disk was busy) is asked again
+                    }
+                    gitVersionText = FirstNonEmptyLine(result.StandardOutput);
+                    gitVersion = ParseGitVersion(gitVersionText);
+                }
+
+                text = gitVersionText;
+                return gitVersion;
+            }
+        }
+
+        internal static Version ParseGitVersion(string text)
+        {
+            Match match = Regex.Match(text ?? string.Empty, @"(\d+)\.(\d+)(?:\.(\d+))?");
+            if (!match.Success) return new Version(0, 0);
+            int Part(int group) => match.Groups[group].Success ? int.Parse(match.Groups[group].Value, CultureInfo.InvariantCulture) : 0;
+            return new Version(Part(1), Part(2), Part(3));
         }
 
         public GitCommandResult GitHubLogin()
@@ -2846,23 +3011,25 @@ namespace Orbiters.UnitGit.Editor
             result.StandardError = result.TimedOut
                 ? timeoutMessage
                 : error.ToString();
-            if (UnitGitCommandLog.HasListeners)
-            {
-                var finished = DateTime.UtcNow;
-                UnitGitCommandLog.Raise(new UnitGitCommandRecord
-                {
-                    CommandLine = UnitGitRedaction.Redact(FormatCommandLine(fileName, arguments)),
-                    WorkingDirectory = workingDirectory ?? string.Empty,
-                    ExitCode = result.ExitCode,
-                    TimedOut = result.TimedOut,
-                    StandardOutput = UnitGitRedaction.Redact(result.StandardOutput),
-                    StandardError = UnitGitRedaction.Redact(result.StandardError),
-                    Milliseconds = (finished - started).TotalMilliseconds,
-                    FinishedUtc = finished
-                });
-            }
-
+            RaiseCommandRecord(workingDirectory, arguments, result, started, fileName);
             return result;
+        }
+
+        private static void RaiseCommandRecord(string workingDirectory, string[] arguments, GitCommandResult result, DateTime started, string fileName = "git")
+        {
+            if (!UnitGitCommandLog.HasListeners) return;
+            var finished = DateTime.UtcNow;
+            UnitGitCommandLog.Raise(new UnitGitCommandRecord
+            {
+                CommandLine = UnitGitRedaction.Redact(FormatCommandLine(fileName, arguments)),
+                WorkingDirectory = workingDirectory ?? string.Empty,
+                ExitCode = result.ExitCode,
+                TimedOut = result.TimedOut,
+                StandardOutput = UnitGitRedaction.Redact(result.StandardOutput),
+                StandardError = UnitGitRedaction.Redact(result.StandardError),
+                Milliseconds = (finished - started).TotalMilliseconds,
+                FinishedUtc = finished
+            });
         }
 
         private static GitCommandResult Failure(string message)

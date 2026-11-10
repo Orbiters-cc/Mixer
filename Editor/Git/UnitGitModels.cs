@@ -23,6 +23,8 @@ namespace Orbiters.UnitGit.Editor
         public string StandardOutput = string.Empty;
         public string StandardError = string.Empty;
         public bool TimedOut;
+        // A streamed read the caller stopped once it had what it needed: a success, with only part of the output.
+        public bool Stopped;
 
         public bool Success
         {
