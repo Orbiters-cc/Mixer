@@ -7,9 +7,10 @@ namespace Orbiters.Mixer.Editor.Splats
     /// <summary>
     /// Imports <c>.splats</c> files (a Gaussian splat PLY under Mixer's own extension, so other PLY importers never
     /// see it) as a <see cref="Orbiters.Mixer.Splats.SplatCloud"/>, with the sky map trained with them when a
-    /// <c>.splatsky</c> lies beside (<see cref="SkyMaps"/>).
+    /// <c>.splatsky</c> lies beside (<see cref="SkyMaps"/>). Version 4: the splats kept in the GPU's layout
+    /// (<see cref="Orbiters.Mixer.Splats.SplatLayout"/>); every cloud imported before is read again from its file.
     /// </summary>
-    [ScriptedImporter(3, "splats")]
+    [ScriptedImporter(4, "splats")]
     public sealed class SplatImporter : ScriptedImporter
     {
         public override void OnImportAsset(AssetImportContext ctx)

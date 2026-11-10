@@ -84,6 +84,19 @@ namespace Orbiters.Mixer.Editor.Splats.Tests
             color = new Color(0.1f, 0.6f, 0.5f),
         };
 
+        /// <summary>A cloud of <paramref name="positions"/> (identity rotations, 1 m scales, white unless
+        /// <paramref name="colors"/> says), on the sky shell where <paramref name="sky"/> says (null: not known).</summary>
+        static SplatCloud CloudOf(Vector3[] positions, Color32[] colors, bool[] sky)
+        {
+            var cloud = ScriptableObject.CreateInstance<SplatCloud>();
+            cloud.hideFlags = HideFlags.HideAndDontSave;
+            int n = positions.Length;
+            cloud.SetSplats(positions, Array.ConvertAll(positions, _ => Quaternion.identity), Array.ConvertAll(positions, _ => Vector3.one),
+                colors ?? Array.ConvertAll(positions, _ => new Color32(255, 255, 255, 255)),
+                sky != null ? new Vector4[n] : null, sky, sky != null ? new float[n] : null);
+            return cloud;
+        }
+
         static void AreClose(Quaternion want, Quaternion got)
         {
             // q and −q are the same rotation.
@@ -97,15 +110,15 @@ namespace Orbiters.Mixer.Editor.Splats.Tests
             try
             {
                 Assert.That(cloud.Count, Is.EqualTo(2));
-                Assert.That(Vector3.Distance(cloud.positions[0], A.position), Is.LessThan(1e-5f));
-                Assert.That(Vector3.Distance(cloud.positions[1], B.position), Is.LessThan(1e-5f));
-                AreClose(A.rotation, cloud.rotations[0]);
-                AreClose(B.rotation, cloud.rotations[1]);
-                Assert.That(Vector3.Distance(cloud.scales[0], new Vector3(0.1f, 0.02f, 0.3f)), Is.LessThan(1e-5f));
-                Assert.That(cloud.colors[0].a, Is.EqualTo((byte)Mathf.RoundToInt(255f / (1f + Mathf.Exp(-1.2f)))));
-                Assert.That(cloud.colors[0].r, Is.EqualTo((byte)204));
-                Assert.That(cloud.colors[0].g, Is.EqualTo((byte)102));
-                Assert.That(cloud.colors[1].g, Is.EqualTo((byte)153));
+                Assert.That(Vector3.Distance(cloud.PositionOf(0), A.position), Is.LessThan(1e-5f));
+                Assert.That(Vector3.Distance(cloud.PositionOf(1), B.position), Is.LessThan(1e-5f));
+                AreClose(A.rotation, cloud.RotationOf(0));
+                AreClose(B.rotation, cloud.RotationOf(1));
+                Assert.That(Vector3.Distance(cloud.ScaleOf(0), new Vector3(0.1f, 0.02f, 0.3f)), Is.LessThan(1e-5f));
+                Assert.That(cloud.ColorOf(0).a, Is.EqualTo((byte)Mathf.RoundToInt(255f / (1f + Mathf.Exp(-1.2f)))));
+                Assert.That(cloud.ColorOf(0).r, Is.EqualTo((byte)204));
+                Assert.That(cloud.ColorOf(0).g, Is.EqualTo((byte)102));
+                Assert.That(cloud.ColorOf(1).g, Is.EqualTo((byte)153));
             }
             finally
             {
@@ -119,9 +132,9 @@ namespace Orbiters.Mixer.Editor.Splats.Tests
             SplatCloud cloud = PlyReader.Read(Ply(new[] { A }, "f_rest_0", "f_rest_1", "f_rest_2"));
             try
             {
-                Assert.That(Vector3.Distance(cloud.positions[0], A.position), Is.LessThan(1e-5f));
-                Assert.That(Vector3.Distance(cloud.scales[0], new Vector3(0.1f, 0.02f, 0.3f)), Is.LessThan(1e-5f));
-                AreClose(A.rotation, cloud.rotations[0]);
+                Assert.That(Vector3.Distance(cloud.PositionOf(0), A.position), Is.LessThan(1e-5f));
+                Assert.That(Vector3.Distance(cloud.ScaleOf(0), new Vector3(0.1f, 0.02f, 0.3f)), Is.LessThan(1e-5f));
+                AreClose(A.rotation, cloud.RotationOf(0));
             }
             finally
             {
@@ -138,18 +151,18 @@ namespace Orbiters.Mixer.Editor.Splats.Tests
             SplatCloud without = PlyReader.Read(Ply(new[] { A }));
             try
             {
-                Assert.That(with.seen, Is.EqualTo(new[] { new Vector4(123f, 123f, 123f, 123f), new Vector4(123f, 123f, 123f, 123f) }));
-                Assert.That(with.sky, Is.EqualTo(new[] { true, true }));
-                Assert.That(with.beyond, Is.EqualTo(new[] { 123f, 123f }));
+                Assert.That(new[] { with.SeenOf(0), with.SeenOf(1) }, Is.EqualTo(new[] { new Vector4(123f, 123f, 123f, 123f), new Vector4(123f, 123f, 123f, 123f) }));
+                Assert.That(new[] { with.IsSky(0), with.IsSky(1) }, Is.EqualTo(new[] { true, true }));
+                Assert.That(new[] { with.BeyondOf(0), with.BeyondOf(1) }, Is.EqualTo(new[] { 123f, 123f }));
                 // Every splat on the sky shell: nothing to see the horizon from.
                 Assert.That(with.hasHorizon, Is.False);
-                Assert.That(without.seen, Is.Empty);
-                Assert.That(without.sky, Is.Empty);
-                // Uploaded: known where the cloud says, unknown (a negative weight) where it does not.
-                Assert.That(SplatRenderer.Pack(with)[1].seen, Is.EqualTo(new Vector4(123f, 123f, 123f, 123f)));
-                Assert.That(SplatRenderer.Pack(with)[1].flags, Is.EqualTo(1u));
-                Assert.That(SplatRenderer.Pack(with)[1].beyond, Is.EqualTo(123f));
-                Assert.That(SplatRenderer.Pack(without)[0].seen.x, Is.LessThan(0f));
+                Assert.That(without.HasSeen, Is.False);
+                Assert.That(without.packedSeen, Is.Empty);
+                Assert.That(without.IsSky(0), Is.False);
+                // As uploaded (the cloud's bytes are the GPU's): known where the cloud says, unknown (a negative weight)
+                // where it does not.
+                Assert.That(with.packedSeen.Length, Is.EqualTo(2 * SplatLayout.SeenStride));
+                Assert.That(without.SeenOf(0).x, Is.LessThan(0f));
             }
             finally
             {
@@ -166,10 +179,20 @@ namespace Orbiters.Mixer.Editor.Splats.Tests
             var positions = new[] { new Vector3(0, 0, 0), new Vector3(1, 0, 1), new Vector3(400, 10, 0), new Vector3(0, 20, -400), new Vector3(0, 400, 0) };
             var colors = new[] { new Color32(10, 200, 10, 255), new Color32(10, 200, 10, 255), new Color32(100, 150, 250, 255), new Color32(100, 150, 250, 128), new Color32(250, 0, 0, 255) };
             var sky = new[] { false, false, true, true, true };
-            Assert.That(PlyReader.Horizon(positions, colors, sky, out Color horizon), Is.True);
-            Assert.That(horizon.r, Is.EqualTo(100f / 255f).Within(1e-4f));
-            Assert.That(horizon.b, Is.EqualTo(250f / 255f).Within(1e-4f));
-            Assert.That(PlyReader.Horizon(positions, colors, new bool[0], out _), Is.False);
+            SplatCloud known = CloudOf(positions, colors, sky);
+            SplatCloud unknown = CloudOf(positions, colors, null);
+            try
+            {
+                Assert.That(PlyReader.Horizon(known, out Color horizon), Is.True);
+                Assert.That(horizon.r, Is.EqualTo(100f / 255f).Within(1e-4f));
+                Assert.That(horizon.b, Is.EqualTo(250f / 255f).Within(1e-4f));
+                Assert.That(PlyReader.Horizon(unknown, out _), Is.False);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(known);
+                UnityEngine.Object.DestroyImmediate(unknown);
+            }
         }
 
         [Test]
@@ -188,7 +211,7 @@ namespace Orbiters.Mixer.Editor.Splats.Tests
             try
             {
                 Assert.That(cloud.Count, Is.EqualTo(2));
-                Assert.That(Vector3.Distance(cloud.positions[1], B.position), Is.LessThan(1e-5f));
+                Assert.That(Vector3.Distance(cloud.PositionOf(1), B.position), Is.LessThan(1e-5f));
             }
             finally
             {
@@ -218,8 +241,8 @@ namespace Orbiters.Mixer.Editor.Splats.Tests
             try
             {
                 Assert.That(cloud.Count, Is.EqualTo(2));
-                Assert.That(Vector3.Distance(cloud.positions[0], A.position), Is.LessThan(1e-5f));
-                Assert.That(Vector3.Distance(cloud.positions[1], B.position), Is.LessThan(1e-5f));
+                Assert.That(Vector3.Distance(cloud.PositionOf(0), A.position), Is.LessThan(1e-5f));
+                Assert.That(Vector3.Distance(cloud.PositionOf(1), B.position), Is.LessThan(1e-5f));
             }
             finally
             {
@@ -241,10 +264,14 @@ namespace Orbiters.Mixer.Editor.Splats.Tests
             try
             {
                 Assert.That(cloud.Count, Is.EqualTo(2));
-                AreClose(A.rotation, cloud.rotations[0]);
-                Assert.That(cloud.rotations[1], Is.EqualTo(Quaternion.identity), "a rotation of length zero is none");
-                foreach (var packed in SplatRenderer.Pack(cloud))
-                    Assert.That(float.IsNaN(packed.cov0.x + packed.cov0.y + packed.cov0.z + packed.cov1.x + packed.cov1.y + packed.cov1.z), Is.False);
+                AreClose(A.rotation, cloud.RotationOf(0));
+                Assert.That(cloud.RotationOf(1), Is.EqualTo(Quaternion.identity), "a rotation of length zero is none");
+                // The covariance the shader builds from what is uploaded.
+                for (int i = 0; i < cloud.Count; i++)
+                {
+                    SplatLayout.Covariance(cloud.RotationOf(i), cloud.ScaleOf(i), out Vector3 cov0, out Vector3 cov1);
+                    Assert.That(float.IsNaN(cov0.x + cov0.y + cov0.z + cov1.x + cov1.y + cov1.z), Is.False);
+                }
             }
             finally
             {
@@ -260,7 +287,7 @@ namespace Orbiters.Mixer.Editor.Splats.Tests
             SplatCloud sky = PlyReader.Read(Ply(new[] { A, B }, (splat, property) => property == "sky" ? (splat == 1 ? 1f : 0f) : 0.5f, PlyReader.Seen));
             try
             {
-                Assert.That(sky.sky, Is.EqualTo(new[] { false, true }));
+                Assert.That(new[] { sky.IsSky(0), sky.IsSky(1) }, Is.EqualTo(new[] { false, true }));
                 Assert.That(sky.contentHash, Is.Not.EqualTo(ground.contentHash));
             }
             finally
@@ -317,7 +344,7 @@ namespace Orbiters.Mixer.Editor.Splats.Tests
         {
             Quaternion q = Quaternion.Euler(30, -60, 15);
             var s = new Vector3(0.5f, 2f, 0.1f);
-            SplatRenderer.Covariance(q, s, out Vector3 cov0, out Vector3 cov1);
+            SplatLayout.Covariance(q, s, out Vector3 cov0, out Vector3 cov1);
             Matrix4x4 m = Matrix4x4.TRS(Vector3.zero, q, s);
             Matrix4x4 sigma = m * m.transpose;
             Assert.That(cov0.x, Is.EqualTo(sigma[0, 0]).Within(1e-5f));
@@ -341,10 +368,18 @@ namespace Orbiters.Mixer.Editor.Splats.Tests
                 Vector3 d = new Vector3((float)rng.NextDouble() - 0.5f, (float)rng.NextDouble() * 0.5f, (float)rng.NextDouble() - 0.5f).normalized;
                 positions.Add(d * 400f);
             }
-            Bounds core = PlyReader.Core(positions.ToArray());
-            Assert.That(core.max.x, Is.LessThan(3f));
-            Assert.That(core.min.x, Is.LessThan(-1.5f));
-            Assert.That(core.max.y, Is.LessThan(3f));
+            SplatCloud cloud = CloudOf(positions.ToArray(), null, null);
+            try
+            {
+                Bounds core = PlyReader.Core(cloud);
+                Assert.That(core.max.x, Is.LessThan(3f));
+                Assert.That(core.min.x, Is.LessThan(-1.5f));
+                Assert.That(core.max.y, Is.LessThan(3f));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(cloud);
+            }
         }
 
         [Test]
@@ -355,10 +390,20 @@ namespace Orbiters.Mixer.Editor.Splats.Tests
                 positions.Add(new Vector3(i * 0.01f, 1f, 0f));
             for (int i = 0; i < 1000; i++)
                 positions.Add(i % 2 == 0 ? new Vector3(float.NaN, 0f, 0f) : new Vector3(5e9f, -5e9f, 1e12f));
-            Bounds core = PlyReader.Core(positions.ToArray());
-            Assert.That(core.center.y, Is.EqualTo(1f).Within(1e-3f));
-            Assert.That(core.max.x, Is.LessThan(1.1f));
-            Assert.That(PlyReader.Core(new[] { new Vector3(float.NaN, 0f, 0f) }).size, Is.EqualTo(Vector3.zero));
+            SplatCloud cloud = CloudOf(positions.ToArray(), null, null);
+            SplatCloud lost = CloudOf(new[] { new Vector3(float.NaN, 0f, 0f) }, null, null);
+            try
+            {
+                Bounds core = PlyReader.Core(cloud);
+                Assert.That(core.center.y, Is.EqualTo(1f).Within(1e-3f));
+                Assert.That(core.max.x, Is.LessThan(1.1f));
+                Assert.That(PlyReader.Core(lost).size, Is.EqualTo(Vector3.zero));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(cloud);
+                UnityEngine.Object.DestroyImmediate(lost);
+            }
         }
 
         const int Size = 64;
@@ -368,10 +413,8 @@ namespace Orbiters.Mixer.Editor.Splats.Tests
         {
             var cloud = ScriptableObject.CreateInstance<SplatCloud>();
             cloud.hideFlags = HideFlags.HideAndDontSave;
-            cloud.positions = Array.ConvertAll(distances, z => new Vector3(0f, 0f, z));
-            cloud.rotations = Array.ConvertAll(distances, _ => Quaternion.identity);
-            cloud.scales = Array.ConvertAll(distances, _ => new Vector3(0.3f, 0.3f, 0.3f));
-            cloud.colors = Array.ConvertAll(distances, _ => new Color32(255, 255, 255, opacity));
+            cloud.SetSplats(Array.ConvertAll(distances, z => new Vector3(0f, 0f, z)), Array.ConvertAll(distances, _ => Quaternion.identity),
+                Array.ConvertAll(distances, _ => new Vector3(0.3f, 0.3f, 0.3f)), Array.ConvertAll(distances, _ => new Color32(255, 255, 255, opacity)));
             cloud.contentHash = opacity + ":" + string.Join(",", distances);
             return cloud;
         }

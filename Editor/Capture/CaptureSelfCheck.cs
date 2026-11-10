@@ -10,8 +10,9 @@ namespace Orbiters.Mixer.Editor.Capture
 {
     /// <summary>
     /// Decodes a sample of a capture's written frames the way Orbiters - N4N0 will (QOI from disk, then
-    /// <see cref="CaptureStrip.TryDecode"/> and <see cref="DepthFrames.TryDecode"/>) and compares them with the ground
-    /// truth: strip payloads bit for bit, depth codes within ±1 of the quantised true depth at every sample pixel.
+    /// <see cref="CaptureStrip.TryDecode"/> and a <see cref="DepthDecoder"/> per worker, kept across its frames as
+    /// Orbiters - N4N0 keeps one for a capture) and compares them with the ground truth: strip payloads bit for bit, depth
+    /// codes within ±1 of the quantised true depth at every sample pixel.
     /// </summary>
     internal static class CaptureSelfCheck
     {
@@ -67,16 +68,20 @@ namespace Orbiters.Mixer.Editor.Capture
             var result = new Result();
             var gate = new object();
             int done = 0;
-            Parallel.ForEach(frames, new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, threads), CancellationToken = cancel }, index =>
-            {
-                var local = Check(folder, index, expectedWords(index), expectedDepth(index));
-                lock (gate) Merge(result, local);
-                progress?.Invoke(Interlocked.Increment(ref done));
-            });
+            Parallel.ForEach(frames, new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, threads), CancellationToken = cancel },
+                () => new DepthDecoder(),
+                (index, state, decoder) =>
+                {
+                    var local = Check(folder, index, expectedWords(index), expectedDepth(index), decoder);
+                    lock (gate) Merge(result, local);
+                    progress?.Invoke(Interlocked.Increment(ref done));
+                    return decoder;
+                },
+                decoder => { });
             return result;
         }
 
-        private static Result Check(string folder, int index, uint[] words, ushort[] depthCodes)
+        private static Result Check(string folder, int index, uint[] words, ushort[] depthCodes, DepthDecoder decoder)
         {
             var r = new Result();
             var image = Qoi.Decode(File.ReadAllBytes(Path.Combine(folder, RawCapture.FramesDir, RawCapture.FrameFile(index))));
@@ -99,7 +104,7 @@ namespace Orbiters.Mixer.Editor.Capture
             }
             if (depthCodes == null) return r;
             r.DepthFramesChecked = 1;
-            if (!DepthFrames.TryDecode(image, flipped, out var layout, out var codes, out r.TilesOk, out r.TilesRejected))
+            if (!decoder.TryDecode(image, flipped, out var layout, out var codes, out r.TilesOk, out r.TilesRejected))
             {
                 r.Problems.Add("frame " + index + ": no depth layout");
                 return r;
