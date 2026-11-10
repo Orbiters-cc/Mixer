@@ -101,6 +101,26 @@ namespace Orbiters.UnitGit.Editor
             }
         }
 
+        private static readonly Regex LockFile = new Regex(@"Unable to create '([^']+\.lock)': File exists", RegexOptions.Compiled);
+
+        /// <summary>
+        /// Adds, once, what to do about a lock file: another program may be using the repository; if none is, deleting the
+        /// file unlocks it. <paramref name="lockPath"/>: the file a stopped change may have left (else the one Git names).
+        /// Mixer Git never deletes a lock itself: an embedded Git (an IDE's) can hold one with no git process to see.
+        /// </summary>
+        internal static string ExplainLock(string message, string lockPath = null)
+        {
+            message = message ?? string.Empty;
+            Match named = LockFile.Match(message);
+            string file = named.Success ? named.Groups[1].Value : lockPath;
+            if (string.IsNullOrEmpty(file) || message.IndexOf(LockAdvice, StringComparison.Ordinal) >= 0) return message;
+            string start = named.Success ? string.Empty : "Git was stopped before it finished and may have left its lock file '" + file + "' behind. ";
+            return message.TrimEnd() + (message.Trim().Length > 0 ? "\n" : string.Empty) + start +
+                   "The repository is locked by '" + System.IO.Path.GetFileName(file) + "': " + LockAdvice + " '" + file + "' unlocks it.";
+        }
+
+        private const string LockAdvice = "another program may be using the repository; if none is, deleting";
+
         internal static bool IsLockContention(GitCommandResult result) =>
             result != null && !result.Success && !result.TimedOut &&
             (result.StandardError ?? string.Empty).IndexOf("index.lock': File exists", StringComparison.Ordinal) >= 0;
@@ -121,6 +141,9 @@ namespace Orbiters.UnitGit.Editor
                 for (int attempt = 0; ; attempt++)
                 {
                     GitCommandResult result = run();
+                    if (!result.Success && LockFile.IsMatch(result.StandardError ?? string.Empty) &&
+                        (!retryable || attempt >= LockRetryDelays.Length || !IsLockContention(result)))
+                        result.StandardError = ExplainLock(result.StandardError);
                     if (!retryable || attempt >= LockRetryDelays.Length || !IsLockContention(result)) return result;
                     log?.Invoke("waiting for another Git process to release the index lock");
                     Thread.Sleep(LockRetryDelays[attempt]);

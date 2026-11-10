@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Threading;
 using Microsoft.Win32.SafeHandles;
 using UnityEditor;
 
@@ -21,8 +22,23 @@ namespace Orbiters.UnitGit.Editor
     {
         private static readonly object Sync = new object();
         private static readonly Dictionary<Process, UnitGitProcessJob> Active = new Dictionary<Process, UnitGitProcessJob>();
-        // Called after a process had to be stopped while it still ran (see UnitGitIndexLock).
-        private static readonly Dictionary<Process, Action> OnStopped = new Dictionary<Process, Action>();
+        // Commands that change the repository: at a reload or quit they get time to finish before they are stopped.
+        private static readonly HashSet<Process> Writes = new HashSet<Process>();
+        // Processes stopped while they still ran: a job closed under them makes them exit with code 0, which is no success.
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Process, object> StoppedRunning =
+            new System.Runtime.CompilerServices.ConditionalWeakTable<Process, object>();
+
+        /// <summary>Whether this process ended because it was stopped (timeout, cancel, reload), not by itself.</summary>
+        internal static bool WasStopped(Process process)
+        {
+            lock (Sync) return StoppedRunning.TryGetValue(process, out _);
+        }
+        // Only Process.Start itself runs under this lock (a process started at the same moment would inherit the other's
+        // pipe ends); a start that waits for it longer than this goes ahead without it rather than hold the editor up.
+        private static readonly object StartSync = new object();
+        private const int StartLockWaitMilliseconds = 10000;
+        /// <summary>How long a reload or quit waits for changes in flight to finish before it stops them.</summary>
+        internal const int WriteGraceMilliseconds = 10000;
         private static readonly List<Action> StopListeners = new List<Action>();
         private static volatile bool stopping;
 
@@ -41,54 +57,63 @@ namespace Orbiters.UnitGit.Editor
             lock (Sync) StopListeners.Add(listener);
         }
 
-        /// <param name="onStopped">Called when the process is stopped while it still runs (never when it ended by itself).</param>
-        internal static bool Start(Process process, Action onStopped = null)
+        /// <param name="write">The command changes the repository: a reload or quit lets it finish first (see StopAll).</param>
+        internal static bool Start(Process process, bool write = false)
         {
-            lock (Sync)
+            if (stopping) return false;
+            UnitGitProcessJob job = Path.DirectorySeparatorChar == '\\' ? UnitGitProcessJob.Create() : null;
+            bool started = false;
+            try
             {
-                if (stopping) return false;
-                UnitGitProcessJob job = Path.DirectorySeparatorChar == '\\' ? UnitGitProcessJob.Create() : null;
-                bool started = false;
+                bool locked = Monitor.TryEnter(StartSync, StartLockWaitMilliseconds);
                 try
                 {
+                    if (stopping) { job?.Dispose(); return false; }
                     if (!process.Start()) { job?.Dispose(); return false; }
                     started = true;
-                    job?.Assign(process);
-                    Active.Add(process, job);
-                    if (onStopped != null) OnStopped[process] = onStopped;
                 }
-                catch
+                finally
                 {
-                    job?.Dispose();
-                    try { if (started && !process.HasExited) process.Kill(); } catch (InvalidOperationException) { }
-                    throw;
+                    if (locked) Monitor.Exit(StartSync);
                 }
-                return true;
+
+                job?.Assign(process);
+                lock (Sync)
+                {
+                    Active.Add(process, job);
+                    if (write) Writes.Add(process);
+                }
             }
+            catch
+            {
+                job?.Dispose();
+                try { if (started && !process.HasExited) process.Kill(); } catch (InvalidOperationException) { }
+                throw;
+            }
+            return true;
         }
+
+        /// <summary>Whether a reload or quit is under way and this process should stop now (a change in flight may finish).</summary>
+        internal static bool ShouldStop(bool write) => stopping && !(write && stoppingAllowsWrites);
+
+        private static volatile bool stoppingAllowsWrites;
 
         /// <summary>Stops the process and everything it started, then forgets it.</summary>
         internal static void Stop(Process process)
         {
-            Action stopped = StopWithoutCallback(process);
-            Invoke(stopped);
-        }
-
-        // Stops the process; returns its stop callback when it was still running (to call once it is gone).
-        private static Action StopWithoutCallback(Process process)
-        {
             UnitGitProcessJob job;
-            Action stopped;
             lock (Sync)
             {
                 Active.TryGetValue(process, out job);
                 Active.Remove(process);
-                OnStopped.TryGetValue(process, out stopped);
-                OnStopped.Remove(process);
+                Writes.Remove(process);
             }
             bool running;
             try { running = !process.HasExited; }
             catch (InvalidOperationException) { running = false; }
+            if (running)
+                lock (Sync)
+                    if (!StoppedRunning.TryGetValue(process, out _)) StoppedRunning.Add(process, null);
             if (job != null) job.Dispose();
             else
             {
@@ -99,18 +124,10 @@ namespace Orbiters.UnitGit.Editor
                 catch (Exception ex) when (ex is InvalidOperationException || ex is Win32Exception || ex is IOException) { }
             }
             KillRoot(process);
-            if (!running) return null;
+            if (!running) return;
             try { process.WaitForExit(2000); }
             catch (InvalidOperationException) { }
             catch (Win32Exception) { }
-            return stopped;
-        }
-
-        private static void Invoke(Action action)
-        {
-            if (action == null) return;
-            try { action(); }
-            catch (Exception) { /* A cleanup that fails leaves things as Git left them. */ }
         }
 
         /// <summary>
@@ -124,20 +141,6 @@ namespace Orbiters.UnitGit.Editor
             return job == null ? -1 : job.ActiveProcesses();
         }
 
-        /// <summary>The ids of the Git processes this editor runs now.</summary>
-        internal static HashSet<int> OwnedIds()
-        {
-            var ids = new HashSet<int>();
-            lock (Sync)
-            {
-                foreach (Process process in Active.Keys)
-                {
-                    try { ids.Add(process.Id); }
-                    catch (InvalidOperationException) { }
-                }
-            }
-            return ids;
-        }
 
         private static void KillRoot(Process process)
         {
@@ -146,14 +149,24 @@ namespace Orbiters.UnitGit.Editor
             catch (Win32Exception) { }
         }
 
-        private static void StopAll()
+        private static void StopAll() => StopAll(WriteGraceMilliseconds);
+
+        /// <summary>
+        /// Before a reload and at quit: reads and kept-alive processes stop at once; a change in flight (a commit, a
+        /// staging) gets up to <paramref name="graceMilliseconds"/> to finish (its runner keeps reading its output
+        /// meanwhile), and only then is stopped. A killed change can leave Git's lock file behind, which nothing here
+        /// deletes: the failed result says which file it is.
+        /// </summary>
+        internal static void StopAll(int graceMilliseconds)
         {
-            Process[] processes;
+            Process[] reads, writes;
             Action[] listeners;
             lock (Sync)
             {
+                stoppingAllowsWrites = true;
                 stopping = true;
-                processes = Active.Keys.ToArray();
+                writes = Writes.ToArray();
+                reads = Active.Keys.Where(process => !Writes.Contains(process)).ToArray();
                 listeners = StopListeners.ToArray();
             }
             foreach (Action listener in listeners)
@@ -161,10 +174,27 @@ namespace Orbiters.UnitGit.Editor
                 try { listener(); }
                 catch (Exception) { /* Stopping goes on for the others. */ }
             }
-            // Every process first, then the cleanups: a stale lock is only removed once no Git of ours runs.
-            var stopped = new List<Action>();
-            foreach (Process process in processes) stopped.Add(StopWithoutCallback(process));
-            foreach (Action action in stopped) Invoke(action);
+            foreach (Process process in reads) Stop(process);
+            var waited = Stopwatch.StartNew();
+            foreach (Process process in writes)
+            {
+                try
+                {
+                    int left = (int)Math.Max(0, graceMilliseconds - waited.ElapsedMilliseconds);
+                    if (left > 0) process.WaitForExit(left);
+                }
+                catch (InvalidOperationException) { }
+                catch (Win32Exception) { }
+            }
+            stoppingAllowsWrites = false;
+            foreach (Process process in writes) Stop(process);
+        }
+
+        /// <summary>For tests only: <see cref="StopAll(int)"/> as a reload runs it, then starting processes is allowed again.</summary>
+        internal static void StopAllThenResume(int graceMilliseconds)
+        {
+            StopAll(graceMilliseconds);
+            stopping = false;
         }
 
         private static void StopUnixChildren(int root)

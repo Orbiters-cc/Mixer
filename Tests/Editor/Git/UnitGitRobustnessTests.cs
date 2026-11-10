@@ -7,12 +7,46 @@ using NUnit.Framework;
 
 namespace Orbiters.UnitGit.Editor.Tests
 {
-    // A stopped change leaves no lock behind, stdin never gains a byte order mark (and every list still reaches Git without
+    // A change in flight at a reload is let finish, a lock is reported and never deleted, stdin never gains a byte order mark (and every list still reaches Git without
     // stdin), commit data survives the user's i18n settings, and a resumed history never mixes two histories.
     public sealed class UnitGitRobustnessTests
     {
         [Test]
-        public void AChangeStoppedMidwayLeavesNoLockAndTheNextChangeWorks()
+        public void AChangeInFlightAtAReloadIsLetFinish()
+        {
+            using (var repo = UnitGitTestRepo.Create())
+            {
+                repo.Write("Assets/keep.txt", "base\n");
+                repo.Commit("base");
+                var paths = new List<string>();
+                for (int i = 0; i < 400; i++)
+                {
+                    paths.Add("Assets/Many/" + i + ".txt");
+                    repo.Write(paths[i], i + "\n");
+                }
+
+                GitCommandResult staged = null;
+                var worker = new System.Threading.Thread(() => staged = repo.Git.Stage(paths));
+                worker.Start();
+                // Once git add runs, "reload": reads stop at once, the change gets its grace time.
+                var wait = System.Diagnostics.Stopwatch.StartNew();
+                while (UnitGitProcessLifetime.ActiveCount == 0 && wait.ElapsedMilliseconds < 10000 && worker.IsAlive) System.Threading.Thread.Sleep(1);
+                UnitGitProcessLifetime.StopAllThenResume(UnitGitProcessLifetime.WriteGraceMilliseconds);
+                Assert.That(worker.Join(30000), Is.True);
+                // Finished within the grace time: a correct result. (Past it, the change is stopped and says so instead.)
+                if (!staged.Success)
+                {
+                    Assert.That(staged.Message, Does.Contain("index.lock"), "A stopped change names the lock.");
+                    Assert.Ignore("git add needed more than the grace time here.");
+                }
+                var index = repo.Run("diff", "--cached", "--name-only", "-z").Split('\0').Where(path => path.Length > 0).ToList();
+                Assert.That(index, Is.EquivalentTo(paths));
+                Assert.That(File.Exists(repo.Full(".git/index.lock")), Is.False);
+            }
+        }
+
+        [Test]
+        public void AKilledChangeNamesTheLockAndDeletesNothing()
         {
             using (var repo = UnitGitTestRepo.Create())
             {
@@ -20,21 +54,25 @@ namespace Orbiters.UnitGit.Editor.Tests
                 repo.Commit("base");
                 for (int i = 0; i < 3000; i++) repo.Write("Assets/Many/" + i + ".txt", i + "\n");
                 string lockPath = repo.Full(".git/index.lock");
-                UnitGitRunResult stopped = UnitGitRunner.Run(new UnitGitRunRequest
+                GitCommandResult killed = repo.Git.RunGit(150, "add", "-A");
+                if (killed.Success) Assert.Ignore("git add finished within 150 ms here: nothing was killed.");
+                Assert.That(killed.Message, Does.Contain("index.lock"));
+                Assert.That(killed.Message, Does.Contain("another program may be using the repository; if none is, deleting"));
+                if (File.Exists(lockPath))
                 {
-                    WorkingDirectory = repo.Root,
-                    Arguments = new[] { "add", "-A" },
-                    TimeoutMilliseconds = 150,
-                    IndexLock = lockPath
-                });
-                Assert.That(File.Exists(lockPath), Is.False, "Stopped (" + stopped.TimedOut + ") or done, no lock is left.");
-                GitCommandResult next = repo.Git.Stage(new[] { "Assets/keep.txt", "Assets/Many/1.txt" });
-                Assert.That(next.Success, Is.True, next.Message);
+                    // Left as Git left it: the next change says so, and the user decides.
+                    GitCommandResult next = repo.Git.Stage(new[] { "Assets/keep.txt" });
+                    Assert.That(next.Success, Is.False);
+                    Assert.That(next.Message, Does.Contain("deleting"));
+                    Assert.That(File.Exists(lockPath), Is.True);
+                    File.Delete(lockPath);
+                }
+                Assert.That(repo.Git.Stage(new[] { "Assets/keep.txt" }).Success, Is.True);
             }
         }
 
         [Test]
-        public void ALockSomeoneElseHoldsIsNeverRemoved()
+        public void ALockSomeoneElseHoldsIsReportedAndKept()
         {
             using (var repo = UnitGitTestRepo.Create())
             {
@@ -43,7 +81,10 @@ namespace Orbiters.UnitGit.Editor.Tests
                 File.WriteAllText(lockPath, string.Empty);
                 GitCommandResult add = repo.Git.Stage(new[] { "Assets/a.txt" });
                 Assert.That(add.Success, Is.False);
-                Assert.That(File.Exists(lockPath), Is.True, "The lock was there before Mixer Git started: it is not Mixer Git's to remove.");
+                Assert.That(add.Message, Does.Contain("index.lock"));
+                Assert.That(add.Message, Does.Contain("another program may be using the repository; if none is, deleting"));
+                Assert.That(add.Message.Split(new[] { "deleting" }, StringSplitOptions.None).Length, Is.EqualTo(2), "Said once.");
+                Assert.That(File.Exists(lockPath), Is.True, "Mixer Git never deletes a lock.");
                 File.Delete(lockPath);
                 Assert.That(repo.Git.Stage(new[] { "Assets/a.txt" }).Success, Is.True);
             }
