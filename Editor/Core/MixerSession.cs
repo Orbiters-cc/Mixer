@@ -11,6 +11,30 @@ using Object = UnityEngine.Object;
 
 namespace Orbiters.Mixer.Editor
 {
+    /// <summary>What a session change touched, for listeners that care about some of it (several at once for some operations).</summary>
+    [Flags]
+    internal enum SessionChange
+    {
+        None = 0,
+        /// <summary>Sessions began, ended, waited or came back (the targets list changed).</summary>
+        Sessions = 1 << 0,
+        /// <summary>The active layer or its shown weight.</summary>
+        Layer = 1 << 1,
+        /// <summary>Positions of the base or of a shape (strokes, mirror, Blender).</summary>
+        Geometry = 1 << 2,
+        /// <summary>Bone weights.</summary>
+        Weights = 1 << 3,
+        /// <summary>Vertex groups: their list or their weights.</summary>
+        Groups = 1 << 4,
+        /// <summary>The shapes: made, deleted, renamed, duplicated, reordered.</summary>
+        ShapeList = 1 << 5,
+        Mask = 1 << 6,
+        /// <summary>Bind poses (rest-pose editing and its undo), for every target that shares the bones.</summary>
+        RestPose = 1 << 7,
+        /// <summary>Any edit of a document (what an edit from outside, Blender's, may have touched).</summary>
+        Edits = Layer | Geometry | Weights | Groups | ShapeList | Mask,
+    }
+
     /// <summary>
     /// The meshes being edited in this editor: each shows a working copy on its renderer while its document takes the
     /// edits, flushed to the copy once a frame. Nothing is written to assets until <see cref="Commit"/>, which saves
@@ -23,8 +47,22 @@ namespace Orbiters.Mixer.Editor
     {
         private static readonly List<EditTarget> targets = new List<EditTarget>();
 
-        /// <summary>Raised when a target is added, committed or reverted, or an edit changed what the window shows.</summary>
+        /// <summary>
+        /// Raised when a target is added, committed or reverted, or an edit changed what the window shows: anything.
+        /// Raised after <see cref="Edited"/>, for listeners that refresh on any change.
+        /// </summary>
         public static event Action Changed;
+        /// <summary>
+        /// What changed, on which target (null: several, or a session that ended), so a listener reacts only to what
+        /// concerns it: a stroke is <see cref="SessionChange.Geometry"/> of one target, not a new list of sessions.
+        /// </summary>
+        public static event Action<EditTarget, SessionChange> Edited;
+
+        private static void Raise(EditTarget target, SessionChange change)
+        {
+            Edited?.Invoke(target, change);
+            Changed?.Invoke();
+        }
         /// <summary>Short messages for the window's toasts (text, isError).</summary>
         public static event Action<string, bool> Notice;
 
@@ -101,7 +139,7 @@ namespace Orbiters.Mixer.Editor
             SaveState();
             MixerLinkService.ClaimForUnity(target);
             NotePreviewed(target.Renderer);
-            Changed?.Invoke();
+            Raise(target, SessionChange.Sessions);
             return target;
         }
 
@@ -135,7 +173,7 @@ namespace Orbiters.Mixer.Editor
             doc.Groups.Add(group);
             doc.Revision++;
             MixerHistory.Push(new GroupListEdit { Target = target, Label = "New group " + name, Before = before, After = new List<VertexGroup>(doc.Groups) });
-            NoteEdited(target);
+            NoteEdited(target, SessionChange.Groups);
             return group;
         }
 
@@ -150,7 +188,7 @@ namespace Orbiters.Mixer.Editor
             doc.Revision++;
             MixerHistory.Push(new GroupListEdit { Target = target, Label = "Remove group " + name, Before = before, After = new List<VertexGroup>(doc.Groups) });
             if (target.ShownChannel.IsGroup && target.ShownChannel.Group == name) target.ShowChannel(WeightChannel.None);
-            NoteEdited(target);
+            NoteEdited(target, SessionChange.Groups);
         }
 
         public static void RenameGroup(EditTarget target, string from, string to)
@@ -168,7 +206,7 @@ namespace Orbiters.Mixer.Editor
             doc.Revision++;
             MixerHistory.Push(new GroupListEdit { Target = target, Label = "Rename group " + from, Before = before, After = new List<VertexGroup>(doc.Groups) });
             if (target.ShownChannel.IsGroup && target.ShownChannel.Group == from) target.ShowChannel(WeightChannel.OfGroup(to));
-            NoteEdited(target);
+            NoteEdited(target, SessionChange.Groups);
         }
 
         // ---- Revert and Commit -------------------------------------------------------------------------------------
@@ -298,7 +336,7 @@ namespace Orbiters.Mixer.Editor
             }
             Undo.IncrementCurrentGroup();
             Notice?.Invoke("Saved " + string.Join(", ", saved), false);
-            Changed?.Invoke();
+            Raise(null, SessionChange.Sessions);
             return result;
         }
 
@@ -458,7 +496,7 @@ namespace Orbiters.Mixer.Editor
             if (deleteAutosave) MixerAutosave.Delete(target.Id);
             targets.Remove(target);
             SaveState();
-            if (notify) Changed?.Invoke();
+            if (notify) Raise(target, SessionChange.Sessions);
         }
 
         private static Transform RootOf(Renderer renderer) => renderer != null ? renderer.transform.root : null;
@@ -470,13 +508,16 @@ namespace Orbiters.Mixer.Editor
             return root != null ? root.name : renderer.name;
         }
 
-        /// <summary>Called after a stroke or operation changed a target.</summary>
-        public static void NoteEdited(EditTarget target)
+        /// <summary>Called after a stroke or operation changed a target (anything of it: see the overload).</summary>
+        public static void NoteEdited(EditTarget target) => NoteEdited(target, SessionChange.Edits);
+
+        /// <summary>Called after a stroke or operation changed <paramref name="change"/> of a target.</summary>
+        public static void NoteEdited(EditTarget target, SessionChange change)
         {
             dirtySinceAutosave = true;
             if (!MixerLinkService.IsBlenderOwned(target)) MixerLinkService.NotePositions(target);
             if (target != null) NotePreviewed(target.Renderer);
-            Changed?.Invoke();
+            Raise(target, change);
         }
 
         /// <summary>Mixer's history undid or redid steps: the next autosave writes what the documents hold now (a crash
@@ -489,7 +530,7 @@ namespace Orbiters.Mixer.Editor
             dirtySinceAutosave = true;
             MixerLinkService.NoteArmatureChanged();
             foreach (var root in targets.Where(t => t.Alive).Select(t => RootOf(t.Renderer)).Distinct()) if (root != null) AvatarMeshEdits.NotifyPreviewed(root);
-            Changed?.Invoke();
+            Raise(null, SessionChange.RestPose);
         }
 
         /// <summary>Picks the layer a target is edited on: null for the base mesh, else a shape (created when new).</summary>
@@ -509,7 +550,7 @@ namespace Orbiters.Mixer.Editor
             else doc.Layer = shape;
             target.AfterLayerChange();
             SaveState();
-            NoteEdited(target);
+            NoteEdited(target, SessionChange.Layer | SessionChange.ShapeList);
         }
 
         /// <summary>
@@ -533,7 +574,7 @@ namespace Orbiters.Mixer.Editor
             MixerHistory.Push(new ShapeListEdit { Target = target, Label = "Delete shape " + shape, Name = shape, Layer = layer, Created = false, LayerBefore = before, OrderIndex = index });
             target.AfterLayerChange();
             SaveState();
-            NoteEdited(target);
+            NoteEdited(target, SessionChange.Layer | SessionChange.ShapeList);
         }
 
         public static void Say(string text, bool error = false) => Notice?.Invoke(text, error);
@@ -552,7 +593,7 @@ namespace Orbiters.Mixer.Editor
             MixerHistory.Push(new ShapeStateEdit { Target = target, Label = "Rename " + from + " to " + to, Before = before, After = doc.CaptureShapes() });
             target.AfterLayerChange();
             SaveState();
-            NoteEdited(target);
+            NoteEdited(target, SessionChange.Layer | SessionChange.ShapeList);
         }
 
         public static void DuplicateShape(EditTarget target, string from, string to)
@@ -568,7 +609,7 @@ namespace Orbiters.Mixer.Editor
             MixerHistory.Push(new ShapeStateEdit { Target = target, Label = "Duplicate " + from, Before = before, After = doc.CaptureShapes() });
             target.AfterLayerChange();
             SaveState();
-            NoteEdited(target);
+            NoteEdited(target, SessionChange.Layer | SessionChange.ShapeList);
         }
 
         /// <summary>Copies one side of a shape onto the other across the mesh's X axis (<paramref name="fromPositiveX"/>: +X side is the source).</summary>
@@ -627,7 +668,7 @@ namespace Orbiters.Mixer.Editor
             MixerHistory.Push(new PositionEdit { Target = target, Label = "Mirror " + name + (fromPositiveX ? " +X to -X" : " -X to +X"), Layer = name, Indices = indices.ToArray(), Before = before.ToArray(), After = after.ToArray() });
             if (previousLayer != name) target.AfterLayerChange(); else { target.AfterEdit(indices, fullRefresh: true); target.RecomputeAllNormals(); }
             SaveState();
-            NoteEdited(target);
+            NoteEdited(target, SessionChange.Layer | SessionChange.Geometry);
         }
 
         public static void ClearMask(EditTarget target) => SetMask(target, _ => 0f, "Clear mask");
@@ -649,7 +690,7 @@ namespace Orbiters.Mixer.Editor
             if (indices.Count == 0) return;
             doc.Revision++;
             MixerHistory.Push(new MaskEdit { Target = target, Label = label, Indices = indices.ToArray(), Before = before.ToArray(), After = after.ToArray() });
-            NoteEdited(target);
+            NoteEdited(target, SessionChange.Mask);
             SceneView.RepaintAll();
         }
     }

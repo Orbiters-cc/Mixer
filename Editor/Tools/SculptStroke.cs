@@ -165,7 +165,7 @@ namespace Orbiters.Mixer.Editor
                 foreach (var pair in maskBefore) { maskEdit.Indices[k] = pair.Key; maskEdit.Before[k] = pair.Value; maskEdit.After[k] = mask[pair.Key]; k++; }
                 if (cancel) { maskEdit.Undo(); return null; }
                 MixerHistory.Push(maskEdit);
-                MixerSession.NoteEdited(target);
+                MixerSession.NoteEdited(target, SessionChange.Mask);
                 return null;
             }
             // The normals of the last moves first: a cancel then puts the recorded ones back over them.
@@ -179,7 +179,7 @@ namespace Orbiters.Mixer.Editor
             }
             target.EndStroke();
             MixerHistory.Push(edit);
-            MixerSession.NoteEdited(target);
+            MixerSession.NoteEdited(target, SessionChange.Geometry);
             return edit;
         }
 

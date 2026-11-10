@@ -238,6 +238,38 @@ namespace Orbiters.Mixer.Editor.Tests
             Assert.That(MaxDistance(before, target.Working.normals), Is.LessThan(1e-4f), "and the working mesh shows them");
         }
 
+        // Listeners learn what changed: a session starting, a stroke's geometry, a layer, a group, the coarse event each time.
+        [Test]
+        public void SessionEventsSayWhatChanged()
+        {
+            var seen = new List<(EditTarget target, SessionChange change)>();
+            int coarse = 0;
+            System.Action<EditTarget, SessionChange> edited = (t, c) => seen.Add((t, c));
+            System.Action changed = () => coarse++;
+            MixerSession.Edited += edited;
+            MixerSession.Changed += changed;
+            try
+            {
+                var target = MixerSession.Edit(renderer);
+                Assert.That(seen.Last().change, Is.EqualTo(SessionChange.Sessions));
+                Assert.That(seen.Last().target, Is.SameAs(target));
+                MixerSceneTool.StrokeBetween(target, Brushes.Named("Inflate"), new Vector3(0.3f, 0.5f, 0f), new Vector3(0.3f, 0.6f, 0f), 3, 0.2f, 1f, Vector3.forward);
+                Assert.That(seen.Last().change, Is.EqualTo(SessionChange.Geometry), "a stroke moved vertices, nothing else");
+                MixerSession.SetLayer(target, "Wide", createIfMissing: false);
+                Assert.That(seen.Last().change & SessionChange.Layer, Is.EqualTo(SessionChange.Layer));
+                MixerSession.AddGroup(target, "Belt");
+                Assert.That(seen.Last().change, Is.EqualTo(SessionChange.Groups));
+                MixerSession.Revert(target);
+                Assert.That(seen.Last().change, Is.EqualTo(SessionChange.Sessions));
+                Assert.That(coarse, Is.EqualTo(seen.Count), "the coarse event follows every typed one");
+            }
+            finally
+            {
+                MixerSession.Edited -= edited;
+                MixerSession.Changed -= changed;
+            }
+        }
+
         // The commit writes the shapes from buffers it reuses: an edited shape with an in-between gets the frames FramesOf
         // describes (with their normals turned), and an untouched shape its source's frames exactly.
         [Test]

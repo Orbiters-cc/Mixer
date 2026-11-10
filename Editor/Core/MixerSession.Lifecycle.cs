@@ -217,7 +217,7 @@ namespace Orbiters.Mixer.Editor
             }
             targets.Remove(t);
             SaveState();
-            Changed?.Invoke();
+            Raise(null, SessionChange.Sessions);
         }
 
         // A parked session goes on where it was: its working mesh, layer, history.
@@ -250,7 +250,7 @@ namespace Orbiters.Mixer.Editor
                 kept.Show(kept.Working);
                 Resume(kept, renderer);
                 SaveState();
-                Changed?.Invoke();
+                Raise(null, SessionChange.Sessions);
                 return kept;
             }
             // After a script reload only its record and working mesh are left: the session comes back from its autosave
@@ -269,7 +269,7 @@ namespace Orbiters.Mixer.Editor
                 if (!restored) { Revert(opened); return null; }
                 ArmatureEdit.SyncFromHolder(opened);
                 SaveState();
-                Changed?.Invoke();
+                Raise(null, SessionChange.Sessions);
                 return opened;
             }
             return null;
@@ -452,7 +452,7 @@ namespace Orbiters.Mixer.Editor
                 pendingRestore.Clear();
                 restoring = false;
                 SaveState();
-                Changed?.Invoke();
+                Raise(null, SessionChange.Sessions);
             }
         }
 
@@ -615,10 +615,10 @@ namespace Orbiters.Mixer.Editor
                 restoring = false;
                 SaveState();
             }
-            if (resumed.Count > 0 && back.Count == 0) Changed?.Invoke();
+            if (resumed.Count > 0 && back.Count == 0) Raise(null, SessionChange.Sessions);
             if (back.Count == 0) return;
             Say("Mixer brought back the edits of " + string.Join(", ", back.Select(b => b.target.Name)) + " that were not committed (commit or revert them).", false);
-            Changed?.Invoke();
+            Raise(null, SessionChange.Sessions);
         }
 
         // A renderer by the session's object id, else its instance id (an undone delete), else its place in the hierarchy.
@@ -692,7 +692,7 @@ namespace Orbiters.Mixer.Editor
                 }
                 catch (Exception e) { Debug.LogException(e); }
             }
-            Changed?.Invoke();
+            Raise(null, SessionChange.Sessions);
         }
 
         private static void TrimAddedBones(EditTarget t)
@@ -795,7 +795,7 @@ namespace Orbiters.Mixer.Editor
             MixerLinkService.ClaimForUnity(target);
             NotePreviewed(renderer);
             Say("The copy " + renderer.name + " keeps " + source.Name + "'s Mixer edits in a session of its own.", false);
-            Changed?.Invoke();
+            Raise(null, SessionChange.Sessions);
             return true;
         }
 

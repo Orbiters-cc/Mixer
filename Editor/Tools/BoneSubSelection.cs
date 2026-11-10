@@ -37,7 +37,7 @@ namespace Orbiters.Mixer.Editor
             XRayBonePickHandlers.Register(HandlerId, Pick, () => Bone);
             Selection.selectionChanged += OnSelectionChanged;
             // The painted mesh reverted, committed away or deleted: its rig is no longer what is painted.
-            MixerSession.Changed += () => { if ((Bone != null || hidingTools) && !Accepts(Bone)) Clear(); };
+            MixerSession.Edited += (_, change) => { if ((change & SessionChange.Sessions) != 0 && (Bone != null || hidingTools) && !Accepts(Bone)) Clear(); };
             // Weight Paint does not survive a reload: neither does its pose.
             AssemblyReloadEvents.beforeAssemblyReload += () => { Clear(); PutBackPosed(); };
         }

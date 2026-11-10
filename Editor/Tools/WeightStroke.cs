@@ -193,7 +193,7 @@ namespace Orbiters.Mixer.Editor
             if (cancel) { edit.Undo(); return null; }
             if (channel.IsGroup) target.GroupsChanged(); else target.FlushWeights(force: true);
             MixerHistory.Push(edit);
-            MixerSession.NoteEdited(target);
+            MixerSession.NoteEdited(target, channel.IsGroup ? SessionChange.Groups : SessionChange.Weights);
             SendToLink(edit);
             return edit;
         }

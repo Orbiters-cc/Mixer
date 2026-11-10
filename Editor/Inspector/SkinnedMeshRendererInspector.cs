@@ -61,7 +61,7 @@ namespace Orbiters.Mixer.Editor
 
         private void OnDisable()
         {
-            MixerSession.Changed -= Refresh;
+            MixerSession.Edited -= OnSessionEdited;
             MixerSceneTool.Changed -= Refresh;
             AssetContentIndex.Updated -= OnContentIndexUpdated;
             if (builtin != null) DestroyImmediate(builtin);
@@ -89,7 +89,7 @@ namespace Orbiters.Mixer.Editor
             if (!EditorGUIUtility.isProSkin) root.AddToClassList("mx-skin-light");
             root.Add(BuildShapeKeys());
             root.Add(BuildVertexGroups());
-            MixerSession.Changed += Refresh;
+            MixerSession.Edited += OnSessionEdited;
             MixerSceneTool.Changed += Refresh;
             AssetContentIndex.Updated += OnContentIndexUpdated;
             root.schedule.Execute(Refresh).Every(400);
@@ -605,6 +605,13 @@ namespace Orbiters.Mixer.Editor
         }
 
         // ---- Common -----------------------------------------------------------------------------------------------------
+
+        // Changes of this renderer's session, or of the sessions: edits of other meshes leave the panels alone.
+        private void OnSessionEdited(EditTarget target, SessionChange change)
+        {
+            if (target != null && target.Renderer != Renderer && (change & SessionChange.Sessions) == 0) return;
+            Refresh();
+        }
 
         private void Refresh()
         {
