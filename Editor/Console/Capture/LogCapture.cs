@@ -125,10 +125,12 @@ namespace Orbiters.Logger.Editor
             var restored = LogSnapshot.TryLoad(out var info, out string problem);
             if (problem != null)
             {
-                // Queued like any log (the callback is in place): the one line that says what was not read back.
-                Debug.LogWarning(restored == null
-                    ? "[Mixer console] The logs from before the script reload could not be read back (" + problem + "): the Mixer console starts again from Unity's console."
-                    : "[Mixer console] Not every log from before the script reload was read back (" + problem + ").");
+                // One recovery for every abnormal start (no valid head, a head skipped, a save that failed): an empty store
+                // and Unity's console read again through the history import, whose progress is saved across reloads. The
+                // session files stay until a save of that recovery succeeds. Queued like any log: the one line about it.
+                restored = null;
+                Debug.LogWarning("[Mixer console] The logs from before the script reload could not be read back (" + problem +
+                    "): the Mixer console reads Unity's console again. Logs only the Mixer console had (timings, Git commands) are lost.");
             }
 
             if (restored != null)
@@ -227,7 +229,7 @@ namespace Orbiters.Logger.Editor
                 if (Store.Texts.Faulted)
                 {
                     // The session file was damaged after it was read back: never show placeholders as logs.
-                    Debug.LogWarning("[Mixer console] Some logs from before the script reload could not be read back: the Mixer console starts again from Unity's console.");
+                    Debug.LogWarning("[Mixer console] Some logs from before the script reload could not be read back: the Mixer console reads Unity's console again. Logs only the Mixer console had (timings, Git commands) are lost.");
                     RebuildFromUnityConsole();
                 }
 

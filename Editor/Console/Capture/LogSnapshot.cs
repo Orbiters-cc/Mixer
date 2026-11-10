@@ -79,13 +79,8 @@ namespace Orbiters.Logger.Editor
         /// </summary>
         public static LogStore TryLoad(out SnapshotInfo info, out string problem)
         {
-            var store = session.Load(ProcessId, EditorStartTicks, out info, out problem);
-            if (store == null)
-            {
-                session.Delete();
-            }
-
-            return store;
+            // Nothing is deleted here: the files of the last committed session go only once a later save succeeds.
+            return session.Load(ProcessId, EditorStartTicks, out info, out problem);
         }
     }
 }

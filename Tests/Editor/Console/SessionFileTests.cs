@@ -413,6 +413,53 @@ namespace Orbiters.Logger.Editor.Tests
         }
 
         [Test]
+        public void TwoFailedSavesInARowKeepTheCommittedSession()
+        {
+            var store = new LogStore();
+            store.Add(100, "Saved before", string.Empty, LogVariant.Log);
+            saving.Save(store, Info(), Process, Start);
+            string blocker = Path.Combine(folder, "head.tmp");
+            for (int attempt = 0; attempt < 2; attempt++)
+            {
+                store.Add(200 + attempt, "Never committed " + attempt, string.Empty, LogVariant.Log);
+                Directory.CreateDirectory(blocker);
+                Assert.Catch<Exception>(() => saving.Save(store, Info(), Process, Start));
+                saving.MarkSaveFailed();
+                Directory.Delete(blocker);
+            }
+
+            var loaded = Fresh().Load(Process, Start, out _, out string problem);
+            Assert.AreEqual(1, loaded.Count);
+            Assert.IsNotNull(problem, "LogCapture then starts over from Unity's console");
+        }
+
+        [Test]
+        public void ARecoverySavedMidImportResumesAndRetiresTheOldSession()
+        {
+            var store = new LogStore();
+            store.Add(100, "Saved before", string.Empty, LogVariant.Log);
+            saving.Save(store, Info(), Process, Start);
+            saving.MarkSaveFailed();
+
+            // The recovery: an empty store importing Unity's console, rows 0 to 900, when scripts reload again.
+            Assert.IsNotNull(Fresh().Load(Process, Start, out _, out string problem));
+            Assert.IsNotNull(problem);
+            var recovery = new LogStore();
+            recovery.Add(500, "Logged during the import", string.Empty, LogVariant.Log);
+            var next = Fresh();
+            next.Save(recovery, new SnapshotInfo { UnityRows = 950, HistoryFrom = 300, HistoryTo = 900, HistoryAnchor = "row 899" }, Process, Start);
+            next.Close();
+
+            var resumed = Fresh().Load(Process, Start, out var info, out problem);
+            Assert.IsNull(problem, "the recovery's save is a normal session: the marker and the old head are gone");
+            Assert.AreEqual(1, Directory.GetFiles(folder, "head-*.bin").Length);
+            Assert.AreEqual(1, resumed.Count);
+            Assert.AreEqual(300, info.HistoryFrom, "the import goes on where it was");
+            Assert.AreEqual(900, info.HistoryTo);
+            Assert.AreEqual("row 899", info.HistoryAnchor);
+        }
+
+        [Test]
         public void TheNewestValidHeadWins()
         {
             var store = new LogStore();
