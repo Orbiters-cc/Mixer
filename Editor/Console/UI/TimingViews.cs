@@ -45,17 +45,22 @@ namespace Orbiters.Logger.Editor
             return Known.TryGetValue(source, out var color) ? color : SourceCatalog.ColorFor(source.Trim().ToLowerInvariant());
         }
 
+        // Parsed once: Kind runs for every timing mark of every repaint.
+        private static readonly Color PlayModeKind = SourceCatalog.Hex("#3cf29a");
+        private static readonly Color AvatarKind = SourceCatalog.Hex("#f0a35e");
+        private static readonly Color ReloadKind = SourceCatalog.Hex("#b890ff");
+
         public static Color Kind(TimingKind kind)
         {
             switch (kind)
             {
                 case TimingKind.PlayMode:
-                    return SourceCatalog.Hex("#3cf29a");
+                    return PlayModeKind;
                 case TimingKind.AvatarBuild:
                 case TimingKind.AvatarUpload:
-                    return SourceCatalog.Hex("#f0a35e");
+                    return AvatarKind;
                 default:
-                    return SourceCatalog.Hex("#b890ff");
+                    return ReloadKind;
             }
         }
 

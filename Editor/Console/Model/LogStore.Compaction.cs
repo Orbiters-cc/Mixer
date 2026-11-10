@@ -373,7 +373,6 @@ namespace Orbiters.Logger.Editor
                 message.Assembly = Copy(message.Assembly);
                 message.Count = 0;
                 message.First = message.Last = -1;
-                message.Explanation = -2;
                 message.Group = GroupFor(Texts, grouping, ref Groups, ref GroupCount, GroupIndex, message.Text, message.Level);
                 Groups[message.Group].Variants++;
                 if (MessageCount == Messages.Length)

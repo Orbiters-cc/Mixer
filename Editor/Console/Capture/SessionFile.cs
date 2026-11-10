@@ -542,8 +542,7 @@ namespace Orbiters.Logger.Editor
                         First = reader.ReadInt32(),
                         Last = reader.ReadInt32(),
                         Variant = (LogVariant)reader.ReadByte(),
-                        Flags = (MessageFlags)reader.ReadByte(),
-                        Explanation = -2
+                        Flags = (MessageFlags)reader.ReadByte()
                     };
                 }
 

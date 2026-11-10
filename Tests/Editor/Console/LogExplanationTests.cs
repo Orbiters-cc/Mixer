@@ -166,6 +166,45 @@ namespace Orbiters.Logger.Editor.Tests
             }
         }
 
+        // The windows' cache of which explanation a message has (no longer a field of the store's messages): the same
+        // answers as asking LogExplanations directly, before and after the explanations, the store or its ids change.
+        [Test]
+        public void TheExplanationIndexAnswersAsAMatchWould()
+        {
+            const string json = @"{ ""explanations"": [
+                { ""id"": ""tests.index"", ""needle"": ""index needle"", ""severity"": ""warning"", ""source"": ""Tests"", ""title"": ""From the index test"" } ] }";
+            var store = new LogStore();
+            store.Add(1, "NullReferenceException: x", "at A.B ()\n", LogVariant.Exception);
+            store.Add(2, "A log with the index needle", string.Empty, LogVariant.Warning);
+            store.Add(3, "Nothing to explain here", string.Empty, LogVariant.Log);
+            void AssertSameAsMatch()
+            {
+                for (int m = 0; m < store.MessageCount; m++)
+                {
+                    ref var message = ref store.Message(m);
+                    Assert.AreEqual(LogExplanations.Match(store.Texts.Plain(message.Text), store.Texts[message.Stack], message.Level), ExplanationIndex.Of(store, m));
+                }
+            }
+
+            try
+            {
+                AssertSameAsMatch();
+                Assert.AreEqual(-1, ExplanationIndex.Of(store, store.MessageAt(1)), "not explained yet");
+                LogExplanations.SetRemote(KnownLogs.Parse(json));
+                AssertSameAsMatch();
+                Assert.AreEqual("From the index test", LogExplanations.Get(ExplanationIndex.Of(store, store.MessageAt(1))).Title, "a new list is looked up again");
+                store.Clear(10);
+                store.Add(11, "Nothing to explain here", string.Empty, LogVariant.Log);
+                store.Add(12, "A log with the index needle", string.Empty, LogVariant.Warning);
+                AssertSameAsMatch();
+                Assert.AreEqual(-1, ExplanationIndex.Of(store, 99), "no such message");
+            }
+            finally
+            {
+                LogExplanations.SetRemote(null);
+            }
+        }
+
         [Test]
         public void NoExplanationNamesTheFormerXRayGizmosPackage()
         {

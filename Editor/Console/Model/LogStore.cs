@@ -23,8 +23,6 @@ namespace Orbiters.Logger.Editor
         public int Count;
         public int First;
         public int Last;
-        /// <summary>-2 not looked up yet, -1 none, else an index in <see cref="LogExplanations"/>.</summary>
-        public int Explanation;
         public LogVariant Variant;
         public MessageFlags Flags;
 
@@ -472,7 +470,6 @@ namespace Orbiters.Logger.Editor
                 Stack = stackId,
                 Variant = variant,
                 Assembly = assembly,
-                Explanation = -2,
                 First = -1,
                 Last = -1,
                 Flags = (LogVariants.IsCompile(variant) ? MessageFlags.Compile : MessageFlags.None) | (kind & KindFlags)
@@ -1555,7 +1552,6 @@ namespace Orbiters.Logger.Editor
             {
                 ref var message = ref messages[i];
                 messageIndex[MessageKey.Of(message)] = i;
-                message.Explanation = -2;
                 if (message.Count == 0)
                 {
                     zeroCount++;

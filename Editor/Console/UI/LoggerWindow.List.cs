@@ -280,28 +280,7 @@ namespace Orbiters.Logger.Editor
             return RichText.Highlight(plain, ranges, MarkColor);
         }
 
-        private int ExplanationOf(int messageId)
-        {
-            var store = Store;
-            ref var message = ref store.Message(messageId);
-            if (message.Explanation == -2 || explanationVersion != LogExplanations.Version)
-            {
-                if (explanationVersion != LogExplanations.Version)
-                {
-                    explanationVersion = LogExplanations.Version;
-                    for (int i = 0; i < store.MessageCount; i++)
-                    {
-                        store.Message(i).Explanation = -2;
-                    }
-                }
-
-                message.Explanation = LogExplanations.Match(store.Texts.Plain(message.Text), store.Texts[message.Stack], message.Level);
-            }
-
-            return message.Explanation;
-        }
-
-        private int explanationVersion = -1;
+        private int ExplanationOf(int messageId) => ExplanationIndex.Of(Store, messageId);
 
         private void UpdateListChrome()
         {
