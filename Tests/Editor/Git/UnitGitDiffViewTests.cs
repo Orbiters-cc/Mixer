@@ -174,6 +174,10 @@ namespace Orbiters.UnitGit.Editor.Tests
             }
         }
 
+        // A change waits for another program's index lock the way the window runs it: the whole operation on a worker under
+        // its lease, retrying with short delays, while the editor's updates keep running; a lock that never goes ends it with
+        // Git's message after the bounded retries, and the lease is released. Asked on the editor thread itself, a change
+        // does not run there.
         [Test]
         public void WritesWaitForAnotherProgramsIndexLock()
         {
@@ -183,6 +187,8 @@ namespace Orbiters.UnitGit.Editor.Tests
                 repo.Commit("base");
                 repo.Write("Assets/a.txt", "b\n");
                 string lockPath = repo.Full(".git/index.lock");
+
+                // (a) and (b): the lock goes after 400 ms.
                 File.WriteAllText(lockPath, string.Empty);
                 var release = new Thread(() =>
                 {
@@ -190,11 +196,68 @@ namespace Orbiters.UnitGit.Editor.Tests
                     File.Delete(lockPath);
                 });
                 release.Start();
-                var result = repo.Git.Stage(new[] { "Assets/a.txt" });
+                var write = System.Threading.Tasks.Task.Run(() => repo.Git.Stage(new[] { "Assets/a.txt" }));
+                Pump(write, 30000, out int ticks, out long longestGap);
                 release.Join();
-                Assert.That(result.Success, Is.True, result.Message);
+                Assert.That(write.Result.Success, Is.True, write.Result.Message);
                 Assert.That(repo.Run("status", "--porcelain").Trim(), Is.EqualTo("M  Assets/a.txt"));
+                Assert.That(ticks, Is.GreaterThan(10), "The editor's updates ran while the change waited.");
+                Assert.That(longestGap, Is.LessThan(250), "The editor thread was never held up.");
+
+                // (c): a lock that never goes: Git's message after the bounded retries, and the lease released.
+                repo.Write("Assets/a.txt", "c\n");
+                File.WriteAllText(lockPath, string.Empty);
+                try
+                {
+                    var elapsed = System.Diagnostics.Stopwatch.StartNew();
+                    var stuck = System.Threading.Tasks.Task.Run(() => repo.Git.Stage(new[] { "Assets/a.txt" }));
+                    Pump(stuck, 60000, out ticks, out longestGap);
+                    Assert.That(stuck.Result.Success, Is.False);
+                    Assert.That(stuck.Result.Message, Does.Contain("index.lock"));
+                    Assert.That(elapsed.ElapsedMilliseconds, Is.GreaterThan(3000), "It retried before giving up.");
+                    Assert.That(longestGap, Is.LessThan(250));
+                    Assert.That(UnitGitLease.Hold(() => new GitCommandResult()).Success, Is.True, "The lease was released.");
+                }
+                finally
+                {
+                    File.Delete(lockPath);
+                }
+
+                // On the editor thread a change does not run: refused in the product, an exception in strict tests.
+                bool allowed = UnitGitLease.EditorThreadAllowedForTests;
+                UnitGitLease.EditorThreadAllowedForTests = false;
+                try
+                {
+                    GitCommandResult refused = repo.Git.Stage(new[] { "Assets/a.txt" });
+                    Assert.That(refused.Success, Is.False);
+                    Assert.That(refused.Message, Does.Contain("off the editor thread"));
+                    UnitGitLease.EditorThreadThrowsForTests = true;
+                    Assert.Throws<InvalidOperationException>(() => repo.Git.Stage(new[] { "Assets/a.txt" }));
+                }
+                finally
+                {
+                    UnitGitLease.EditorThreadThrowsForTests = false;
+                    UnitGitLease.EditorThreadAllowedForTests = allowed;
+                }
             }
+        }
+
+        // The editor's update loop while a task runs: a tick each frame (about 10 ms), and the longest gap between two.
+        private static void Pump(System.Threading.Tasks.Task task, int timeoutMilliseconds, out int ticks, out long longestGap)
+        {
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            ticks = 0;
+            longestGap = 0;
+            long last = 0;
+            while (!task.IsCompleted && clock.ElapsedMilliseconds < timeoutMilliseconds)
+            {
+                Thread.Sleep(10);
+                ticks++;
+                long now = clock.ElapsedMilliseconds;
+                longestGap = Math.Max(longestGap, now - last);
+                last = now;
+            }
+            Assert.That(task.IsCompleted, Is.True, "The change never ended.");
         }
 
         [Test]

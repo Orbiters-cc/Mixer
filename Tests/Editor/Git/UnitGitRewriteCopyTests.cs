@@ -152,19 +152,39 @@ namespace Orbiters.UnitGit.Editor.Tests
         }
 
         [Test]
-        public void ScratchRefsLeftBehindAreSweptAndAMovedOneIsKept()
+        public void ScratchRefsAreSweptOnlyWhenTheirOwnerIsGone()
         {
+            string self = System.Diagnostics.Process.GetCurrentProcess().Id + "-" +
+                          System.Diagnostics.Process.GetCurrentProcess().StartTime.ToUniversalTime().Ticks;
             using (var repo = History(out string first))
             {
                 string head = repo.Run("rev-parse", "HEAD").Trim();
-                repo.Run("update-ref", "refs/mixer-git/rewrite/leftover", head);
-                repo.Run("update-ref", "refs/mixer-git/rewrite/other", first);
-                repo.Git.SweepScratchRefs();
-                Assert.That(repo.Run("for-each-ref", "refs/mixer-git/").Trim(), Is.Empty);
-                // A rewrite sweeps first too.
-                repo.Run("update-ref", "refs/mixer-git/rewrite/leftover", head);
-                Assert.That(Rename(repo, first).Success, Is.True);
-                Assert.That(repo.Run("for-each-ref", "refs/mixer-git/").Trim(), Is.Empty);
+                // Two service instances on one repository stand for two editors; the other editor is 4242, started at 777.
+                var otherEditor = new UnitGitService(repo.Root);
+                string mine = "refs/mixer-git/rewrite/" + self + "/left", theirs = "refs/mixer-git/rewrite/4242-777/running";
+                repo.Run("update-ref", mine, head);
+                repo.Run("update-ref", theirs, head);
+                repo.Run("update-ref", "refs/mixer-git/rewrite/unreadable", head);
+                bool otherAlive = true;
+                UnitGitService.OwnerAliveForTests = (pid, started) => pid == 4242 && started == 777 ? otherAlive : false;
+                try
+                {
+                    otherEditor.SweepScratchRefs();
+                    string left = repo.Run("for-each-ref", "--format=%(refname)", "refs/mixer-git/");
+                    Assert.That(left, Does.Not.Contain(mine), "This editor's leftover, with no rewrite of its own running: swept.");
+                    Assert.That(left, Does.Contain(theirs), "The other editor still runs: its rewrite's ref is kept.");
+                    Assert.That(left, Does.Contain("refs/mixer-git/rewrite/unreadable"), "A name that cannot be read is kept.");
+
+                    otherAlive = false;
+                    Assert.That(Rename(repo, first).Success, Is.True, "A rewrite sweeps first, and deletes its own.");
+                    left = repo.Run("for-each-ref", "--format=%(refname)", "refs/mixer-git/");
+                    Assert.That(left, Does.Not.Contain(theirs), "Its editor gone: swept.");
+                    Assert.That(left.Trim(), Is.EqualTo("refs/mixer-git/rewrite/unreadable"));
+                }
+                finally
+                {
+                    UnitGitService.OwnerAliveForTests = null;
+                }
             }
         }
     }

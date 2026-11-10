@@ -191,9 +191,27 @@ namespace Orbiters.UnitGit.Editor.Tests
                 }
                 finally
                 {
-                    UnitGitLease.RecordUnleased = false;
+                    // Recording stays on for the rest of the suite (UnitGitTestRepo checks it at each Dispose).
                 }
                 Assert.That(UnitGitLease.TakeUnleased(), Is.Empty, "Exclusive commands ran with no operation's lease around them.");
+            }
+        }
+
+        [Test]
+        public void TheRecordingNamesProductCodeThatSkippedItsLeaseAndNotATestsOwnCommands()
+        {
+            using (var repo = History(out _))
+            {
+                UnitGitLease.RecordUnleased = true;
+                UnitGitLease.TakeUnleased();
+                // A test calling the runner itself is its own caller: not recorded.
+                Assert.That(repo.Git.RunGit(GitAccess.Exclusive, 60000, "commit", "-q", "--allow-empty", "-m", "raw").Success, Is.True);
+                Assert.That(UnitGitLease.TakeUnleased(), Is.Empty);
+                // Mixer Git's own code reaching the runner with no operation around it: recorded, with its name.
+                Assert.That(repo.Git.RunCommitWithMessageFile(new[] { "commit", "--allow-empty" }, "no lease").Success, Is.True);
+                List<string> recorded = UnitGitLease.TakeUnleased();
+                Assert.That(recorded.Count, Is.EqualTo(1));
+                Assert.That(recorded[0], Does.Contain("RunCommitWithMessageFile"));
             }
         }
     }

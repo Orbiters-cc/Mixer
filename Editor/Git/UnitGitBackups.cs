@@ -257,6 +257,12 @@ namespace Orbiters.UnitGit.Editor
         /// </summary>
         public static GitCommandResult RestoreCopy(UnitGitService git, string bundle, string destination)
         {
+            // One operation under the repository's lease (see UnitGitLease); its caller is the Backups tab's action (a worker).
+            return UnitGitLease.Hold(() => RestoreCopyHeld(git, bundle, destination));
+        }
+
+        private static GitCommandResult RestoreCopyHeld(UnitGitService git, string bundle, string destination)
+        {
             if (Directory.Exists(destination) && Directory.EnumerateFileSystemEntries(destination).Any())
                 return Failure("Choose an empty folder: " + destination + " already has files.");
             var heads = git.RunGit(GitAccess.Read, UnitGitService.DefaultTimeoutMilliseconds, "bundle", "list-heads", bundle);

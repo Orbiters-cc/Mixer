@@ -280,7 +280,8 @@ namespace Orbiters.UnitGit.Editor
         /// </summary>
         public static UnitGitReleaseResult PublishRelease(UnitGitReleaseEntry entry, string commitTitle, params string[] projectRelativePaths)
         {
-            return PublishRelease(entry, commitTitle, new UnitGitService(), projectRelativePaths);
+            // Called by MCB on the editor thread: an old entry point (see UnitGitLease.ForOldCallers).
+            return UnitGitLease.ForOldCallers(() => PublishRelease(entry, commitTitle, new UnitGitService(), projectRelativePaths));
         }
 
         internal static UnitGitReleaseResult PublishRelease(UnitGitReleaseEntry entry, string commitTitle, UnitGitService service, params string[] projectRelativePaths)
@@ -498,6 +499,13 @@ namespace Orbiters.UnitGit.Editor
 
         internal static UnitGitReleaseResult CommitAll(string commitTitle, string trailingParagraph, UnitGitService service, bool notifyChangedExternally)
         {
+            // One operation, its checks included, under the repository's lease (see UnitGitLease). Its callers: the VRChat
+            // upload hook (on a worker), the public CommitAll above, tests; on the editor thread it never waits for the lease.
+            return UnitGitLease.Hold(() => CommitAllHeld(commitTitle, trailingParagraph, service, notifyChangedExternally), () => Fail(LeaseBusyMessage));
+        }
+
+        private static UnitGitReleaseResult CommitAllHeld(string commitTitle, string trailingParagraph, UnitGitService service, bool notifyChangedExternally)
+        {
             if (string.IsNullOrWhiteSpace(commitTitle))
             {
                 return Fail("Commit title is required.");
@@ -523,7 +531,8 @@ namespace Orbiters.UnitGit.Editor
         /// </summary>
         public static UnitGitReleaseResult CommitFiles(string commitTitle, string trailingParagraph, params string[] projectRelativePaths)
         {
-            return CommitFiles(new UnitGitService(), commitTitle, trailingParagraph, projectRelativePaths);
+            // Called by MCB on the editor thread: an old entry point (see UnitGitLease.ForOldCallers).
+            return UnitGitLease.ForOldCallers(() => CommitFiles(new UnitGitService(), commitTitle, trailingParagraph, projectRelativePaths));
         }
 
         /// <summary>Explicit project root for integrations running Git off the Unity main thread.</summary>

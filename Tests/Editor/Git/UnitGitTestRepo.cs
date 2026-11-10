@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using NUnit.Framework;
@@ -23,6 +24,9 @@ namespace Orbiters.UnitGit.Editor.Tests
         public static UnitGitTestRepo Create()
         {
             if (!new UnitGitService(Path.GetTempPath()).IsGitAvailable()) Assert.Ignore("Git is not available on PATH.");
+            // Every test of the suite: no public operation may run an exclusive command outside its lease (checked at Dispose).
+            UnitGitLease.RecordUnleased = true;
+            UnitGitLease.EditorThreadAllowedForTests = true;
             string root = TempFolder();
             var repo = new UnitGitTestRepo(root);
             try
@@ -119,6 +123,10 @@ namespace Orbiters.UnitGit.Editor.Tests
         public void Dispose()
         {
             DeleteTempFolder(Root);
+            // A public operation of Mixer Git that ran an exclusive command outside its lease, anywhere in this test (or in
+            // a test before it that made no repository through this class).
+            List<string> unleased = UnitGitLease.TakeUnleased();
+            Assert.That(unleased, Is.Empty, "Exclusive commands ran outside any operation's lease.");
         }
     }
 }
