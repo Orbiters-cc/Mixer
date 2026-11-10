@@ -110,7 +110,11 @@ namespace Orbiters.UnitGit.Editor
         {
             if (IsRead(arguments)) return run();
             // The editor's main thread never waits on the gate (a long background write would freeze Unity): it relies on the retries.
-            bool entered = Gate.Wait(UnityEditorInternal.InternalEditorUtility.CurrentThreadIsMainThread() ? 0 : Math.Max(1000, timeoutMilliseconds));
+            bool mainThread = UnityEditorInternal.InternalEditorUtility.CurrentThreadIsMainThread();
+            bool entered = Gate.Wait(mainThread ? 0 : Math.Max(1000, timeoutMilliseconds));
+            // A worker that waited its whole timeout: another change still runs, and two at once is what the gate prevents.
+            if (!entered && !mainThread)
+                return new GitCommandResult { ExitCode = 1, TimedOut = true, StandardError = "Another Git change is still running. Try again once it is done." };
             try
             {
                 bool retryable = RetryableVerbs.Contains(Verb(arguments));

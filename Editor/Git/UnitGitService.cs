@@ -21,8 +21,12 @@ namespace Orbiters.UnitGit.Editor
         internal const int DefaultTimeoutMilliseconds = 30000;
         public const int LongTimeoutMilliseconds = 900000;
         // Windows stops a command line at 32k characters: longer path lists go to Git on stdin.
-        private const int MaxPathsPerCommand = 200;
-        private const int MaxPathCharactersPerCommand = 8000;
+        internal const int MaxPathsPerCommand = 200;
+        internal const int MaxPathCharactersPerCommand = 8000;
+
+        /// <summary>Whether these paths fit on one command line (else they go on stdin, or a command must list them all).</summary>
+        internal static bool FitsCommandLine(IList<string> paths) =>
+            paths.Count <= MaxPathsPerCommand && paths.Sum(path => path.Length + 3) <= MaxPathCharactersPerCommand;
         private const string NoTextualDifferences = "No textual differences to display.";
         private const string ReleaseTrailerFormat = "%(trailers:key=" + UnitGitReleases.TrailerKey + ",valueonly,separator=%x2C)";
         // Git writes UTF-8 (content, messages, quoted paths); the system code page would garble anything beyond ASCII.
@@ -1827,12 +1831,13 @@ namespace Orbiters.UnitGit.Editor
                 };
             }
 
+            // A checkout writes the whole project: the long timeout, as a visit has (stopped midway, it leaves two versions mixed).
             if (!branch.IsRemote)
             {
-                return RunGit(DefaultTimeoutMilliseconds, "checkout", branch.Name);
+                return RunGit(LongTimeoutMilliseconds, "checkout", branch.Name);
             }
 
-            return RunGit(DefaultTimeoutMilliseconds, "checkout", "-t", branch.Name);
+            return RunGit(LongTimeoutMilliseconds, "checkout", "-t", branch.Name);
         }
 
         public GitCommandResult CreateBranch(string branchName, string startPoint)
@@ -1851,10 +1856,10 @@ namespace Orbiters.UnitGit.Editor
 
             if (string.IsNullOrWhiteSpace(startPoint))
             {
-                return RunGit(DefaultTimeoutMilliseconds, "checkout", "-b", branchName);
+                return RunGit(LongTimeoutMilliseconds, "checkout", "-b", branchName);
             }
 
-            return RunGit(DefaultTimeoutMilliseconds, "checkout", "-b", branchName, startPoint);
+            return RunGit(LongTimeoutMilliseconds, "checkout", "-b", branchName, startPoint);
         }
 
         public GitCommandResult UpdateBranch(UnitGitBranch branch)
@@ -1875,7 +1880,7 @@ namespace Orbiters.UnitGit.Editor
             if (string.IsNullOrWhiteSpace(branch.Upstream))
                 return Failure("Selected branch has no upstream. Fetch still works, but there is nothing to fast-forward.");
 
-            GitCommandResult checkout = RunGit(DefaultTimeoutMilliseconds, "checkout", branch.Name);
+            GitCommandResult checkout = RunGit(LongTimeoutMilliseconds, "checkout", branch.Name);
             if (!checkout.Success)
             {
                 return checkout;
@@ -2013,6 +2018,12 @@ namespace Orbiters.UnitGit.Editor
         /// </summary>
         private GitCommandResult RunGitForPaths(int timeoutMilliseconds, IList<string> paths, params string[] arguments)
         {
+            return RunGitForPaths(null, timeoutMilliseconds, paths, arguments);
+        }
+
+        /// <summary>The same with extra environment variables (a scoped index's GIT_INDEX_FILE).</summary>
+        internal GitCommandResult RunGitForPaths(IDictionary<string, string> environment, int timeoutMilliseconds, IList<string> paths, params string[] arguments)
+        {
             // An empty entry is no path: Git refuses it, and dropped it cannot become "everything".
             paths = paths?.Where(path => !string.IsNullOrEmpty(path)).ToList();
             if (paths == null || paths.Count == 0)
@@ -2035,7 +2046,7 @@ namespace Orbiters.UnitGit.Editor
             if (UnitGitRunner.CleanInput)
             {
                 args.Add("--pathspec-from-file=-");
-                return RunGitWithInput(timeoutMilliseconds, writePaths, args.ToArray());
+                return RunGitWithInput(environment, timeoutMilliseconds, writePaths, args.ToArray());
             }
 
             // Stdin would start with a byte order mark (see UnitGitRunner.CleanInput): the same list from a file.
@@ -2044,7 +2055,7 @@ namespace Orbiters.UnitGit.Editor
             {
                 using (var stream = File.Create(file)) writePaths(stream);
                 args.Add("--pathspec-from-file=" + file);
-                return RunGit(timeoutMilliseconds, args.ToArray());
+                return environment == null ? RunGit(timeoutMilliseconds, args.ToArray()) : RunGitWithEnvironment(environment, timeoutMilliseconds, args.ToArray());
             }
             finally
             {
@@ -2058,7 +2069,7 @@ namespace Orbiters.UnitGit.Editor
         {
             var args = new List<string>(arguments);
             args.Insert(1, "-z"); // right after the verb: ls-tree reads what follows its tree as paths
-            bool whole = paths.Count > MaxPathsPerCommand || paths.Sum(path => path.Length + 3) > MaxPathCharactersPerCommand;
+            bool whole = !FitsCommandLine(paths);
             if (!whole)
             {
                 args.Insert(0, "--literal-pathspecs");
@@ -2991,8 +3002,9 @@ namespace Orbiters.UnitGit.Editor
                 return string.Empty;
             }
 
-            string root = Path.GetFullPath(ProjectRoot);
+            string root = Path.GetFullPath(ProjectRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
             string fullPath = Path.GetFullPath(Path.Combine(root, projectPath.Replace('/', Path.DirectorySeparatorChar)));
+            // With the separator: "…/Project2/x" is not inside "…/Project".
             if (!fullPath.StartsWith(root, StringComparison.OrdinalIgnoreCase))
             {
                 return string.Empty;
@@ -3281,8 +3293,10 @@ namespace Orbiters.UnitGit.Editor
                 logHandler?.Invoke("> " + FormatCommandLine(fileName, arguments));
                 logHandler?.Invoke("cwd: " + startInfo.WorkingDirectory);
 
+                // A read's output only fills the log: its lines are not logged (the command, its exit and errors are).
+                bool logOutput = logHandler != null && !(fileName == "git" && UnitGitWriteGate.IsRead(arguments));
                 var processResult = EditorProcessRunner.Run(startInfo, timeoutMilliseconds, superseded,
-                    logHandler == null ? null : (Action<string>)(line => logHandler("stdout: " + line)),
+                    logOutput ? (Action<string>)(line => logHandler("stdout: " + line)) : null,
                     logHandler == null ? null : (Action<string>)(line => logHandler("stderr: " + line)));
                 result.ExitCode = processResult.Success ? 0 : processResult.ExitCode == 0 ? 1 : processResult.ExitCode;
                 result.TimedOut = processResult.TimedOut;

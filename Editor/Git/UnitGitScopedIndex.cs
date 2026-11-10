@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 
 namespace Orbiters.UnitGit.Editor
 {
@@ -42,24 +43,31 @@ namespace Orbiters.UnitGit.Editor
         internal GitCommandResult Run(params string[] arguments) =>
             service.RunGitWithEnvironment(environment, UnitGitService.LongTimeoutMilliseconds, arguments);
 
+        /// <summary>A command on these paths, which Git reads from stdin: any number of them (add, commit).</summary>
+        internal GitCommandResult RunForPaths(IList<string> paths, params string[] arguments) =>
+            service.RunGitForPaths(environment, UnitGitService.LongTimeoutMilliseconds, paths, arguments);
+
         internal GitCommandResult Commit(string title, string trailingParagraph) =>
             service.RunCommitWithMessageFile(new[] { "commit" }, string.IsNullOrWhiteSpace(trailingParagraph)
                 ? title : title.Trim() + "\n\n" + trailingParagraph.Trim(), environment);
 
         internal string[] FilterIgnored(string[] paths)
         {
-            var args = new List<string> { "-c", "core.quotepath=false", "check-ignore", "--" };
-            args.AddRange(paths);
             // check-ignore already takes literal filenames and rejects Git's
-            // pathspec-magic mode, unlike add/commit.
+            // pathspec-magic mode, unlike add/commit. The paths go on stdin, NUL-separated: any number, any name.
             var ignoreEnvironment = new Dictionary<string, string>(environment) { ["GIT_LITERAL_PATHSPECS"] = "0" };
-            var result = service.RunGitWithEnvironment(ignoreEnvironment,
-                UnitGitService.LongTimeoutMilliseconds, args.ToArray());
+            var result = service.RunGitWithInput(ignoreEnvironment, UnitGitService.LongTimeoutMilliseconds, stream =>
+            {
+                foreach (string path in paths)
+                {
+                    byte[] bytes = Encoding.UTF8.GetBytes(path + "\0");
+                    stream.Write(bytes, 0, bytes.Length);
+                }
+            }, "check-ignore", "--stdin", "-z");
             // check-ignore returns 1 when no paths are ignored. Tracked paths are retained.
             if (result.TimedOut || (result.ExitCode != 0 && result.ExitCode != 1))
                 throw new IOException("Could not check ignored checkpoint files: " + result.Message);
-            var ignored = new HashSet<string>(UnitGitService.SplitLines(result.StandardOutput)
-                .Where(line => !string.IsNullOrWhiteSpace(line)).Select(UnitGitService.UnquotePath), StringComparer.Ordinal);
+            var ignored = new HashSet<string>(result.StandardOutput.Split('\0').Where(path => path.Length > 0), StringComparer.Ordinal);
             return paths.Where(path => !ignored.Contains(path)).ToArray();
         }
 
