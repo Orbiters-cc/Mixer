@@ -914,6 +914,50 @@ namespace Orbiters.Mixer.Editor.Tests
             }
         }
 
+        // With Auto normalize a stroke on one bone scales the vertices' other bones: Blender gets those too, not only the
+        // painted one (it would keep their old weights and bring them back with its next whole mesh).
+        [Test]
+        public void ANormalizedWeightStrokeSendsTheBonesThatGaveWay()
+        {
+            using (var host = MixerLinkHost.OpenPrivate(scene))
+            using (var blender = new FakeBlender(host))
+            {
+                blender.Hello();
+                blender.Pump(5, MixerLinkProtocol.FrameType.MeshData);
+                var target = MixerSession.Edit(renderer);
+                blender.Pump(0.3);
+                var doc = target.Document;
+                int v = doc.LinkWeld.Representative[0];
+                doc.SetBoneWeight(v, 0, 1f, normalize: true);
+                doc.SetBoneWeight(v, 1, 0.25f, normalize: true);
+                host.SendWeights(target, WeightChannel.OfBone(1), new[] { v });
+                var frames = blender.Pump(0.5).Where(f => f.type == MixerLinkProtocol.FrameType.Weights).Select(f => MeshDataCodec.DecodeWeights(f.payload)).ToList();
+                Assert.That(frames.Select(f => f.Bone), Is.EquivalentTo(new[] { 1, 0 }), "the painted bone and the one that gave way");
+                Assert.That(frames.Single(f => f.Bone == 0).Weights[0], Is.EqualTo(0.75f).Within(1e-5f));
+            }
+        }
+
+        // The shape list is compared at every revision (every brush step moves it): a step that changes no shape or group
+        // sends no mesh, a deleted shape does.
+        [Test]
+        public void ABrushStepSendsNoMeshAndADeletedShapeDoes()
+        {
+            using (var host = MixerLinkHost.OpenPrivate(scene))
+            using (var blender = new FakeBlender(host))
+            {
+                blender.Hello();
+                blender.Pump(5, MixerLinkProtocol.FrameType.MeshData);
+                var target = MixerSession.Edit(renderer);
+                blender.Pump(0.3);
+                target.Document.Revision++;
+                Assert.That(blender.Pump(0.5).Any(f => f.type == MixerLinkProtocol.FrameType.MeshData), Is.False, "a step sends no mesh");
+                target.Document.DeleteShape("Wide");
+                var resent = blender.Pump(5, MixerLinkProtocol.FrameType.MeshData).Where(f => f.type == MixerLinkProtocol.FrameType.MeshData).Select(f => MeshDataCodec.Decode(f.payload)).LastOrDefault();
+                Assert.That(resent, Is.Not.Null, "a deleted shape sends the mesh");
+                Assert.That(resent.Shapes.Any(sh => sh.name == "Wide"), Is.False);
+            }
+        }
+
         private static IEnumerable<MeshDataCodec.PositionsFrame> PositionsOf(List<(MixerLinkProtocol.FrameType type, byte[] payload)> frames) =>
             frames.Where(f => f.type == MixerLinkProtocol.FrameType.Positions).Select(f => MeshDataCodec.DecodePositions(f.payload));
 

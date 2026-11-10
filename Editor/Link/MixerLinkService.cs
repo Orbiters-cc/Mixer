@@ -792,7 +792,7 @@ namespace Orbiters.Mixer.Editor
                         LayersOf(layers, target).Add(deltas.Shape);
                         break;
                     case GroupWeightEdit group:
-                        if (target.Document.Group(group.Group) != null) SendWeights(target, WeightChannel.OfGroup(group.Group), group.Indices);
+                        if (target.Document.Group(group.Group) != null) SendChannel(target, WeightChannel.OfGroup(group.Group), group.Indices);
                         break;
                     case WeightEdit weights:
                     {
@@ -802,7 +802,7 @@ namespace Orbiters.Mixer.Editor
                             foreach (var influence in weights.Before[i]) VerticesOf(byBone, influence.Bone).Add(weights.Indices[i]);
                             foreach (var influence in weights.After[i]) VerticesOf(byBone, influence.Bone).Add(weights.Indices[i]);
                         }
-                        foreach (var pair in byBone) if (pair.Key >= 0) SendWeights(target, WeightChannel.OfBone(pair.Key), pair.Value);
+                        foreach (var pair in byBone) if (pair.Key >= 0) SendChannel(target, WeightChannel.OfBone(pair.Key), pair.Value);
                         break;
                     }
                 }
@@ -1206,8 +1206,26 @@ namespace Orbiters.Mixer.Editor
             positionsDue[key] = Math.Min(positionsDue.TryGetValue(key, out double due) ? due : double.MaxValue, EditorApplication.timeSinceStartup + 0.1);
         }
 
-        /// <summary>A Mixer stroke changed weights: Blender gets the sparse change now.</summary>
+        /// <summary>
+        /// A Mixer stroke changed weights: Blender gets the sparse change now. For a bone, every bone the vertices have
+        /// now goes too (Auto normalize scaled the others), each with its weight there (0 where it has none).
+        /// </summary>
         public void SendWeights(EditTarget target, WeightChannel channel, IReadOnlyList<int> vertices)
+        {
+            if (!Connected || target == null || channel.IsNone || !graphNodes.Contains(target.Id) || IsBlenderOwned(target)) return;
+            SendChannel(target, channel, vertices);
+            var lists = target.Document.Influences;
+            if (channel.IsGroup || lists == null) return;
+            var others = new HashSet<int>();
+            foreach (int v in vertices)
+                if (v >= 0 && v < lists.Length)
+                    foreach (var influence in lists[v])
+                        if (influence.Bone != channel.Bone && influence.Bone >= 0) others.Add(influence.Bone);
+            foreach (int bone in others) SendChannel(target, WeightChannel.OfBone(bone), vertices);
+        }
+
+        // One channel's weights on these vertices (welded once each), as they are now.
+        private void SendChannel(EditTarget target, WeightChannel channel, IReadOnlyList<int> vertices)
         {
             if (!Connected || target == null || channel.IsNone || !graphNodes.Contains(target.Id) || IsBlenderOwned(target)) return;
             var doc = target.Document;
@@ -1228,7 +1246,8 @@ namespace Orbiters.Mixer.Editor
         }
 
         // A session whose shapes or groups changed in Unity (deleted, renamed, duplicated...) is sent whole: Blender would
-        // keep the old ones otherwise, and bring them back with its next edit.
+        // keep the old ones otherwise, and bring them back with its next edit. Looked at when the document's revision
+        // moved (every brush step moves it): compared name by name, nothing allocated, no native lookup.
         private void CheckShapeLists()
         {
             foreach (var target in MixerSession.Targets)
@@ -1240,12 +1259,38 @@ namespace Orbiters.Mixer.Editor
                 // Not compared while Blender holds the mesh or it waits to go: the revision is checked once it can be.
                 if (meshId == null || OwnsMesh(meshId) || queuedMeshes.Contains(target.Id) || !sent.TryGetValue(meshId, out var info)) continue;
                 checkedRevision[target.Id] = doc.Revision;
-                var shapes = new HashSet<string>(doc.ShapeOrder.Where(doc.HasShape));
-                var groups = new HashSet<string>(doc.Groups.Select(g => g.Name));
-                if (shapes.SetEquals(info.Shapes) && groups.SetEquals(info.Groups)) continue;
+                if (SameShapes(doc, info.Shapes) && SameGroups(doc, info.Groups)) continue;
                 ForgetPositions(target.Id);
                 SendMesh(target.Id);
             }
+        }
+
+        private static readonly ConditionalWeakTable<MeshDocument, HashSet<string>> sourceShapes = new ConditionalWeakTable<MeshDocument, HashSet<string>>();
+
+        // The document's live shapes (MeshDocument.HasShape, with its source's names read once) are exactly these.
+        private static bool SameShapes(MeshDocument doc, HashSet<string> sentShapes)
+        {
+            var source = sourceShapes.GetValue(doc, d =>
+            {
+                var names = new HashSet<string>();
+                for (int i = 0; i < d.ShapeSource.blendShapeCount; i++) names.Add(d.ShapeSource.GetBlendShapeName(i));
+                return names;
+            });
+            int live = 0;
+            foreach (string name in doc.ShapeOrder)
+            {
+                if (string.IsNullOrEmpty(name) || doc.DeletedShapes.Contains(name) || (!doc.ShapeEdits.ContainsKey(name) && !source.Contains(name))) continue;
+                if (!sentShapes.Contains(name)) return false;
+                live++;
+            }
+            return live == sentShapes.Count;
+        }
+
+        private static bool SameGroups(MeshDocument doc, HashSet<string> sentGroups)
+        {
+            foreach (var g in doc.Groups) if (!sentGroups.Contains(g.Name)) return false;
+            foreach (string name in sentGroups) if (doc.Group(name) == null) return false;
+            return true;
         }
 
         internal void Tick()
