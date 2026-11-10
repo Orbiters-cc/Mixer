@@ -186,8 +186,8 @@ namespace Orbiters.Logger.Editor.Tests
                 Assert.LessOrEqual(store.Texts.TotalChars, (1 << 20) + 300_000, "after log " + i);
             }
 
-            // A 200,000-character log is more than an eighth of this 1M budget: it is kept cut to that (one log always fits).
-            Assert.AreEqual(LogStore.Capped("39 " + large, (1 << 20) / 8), store.Texts[store.Message(store.MessageAt(store.EndId - 1)).Text], "the newest log stays");
+            // A 200,000-character log is more than a 32nd of this 1M budget: it is kept cut to that (one log always fits).
+            Assert.AreEqual(LogStore.Capped("39 " + large, store.TextLimit), store.Texts[store.Message(store.MessageAt(store.EndId - 1)).Text], "the newest log stays");
 
             // One log larger than the whole budget is cut, and says so.
             var huge = new LogStore();

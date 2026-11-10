@@ -229,6 +229,8 @@ namespace Orbiters.Logger.Editor
         public int FirstId => first;
         /// <summary>The id the next occurrence gets.</summary>
         public int EndId => end;
+        /// <summary>Occurrences and history waiting to be put in front (an import): what the limits count.</summary>
+        internal int Total => end - first + StagedCount;
         /// <summary>Where ids start after a clear.</summary>
         public int InitialFirstId => initialFirst;
         public int MessageCount => messageCount;
@@ -639,7 +641,7 @@ namespace Orbiters.Logger.Editor
             // Published after the slot is written: a compaction worker reads the occurrences before this id.
             Volatile.Write(ref end, id + 1);
             Version++;
-            if (Count > maxOccurrences && (compaction == null || Count > maxOccurrences + maxOccurrences / 5))
+            if (Total > maxOccurrences && (compaction == null || Total > maxOccurrences + maxOccurrences / 5))
             {
                 // The oldest fifth goes: the new occurrence is still the last one. While a compaction is prepared the trim
                 // waits for it (it would start it over), up to a fifth more logs: then it goes ahead and the compaction
@@ -664,7 +666,10 @@ namespace Orbiters.Logger.Editor
             if (entry.Count == 0)
             {
                 entry.First = id;
-                zeroCount--;
+                if (StagedRefs(message) == 0)
+                {
+                    zeroCount--;
+                }
             }
 
             entry.Count++;
@@ -709,10 +714,11 @@ namespace Orbiters.Logger.Editor
         public static string Capped(string text) => Capped(text, MaxTextLength);
 
         /// <summary>
-        /// The longest text this store keeps: <see cref="MaxTextLength"/>, or an eighth of its text budget when that is
-        /// smaller, so one log (its text and stack and their stripped copies) always fits the budget, whatever it is.
+        /// The longest text this store keeps: <see cref="MaxTextLength"/>, or a 32nd of its text budget when that is
+        /// smaller, so one log (its text and stack, their stripped copies, its group key) stays under the quarter the
+        /// ceiling leaves over the budget: adding any one log never takes the texts past <see cref="TextCeiling"/>.
         /// </summary>
-        internal int TextLimit => (int)Math.Min(MaxTextLength, maxTextChars / 8);
+        internal int TextLimit => (int)Math.Min(MaxTextLength, maxTextChars / 32);
 
         /// <summary>
         /// Whether a new message with these texts fits the text budget now (before anything is interned): a history import
@@ -770,9 +776,9 @@ namespace Orbiters.Logger.Editor
         // texts can exceed the budget up to TextCeiling, where EnforceCeiling takes over synchronously.
         private void KeepTextBudget()
         {
-            while (Texts.TotalChars > maxTextChars && Count > 1 && !Texts.Faulted && compaction == null)
+            while (Texts.TotalChars > maxTextChars && Total > 1 && !Texts.Faulted && compaction == null)
             {
-                Trim(Count * 4 / 5);
+                Trim(Total * 4 / 5);
             }
         }
 
@@ -893,6 +899,7 @@ namespace Orbiters.Logger.Editor
             groupIndex.Clear();
             events.Clear();
             profiles.Clear();
+            ClearStaged();
             Texts = new TextTable();
             RowsGeneration = NewRowsGeneration();
             Epoch++;
@@ -1068,10 +1075,24 @@ namespace Orbiters.Logger.Editor
         /// </summary>
         public void Trim(int keep)
         {
-            keep = Math.Max(0, Math.Min(keep, Count));
+            // History waiting to be put in front (an import) is older than every occurrence: it goes first.
+            keep = Math.Max(0, Math.Min(keep, Total));
+            int dropStaged = Math.Min(StagedCount, Total - keep);
+            if (dropStaged > 0)
+            {
+                DropOldestStaged(dropStaged);
+            }
+
+            keep = Math.Min(keep, Count);
             int newFirst = end - keep;
             if (newFirst <= first)
             {
+                if (dropStaged > 0)
+                {
+                    Version++;
+                    MaybeCompact();
+                }
+
                 return;
             }
 
@@ -1107,7 +1128,10 @@ namespace Orbiters.Logger.Editor
             if (--entry.Count == 0)
             {
                 entry.First = entry.Last = -1;
-                zeroCount++;
+                if (StagedRefs(message) == 0)
+                {
+                    zeroCount++;
+                }
             }
             else if (entry.First < newFirst)
             {
@@ -1212,7 +1236,7 @@ namespace Orbiters.Logger.Editor
 
             RowsGeneration = NewRowsGeneration();
             Version++;
-            if (Count > maxOccurrences)
+            if (Total > maxOccurrences)
             {
                 Trim(maxOccurrences * 4 / 5);
             }
@@ -1276,7 +1300,11 @@ namespace Orbiters.Logger.Editor
             ref var entry = ref messages[message];
             if (entry.Count == 0)
             {
-                zeroCount--;
+                if (StagedRefs(message) == 0)
+                {
+                    zeroCount--;
+                }
+
                 entry.First = entry.Last = id;
             }
             else

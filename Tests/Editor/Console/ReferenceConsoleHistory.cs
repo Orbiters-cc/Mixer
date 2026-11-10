@@ -1,0 +1,315 @@
+// Round 1's import (master's Editor/Console/Capture/ConsoleHistory.cs), verbatim but for what a test needs: rows from
+// an IConsoleSource instead of Unity's console, a given editor start, and no pins (the store has none; with no
+// compaction under the limits they changed nothing). The reference the new import is compared with.
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+
+namespace Orbiters.Logger.Editor.Tests
+{
+    /// <summary>
+    /// Reads entries already in Unity's console (logged before the Mixer console listened) into the store, a slice per editor
+    /// update so a console with millions of entries never freezes the editor. Each row costs one short read (its first
+    /// two lines and timestamp); the full entry is only read the first time a message is seen.
+    /// <para>
+    /// <see cref="Placement.Before"/> collects into its own columns and puts them in front of the store at the end;
+    /// <see cref="Placement.After"/> appends directly (the few logs Unity received during a script reload).
+    /// </para>
+    /// </summary>
+    internal sealed class ReferenceConsoleHistory
+    {
+        internal enum Placement
+        {
+            Before,
+            After
+        }
+
+        private readonly int from;
+        private readonly int to;
+        private readonly (int row, string text)[] anchors;
+        private readonly Placement placement;
+        private readonly long fallbackTime;
+        private readonly DateTime startDay;
+        private readonly int startSeconds;
+        private readonly Dictionary<(LogVariant variant, string text), int> signatures = new Dictionary<(LogVariant variant, string text), int>();
+        private int next;
+        private bool verified;
+        // Test adaptations: where rows come from, and the editor's start.
+        internal static DateTime EditorStartForTests;
+        internal IConsoleSource Source;
+        private int lastSeconds = -1;
+        private long lastTicks;
+        private int dayOffset;
+        private long[] times = new long[0];
+        private int[] owners = new int[0];
+        private byte[] flags = new byte[0];
+        private int count;
+        private readonly Dictionary<int, int> contexts = new Dictionary<int, int>();
+
+        public ReferenceConsoleHistory(int from, int to, Placement placement, long fallbackTime, params (int row, string text)[] anchors)
+        {
+            this.from = Math.Max(0, from);
+            this.to = Math.Max(this.from, to);
+            this.placement = placement;
+            this.fallbackTime = fallbackTime;
+            this.anchors = anchors ?? new (int, string)[0];
+            next = this.from;
+            var editorStart = EditorStartForTests;
+            startDay = editorStart.Date;
+            startSeconds = (int)editorStart.TimeOfDay.TotalSeconds;
+            if (placement == Placement.Before)
+            {
+                int capacity = Math.Min(this.to - this.from, 1 << 20);
+                times = new long[capacity];
+                owners = new int[capacity];
+                flags = new byte[capacity];
+            }
+        }
+
+        public int From => from;
+        public int To => to;
+        public bool Prepends => placement == Placement.Before;
+
+        /// <summary>The anchor text of the last row read, saved with the session when scripts reload mid-import.</summary>
+        public string EndAnchor
+        {
+            get
+            {
+                foreach (var (row, text) in anchors)
+                {
+                    if (row == to - 1)
+                    {
+                        return text;
+                    }
+                }
+
+                return string.Empty;
+            }
+        }
+        public int Total => to - from;
+        public int Done => next - from;
+        public bool Finished { get; private set; }
+        public bool Failed { get; private set; }
+
+        /// <summary>What stopped the import, when an exception did (reported once by its caller).</summary>
+        public Exception Error { get; private set; }
+        public float Progress => Total > 0 ? (float)Done / Total : 1f;
+
+        /// <summary>
+        /// The first two lines of a row without its timestamp: checks the console still holds the same entries. Empty
+        /// (no check) when Unity's console doesn't list every entry right now: changing its settings just for this would
+        /// cost it two passes over all its entries.
+        /// </summary>
+        public static string Anchor(int row)
+        {
+            if (row < 0 || !UnityConsole.RowsAreComplete)
+            {
+                return string.Empty;
+            }
+
+            using (var reader = UnityConsole.Reader.Open())
+            {
+                if (reader == null || row >= reader.Count)
+                {
+                    return string.Empty;
+                }
+
+                UnityConsole.TrySplitTimestamp(reader.Lines(row, 2, out _), out _, out string text);
+                return text;
+            }
+        }
+
+        /// <summary>Reads rows for about <paramref name="budgetMs"/> milliseconds. True when finished (or failed).</summary>
+        public bool Step(LogStore store, double budgetMs)
+        {
+            if (Finished)
+            {
+                return true;
+            }
+
+            if (!Source.Available || to <= from)
+            {
+                return Finish(store, failed: !Source.Available);
+            }
+
+            var clock = Stopwatch.StartNew();
+            // Held until the import ends (Finish), unless a Unity Console window may show the borrowed settings.
+            bool changed = Source.TakeAll();
+            try
+            {
+                if (ReadSlice(store, budgetMs, changed, clock, out bool failed))
+                {
+                    return Finish(store, failed);
+                }
+            }
+            catch (Exception exception)
+            {
+                // Never retried: the same row would fail at every update while the store stays pinned. Finish gives the
+                // console settings and the pin back; the caller reports Error once.
+                Error = exception;
+                return Finish(store, failed: true);
+            }
+            finally
+            {
+                if (!Finished && Source.WindowMayShow)
+                {
+                    Source.ReleaseAll();
+                }
+            }
+
+            return false;
+        }
+
+        // True when the import is over (read to the end, or the console no longer holds its rows).
+        private bool ReadSlice(LogStore store, double budgetMs, bool changed, Stopwatch clock, out bool failed)
+        {
+            failed = false;
+            using (var reader = Source.Open())
+            {
+                if (reader == null || reader.Count < to)
+                {
+                    // Unity's console was cleared since: those entries are gone.
+                    failed = true;
+                    return true;
+                }
+
+                if (!verified)
+                {
+                    foreach (var (row, text) in anchors)
+                    {
+                        if (row < 0 || string.IsNullOrEmpty(text))
+                        {
+                            continue;
+                        }
+
+                        UnityConsole.TrySplitTimestamp(reader.Lines(row, 2, out _), out _, out string current);
+                        if (!string.Equals(current, text, StringComparison.Ordinal))
+                        {
+                            failed = true;
+                            return true;
+                        }
+                    }
+
+                    verified = true;
+                }
+
+                // Changing the console's filters costs Unity a pass over its entries: take bigger slices then.
+                double budget = changed ? Math.Max(budgetMs, 40d) : budgetMs;
+                while (next < to)
+                {
+                    ReadRow(store, reader, next);
+                    next++;
+                    if ((next & 255) == 0 && clock.Elapsed.TotalMilliseconds >= budget)
+                    {
+                        break;
+                    }
+                }
+            }
+
+            return next >= to;
+        }
+
+        private void ReadRow(LogStore store, IConsoleRows reader, int row)
+        {
+            string lines = reader.Lines(row, 2, out int mode);
+            long time = fallbackTime;
+            var occurrenceFlags = OccurrenceFlags.ApproximateTime | OccurrenceFlags.FromUnityConsole;
+            if (UnityConsole.TrySplitTimestamp(lines, out int seconds, out string text))
+            {
+                time = TimeOf(seconds);
+            }
+            else
+            {
+                text = lines;
+            }
+
+            var variant = UnityConsole.VariantOf(mode);
+            var signature = (variant, text);
+            int instanceId = 0;
+            if (!signatures.TryGetValue(signature, out int message))
+            {
+                if (reader.TryRead(row, out var entry))
+                {
+                    instanceId = entry.InstanceId;
+                    message = store.Intern(entry.Condition, LogVariants.IsCompile(variant) ? string.Empty : entry.Stack, variant, 0, entry.File, entry.Line, entry.Column);
+                }
+                else
+                {
+                    message = store.Intern(text, string.Empty, variant);
+                }
+
+                signatures[signature] = message;
+            }
+
+            if (placement == Placement.After)
+            {
+                int occurrence = store.Append(time, message, occurrenceFlags);
+                if (instanceId != 0)
+                {
+                    store.SetContext(occurrence, instanceId);
+                }
+
+                return;
+            }
+
+            if (count == times.Length)
+            {
+                int size = Math.Max(1024, times.Length * 2);
+                Array.Resize(ref times, size);
+                Array.Resize(ref owners, size);
+                Array.Resize(ref flags, size);
+            }
+
+            if (instanceId != 0)
+            {
+                contexts[count] = instanceId;
+            }
+
+            times[count] = time;
+            owners[count] = message;
+            flags[count] = (byte)occurrenceFlags;
+            count++;
+        }
+
+        // Unity's console timestamps are local times of day: rows are in order, so a jump back means midnight passed.
+        private long TimeOf(int seconds)
+        {
+            if (seconds == lastSeconds)
+            {
+                return lastTicks;
+            }
+
+            if (lastSeconds < 0)
+            {
+                dayOffset = seconds + 300 < startSeconds ? 1 : 0;
+            }
+            else if (seconds + 3600 < lastSeconds)
+            {
+                dayOffset++;
+            }
+
+            lastSeconds = seconds;
+            var local = startDay.AddDays(dayOffset).AddSeconds(seconds);
+            lastTicks = local.ToUniversalTime().Ticks;
+            return lastTicks;
+        }
+
+        private bool Finish(LogStore store, bool failed)
+        {
+            Finished = true;
+            Failed = failed;
+            Source.ReleaseAll();
+
+            if (!failed && placement == Placement.Before && count > 0)
+            {
+                store.Prepend(times, owners, flags, count, contexts);
+            }
+
+            times = new long[0];
+            owners = new int[0];
+            flags = new byte[0];
+            count = 0;
+            return true;
+        }
+    }
+}

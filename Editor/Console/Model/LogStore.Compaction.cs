@@ -59,7 +59,8 @@ namespace Orbiters.Logger.Editor
             }
 
             compaction = new StoreCompaction(this);
-            if (CompactInBackground && !compactNow)
+            // While history waits to be put in front, compactions are synchronous: the import changes what it references.
+            if (CompactInBackground && !compactNow && StagedCount == 0)
             {
                 compaction.Start();
                 return;
@@ -148,6 +149,13 @@ namespace Orbiters.Logger.Editor
         private void TryLand(bool bounded)
         {
             var prepared = compaction;
+            if (bounded && StagedCount > 0)
+            {
+                // Staged history references messages this compaction doesn't keep: it starts over (synchronously).
+                CancelCompaction();
+                return;
+            }
+
             if (bounded && (end - prepared.Done > LandingLimit || prepared.LatePatches > LandingPatches))
             {
                 prepared.Start();
@@ -178,6 +186,12 @@ namespace Orbiters.Logger.Editor
                 // Keep the old table untouched; LogCapture starts over from Unity's console.
                 compaction = null;
                 return;
+            }
+
+            if (StagedCount > 0)
+            {
+                // Only on the synchronous path (see MaybeCompact): history waiting to go in front keeps its messages.
+                RemapStaged(prepared);
             }
 
             // Profiles of the timings known when it started, remapped by the worker; one filed since is parsed again from
@@ -487,6 +501,13 @@ namespace Orbiters.Logger.Editor
                 }
 
                 remappedProfiles = remapped;
+            }
+
+            /// <summary>The new id of a message history waiting to go in front references (adopted if it had no occurrence).</summary>
+            public int Keep(int old)
+            {
+                int moved = NewId(old);
+                return moved >= 0 ? moved : Adopt(old, Volatile.Read(ref store.messages));
             }
 
             /// <summary>The owner chunks with the new message ids, in a directory of <paramref name="size"/>.</summary>
