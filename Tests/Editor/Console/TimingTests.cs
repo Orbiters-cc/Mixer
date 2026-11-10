@@ -83,6 +83,34 @@ namespace Orbiters.Logger.Editor.Tests
         }
 
         [Test]
+        public void AReloadTreeSearchGoesOnWhereItStopped()
+        {
+            string path = Path.Combine(Path.GetTempPath(), "logger-reload-" + Guid.NewGuid().ToString("N") + ".log");
+            try
+            {
+                // A flood before the tree, then the header cut in two by a poll, then the rest.
+                string flood = string.Concat(Enumerable.Repeat("Some log line from a flood of logs\n", 5000));
+                File.WriteAllText(path, flood + Block.Substring(0, 10));
+                var search = new ReloadTimings.BlockSearch();
+                Assert.IsFalse(ReloadTimings.TryFindBlock(path, 0, new FileInfo(path).Length, search, out _, out _));
+                Assert.Less(search.HeaderAt, 0L);
+                Assert.Greater(search.SearchedTo, 100_000L, "the flood is not read again");
+                File.AppendAllText(path, Block.Substring(10) + "\n");
+                Assert.IsFalse(ReloadTimings.TryFindBlock(path, 0, new FileInfo(path).Length, search, out _, out _), "the tree may still be written");
+                Assert.AreEqual(flood.Length, search.HeaderAt, "the header across two polls is found");
+                File.AppendAllText(path, "Asset Pipeline Refresh: Total: 4.9 seconds\n");
+                Assert.IsTrue(ReloadTimings.TryFindBlock(path, 0, new FileInfo(path).Length, search, out string block, out long end));
+                Assert.IsTrue(ReloadTimings.TryFindBlock(path, 0, new FileInfo(path).Length, out string fresh, out long freshEnd));
+                Assert.AreEqual(fresh, block, "the same tree as a search from the start");
+                Assert.AreEqual(freshEnd, end);
+            }
+            finally
+            {
+                File.Delete(path);
+            }
+        }
+
+        [Test]
         public void AReloadTreeIsReadOnceItIsComplete()
         {
             string path = Path.Combine(Path.GetTempPath(), "logger-reload-" + Guid.NewGuid().ToString("N") + ".log");

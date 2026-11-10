@@ -298,9 +298,10 @@ namespace Orbiters.Logger.Editor
                     return;
                 }
 
+                var search = blockSearch;
                 Run(() =>
                 {
-                    if (TryFindBlock(path, offset, length, out string block, out long end))
+                    if (TryFindBlock(path, offset, length, search, out string block, out long end))
                     {
                         foundEnd = end;
                         foundBlock = block;
@@ -358,16 +359,57 @@ namespace Orbiters.Logger.Editor
             LogCapture.Inject(profile.Message(), profile.Format(), LogType.Log);
         }
 
+        /// <summary>
+        /// How far one reload's search of Editor.log got: the bytes before <see cref="SearchedTo"/> hold no header, and
+        /// once the header is found the tree is read from <see cref="HeaderAt"/>. Each poll then reads only new bytes,
+        /// instead of everything since the reload started (up to 32 MB, as one array and one string, every 0.4 s).
+        /// </summary>
+        internal sealed class BlockSearch
+        {
+            public long Offset = -1L;
+            public long SearchedTo;
+            public long HeaderAt = -1L;
+
+            public void StartAt(long offset)
+            {
+                if (offset != Offset)
+                {
+                    Offset = offset;
+                    SearchedTo = offset;
+                    HeaderAt = -1L;
+                }
+            }
+        }
+
+        private static readonly BlockSearch blockSearch = new BlockSearch();
+        private static readonly byte[] HeaderBytes = Encoding.ASCII.GetBytes(Header);
+
         /// <summary>The first complete profiling tree written after <paramref name="offset"/>, and where it ends.</summary>
-        internal static bool TryFindBlock(string path, long offset, long length, out string block, out long end)
+        internal static bool TryFindBlock(string path, long offset, long length, out string block, out long end) =>
+            TryFindBlock(path, offset, length, new BlockSearch(), out block, out end);
+
+        /// <summary><see cref="TryFindBlock(string,long,long,out string,out long)"/> going on from where <paramref name="search"/> stopped.</summary>
+        internal static bool TryFindBlock(string path, long offset, long length, BlockSearch search, out string block, out long end)
         {
             block = null;
             end = offset;
-            int count = (int)Math.Min(MaxScanBytes, length - offset);
-            var buffer = new byte[count];
+            search.StartAt(offset);
+            long limit = Math.Min(length, offset + MaxScanBytes);
             using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
             {
-                stream.Seek(offset, SeekOrigin.Begin);
+                if (search.HeaderAt < 0)
+                {
+                    search.HeaderAt = FindHeader(stream, Math.Max(offset, search.SearchedTo - (HeaderBytes.Length - 1)), limit);
+                    if (search.HeaderAt < 0)
+                    {
+                        search.SearchedTo = Math.Max(search.SearchedTo, limit);
+                        return false;
+                    }
+                }
+
+                int count = (int)Math.Max(0L, limit - search.HeaderAt);
+                var buffer = new byte[count];
+                stream.Seek(search.HeaderAt, SeekOrigin.Begin);
                 int read = 0;
                 while (read < count)
                 {
@@ -380,32 +422,76 @@ namespace Orbiters.Logger.Editor
                     read += n;
                 }
 
-                count = read;
-            }
-
-            string text = Encoding.UTF8.GetString(buffer, 0, count);
-            int start = text.IndexOf(Header, StringComparison.Ordinal);
-            if (start < 0)
-            {
-                return false;
-            }
-
-            // The tree ends at the first line that is not indented; until that line is written, it may be partial.
-            int lineEnd = text.IndexOf('\n', start);
-            while (lineEnd >= 0 && lineEnd + 1 < text.Length)
-            {
-                char next = text[lineEnd + 1];
-                if (next != '\t' && next != ' ')
+                // The tree ends at the first line that is not indented; until that line is written, it may be partial.
+                string text = Encoding.UTF8.GetString(buffer, 0, read);
+                int lineEnd = text.IndexOf('\n');
+                while (lineEnd >= 0 && lineEnd + 1 < text.Length)
                 {
-                    block = text.Substring(start, lineEnd - start);
-                    end = offset + Encoding.UTF8.GetByteCount(text.Substring(0, lineEnd));
-                    return true;
-                }
+                    char next = text[lineEnd + 1];
+                    if (next != '\t' && next != ' ')
+                    {
+                        block = text.Substring(0, lineEnd);
+                        end = search.HeaderAt + Encoding.UTF8.GetByteCount(block);
+                        return true;
+                    }
 
-                lineEnd = text.IndexOf('\n', lineEnd + 1);
+                    lineEnd = text.IndexOf('\n', lineEnd + 1);
+                }
             }
 
             return false;
+        }
+
+        // Where the header starts in [from, to), or -1: 64 KB at a time, a header cut by a chunk's end found in the next.
+        private static long FindHeader(FileStream stream, long from, long to)
+        {
+            var buffer = new byte[1 << 16];
+            int keep = HeaderBytes.Length - 1;
+            long position = from;
+            while (position < to)
+            {
+                stream.Seek(position, SeekOrigin.Begin);
+                int want = (int)Math.Min(buffer.Length, to - position);
+                int read = 0;
+                while (read < want)
+                {
+                    int n = stream.Read(buffer, read, want - read);
+                    if (n <= 0)
+                    {
+                        break;
+                    }
+
+                    read += n;
+                }
+
+                for (int i = 0; i + HeaderBytes.Length <= read; i++)
+                {
+                    if (buffer[i] != HeaderBytes[0])
+                    {
+                        continue;
+                    }
+
+                    int j = 1;
+                    while (j < HeaderBytes.Length && buffer[i + j] == HeaderBytes[j])
+                    {
+                        j++;
+                    }
+
+                    if (j == HeaderBytes.Length)
+                    {
+                        return position + i;
+                    }
+                }
+
+                if (read < want || position + read >= to)
+                {
+                    return -1L;
+                }
+
+                position += Math.Max(1, read - keep);
+            }
+
+            return -1L;
         }
 
         private sealed class Node
