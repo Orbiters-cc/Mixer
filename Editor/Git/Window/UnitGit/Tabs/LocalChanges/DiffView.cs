@@ -10,15 +10,6 @@ namespace Orbiters.UnitGit.Editor
 {
     internal sealed partial class UnitGitWindow
     {
-        private readonly UnitGitLatestRequest<UnitGitDiff> diffRead = new UnitGitLatestRequest<UnitGitDiff>();
-        private UnitGitDiff loadedDiff;
-        private string requestedDiffPath;
-        // What the text diff asked last was read from (see TextDiffKey); null: no text diff asked for this file yet.
-        private string requestedDiffKey;
-        private UnitGitDiffViewer diffViewer;
-        private Label diffCountLabel;
-        // A newly selected file opens at its first change; a refresh of the same file keeps the scroll.
-        private string jumpedToFirstChange;
         private Font diffFont;
         private const string DiffModePref = "Orbiters.UnitGit.Diff.Mode";
 
@@ -160,13 +151,13 @@ namespace Orbiters.UnitGit.Editor
             pane.AddToClassList("unitgit-diff-pane");
             UnitGitStatusEntry change = GetSelectedChange();
             string path = change != null ? change.Path : string.Empty;
-            if (!string.Equals(requestedDiffPath, path, StringComparison.Ordinal))
+            if (!string.Equals(changesTab.requestedDiffPath, path, StringComparison.Ordinal))
             {
-                loadedDiff = null;
+                changesTab.loadedDiff = null;
                 RequestLocalDiff(change);
             }
-            diffViewer = null;
-            diffCountLabel = null;
+            changesTab.diffViewer = null;
+            changesTab.diffCountLabel = null;
             if (change == null)
             {
                 pane.Add(BuildDiffPlaceholder("Select a file to see its changes"));
@@ -184,19 +175,19 @@ namespace Orbiters.UnitGit.Editor
             // Entering Text (also back from the Scene or 3D view, during which the file may have changed): the text diff's
             // key decides whether it is read again.
             RequestLocalDiff(change);
-            if (loadedDiff == null)
+            if (changesTab.loadedDiff == null)
             {
                 pane.Add(BuildDiffPlaceholder("Loading the diff…", spinner: true));
                 return pane;
             }
-            diffViewer = new UnitGitDiffViewer { CanRevert = true };
-            diffViewer.RevertRequested += block => RevertLocalBlock(change.Path, block);
-            diffViewer.SetDiff(loadedDiff);
-            diffViewer.Search(diffSearch, false);
+            changesTab.diffViewer = new UnitGitDiffViewer { CanRevert = true };
+            changesTab.diffViewer.RevertRequested += block => RevertLocalBlock(change.Path, block);
+            changesTab.diffViewer.SetDiff(changesTab.loadedDiff);
+            changesTab.diffViewer.Search(changesTab.diffSearch, false);
             JumpToFirstChange(path);
-            diffViewer.List.focusable = true;
-            diffViewer.List.RegisterCallback<KeyDownEvent>(OnDiffKeyDown);
-            pane.Add(diffViewer);
+            changesTab.diffViewer.List.focusable = true;
+            changesTab.diffViewer.List.RegisterCallback<KeyDownEvent>(OnDiffKeyDown);
+            pane.Add(changesTab.diffViewer);
             UpdateDiffCount();
             return pane;
         }
@@ -222,21 +213,21 @@ namespace Orbiters.UnitGit.Editor
             }
             if (mode == DiffMode.Text)
             {
-                toolbar.Add(UnitGitDiffViewer.BuildViewOptions(() => diffViewer, ReloadLocalDiff));
+                toolbar.Add(UnitGitDiffViewer.BuildViewOptions(() => changesTab.diffViewer, ReloadLocalDiff));
                 toolbar.Add(UnitGitUi.Separator());
                 toolbar.Add(UnitGitUi.Icon(UnitGitIconKind.PreviousDifference, "Previous change (Shift+F7) or search match", () => StepDiff(-1)));
                 toolbar.Add(UnitGitUi.Icon(UnitGitIconKind.NextDifference, "Next change (F7) or search match; after the last one, the next file", () => StepDiff(1)));
-                var search = UnitGitUi.Search(diffSearch, "Search", value =>
+                var search = UnitGitUi.Search(changesTab.diffSearch, "Search", value =>
                 {
-                    diffSearch = value ?? string.Empty;
-                    diffSearchMatchIndex = 0;
+                    changesTab.diffSearch = value ?? string.Empty;
+                    changesTab.diffSearchMatchIndex = 0;
                     UpdateDiffSearch(true);
                 }, "ug-diff-search");
-                diffSearchField = search;
+                changesTab.diffSearchField = search;
                 toolbar.Add(search);
-                diffCountLabel = UnitGitUi.Chip(loadedDiff == null ? "…" : string.Empty, null);
-                diffCountLabel.AddToClassList("ug-diff-count");
-                toolbar.Add(diffCountLabel);
+                changesTab.diffCountLabel = UnitGitUi.Chip(changesTab.loadedDiff == null ? "…" : string.Empty, null);
+                changesTab.diffCountLabel.AddToClassList("ug-diff-count");
+                toolbar.Add(changesTab.diffCountLabel);
             }
             return toolbar;
         }
@@ -258,9 +249,9 @@ namespace Orbiters.UnitGit.Editor
 
         private void JumpToFirstChange(string path)
         {
-            if (diffViewer == null || loadedDiff == null || loadedDiff.Lines.Count == 0 || jumpedToFirstChange == path) return;
-            jumpedToFirstChange = path;
-            var viewer = diffViewer;
+            if (changesTab.diffViewer == null || changesTab.loadedDiff == null || changesTab.loadedDiff.Lines.Count == 0 || changesTab.jumpedToFirstChange == path) return;
+            changesTab.jumpedToFirstChange = path;
+            var viewer = changesTab.diffViewer;
             viewer.schedule.Execute(() =>
             {
                 viewer.MoveChange(1);
@@ -270,23 +261,23 @@ namespace Orbiters.UnitGit.Editor
 
         private void UpdateDiffCount()
         {
-            if (diffCountLabel == null) return;
-            if (diffViewer == null) { diffCountLabel.text = "…"; return; }
-            if (!string.IsNullOrWhiteSpace(diffSearch))
-                diffCountLabel.text = diffViewer.MatchCount == 0 ? "No match" : diffViewer.MatchIndex + 1 + " of " + diffViewer.MatchCount;
+            if (changesTab.diffCountLabel == null) return;
+            if (changesTab.diffViewer == null) { changesTab.diffCountLabel.text = "…"; return; }
+            if (!string.IsNullOrWhiteSpace(changesTab.diffSearch))
+                changesTab.diffCountLabel.text = changesTab.diffViewer.MatchCount == 0 ? "No match" : changesTab.diffViewer.MatchIndex + 1 + " of " + changesTab.diffViewer.MatchCount;
             else
-                diffCountLabel.text = diffViewer.DifferenceCount == 0 ? "No change"
-                    : diffViewer.CurrentChange >= 0 ? diffViewer.CurrentChange + 1 + " of " + diffViewer.DifferenceCount + (diffViewer.DifferenceCount == 1 ? " change" : " changes")
-                    : diffViewer.DifferenceCount + (diffViewer.DifferenceCount == 1 ? " change" : " changes");
+                changesTab.diffCountLabel.text = changesTab.diffViewer.DifferenceCount == 0 ? "No change"
+                    : changesTab.diffViewer.CurrentChange >= 0 ? changesTab.diffViewer.CurrentChange + 1 + " of " + changesTab.diffViewer.DifferenceCount + (changesTab.diffViewer.DifferenceCount == 1 ? " change" : " changes")
+                    : changesTab.diffViewer.DifferenceCount + (changesTab.diffViewer.DifferenceCount == 1 ? " change" : " changes");
         }
 
         // Arrows: the search matches while searching, the changes otherwise; past the last change, the next file (as F7 does
         // in JetBrains IDEs).
         private void StepDiff(int step)
         {
-            if (diffViewer == null) return;
-            if (!string.IsNullOrWhiteSpace(diffSearch)) MoveDiffSearchMatch(step);
-            else if (!diffViewer.MoveChange(step) && !SelectAdjacentChange(step))
+            if (changesTab.diffViewer == null) return;
+            if (!string.IsNullOrWhiteSpace(changesTab.diffSearch)) MoveDiffSearchMatch(step);
+            else if (!changesTab.diffViewer.MoveChange(step) && !SelectAdjacentChange(step))
                 ShowToast(step > 0 ? "That was the last change" : "That was the first change");
             UpdateDiffCount();
         }
@@ -294,21 +285,21 @@ namespace Orbiters.UnitGit.Editor
         // The whitespace option changed: the same file is read again and opens at its first change.
         private void ReloadLocalDiff()
         {
-            jumpedToFirstChange = null;
-            requestedDiffPath = null;
+            changesTab.jumpedToFirstChange = null;
+            changesTab.requestedDiffPath = null;
             RequestLocalDiff(GetSelectedChange());
         }
 
         // "»": the change goes back to the left side's lines in the file on disk; the notification can undo it.
         private void RevertLocalBlock(string path, UnitGitDiffBlock block)
         {
-            if (string.IsNullOrEmpty(path) || block == null || diffViewer == null) return;
+            if (string.IsNullOrEmpty(path) || block == null || changesTab.diffViewer == null) return;
             string full = Path.Combine(gitService.ProjectRoot, path);
             GitCommandResult result;
             byte[] before = null, after = null;
             try
             {
-                result = UnitGitBlockRevert.Apply(full, block.RightStart, block.Right, block.Left, diffViewer.Diff.LeftEndsWithoutNewline, out before, out after);
+                result = UnitGitBlockRevert.Apply(full, block.RightStart, block.Right, block.Left, changesTab.diffViewer.Diff.LeftEndsWithoutNewline, out before, out after);
             }
             catch (Exception ex)
             {
@@ -361,7 +352,7 @@ namespace Orbiters.UnitGit.Editor
             }
             else if (evt.keyCode == KeyCode.F && (evt.ctrlKey || evt.commandKey))
             {
-                diffSearchField?.Focus();
+                changesTab.diffSearchField?.Focus();
                 evt.StopPropagation();
             }
         }
@@ -369,23 +360,23 @@ namespace Orbiters.UnitGit.Editor
         private void RequestLocalDiff(UnitGitStatusEntry change)
         {
             string path = change != null ? change.Path : string.Empty;
-            bool changedPath = requestedDiffPath != path;
-            requestedDiffPath = path;
+            bool changedPath = changesTab.requestedDiffPath != path;
+            changesTab.requestedDiffPath = path;
             if (changedPath)
             {
-                loadedDiff = null;
-                requestedDiffKey = null;
+                changesTab.loadedDiff = null;
+                changesTab.requestedDiffKey = null;
             }
             // The Scene and 3D views read both versions themselves: no text diff for them.
             if (change != null && ModeFor(path) != DiffMode.Text) return;
             var whitespace = UnitGitDiffViewer.Whitespace;
             // Nothing the diff depends on moved (the file, the index, HEAD, the option): what is shown is still it.
             string key = TextDiffKey(change, whitespace);
-            if (!changedPath && key != null && key == requestedDiffKey && (loadedDiff != null || diffRead.IsBusy)) return;
-            requestedDiffKey = key ?? string.Empty;
-            var previous = loadedDiff;
+            if (!changedPath && key != null && key == changesTab.requestedDiffKey && (changesTab.loadedDiff != null || changesTab.diffRead.IsBusy)) return;
+            changesTab.requestedDiffKey = key ?? string.Empty;
+            var previous = changesTab.loadedDiff;
             string root = gitService.ProjectRoot;
-            diffRead.Request(stale =>
+            changesTab.diffRead.Request(stale =>
             {
                 var next = new UnitGitService(root) { ReadSuperseded = stale }.GetFileDiff(change, whitespace);
                 PrepareDiff(next);
@@ -441,24 +432,24 @@ namespace Orbiters.UnitGit.Editor
 
         private void PollDiffRead()
         {
-            if (!diffRead.Poll(out UnitGitDiff diff, out Exception error))
+            if (!changesTab.diffRead.Poll(out UnitGitDiff diff, out Exception error))
                 return;
-            if (ReferenceEquals(loadedDiff, diff) && error == null)
+            if (ReferenceEquals(changesTab.loadedDiff, diff) && error == null)
                 return;
-            loadedDiff = diff ?? new UnitGitDiff();
+            changesTab.loadedDiff = diff ?? new UnitGitDiff();
             if (error != null)
-                loadedDiff.Lines.Add(new UnitGitDiffLine { Right = "Could not load diff: " + error.Message });
-            if (diffViewer != null)
+                changesTab.loadedDiff.Lines.Add(new UnitGitDiffLine { Right = "Could not load diff: " + error.Message });
+            if (changesTab.diffViewer != null)
             {
-                diffViewer.SetDiff(loadedDiff);
-                JumpToFirstChange(loadedDiff.Path);
+                changesTab.diffViewer.SetDiff(changesTab.loadedDiff);
+                JumpToFirstChange(changesTab.loadedDiff.Path);
                 UpdateDiffCount();
                 return;
             }
             if (activeTab == UnitGitTab.LocalChanges)
             {
                 // The Scene view reads the file itself: the text diff arriving changes nothing there.
-                if (localDiffPaneRoot != null && (localDiffPaneRoot.Q<SemanticDiffView>() != null || localDiffPaneRoot.Q<ModelCompareView>() != null))
+                if (changesTab.localDiffPaneRoot != null && (changesTab.localDiffPaneRoot.Q<SemanticDiffView>() != null || changesTab.localDiffPaneRoot.Q<ModelCompareView>() != null))
                     return;
                 RememberScrollOffsets();
                 RebuildLocalDiffPane();
@@ -468,7 +459,7 @@ namespace Orbiters.UnitGit.Editor
 
         private void UpdateDiffSearch(bool scrollToMatch)
         {
-            diffViewer?.Search(diffSearch, scrollToMatch);
+            changesTab.diffViewer?.Search(changesTab.diffSearch, scrollToMatch);
             UpdateDiffCount();
         }
 
@@ -476,13 +467,13 @@ namespace Orbiters.UnitGit.Editor
         private void NextDiffSearchMatch() { MoveDiffSearchMatch(1); }
         private void MoveDiffSearchMatch(int step)
         {
-            if (diffViewer == null || diffViewer.MatchCount == 0)
+            if (changesTab.diffViewer == null || changesTab.diffViewer.MatchCount == 0)
             {
-                diffSearchField?.Focus();
+                changesTab.diffSearchField?.Focus();
                 return;
             }
-            diffViewer.MoveMatch(step);
-            diffSearchMatchIndex = diffViewer.MatchIndex;
+            changesTab.diffViewer.MoveMatch(step);
+            changesTab.diffSearchMatchIndex = changesTab.diffViewer.MatchIndex;
             UpdateDiffCount();
         }
     }

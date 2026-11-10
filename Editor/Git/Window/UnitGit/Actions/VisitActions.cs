@@ -79,7 +79,7 @@ namespace Orbiters.UnitGit.Editor
             visitBanner.style.display = show ? DisplayStyle.Flex : DisplayStyle.None;
             if (!show) return;
 
-            bool idle = !busy && commitWhenIncluded == null && pendingVisit == null && pendingReturnBranch == null;
+            bool idle = !busy && changesTab.commitWhenIncluded == null && pendingVisit == null && pendingReturnBranch == null;
             visitBackButton.SetEnabled(idle);
             visitNewBranchButton.SetEnabled(idle);
             if (pendingReturnBranch != null)
@@ -122,7 +122,7 @@ namespace Orbiters.UnitGit.Editor
         private bool CanStartVisitAction()
         {
             if (gitService == null || snapshot == null) return false;
-            if (busy || commitWhenIncluded != null)
+            if (busy || changesTab.commitWhenIncluded != null)
             {
                 ShowToast("Wait for " + (busyLabel ?? "the current Git operation") + " to finish.", error: true);
                 return false;

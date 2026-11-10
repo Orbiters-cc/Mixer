@@ -18,32 +18,8 @@ namespace Orbiters.UnitGit.Editor
         private const string GroupByFolderPref = "Orbiters.UnitGit.Changes.GroupByFolder";
         private const string DownloadsNoticeHiddenKey = "Orbiters.UnitGit.Changes.DownloadsNoticeHidden";
         private const float ChangeRowHeight = 26f;
-        private readonly HashSet<string> selectedChangePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        private readonly HashSet<string> collapsedChangeFolders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        // Boxes ticked or cleared but not yet written by Git: shown at once, reconciled by the next refresh.
-        private readonly Dictionary<string, bool> pendingInclude = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
-        private readonly List<(List<string> paths, bool include)> includeQueue = new List<(List<string> paths, bool include)>();
-        private bool includeRunning;
-        private int includeGeneration;
-        private int includeRunningCount;
-        private bool includeRunningAdds;
-        // Commit (true: and push) clicked while Git was still including files: it runs as soon as they are in.
-        private bool? commitWhenIncluded;
-        private double includeStarted;
-        private string includePaths;
-        private Label commitProgressLabel;
-        private string changeFilter = string.Empty;
-        private string changeAnchorPath = string.Empty;
-        private List<ChangeRow> changeRows = new List<ChangeRow>();
-        private ListView changesListView;
-        private VisualElement changesNoticesRoot;
-        private string changesNoticesKey;
-        private Label commitSummaryLabel;
-        private Button commitButton;
-        private Button commitPushButton;
-        private UnitGitCheck amendCheck;
 
-        private sealed class ChangeRow
+        internal sealed class ChangeRow
         {
             public enum RowKind { Group, Folder, File }
             public RowKind Kind;
@@ -61,10 +37,10 @@ namespace Orbiters.UnitGit.Editor
 
             var split = BuildTrackedSplit(LocalChangesDiffSplitPref, 0, 460f);
             split.Add(BuildLocalChangesListPane());
-            localDiffPaneRoot = new VisualElement();
-            localDiffPaneRoot.AddToClassList("unitgit-diff-pane-container");
-            localDiffPaneRoot.Add(BuildDiffViewerPane());
-            split.Add(localDiffPaneRoot);
+            changesTab.localDiffPaneRoot = new VisualElement();
+            changesTab.localDiffPaneRoot.AddToClassList("unitgit-diff-pane-container");
+            changesTab.localDiffPaneRoot.Add(BuildDiffViewerPane());
+            split.Add(changesTab.localDiffPaneRoot);
             workspace.Add(split);
 
             return workspace;
@@ -79,9 +55,9 @@ namespace Orbiters.UnitGit.Editor
 
             var toolbar = new VisualElement();
             toolbar.AddToClassList("ug-toolbar");
-            addButton = UnitGitUi.Pill("Add", AddSelectedUnversioned, null, null, "Add the selected unversioned files to Git (Ctrl+Alt+A)");
-            addButton.AddToClassList("unitgit-add-button");
-            toolbar.Add(addButton);
+            changesTab.addButton = UnitGitUi.Pill("Add", AddSelectedUnversioned, null, null, "Add the selected unversioned files to Git (Ctrl+Alt+A)");
+            changesTab.addButton.AddToClassList("unitgit-add-button");
+            toolbar.Add(changesTab.addButton);
             toolbar.Add(UnitGitUi.Icon(UnitGitIconKind.Rollback, "Rollback: discard the changes of the selected files", RollbackSelectedChanges));
             toolbar.Add(UnitGitUi.Icon(UnitGitIconKind.Shelve, "Shelve every change (set it aside)", ShelveAll));
             toolbar.Add(UnitGitUi.Separator());
@@ -89,20 +65,20 @@ namespace Orbiters.UnitGit.Editor
             var group = UnitGitUi.Icon(UnitGitIconKind.Folder, "Group by folder", ToggleGroupByFolder);
             group.EnableInClassList("ug-icon-button--on", grouped);
             toolbar.Add(group);
-            toolbar.Add(UnitGitUi.Icon(UnitGitIconKind.ExpandAll, "Expand all", () => { collapsedChangeFolders.Clear(); RefreshChangesList(); }));
+            toolbar.Add(UnitGitUi.Icon(UnitGitIconKind.ExpandAll, "Expand all", () => { changesTab.collapsedChangeFolders.Clear(); RefreshChangesList(); }));
             toolbar.Add(UnitGitUi.Icon(UnitGitIconKind.CollapseAll, "Collapse all", CollapseAllChangeFolders));
             toolbar.Add(UnitGitUi.Spacer());
-            toolbar.Add(UnitGitUi.Search(changeFilter, "Filter files", value => { changeFilter = value ?? string.Empty; RefreshChangesList(); }, "ug-toolbar__search"));
+            toolbar.Add(UnitGitUi.Search(changesTab.changeFilter, "Filter files", value => { changesTab.changeFilter = value ?? string.Empty; RefreshChangesList(); }, "ug-toolbar__search"));
             pane.Add(toolbar);
 
-            changesNoticesRoot = new VisualElement();
-            changesNoticesKey = null;
+            changesTab.changesNoticesRoot = new VisualElement();
+            changesTab.changesNoticesKey = null;
             UpdateChangesNotices();
-            pane.Add(changesNoticesRoot);
+            pane.Add(changesTab.changesNoticesRoot);
 
             var list = new VisualElement();
             list.AddToClassList("unitgit-changes-list");
-            localChangesListRoot = list;
+            changesTab.localChangesListRoot = list;
             AddChangedFileGroups(list);
             pane.Add(list);
 
@@ -114,15 +90,15 @@ namespace Orbiters.UnitGit.Editor
         // The notices above the list follow every refresh (a conflict resolved, downloads untracked) without rebuilding the pane.
         private void UpdateChangesNotices()
         {
-            if (changesNoticesRoot == null || snapshot == null) return;
+            if (changesTab.changesNoticesRoot == null || snapshot == null) return;
             int conflicts = Conflicted().Count;
             bool downloads = snapshot.TrackedIgnoredDownloads.Count > 0 && !SessionState.GetBool(DownloadsNoticeHiddenKey, false);
             string key = conflicts + "|" + (downloads ? snapshot.TrackedIgnoredDownloads.Count + ":" + snapshot.TrackedIgnoredDownloadBytes : "-");
-            if (key == changesNoticesKey) return;
-            changesNoticesKey = key;
-            changesNoticesRoot.Clear();
-            if (conflicts > 0) changesNoticesRoot.Add(BuildConflictsNotice());
-            if (downloads) changesNoticesRoot.Add(BuildTrackedDownloadsNotice());
+            if (key == changesTab.changesNoticesKey) return;
+            changesTab.changesNoticesKey = key;
+            changesTab.changesNoticesRoot.Clear();
+            if (conflicts > 0) changesTab.changesNoticesRoot.Add(BuildConflictsNotice());
+            if (downloads) changesTab.changesNoticesRoot.Add(BuildTrackedDownloadsNotice());
         }
 
         private VisualElement BuildConflictsNotice()
@@ -141,7 +117,7 @@ namespace Orbiters.UnitGit.Editor
                 snapshot.TrackedIgnoredDownloads.Count + " version files MCB downloads again when needed. Stop tracking them to keep your repository small: they stay on disk.",
                 "Stop tracking", () =>
                 {
-                    if (busy || commitWhenIncluded != null) return;
+                    if (busy || changesTab.commitWhenIncluded != null) return;
                     // Gone at once; a failure brings it back with the next refresh.
                     notice?.AddToClassList("unitgit-notice--leave");
                     notice?.schedule.Execute(() => notice.RemoveFromHierarchy()).StartingIn(180);
@@ -186,23 +162,23 @@ namespace Orbiters.UnitGit.Editor
 
         private void AddChangedFileGroups(VisualElement parent)
         {
-            changeRows = BuildChangeRows();
+            changesTab.changeRows = BuildChangeRows();
             if (snapshot.Changes.Count == 0)
             {
                 parent.Add(BuildCleanState());
-                changesListView = null;
+                changesTab.changesListView = null;
                 return;
             }
-            if (changeRows.Count == 0)
+            if (changesTab.changeRows.Count == 0)
             {
-                parent.Add(BuildEmptyState("No file matches “" + changeFilter.Trim() + "”."));
-                changesListView = null;
+                parent.Add(BuildEmptyState("No file matches “" + changesTab.changeFilter.Trim() + "”."));
+                changesTab.changesListView = null;
                 return;
             }
-            changesListView = BuildVirtualList(changeRows, ChangeRowHeight, BuildChangeRow, "unitgit-local-changes-list");
-            changesListView.focusable = true;
-            changesListView.RegisterCallback<KeyDownEvent>(OnChangesKeyDown);
-            parent.Add(changesListView);
+            changesTab.changesListView = BuildVirtualList(changesTab.changeRows, ChangeRowHeight, BuildChangeRow, "unitgit-local-changes-list");
+            changesTab.changesListView.focusable = true;
+            changesTab.changesListView.RegisterCallback<KeyDownEvent>(OnChangesKeyDown);
+            parent.Add(changesTab.changesListView);
         }
 
         private VisualElement BuildCleanState()
@@ -221,13 +197,13 @@ namespace Orbiters.UnitGit.Editor
         // Rebuilds the rows in place (filter, folders, a refresh), keeping the scroll position.
         private void RefreshChangesList()
         {
-            if (localChangesListRoot == null || snapshot == null) return;
+            if (changesTab.localChangesListRoot == null || snapshot == null) return;
             UpdateAddButton();
-            var scroll = changesListView?.Q<ScrollView>();
+            var scroll = changesTab.changesListView?.Q<ScrollView>();
             var offset = scroll != null ? scroll.scrollOffset : Vector2.zero;
-            localChangesListRoot.Clear();
-            AddChangedFileGroups(localChangesListRoot);
-            var restored = changesListView?.Q<ScrollView>();
+            changesTab.localChangesListRoot.Clear();
+            AddChangedFileGroups(changesTab.localChangesListRoot);
+            var restored = changesTab.changesListView?.Q<ScrollView>();
             if (restored != null) restored.schedule.Execute(() => restored.scrollOffset = offset);
             UpdateCommitSummary();
         }
@@ -236,7 +212,7 @@ namespace Orbiters.UnitGit.Editor
         {
             var rows = new List<ChangeRow>();
             if (snapshot == null) return rows;
-            string term = changeFilter.Trim();
+            string term = changesTab.changeFilter.Trim();
             var changes = snapshot.Changes
                 .Where(change => term.Length == 0 || change.Path.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0)
                 .OrderBy(change => change.Path, StringComparer.OrdinalIgnoreCase)
@@ -253,7 +229,7 @@ namespace Orbiters.UnitGit.Editor
             var group = new ChangeRow { Kind = ChangeRow.RowKind.Group, Key = "group:" + title, Name = title };
             group.Files.AddRange(files);
             rows.Add(group);
-            if (collapsedChangeFolders.Contains(group.Key)) return;
+            if (changesTab.collapsedChangeFolders.Contains(group.Key)) return;
             if (!grouped)
             {
                 foreach (var file in files)
@@ -305,7 +281,7 @@ namespace Orbiters.UnitGit.Editor
                 var row = new ChangeRow { Kind = ChangeRow.RowKind.Folder, Key = keyPrefix + shown.Path, Name = name, Depth = depth };
                 row.Files.AddRange(shown.All);
                 rows.Add(row);
-                if (!collapsedChangeFolders.Contains(row.Key))
+                if (!changesTab.collapsedChangeFolders.Contains(row.Key))
                     AddFolderRows(rows, keyPrefix, shown, depth + 1);
             }
             foreach (var file in node.Files)
@@ -320,7 +296,7 @@ namespace Orbiters.UnitGit.Editor
             element.AddToClassList("ug-row");
             element.AddToClassList(row.Kind == ChangeRow.RowKind.Group ? "ug-row--group" : "ug-row--folder");
             element.style.paddingLeft = 6 + row.Depth * 16;
-            bool collapsed = collapsedChangeFolders.Contains(row.Key);
+            bool collapsed = changesTab.collapsedChangeFolders.Contains(row.Key);
             var chevron = new UnitGitIconElement(collapsed ? UnitGitIconKind.ChevronCollapsed : UnitGitIconKind.ChevronExpanded);
             chevron.AddToClassList("ug-row__chevron");
             element.Add(chevron);
@@ -338,7 +314,7 @@ namespace Orbiters.UnitGit.Editor
             element.RegisterCallback<MouseDownEvent>(evt =>
             {
                 if (evt.button != 0) return;
-                if (!collapsedChangeFolders.Remove(row.Key)) collapsedChangeFolders.Add(row.Key);
+                if (!changesTab.collapsedChangeFolders.Remove(row.Key)) changesTab.collapsedChangeFolders.Add(row.Key);
                 RefreshChangesList();
             });
             return element;
@@ -353,7 +329,7 @@ namespace Orbiters.UnitGit.Editor
             element.userData = change.Path;
             element.tooltip = change.Path + "  •  " + change.DisplayStatus;
             element.style.paddingLeft = 6 + row.Depth * 16 + 18;
-            element.EnableInClassList("ug-row--selected", selectedChangePaths.Contains(change.Path));
+            element.EnableInClassList("ug-row--selected", changesTab.selectedChangePaths.Contains(change.Path));
             var check = new UnitGitCheck(CheckStateOf(change));
             check.Toggled += include => SetIncluded(new[] { change }, include);
             element.Add(check);
@@ -380,7 +356,7 @@ namespace Orbiters.UnitGit.Editor
                     evt.StopPropagation();
                     return;
                 }
-                if (evt.button == 0 || (evt.button == 1 && !selectedChangePaths.Contains(change.Path)))
+                if (evt.button == 0 || (evt.button == 1 && !changesTab.selectedChangePaths.Contains(change.Path)))
                 {
                     SelectChange(change, evt.shiftKey, evt.ctrlKey || evt.commandKey);
                     selectedOnDown = true;
@@ -433,7 +409,7 @@ namespace Orbiters.UnitGit.Editor
         private bool IsIncluded(UnitGitStatusEntry change, out bool partly)
         {
             partly = false;
-            if (pendingInclude.TryGetValue(change.Path, out bool pending)) return pending;
+            if (changesTab.pendingInclude.TryGetValue(change.Path, out bool pending)) return pending;
             if (change.IsUntracked || !change.IsStaged) return false;
             partly = change.IsUnstaged;
             return !partly;
@@ -467,28 +443,28 @@ namespace Orbiters.UnitGit.Editor
             var paths = new List<string>();
             foreach (var file in files)
             {
-                pendingInclude[file.Path] = include;
+                changesTab.pendingInclude[file.Path] = include;
                 if (include ? file.IsUnstaged || file.IsUntracked : file.IsStaged) paths.Add(file.Path);
             }
-            changesListView?.RefreshItems();
+            changesTab.changesListView?.RefreshItems();
             UpdateCommitSummary();
             if (paths.Count == 0) return;
-            includeQueue.Add((paths, include));
+            changesTab.includeQueue.Add((paths, include));
             RunIncludeQueue();
         }
 
         private void RunIncludeQueue()
         {
-            if (includeRunning || includeQueue.Count == 0) return;
-            includeRunning = true;
-            int generation = includeGeneration;
-            var batch = includeQueue.ToList();
-            includeQueue.Clear();
-            includeRunningCount = batch.Sum(item => item.paths.Count);
-            includeRunningAdds = batch.All(item => item.include);
-            includeStarted = EditorApplication.timeSinceStartup;
-            includePaths = string.Join("\n", batch.SelectMany(item => item.paths).Take(8));
-            if (includeRunningCount > 8) includePaths += "\n…and " + (includeRunningCount - 8) + " more files";
+            if (changesTab.includeRunning || changesTab.includeQueue.Count == 0) return;
+            changesTab.includeRunning = true;
+            int generation = changesTab.includeGeneration;
+            var batch = changesTab.includeQueue.ToList();
+            changesTab.includeQueue.Clear();
+            changesTab.includeRunningCount = batch.Sum(item => item.paths.Count);
+            changesTab.includeRunningAdds = batch.All(item => item.include);
+            changesTab.includeStarted = EditorApplication.timeSinceStartup;
+            changesTab.includePaths = string.Join("\n", batch.SelectMany(item => item.paths).Take(8));
+            if (changesTab.includeRunningCount > 8) changesTab.includePaths += "\n…and " + (changesTab.includeRunningCount - 8) + " more files";
             UpdateCommitSummary();
             string root = gitService.ProjectRoot;
             Task.Run(() =>
@@ -506,32 +482,32 @@ namespace Orbiters.UnitGit.Editor
                 })
                 .ContinueWith(task => QueueMainThreadAction(() =>
                 {
-                    if (this == null || generation != includeGeneration) return;
-                    includeRunning = false;
-                    includeRunningCount = 0;
+                    if (this == null || generation != changesTab.includeGeneration) return;
+                    changesTab.includeRunning = false;
+                    changesTab.includeRunningCount = 0;
                     var result = task.Status == TaskStatus.RanToCompletion ? task.Result : null;
                     bool failed = result == null || !result.Success;
                     if (failed)
                     {
-                        pendingInclude.Clear();
-                        includeQueue.Clear();
+                        changesTab.pendingInclude.Clear();
+                        changesTab.includeQueue.Clear();
                         string reason = UnitGitRedaction.Redact(result?.Message ?? task.Exception?.GetBaseException().Message ?? "unknown error");
                         commitIssue = "Could not prepare the commit. " + reason;
                         pendingCommitDescription = null;
                         AppendConsole("prepare commit", reason);
-                        ShowToast("Could not update the files to commit" + (commitWhenIncluded != null ? ", so nothing was committed" : string.Empty) + ": " + reason,
+                        ShowToast("Could not update the files to commit" + (changesTab.commitWhenIncluded != null ? ", so nothing was committed" : string.Empty) + ": " + reason,
                             error: true, "Console", () => SetActiveTab(UnitGitTab.Console));
-                        commitWhenIncluded = null;
+                        changesTab.commitWhenIncluded = null;
                     }
-                    if (includeQueue.Count > 0)
+                    if (changesTab.includeQueue.Count > 0)
                     {
                         RunIncludeQueue();
                         return;
                     }
-                    if (commitWhenIncluded != null)
+                    if (changesTab.commitWhenIncluded != null)
                     {
-                        bool push = commitWhenIncluded.Value;
-                        commitWhenIncluded = null;
+                        bool push = changesTab.commitWhenIncluded.Value;
+                        changesTab.commitWhenIncluded = null;
                         CommitStaged(push);
                         return;
                     }
@@ -545,34 +521,34 @@ namespace Orbiters.UnitGit.Editor
         // Called once a refresh landed: what Git now says replaces what was shown ahead of it.
         private void ReconcilePendingInclude()
         {
-            if (!includeRunning && includeQueue.Count == 0) pendingInclude.Clear();
+            if (!changesTab.includeRunning && changesTab.includeQueue.Count == 0) changesTab.pendingInclude.Clear();
         }
 
         // ---- Selection ------------------------------------------------------------------------------------------------
 
         private void SelectChange(UnitGitStatusEntry change, bool range, bool toggle)
         {
-            if (range && !string.IsNullOrEmpty(changeAnchorPath))
+            if (range && !string.IsNullOrEmpty(changesTab.changeAnchorPath))
             {
-                var files = changeRows.Where(row => row.Kind == ChangeRow.RowKind.File).Select(row => row.Change.Path).ToList();
-                int a = files.FindIndex(path => string.Equals(path, changeAnchorPath, StringComparison.OrdinalIgnoreCase));
+                var files = changesTab.changeRows.Where(row => row.Kind == ChangeRow.RowKind.File).Select(row => row.Change.Path).ToList();
+                int a = files.FindIndex(path => string.Equals(path, changesTab.changeAnchorPath, StringComparison.OrdinalIgnoreCase));
                 int b = files.FindIndex(path => string.Equals(path, change.Path, StringComparison.OrdinalIgnoreCase));
                 if (a >= 0 && b >= 0)
                 {
-                    if (!toggle) selectedChangePaths.Clear();
-                    for (int i = Math.Min(a, b); i <= Math.Max(a, b); i++) selectedChangePaths.Add(files[i]);
+                    if (!toggle) changesTab.selectedChangePaths.Clear();
+                    for (int i = Math.Min(a, b); i <= Math.Max(a, b); i++) changesTab.selectedChangePaths.Add(files[i]);
                 }
             }
             else if (toggle)
             {
-                if (!selectedChangePaths.Remove(change.Path)) selectedChangePaths.Add(change.Path);
-                changeAnchorPath = change.Path;
+                if (!changesTab.selectedChangePaths.Remove(change.Path)) changesTab.selectedChangePaths.Add(change.Path);
+                changesTab.changeAnchorPath = change.Path;
             }
             else
             {
-                selectedChangePaths.Clear();
-                selectedChangePaths.Add(change.Path);
-                changeAnchorPath = change.Path;
+                changesTab.selectedChangePaths.Clear();
+                changesTab.selectedChangePaths.Add(change.Path);
+                changesTab.changeAnchorPath = change.Path;
             }
             UpdateLocalChangeSelectionState();
             SelectLocalChange(change);
@@ -585,17 +561,16 @@ namespace Orbiters.UnitGit.Editor
                 return;
             }
 
-            if (selectedChangePaths.Count == 0) selectedChangePaths.Add(change.Path);
-            if (string.Equals(selectedChangePath, change.Path, StringComparison.Ordinal))
+            if (changesTab.selectedChangePaths.Count == 0) changesTab.selectedChangePaths.Add(change.Path);
+            if (string.Equals(changesTab.selectedChangePath, change.Path, StringComparison.Ordinal))
                 return;
 
-            selectedChangePath = change.Path;
-            diffSearchMatchIndex = 0;
+            changesTab.selectedChangePath = change.Path;
+            changesTab.diffSearchMatchIndex = 0;
             UpdateLocalChangeSelectionState();
             RebuildLocalDiffPane();
         }
 
-        private Button addButton;
 
         // Ctrl+Alt+A, as in JetBrains IDEs: the selected unversioned files go to Git (and into the commit).
         internal void AddSelectedUnversioned()
@@ -614,39 +589,39 @@ namespace Orbiters.UnitGit.Editor
 
         private void UpdateAddButton()
         {
-            if (addButton == null) return;
+            if (changesTab.addButton == null) return;
             int count = SelectedChanges().Count(change => change.IsUntracked && !IsIncluded(change, out _));
-            addButton.SetEnabled(count > 0);
-            UnitGitUi.SetText(addButton, count > 1 ? "Add " + count : "Add");
+            changesTab.addButton.SetEnabled(count > 0);
+            UnitGitUi.SetText(changesTab.addButton, count > 1 ? "Add " + count : "Add");
         }
 
         private void UpdateLocalChangeSelectionState()
         {
             UpdateAddButton();
-            if (localChangesListRoot == null)
+            if (changesTab.localChangesListRoot == null)
             {
                 return;
             }
 
-            localChangesListRoot.Query<Button>(className: "unitgit-change-file-row").ForEach(row =>
+            changesTab.localChangesListRoot.Query<Button>(className: "unitgit-change-file-row").ForEach(row =>
             {
                 string rowPath = row.userData as string;
-                row.EnableInClassList("ug-row--selected", rowPath != null && selectedChangePaths.Contains(rowPath));
+                row.EnableInClassList("ug-row--selected", rowPath != null && changesTab.selectedChangePaths.Contains(rowPath));
             });
         }
 
         private void OnChangesKeyDown(KeyDownEvent evt)
         {
-            var files = changeRows.Where(row => row.Kind == ChangeRow.RowKind.File).ToList();
+            var files = changesTab.changeRows.Where(row => row.Kind == ChangeRow.RowKind.File).ToList();
             if (files.Count == 0) return;
-            int index = files.FindIndex(row => string.Equals(row.Change.Path, selectedChangePath, StringComparison.OrdinalIgnoreCase));
+            int index = files.FindIndex(row => string.Equals(row.Change.Path, changesTab.selectedChangePath, StringComparison.OrdinalIgnoreCase));
             switch (evt.keyCode)
             {
                 case KeyCode.UpArrow:
                 case KeyCode.DownArrow:
                     int next = Mathf.Clamp(index + (evt.keyCode == KeyCode.UpArrow ? -1 : 1), 0, files.Count - 1);
                     SelectChange(files[next].Change, evt.shiftKey, false);
-                    changesListView?.ScrollToItem(changeRows.IndexOf(files[next]));
+                    changesTab.changesListView?.ScrollToItem(changesTab.changeRows.IndexOf(files[next]));
                     evt.StopPropagation();
                     break;
                 case KeyCode.Space:
@@ -664,17 +639,17 @@ namespace Orbiters.UnitGit.Editor
         // The next (or previous) file of the list, selected with its diff, as F7 does past a file's last change.
         private bool SelectAdjacentChange(int step)
         {
-            var files = changeRows.Where(row => row.Kind == ChangeRow.RowKind.File).ToList();
-            int index = files.FindIndex(row => string.Equals(row.Change.Path, selectedChangePath, StringComparison.OrdinalIgnoreCase));
+            var files = changesTab.changeRows.Where(row => row.Kind == ChangeRow.RowKind.File).ToList();
+            int index = files.FindIndex(row => string.Equals(row.Change.Path, changesTab.selectedChangePath, StringComparison.OrdinalIgnoreCase));
             int next = index + step;
             if (index < 0 || next < 0 || next >= files.Count) return false;
             SelectChange(files[next].Change, false, false);
-            changesListView?.ScrollToItem(changeRows.IndexOf(files[next]));
+            changesTab.changesListView?.ScrollToItem(changesTab.changeRows.IndexOf(files[next]));
             return true;
         }
 
         private List<UnitGitStatusEntry> SelectedChanges() =>
-            snapshot == null ? new List<UnitGitStatusEntry>() : snapshot.Changes.Where(change => selectedChangePaths.Contains(change.Path)).ToList();
+            snapshot == null ? new List<UnitGitStatusEntry>() : snapshot.Changes.Where(change => changesTab.selectedChangePaths.Contains(change.Path)).ToList();
 
         private void ShowChangeContextMenu(UnitGitStatusEntry clicked)
         {
@@ -712,7 +687,7 @@ namespace Orbiters.UnitGit.Editor
 
         private void CollapseAllChangeFolders()
         {
-            foreach (var row in BuildChangeRows().Where(row => row.Kind == ChangeRow.RowKind.Folder)) collapsedChangeFolders.Add(row.Key);
+            foreach (var row in BuildChangeRows().Where(row => row.Kind == ChangeRow.RowKind.Folder)) changesTab.collapsedChangeFolders.Add(row.Key);
             RefreshChangesList();
         }
 
@@ -744,7 +719,7 @@ namespace Orbiters.UnitGit.Editor
                 if (!result.Success) return result;
                 if (untracked.Count > 0) QueueMainThreadAction(() => DeleteUntracked(root, untracked));
                 return result;
-            }, _ => selectedChangePaths.Clear(), "Rolling back…", "Rolled back " + (chosen.Count == 1 ? "‘" + GetFileLeaf(chosen[0].Path) + "’" : chosen.Count + " files"));
+            }, _ => changesTab.selectedChangePaths.Clear(), "Rolling back…", "Rolled back " + (chosen.Count == 1 ? "‘" + GetFileLeaf(chosen[0].Path) + "’" : chosen.Count + " files"));
         }
 
         // New files: project assets go to the trash (recoverable), anything else is deleted.
@@ -788,60 +763,60 @@ namespace Orbiters.UnitGit.Editor
                 }
             }, TrickleDown.TrickleDown);
             panel.Add(message);
-            commitProgressLabel = UnitGitUi.Text(string.Empty, "unitgit-commit-progress");
-            panel.Add(commitProgressLabel);
+            changesTab.commitProgressLabel = UnitGitUi.Text(string.Empty, "unitgit-commit-progress");
+            panel.Add(changesTab.commitProgressLabel);
 
             var actions = new VisualElement();
             actions.AddToClassList("unitgit-local-commit-actions");
             var amend = new VisualElement();
             amend.AddToClassList("unitgit-local-amend");
-            amendCheck = new UnitGitCheck(commitAmend ? UnitGitCheckState.On : UnitGitCheckState.Off);
-            amendCheck.Toggled += SetAmendCommit;
-            amend.Add(amendCheck);
+            changesTab.amendCheck = new UnitGitCheck(commitAmend ? UnitGitCheckState.On : UnitGitCheckState.Off);
+            changesTab.amendCheck.Toggled += SetAmendCommit;
+            amend.Add(changesTab.amendCheck);
             amend.Add(UnitGitUi.Text("Amend", "unitgit-local-amend__label"));
             amend.tooltip = "Add the included files to the last commit instead, and edit its message.";
             amend.RegisterCallback<MouseDownEvent>(evt =>
             {
-                if (evt.button != 0 || evt.target == amendCheck) return;
+                if (evt.button != 0 || evt.target == changesTab.amendCheck) return;
                 SetAmendCommit(!commitAmend);
             });
             actions.Add(amend);
-            commitSummaryLabel = UnitGitUi.Text(string.Empty, "unitgit-local-commit-summary");
-            actions.Add(commitSummaryLabel);
+            changesTab.commitSummaryLabel = UnitGitUi.Text(string.Empty, "unitgit-local-commit-summary");
+            actions.Add(changesTab.commitSummaryLabel);
             actions.Add(UnitGitUi.Spacer());
-            commitPushButton = UnitGitUi.Pill("Commit and Push", () => CommitStaged(push: true), null, UnitGitIconKind.Push,
+            changesTab.commitPushButton = UnitGitUi.Pill("Commit and Push", () => CommitStaged(push: true), null, UnitGitIconKind.Push,
                 "Commit the included files, then push the branch");
-            actions.Add(commitPushButton);
-            commitButton = UnitGitUi.Pill(commitAmend ? "Amend" : "Commit", () => CommitStaged(), "primary", UnitGitIconKind.Commit, "Ctrl+Enter");
-            commitButton.name = "unitgit-commit-submit";
-            actions.Add(commitButton);
+            actions.Add(changesTab.commitPushButton);
+            changesTab.commitButton = UnitGitUi.Pill(commitAmend ? "Amend" : "Commit", () => CommitStaged(), "primary", UnitGitIconKind.Commit, "Ctrl+Enter");
+            changesTab.commitButton.name = "unitgit-commit-submit";
+            actions.Add(changesTab.commitButton);
             panel.Add(actions);
             return panel;
         }
 
         private void UpdateCommitSummary()
         {
-            if (commitSummaryLabel == null || snapshot == null) return;
+            if (changesTab.commitSummaryLabel == null || snapshot == null) return;
             int included = IncludedCount();
-            int working = includeRunningCount + includeQueue.Sum(item => item.paths.Count);
-            commitSummaryLabel.text = commitWhenIncluded != null ? "Preparing commit…"
-                : includeRunning ? (includeRunningAdds ? "Including " : "Updating ") + working + (working == 1 ? " file…" : " files…")
+            int working = changesTab.includeRunningCount + changesTab.includeQueue.Sum(item => item.paths.Count);
+            changesTab.commitSummaryLabel.text = changesTab.commitWhenIncluded != null ? "Preparing commit…"
+                : changesTab.includeRunning ? (changesTab.includeRunningAdds ? "Including " : "Updating ") + working + (working == 1 ? " file…" : " files…")
                 : included + " of " + snapshot.Changes.Count + " included";
-            commitSummaryLabel.EnableInClassList("unitgit-local-commit-summary--working", includeRunning || commitWhenIncluded != null);
-            if (commitProgressLabel != null)
+            changesTab.commitSummaryLabel.EnableInClassList("unitgit-local-commit-summary--working", changesTab.includeRunning || changesTab.commitWhenIncluded != null);
+            if (changesTab.commitProgressLabel != null)
             {
-                string progress = includeRunning ? "Git is " + (includeRunningAdds ? "including" : "updating") + " " + working + " files · " +
-                    (int)(EditorApplication.timeSinceStartup - includeStarted) + "s\n" + includePaths +
-                    (commitWhenIncluded != null ? "\nYour commit will start when this finishes. Git errors appear here; command details are in Console." : "") : commitIssue;
-                commitProgressLabel.text = progress ?? string.Empty;
-                commitProgressLabel.style.display = string.IsNullOrEmpty(progress) ? DisplayStyle.None : DisplayStyle.Flex;
+                string progress = changesTab.includeRunning ? "Git is " + (changesTab.includeRunningAdds ? "including" : "updating") + " " + working + " files · " +
+                    (int)(EditorApplication.timeSinceStartup - changesTab.includeStarted) + "s\n" + changesTab.includePaths +
+                    (changesTab.commitWhenIncluded != null ? "\nYour commit will start when this finishes. Git errors appear here; command details are in Console." : "") : commitIssue;
+                changesTab.commitProgressLabel.text = progress ?? string.Empty;
+                changesTab.commitProgressLabel.style.display = string.IsNullOrEmpty(progress) ? DisplayStyle.None : DisplayStyle.Flex;
             }
             // Clickable while Git is still including files: the commit then waits for them.
-            bool ready = !busy && commitWhenIncluded == null && (included > 0 || commitAmend);
-            commitButton?.SetEnabled(ready);
-            commitPushButton?.SetEnabled(ready);
-            if (commitButton != null) UnitGitUi.SetText(commitButton, commitAmend ? "Amend" : "Commit");
-            if (commitPushButton != null) UnitGitUi.SetText(commitPushButton, commitAmend ? "Amend and Push" : "Commit and Push");
+            bool ready = !busy && changesTab.commitWhenIncluded == null && (included > 0 || commitAmend);
+            changesTab.commitButton?.SetEnabled(ready);
+            changesTab.commitPushButton?.SetEnabled(ready);
+            if (changesTab.commitButton != null) UnitGitUi.SetText(changesTab.commitButton, commitAmend ? "Amend" : "Commit");
+            if (changesTab.commitPushButton != null) UnitGitUi.SetText(changesTab.commitPushButton, commitAmend ? "Amend and Push" : "Commit and Push");
         }
 
         private void SetAmendCommit(bool value)
@@ -870,7 +845,7 @@ namespace Orbiters.UnitGit.Editor
                 commitMessageBeforeAmend = string.Empty;
             }
 
-            if (amendCheck != null) amendCheck.State = commitAmend ? UnitGitCheckState.On : UnitGitCheckState.Off;
+            if (changesTab.amendCheck != null) changesTab.amendCheck.State = commitAmend ? UnitGitCheckState.On : UnitGitCheckState.Off;
             contentRoot?.Q<TextField>(className: "unitgit-local-commit-message")?.SetValueWithoutNotify(commitMessage);
             var placeholder = contentRoot?.Q<Label>(className: "unitgit-local-commit-placeholder");
             if (placeholder != null) placeholder.style.display = string.IsNullOrEmpty(commitMessage) ? DisplayStyle.Flex : DisplayStyle.None;
@@ -879,14 +854,14 @@ namespace Orbiters.UnitGit.Editor
 
         private void RebuildLocalDiffPane()
         {
-            if (localDiffPaneRoot == null)
+            if (changesTab.localDiffPaneRoot == null)
             {
                 RebuildContent();
                 return;
             }
 
-            localDiffPaneRoot.Clear();
-            localDiffPaneRoot.Add(BuildDiffViewerPane());
+            changesTab.localDiffPaneRoot.Clear();
+            changesTab.localDiffPaneRoot.Add(BuildDiffViewerPane());
         }
     }
 }

@@ -19,12 +19,12 @@ namespace Orbiters.UnitGit.Editor.Tests
             var window = ScriptableObject.CreateInstance<UnitGitWindow>();
             try
             {
-                Set(window, "includeRunning", true);
+                window.changesTab.includeRunning = true;
                 Invoke(window, "EnsureEditorUpdatePump");
                 Invoke(window, "DrainEditorQueues");
                 Assert.That(typeof(UnitGitWindow).GetField("editorUpdatePumpActive", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(window), Is.True);
                 bool delivered = false;
-                Invoke(window, "QueueMainThreadAction", (Action)(() => { delivered = true; Set(window, "includeRunning", false); }));
+                Invoke(window, "QueueMainThreadAction", (Action)(() => { delivered = true; window.changesTab.includeRunning = false; }));
                 Invoke(window, "DrainEditorQueues");
                 Assert.True(delivered);
             }
@@ -45,7 +45,7 @@ namespace Orbiters.UnitGit.Editor.Tests
                 var flags = BindingFlags.Instance | BindingFlags.NonPublic;
                 Assert.That(typeof(UnitGitWindow).GetField("commitMessage", flags).GetValue(restored), Is.EqualTo("my pending work"));
                 StringAssert.Contains("Unity reloaded", (string)typeof(UnitGitWindow).GetField("commitIssue", flags).GetValue(restored));
-                Assert.IsNull(typeof(UnitGitWindow).GetField("commitWhenIncluded", flags).GetValue(restored));
+                Assert.IsNull(restored.changesTab.commitWhenIncluded);
             }
             finally { UnityEngine.Object.DestroyImmediate(window); UnityEngine.Object.DestroyImmediate(restored); }
         }
@@ -186,9 +186,9 @@ namespace Orbiters.UnitGit.Editor.Tests
                 diff.Lines = Enumerable.Range(0, 100000).Select(i => new UnitGitDiffLine { Right = "line " + i }).ToList();
                 diff.Lines[0].Right = new string('x', 500000) + "needle" + new string('y', 499994);
                 Set(owner, "snapshot", snapshot);
-                Set(owner, "selectedChangePath", diff.Path);
-                Set(owner, "requestedDiffPath", diff.Path);
-                Set(owner, "loadedDiff", diff);
+                owner.changesTab.selectedChangePath = diff.Path;
+                owner.changesTab.requestedDiffPath = diff.Path;
+                owner.changesTab.loadedDiff = diff;
                 host.position = new Rect(0, 0, 1200, 700);
                 host.rootVisualElement.style.width = 1200;
                 host.rootVisualElement.style.height = 700;
@@ -209,7 +209,7 @@ namespace Orbiters.UnitGit.Editor.Tests
                 Assert.That(labels.Count, Is.GreaterThan(20));
                 Assert.That(labels, Has.Count.LessThan(350));
                 Assert.That(labels.All(label => (label.text ?? "").Length < 2000), Is.True);
-                Set(owner, "diffSearch", "needle");
+                owner.changesTab.diffSearch = "needle";
                 Invoke(owner, "UpdateDiffSearch", true);
                 for (int i = 0; i < 5; i++)
                     yield return null;

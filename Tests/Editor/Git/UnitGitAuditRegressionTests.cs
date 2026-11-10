@@ -141,9 +141,9 @@ namespace Orbiters.UnitGit.Editor.Tests
                 var fresh = new UnitGitBranch { FullRef = stale.FullRef, IsCurrent = false, Upstream = "new" };
                 var snapshot = new UnitGitSnapshot(); snapshot.Branches.Add(fresh);
                 typeof(UnitGitWindow).GetField("snapshot", Private).SetValue(window, snapshot);
-                typeof(UnitGitWindow).GetField("selectedBranch", Private).SetValue(window, stale);
+                window.logTab.selectedBranch = stale;
                 typeof(UnitGitWindow).GetMethod("ReconcileSnapshotSelection", Private).Invoke(window, null);
-                Assert.That(typeof(UnitGitWindow).GetField("selectedBranch", Private).GetValue(window), Is.SameAs(fresh));
+                Assert.That(window.logTab.selectedBranch, Is.SameAs(fresh));
             }
             finally { UnityEngine.Object.DestroyImmediate(window); }
         }
@@ -181,9 +181,9 @@ namespace Orbiters.UnitGit.Editor.Tests
                 typeof(UnitGitWindow).GetField("gitService", Private).SetValue(window, null);
                 // Scrolling to the end of the log loads the next 300 commits, once until they arrive.
                 typeof(UnitGitWindow).GetMethod("LoadMoreHistory", Private).Invoke(window, null);
-                Assert.That(typeof(UnitGitWindow).GetField("historyLimit", Private).GetValue(window), Is.EqualTo(600));
+                Assert.That(window.logTab.historyLimit, Is.EqualTo(600));
                 typeof(UnitGitWindow).GetMethod("LoadMoreHistory", Private).Invoke(window, null);
-                Assert.That(typeof(UnitGitWindow).GetField("historyLimit", Private).GetValue(window), Is.EqualTo(600));
+                Assert.That(window.logTab.historyLimit, Is.EqualTo(600));
             }
             finally { UnityEngine.Object.DestroyImmediate(window); }
         }

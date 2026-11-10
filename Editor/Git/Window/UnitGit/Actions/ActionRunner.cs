@@ -49,7 +49,7 @@ namespace Orbiters.UnitGit.Editor
             bool holdEditor = false)
         {
             // A commit waiting for its files goes first: nothing may change the repository under it.
-            if (busy || commitWhenIncluded != null)
+            if (busy || changesTab.commitWhenIncluded != null)
             {
                 return;
             }

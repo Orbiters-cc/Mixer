@@ -47,21 +47,14 @@ namespace Orbiters.UnitGit.Editor
         private UnitGitService gitService;
         private UnitGitProjectInitializer initializer;
         private UnitGitSnapshot snapshot;
-        private string selectedChangePath = string.Empty;
         private string selectedShelf = string.Empty;
         private VisualElement contentRoot;
-        private VisualElement localChangesListRoot;
-        private VisualElement localDiffPaneRoot;
         private UnitGitTab activeTab = UnitGitTab.Log;
-        private string diffSearch = string.Empty;
-        private int diffSearchMatchIndex;
-        private TextField diffSearchField;
         [SerializeField] private string commitMessage = string.Empty;
         [SerializeField] private string commitMessageBeforeAmend = string.Empty;
         [SerializeField] private bool commitAmend;
         [SerializeField] private string pendingCommitDescription;
         [SerializeField] private string commitIssue;
-        private bool excludePackageFolderFromInitialCommit = true;
         private bool busy;
         private bool refreshQueued;
         private bool refreshingSnapshot;
@@ -75,7 +68,10 @@ namespace Orbiters.UnitGit.Editor
         private bool staleWhileHidden;
 
         // The Log tab: its selection, search, history and the reads it waits for.
-        private readonly UnitGitLogState logTab = new UnitGitLogState();
+        internal readonly UnitGitLogState logTab = new UnitGitLogState();
+
+        // The Local Changes tab: its list, selection, includes in flight and the diff shown (the commit message fields stay serialized on the window).
+        internal readonly UnitGitChangesState changesTab = new UnitGitChangesState();
 
         [MenuItem("Tools/Orbiters/Mixer Git", priority = 2003)]
         internal static void OpenWindow()
@@ -106,9 +102,9 @@ namespace Orbiters.UnitGit.Editor
 
         private void OnDisable()
         {
-            includeGeneration++;
+            changesTab.includeGeneration++;
             refreshRequestId++;
-            diffRead.Dispose();
+            changesTab.diffRead.Dispose();
             logTab.detailsRead.Dispose();
             promptRead.Dispose();
             logTab.history?.Dispose();
@@ -128,14 +124,14 @@ namespace Orbiters.UnitGit.Editor
 
         private void ResetTransientAsyncState()
         {
-            includeGeneration++;
-            includeRunning = false;
-            includeRunningCount = 0;
-            includeQueue.Clear();
-            pendingInclude.Clear();
-            commitWhenIncluded = null;
+            changesTab.includeGeneration++;
+            changesTab.includeRunning = false;
+            changesTab.includeRunningCount = 0;
+            changesTab.includeQueue.Clear();
+            changesTab.pendingInclude.Clear();
+            changesTab.commitWhenIncluded = null;
             refreshRequestId++;
-            requestedDiffPath = null;
+            changesTab.requestedDiffPath = null;
             logTab.requestedSelection = null;
             busy = false;
             busyLabel = null;

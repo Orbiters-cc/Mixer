@@ -284,7 +284,7 @@ namespace Orbiters.UnitGit.Editor
                 if (snapshot.HasRepository) RequestGitStorage(false);
             }
 
-            bool preserveLocalView = activeTab == UnitGitTab.LocalChanges && localChangesListRoot != null &&
+            bool preserveLocalView = activeTab == UnitGitTab.LocalChanges && changesTab.localChangesListRoot != null &&
                 task.Status == TaskStatus.RanToCompletion && snapshot.HasRepository && snapshot.HasCommits &&
                 string.IsNullOrWhiteSpace(snapshot.LastError);
             if (preserveLocalView)
@@ -294,11 +294,11 @@ namespace Orbiters.UnitGit.Editor
                     RefreshChangesList();
                 else
                 {
-                    changesListView?.RefreshItems();
+                    changesTab.changesListView?.RefreshItems();
                     UpdateCommitSummary();
                 }
                 var change = GetSelectedChange();
-                bool changedPath = requestedDiffPath != (change != null ? change.Path : string.Empty);
+                bool changedPath = changesTab.requestedDiffPath != (change != null ? change.Path : string.Empty);
                 RequestLocalDiff(change);
                 if (changedPath)
                     RebuildLocalDiffPane();
@@ -312,7 +312,7 @@ namespace Orbiters.UnitGit.Editor
             }
             else
             {
-                requestedDiffPath = null;
+                changesTab.requestedDiffPath = null;
                 UpdateTopBar();
                 RebuildContent();
             }
@@ -333,19 +333,19 @@ namespace Orbiters.UnitGit.Editor
                 ?? snapshot.Branches.FirstOrDefault();
 
             var present = new HashSet<string>(snapshot.Changes.Select(change => change.Path), StringComparer.OrdinalIgnoreCase);
-            selectedChangePaths.RemoveWhere(path => !present.Contains(path));
+            changesTab.selectedChangePaths.RemoveWhere(path => !present.Contains(path));
             if (snapshot.Changes.Count > 0 &&
-                (string.IsNullOrWhiteSpace(selectedChangePath) ||
-                 snapshot.Changes.All(change => !string.Equals(change.Path, selectedChangePath, StringComparison.OrdinalIgnoreCase))))
+                (string.IsNullOrWhiteSpace(changesTab.selectedChangePath) ||
+                 snapshot.Changes.All(change => !string.Equals(change.Path, changesTab.selectedChangePath, StringComparison.OrdinalIgnoreCase))))
             {
-                selectedChangePath = snapshot.Changes[0].Path;
+                changesTab.selectedChangePath = snapshot.Changes[0].Path;
             }
             else if (snapshot.Changes.Count == 0)
             {
-                selectedChangePath = string.Empty;
+                changesTab.selectedChangePath = string.Empty;
             }
-            if (selectedChangePaths.Count == 0 && !string.IsNullOrEmpty(selectedChangePath))
-                selectedChangePaths.Add(selectedChangePath);
+            if (changesTab.selectedChangePaths.Count == 0 && !string.IsNullOrEmpty(changesTab.selectedChangePath))
+                changesTab.selectedChangePaths.Add(changesTab.selectedChangePath);
 
             if (snapshot.HasRepository && snapshot.Commits.Count > 0)
             {

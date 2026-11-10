@@ -34,7 +34,7 @@ namespace Orbiters.UnitGit.Editor
             }
 
             var selected = snapshot.Changes.FirstOrDefault(change =>
-                string.Equals(change.Path, selectedChangePath, StringComparison.OrdinalIgnoreCase));
+                string.Equals(change.Path, changesTab.selectedChangePath, StringComparison.OrdinalIgnoreCase));
             return selected ?? snapshot.Changes[0];
         }
 
